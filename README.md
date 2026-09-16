@@ -15,7 +15,7 @@ Three jobs, in order of maturity:
 | Pillar | What it means | Status |
 | --- | --- | --- |
 | **Security** | Irreversible or off-task actions are held with a reason the agent can act on; credential files, force pushes, destructive SQL, and remote-script execution are caught offline; secrets are redacted before anything leaves the machine. Next: injected instructions inside tool output (web pages, issues, files) flagged and quarantined; insecure patterns in written code steered. | built · extending |
-| **Deslopify** | Stubs, placeholders, filler, and restating comments in written code earn a scored nudge; the agent fixes them on the next turn. Next: per-symptom scores instead of one quality number, and wordy or AI-flavoured replies scored against an audience setting. | built for code · prose planned |
+| **Deslopify** | Written code is scored per symptom — stubs, restating comments, dead code, hedging — and the agent gets a nudge naming the symptom and its fix; repeats become a standing rule. Replies are scored for wordiness, assistant clichés, and jargon against an `audience` setting, and a trend across replies shapes the next one. | built |
 | **Context saving** | Jev judges which tool outputs are worth keeping; code compresses them. Only at moments that cannot cost a prompt-cache miss: when an output arrives (before it enters the cache), when the cache is measurably cold, or when Pi compacts anyway. Works alongside prompt-cache optimizers because it never touches the system prompt or a warm prefix. | planned |
 
 ## Why a coding agent needs this
@@ -26,7 +26,7 @@ Agents are good at picking the next command and bad at noticing when that comman
 - **Scope drift gets flagged.** Poems in a bugfix, refactors nobody asked for, dependency installs unrelated to the task: warned to you at 0.6, held at 0.85 when Jev also calls the action `unrelated`.
 - **Loops get broken.** Three failures with the same strategy (same command with cosmetic changes, same error after each edit) earn the agent a steer: re-read the error, form a new hypothesis, or report the blocker. Exact repeats are caught offline; Jev tells "investigating between failures" from "flailing" — 0.32 vs 0.93 in the smoke run.
 - **"Done" gets checked.** When the final message reports completion after file changes and no test, build, or lint passed in that run, the agent is asked to verify before you read a false "all green". A claim that tests passed when none ran is called out as such. Once per prompt, so it cannot loop.
-- **Slop gets a note.** Stub functions, `TODO: implement later`, mocks returning fake data, filler comments: scored on the same request as the action guard (zero extra latency) and steered back to the agent after the write, never held.
+- **Slop gets a name.** Written code is scored per symptom on the same request as the action guard (zero extra latency): stubs and fake-data mocks, comments that restate the code, dead or duplicated code, hedging notes. The agent is told which symptom and how to fix it, never held; the third repeat in a session becomes a standing rule. Replies are scored too — wordy, clichéd, or too technical for the configured audience — and a trend across replies earns a nudge that shapes the next one without spending a turn.
 - **Nothing slows down the boring calls.** Read-only shell lines are skipped without a request; anything else costs one request of ~600 input tokens.
 - **It degrades gracefully.** Offline pattern checks and exact-repeat detection run with no account at all. On an API timeout or outage the call is allowed with a warning (configurable), and reasons never include your command text or upstream error bodies.
 
@@ -68,15 +68,23 @@ Keeps the last 12 tool results for the current prompt. When the latest result fa
 
 Tracks each run's evidence: code changes (`write`, `edit`) and check commands (`npm test`, `pytest`, `cargo test`, `tsc`, `eslint`, `go test`, `make test`, and similar, whether run through `bash` or `ctx_execute`) with pass/fail; context-mode's inline `Command exited with code N` counts as a failure. When a run ends with a normal assistant message after code changes and no passing check, one Jev request judges the message: `claims_done`, `claims_verified`, `verification_applies` (Noul), `outcome` (Choice: complete / partial / blocked / other). A completion claim ≥ 0.7 that is not a blocker or question, for a task where checks would mean something (≥ 0.5; prose and file housekeeping score ~0.05), is reported as unverified; a verification claim with no check run is reported as a false claim. With `nudge: true` (default) the agent receives one follow-up turn asking it to run the checks or say plainly that nothing was verified — once per user prompt.
 
-### Slop (`write`/`edit`, same request as the action guard)
+### Slop in code (`write`/`edit`, same request as the action guard)
 
 pi-warden cannot rewrite code — Jev only judges — so slop is handled as a feedback loop through the agent:
 
-1. When the agent calls `write` or `edit`, two questions ride on the action guard's request (no extra latency): `slop_quality`, a Score over three described levels — *focused* (does what the task needs, comments only where they add information) / *some filler* (comments restating the code, minor dead code, hedging) / *sloppy* (stub or placeholder code, TODO where a working implementation is needed, duplicated or commented-out logic, vague text) — and `slop_placeholder`, a Noul: does the content leave placeholder, stub, mock, or "implement later" code where `task` needs a working implementation? Jev sees the first 1500 characters of a `write` or the first three replacement texts of an `edit`, plus your request, so "needed" is judged against what you asked for.
-2. Quality ≥ 1.5 or placeholder ≥ 0.7 (config `slop`) trips the note. Below that, nothing happens.
-3. The write **goes through** — holding it would leave a half-written file. Instead the agent receives a steer message before its next LLM call: *"pi-warden: the content just written to `src/x.ts` reads as quality 1.90/2 (filler or sloppy) and placeholder or stub code 0.92. Replace stubs and placeholders with working code, remove comments that restate the code, and keep only what the request needs. If something is intentionally left unimplemented, say so in your reply instead of leaving it in the code."* The agent fixes the file on its next turn; you see a notification and `slop 1.9/2 · stub 0.92` in the widget.
+1. When the agent calls `write` or `edit`, four Noul questions ride on the action guard's request (no extra latency), one per symptom, each with concrete yes/no criteria: `slop_stub` (placeholder, mock, or "implement later" code where `task` needs a working implementation), `slop_comments` (explanatory comments that restate what the adjacent code shows), `slop_dead` (commented-out code, unused imports or variables, duplicated logic, unreachable branches), `slop_hedging` ("should work", "for now", TODOs without a plan). Jev sees a head/middle/tail sample of a `write` (1500 characters) or the first three replacement texts of an `edit`, plus your request.
+2. Any symptom ≥ `slop.threshold` (0.7) trips the note. The write **goes through** — holding it would leave a half-written file.
+3. The agent receives a steer message naming the symptoms and their fixes, e.g. *"pi-warden: the content just written to `src/x.ts` has stub or placeholder code where a working implementation is needed; hedging or vague notes. Fix it in your next edit: replace stubs, placeholders, and hard-coded fake data with the working implementation, or state in your reply exactly what is left unimplemented and why; replace \"should work\", \"for now\", and TODOs without a plan with a definite statement or a concrete follow-up."* The third time a symptom appears in a session, the note says so and asks the agent to treat it as a standing rule.
 
-From the live smoke: a `// TODO: implement later` stub scored quality 2.00 / placeholder 0.99, a mock returning fake user data 2.00 / 0.98, a focused implementation 0.00 / 0.02, and a function with only restating comments 0.87 / 0.02 — deliberately below the threshold, because the guard is for stubs and filler that change behaviour, not for style. Not covered: code written through bash heredocs, content past the excerpt limits, and the agent's prose replies.
+Per-symptom scoring is what makes this precise. From the tuning set (`scripts/slop-cases.mjs`, 16 code cases): a `// TODO: implement later` stub scores stub 0.99; restating comments score comments 0.97 while an explanatory why-comment scores 0.08; commented-out code scores dead 0.96 and comments 0.43; a mock inside a *test file* scores stub 0.51 (below threshold, correctly); a stub explicitly outside the task scores 0.24. Not covered: code written through shell heredocs and content past the sample limits.
+
+### Slop in replies (`agent_end`)
+
+The run's final reply (≥ 200 characters) is judged against `slop.prose.audience`: `wordy` (preamble, restating the request, closing summary, filler), `cliches` ("Great question", "I hope this helps", "it's worth noting", unrequested caveat lists, emoji headings), `jargon` (unexplained terms for the audience). `audience` is `technical` (default), `plain`, or any free-text description such as *"a founder without programming background"*. One long answer to a long question is not punished: a symptom must appear in `trend` (2) of the last 3 replies before the agent is nudged, the nudge is queued for the next user prompt so it shapes the next reply without spending a turn, and two replies pass before the same nudge can fire again. From the tuning set: a padded reply scores wordy 0.97 / clichés 0.99; a dense three-point summary 0.25 / 0.05; the same status update scores jargon 0.94 for a plain audience and 0.24 for a developer.
+
+### Steer messages
+
+Nudges from the stuck, done, slop, and prose guards are custom messages in the agent's context. By default they are **hidden from the transcript** (`steerVisible: false`) so the conversation stays yours; the notification tells you a nudge happened and the trace panel shows the exact text. Set `steerVisible: true` to see them inline.
 
 If TypeSafe cannot answer (timeout after 5 s, outage, budget), an action-guard call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead), and the other guards simply skip. When the per-session request budget is spent, pi-warden says so once and continues with offline checks. Consent in headless runs comes from `PI_WARDEN_ENABLED=1`; `PI_WARDEN_MODE` overrides the mode.
 
@@ -103,13 +111,14 @@ Templates in `config.widget` control the text. Segments are separated by ` · `;
   "enabled": true,
   "placement": "aboveEditor",
   "shortcut": "ctrl+shift+w",
-  "action": "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop {slopQuality} · stub {slopStub} · patterns: {patterns} · {flags} · {level}",
+  "action": "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop: {slop} · patterns: {patterns} · {flags} · {level}",
   "stuck": "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
-  "done": "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}"
+  "done": "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
+  "prose": "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}"
 }
 ```
 
-Tokens — action: `tool level source irreversible offTask scope approved slopQuality slopStub patterns reasons path model ms flags time`; stuck: `failures sameStrategy approachChange progress status source reasons model ms flags time`; done: `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`. A minimal line: `"action": "⚔ {tool} {level} · {irreversible}/{offTask}"`. Set `"enabled": false` to hide the line (the trace and panel keep working); `"shortcut": ""` disables the keybinding.
+Tokens — action: `tool level source irreversible offTask scope approved slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time`; prose: `wordy cliches jargon status reasons model ms flags time`; stuck: `failures sameStrategy approachChange progress status source reasons model ms flags time`; done: `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`. A minimal line: `"action": "⚔ {tool} {level} · {irreversible}/{offTask}"`. Set `"enabled": false` to hide the line (the trace and panel keep working); `"shortcut": ""` disables the keybinding.
 
 ## Configuration
 
@@ -131,8 +140,13 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
   },
   "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
   "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
-  "slop": { "enabled": true, "quality": 1.5, "placeholder": 0.7 },
-  "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w" }
+  "slop": {
+    "enabled": true,
+    "threshold": 0.7,
+    "prose": { "enabled": true, "audience": "technical", "threshold": 0.7, "trend": 2, "minChars": 200 }
+  },
+  "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w" },
+  "steerVisible": false
 }
 ```
 
@@ -140,7 +154,7 @@ A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides (f
 
 ## Data handling
 
-- With consent, each guarded call sends to `https://api.typesafe.ai`: your latest prompt (truncated to 1500 characters), the tool name, the command (truncated to 2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character content excerpt for `write`, and the first three edit pairs (400 characters each) for `edit`. The stuck detector sends the last 12 tool calls (300 characters each) with 400-character output tails; the done-check sends the agent's final message (2000 characters) and the run's check commands. No other files, history, or telemetry.
+- With consent, each guarded call sends to `https://api.typesafe.ai`: your latest prompt (truncated to 1500 characters), the tool name, the command (truncated to 2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample for `write`, and the first three edit pairs (400 characters each) for `edit`. The stuck detector sends the last 12 tool calls (300 characters each) with 400-character output tails; the done-check and the prose check send the agent's final message (2000 and 2500 characters) with the run's check commands and the audience description. No other files, history, or telemetry.
 - Obvious credentials in the action (`Authorization` headers, `TOKEN=`/`SECRET=` assignments, `sk-`, `ghp_`, `AKIA`, JWTs, URL passwords, PEM blocks) are replaced with `[redacted]` before sending. This is best-effort; do not rely on it for prompts that contain secrets.
 - Text returned or steered to the agent names the tool, the reasons, and the scores, not the command text. UI errors never include upstream response bodies or keys.
 - Judgments are model output. Thresholds are yours to tune; a hold is information for the agent and for you, not a verdict on either.
@@ -170,8 +184,9 @@ Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`,
 ```bash
 npm install
 npm run check        # typecheck, offline tests (mocked transport), build
-npm run test:live    # 28 billable synthetic judgments across all guards (key from .env or the stored login); pass action|slop|approval|stuck|done for one group
+npm run test:live    # 31 billable synthetic judgments across all guards (key from .env or the stored login); pass action|slop|approval|stuck|done for one group
 npm run dev:pi       # start Pi with this working tree plus an installed pi-typesafe
+node scripts/slop-cases.mjs   # 22 billable cases that tune the slop and prose questions
 npm run preview      # re-render docs/preview.png from the recorded live verdicts (needs a Chrome binary)
 ```
 

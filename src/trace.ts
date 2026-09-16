@@ -1,8 +1,9 @@
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
+import type { ProseVerdict } from "./prose.js";
 import type { Attempt, StuckVerdict } from "./stuck.js";
 
-export type GuardName = "action" | "stuck" | "done";
+export type GuardName = "action" | "stuck" | "done" | "prose";
 
 export interface TraceEntry {
   at: number;
@@ -54,7 +55,7 @@ export function actionDetails(verdict: Verdict, extra: { mode?: string; told?: s
   if (judgment) {
     lines.push(`jev: irreversible ${percent(judgment.irreversible)} · off-task ${percent(judgment.offTask)} · ${judgment.scope.replace(/_/g, " ")} (${percent(judgment.scopeConfidence)})${judgment.approved !== undefined ? ` · approved ${percent(judgment.approved)}` : ""} · ${judgment.model} · ${judgment.elapsedMs} ms`);
   }
-  if (verdict.slop) lines.push(`slop: quality ${verdict.slop.quality.toFixed(2)}/2 · placeholder ${percent(verdict.slop.placeholder)}${verdict.slopReasons?.length ? ` → ${verdict.slopReasons.join("; ")}` : ""}`);
+  if (verdict.slop) lines.push(`slop: stub ${percent(verdict.slop.stub)} · comments ${percent(verdict.slop.comments)} · dead ${percent(verdict.slop.dead)} · hedging ${percent(verdict.slop.hedging)}${verdict.slopReasons?.length ? ` → ${verdict.slopReasons.join("; ")}` : ""}`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
   if (extra.mode && verdict.level === "confirm") lines.push(`mode: ${extra.mode}`);
@@ -76,6 +77,15 @@ export function doneDetails(verdict: DoneVerdict, finalMessage: string, told?: s
   lines.push(`evidence: ${verdict.evidence.mutations} code change${verdict.evidence.mutations === 1 ? "" : "s"}${verdict.evidence.checks.length ? `; checks: ${verdict.evidence.checks.map(check => `${clip(check.call, 60)} → ${check.passed ? "passed" : "failed"}`).join(", ")}` : "; no checks ran"}`);
   if (verdict.judgment) lines.push(`jev: claims done ${percent(verdict.judgment.claimsDone)} · claims verified ${percent(verdict.judgment.claimsVerified)} · checks apply ${percent(verdict.judgment.verificationApplies)} · ${verdict.judgment.outcome} · ${verdict.judgment.model} · ${verdict.judgment.elapsedMs} ms`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
+  if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
+  if (told) lines.push(`agent told: ${clip(told, 400)}`);
+  return lines;
+}
+
+export function proseDetails(verdict: ProseVerdict, reply: string, audience: string, told?: string): string[] {
+  const lines = [`reply: ${clip(reply.replace(/\s+/g, " "), 300)}`, `audience: ${audience}`];
+  if (verdict.scores) lines.push(`jev: wordy ${percent(verdict.scores.wordy)} · clichés ${percent(verdict.scores.cliches)} · jargon ${percent(verdict.scores.jargon)}${verdict.model ? ` · ${verdict.model} · ${verdict.elapsedMs} ms` : ""}`);
+  if (verdict.flagged.length) lines.push(`flagged: ${verdict.flagged.join(", ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
   if (told) lines.push(`agent told: ${clip(told, 400)}`);
   return lines;

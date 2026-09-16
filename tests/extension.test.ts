@@ -256,27 +256,72 @@ test("with consent, Jev judgments drive warn and hold, and the widget shows scor
   assert.match(held?.reason ?? "", /retry the same call and pi-warden will let it through/);
   assert.equal(networkCalls, 2);
 
-  nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated", slop_quality: 0.2, slop_placeholder: 0.05 };
+  nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated" };
   const offTask = await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" });
   assert.equal(offTask?.block, true);
   assert.match(offTask?.reason ?? "", /off-task 0\.95 \(unrelated to the request\)/);
 });
 
-test("slop crossings steer the agent after the write without holding it", async () => {
+test("slop symptoms steer the agent after the write without holding it; steers are hidden from the transcript by default and escalate on repeats", async () => {
   await grantConsent();
-  nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_quality: 1.9, slop_placeholder: 0.92 };
+  nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_stub: 0.92, slop_hedging: 0.75, slop_comments: 0.1, slop_dead: 0.1 };
   assert.equal(await toolCall("write", { path: join(temporary, "src", "a.ts"), content: "// TODO: implement\nexport const a = () => null;" }), undefined);
-  assert.deepEqual(Object.keys(requests.at(-1)!.questions).sort(), ["irreversible", "off_task", "scope", "slop_placeholder", "slop_quality"]);
+  assert.deepEqual(Object.keys(requests.at(-1)!.questions).sort(), ["irreversible", "off_task", "scope", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0]!.message.customType, "pi-warden-steer");
-  assert.match(sentMessages[0]!.message.content, /src\/a\.ts reads as quality 1\.90\/2 .* and placeholder or stub code 0\.92/);
+  assert.equal((sentMessages[0]!.message as { display?: boolean }).display, false, "hidden from the transcript by default");
+  assert.match(sentMessages[0]!.message.content, /src\/a\.ts has stub or placeholder code where a working implementation is needed; hedging or vague notes\. Fix it in your next edit: replace stubs/);
   assert.deepEqual(sentMessages[0]!.options, { deliverAs: "steer" });
   assert.match(notices.at(-1)!.text, /warden · slop · src\/a\.ts/);
-  assert.match(widgets.at(-1)![0]!, /slop 1\.9\/2 · stub 0\.92/);
+  assert.match(widgets.at(-1)![0]!, /slop: stub 0\.92, hedging 0\.75/);
 
-  nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_quality: 0.3, slop_placeholder: 0.1 };
+  nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_stub: 0.1, slop_hedging: 0.1, slop_comments: 0.1, slop_dead: 0.1 };
   await toolCall("edit", { path: join(temporary, "src", "a.ts"), edits: [{ oldText: "a", newText: "b" }] });
   assert.equal(sentMessages.length, 1, "clean content: no steer");
+  assert.match(widgets.at(-1)![0]!, /slop: none/);
+
+  nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_stub: 0.9, slop_hedging: 0.1, slop_comments: 0.1, slop_dead: 0.1 };
+  await toolCall("write", { path: join(temporary, "src", "b.ts"), content: "export const b = () => null; // TODO" });
+  await toolCall("write", { path: join(temporary, "src", "c.ts"), content: "export const c = () => null; // TODO" });
+  assert.equal(sentMessages.length, 3);
+  assert.match(sentMessages[2]!.message.content, /\(3th time this session\)[\s\S]*standing rule/);
+
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, steerVisible: true }));
+  await toolCall("write", { path: join(temporary, "src", "d.ts"), content: "export const d = () => null; // TODO" });
+  assert.equal((sentMessages[3]!.message as { display?: boolean }).display, true);
+});
+
+test("prose: the final reply is scored against the audience and the agent is nudged for the next turn on a trend", async () => {
+  await grantConsent();
+  await newPrompt("explain the bug");
+  nextAnswers = { wordy: 0.9, cliches: 0.95, jargon: 0.1 };
+  const longReply = "Great question! Let me walk you through it. ".repeat(6);
+  await agentEnd(longReply);
+  assert.deepEqual(Object.keys(requests.at(-1)!.questions).sort(), ["cliches", "jargon", "wordy"]);
+  assert.equal(requests.at(-1)!.state.audience, "a software developer who knows this codebase and its tools");
+  assert.equal(sentMessages.length, 0, "one reply is not a trend");
+  assert.match(widgets.at(-1)!.at(-1)!, /warden · prose · wordy 0\.90 · clichés 0\.95 · jargon 0\.10 · cliches, wordy$/, "strongest symptom first");
+
+  await newPrompt("and the fix?");
+  await agentEnd(longReply);
+  assert.equal(sentMessages.length, 1, "two of the last three replies: nudge");
+  assert.equal(sentMessages[0]!.options?.deliverAs, "nextTurn");
+  assert.match(sentMessages[0]!.message.content, /longer than the content needs[\s\S]*assistant clichés[\s\S]*From the next reply on, lead with the answer/);
+  assert.match(widgets.at(-1)!.at(-1)!, /nudged$/);
+  assert.match(notices.at(-1)!.text, /warden · prose: wordy, cliches in 2 of the last 3 replies/);
+
+  await newPrompt("ok");
+  await agentEnd(longReply);
+  assert.equal(sentMessages.length, 1, "cool-down after a nudge");
+  await newPrompt("short one");
+  await agentEnd("Short.");
+  assert.equal(requests.filter(request => "wordy" in request.questions).length, 3, "replies under minChars are not judged");
+
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, slop: { prose: { audience: "plain" } } }));
+  await newPrompt("status?");
+  nextAnswers = { wordy: 0.1, cliches: 0.1, jargon: 0.95 };
+  await agentEnd("The webhook handler lacked HMAC verification so the ORM upsert raced the mutex. ".repeat(3));
+  assert.equal(requests.at(-1)!.state.audience, "a non-programmer who owns the product and reads the reply as a status update");
 });
 
 test("stuck detection: exact repeats are caught offline, varied failures ask Jev, and the agent is nudged once per cool-down", async () => {

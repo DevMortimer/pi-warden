@@ -31,6 +31,8 @@ test("defaults: guards on, steer mode, TypeSafe consent off, nudges on", () => {
   assert.equal(config.stuck.nudge, true);
   assert.equal(config.done.nudge, true);
   assert.equal(config.slop.enabled, true);
+  assert.equal(config.slop.prose.enabled, true);
+  assert.equal(config.steerVisible, false, "steers are hidden from the transcript by default; the trace shows them");
   assert.equal(config.timeoutMs, config.action.timeoutMs);
 });
 
@@ -40,7 +42,7 @@ test("user overrides accept valid values and ignore junk", () => {
     action: { tools: ["bash", 7, ""], irreversible: { warn: 0.9, confirm: 0.6 }, offTask: { confirm: 2 }, timeoutMs: -1, failOpen: false, unknown: 1 },
     stuck: { minFailures: 20, window: 5, sameStrategy: 0.9, nudge: false },
     done: { claimsDone: 0.5 },
-    slop: { quality: 1.0, placeholder: 3 },
+    slop: { placeholder: 0.6, prose: { audience: "plain", trend: 9, threshold: 2 } },
   });
   assert.equal(config.typesafe, true);
   assert.equal(config.mode, "advise");
@@ -55,8 +57,11 @@ test("user overrides accept valid values and ignore junk", () => {
   assert.equal(config.stuck.sameStrategy, 0.9);
   assert.equal(config.stuck.nudge, false);
   assert.equal(config.done.claimsDone, 0.5);
-  assert.equal(config.slop.quality, 1.0);
-  assert.equal(config.slop.placeholder, 0.7, "out-of-range probability falls back");
+  assert.equal(config.slop.threshold, 0.6, "0.2.x placeholder key sets the shared threshold");
+  assert.equal(config.slop.prose.audience, "plain");
+  assert.equal(config.slop.prose.trend, 3, "trend is capped at the 3-reply window");
+  assert.equal(config.slop.prose.threshold, 0.7, "out-of-range probability falls back");
+  assert.equal(applyUserOverrides(defaultConfig(), { steerVisible: true }).steerVisible, true);
   assert.equal(applyUserOverrides(defaultConfig(), { mode: "loud" }).mode, "steer");
 });
 

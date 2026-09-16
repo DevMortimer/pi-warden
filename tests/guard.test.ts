@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { describeAction, evaluateAction, isReadOnlyCommand, matchPatterns, steerReason, textApproves } from "../src/guard.js";
+import { describeAction, evaluateAction, formatVerdict, isReadOnlyCommand, matchPatterns, steerReason, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { redact } from "../src/redact.js";
 
@@ -110,7 +110,7 @@ test("describeAction summarises tool input without leaking secrets or absolute p
   assert.equal(write.path, "sub/new.txt");
   assert.equal(write.location, "inside_project");
   assert.equal(write.exists, false);
-  assert.ok((write.excerpt?.length ?? 0) <= 1520);
+  assert.ok((write.excerpt?.length ?? 0) <= 1700);
   assert.equal(write.bytes, 2400);
 
   const overwrite = describeAction("write", { path: join(cwd, "existing.txt"), content: "x" }, cwd);
@@ -214,7 +214,7 @@ test("evaluateAction skips tools that are not guarded", async () => {
   assert.equal(j.calls.length, 0);
 });
 
-const withSlop = (irreversible: number, offTask: number, quality: number, placeholder: number, approved?: number): Judge & { calls: unknown[] } => {
+const withSlop = (irreversible: number, offTask: number, slop: Partial<Record<"stub" | "comments" | "dead" | "hedging", number>>, approved?: number): Judge & { calls: unknown[] } => {
   const calls: unknown[] = [];
   return {
     calls,
@@ -222,9 +222,8 @@ const withSlop = (irreversible: number, offTask: number, quality: number, placeh
       calls.push(request);
       const base = answers(irreversible, offTask) as { answers: Record<string, unknown> };
       const ids = Object.keys((request as { questions: Record<string, unknown> }).questions);
-      if (ids.includes("slop_quality")) {
-        base.answers.slop_quality = { type: "score", score: quality, confidence: 0.8, probabilities: { "0": 0, "1": 0, "2": 0, [String(Math.round(quality))]: 0.8 } };
-        base.answers.slop_placeholder = { type: "noul", noul: placeholder };
+      for (const symptom of ["stub", "comments", "dead", "hedging"] as const) {
+        if (ids.includes(`slop_${symptom}`)) base.answers[`slop_${symptom}`] = { type: "noul", noul: slop[symptom] ?? 0.05 };
       }
       if (ids.includes("approved")) base.answers.approved = { type: "noul", noul: approved ?? 0 };
       return base as never;
@@ -232,40 +231,52 @@ const withSlop = (irreversible: number, offTask: number, quality: number, placeh
   };
 };
 
-test("slop questions join the write/edit request only, and cross thresholds without raising the level", async () => {
+test("slop questions join the write/edit request only, score per symptom, and never raise the level", async () => {
   const config = defaultConfig();
-  const j = withSlop(0.1, 0.1, 1.8, 0.9);
+  const j = withSlop(0.1, 0.1, { stub: 0.95, hedging: 0.8, comments: 0.2 });
   const write = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "// TODO implement\nexport function a() { return null as any; }" }, cwd, task: "implement a()" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "off_task", "scope", "slop_placeholder", "slop_quality"]);
+  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "off_task", "scope", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
   assert.equal(write.level, "allow", "slop never blocks");
-  assert.deepEqual(write.slop, { quality: 1.8, placeholder: 0.9 });
-  assert.equal(write.slopReasons?.length, 2);
+  assert.deepEqual(write.slop, { stub: 0.95, comments: 0.2, dead: 0.05, hedging: 0.8 });
+  assert.deepEqual(write.slopSymptoms, ["stub", "hedging"], "strongest first");
+  assert.match(write.slopReasons?.[0] ?? "", /stub or placeholder code .* \(0\.95\)/);
+  assert.match(formatVerdict(write), /slop: stub 0\.95, hedging 0\.80/);
 
   const bash = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: config.action, judge: j, slop: config.slop });
   assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "off_task", "scope"], "no slop questions for bash");
   assert.equal(bash.slop, undefined);
 
-  const clean = await evaluateAction({ tool: "edit", input: { path: join(cwd, "a.ts"), edits: [{ oldText: "a", newText: "b" }] }, cwd, task: "rename" }, { config: config.action, judge: withSlop(0.1, 0.1, 0.2, 0.05), slop: config.slop });
+  const clean = await evaluateAction({ tool: "edit", input: { path: join(cwd, "a.ts"), edits: [{ oldText: "a", newText: "b" }] }, cwd, task: "rename" }, { config: config.action, judge: withSlop(0.1, 0.1, {}), slop: config.slop });
   assert.ok(clean.slop);
-  assert.equal(clean.slopReasons, undefined);
+  assert.equal(clean.slopSymptoms, undefined);
+  assert.match(formatVerdict(clean), /slop: none/);
 
   const off = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "x" }, cwd, task: "t" }, { config: config.action, judge: j, slop: { ...config.slop, enabled: false } });
   assert.equal(off.slop, undefined);
 });
 
+test("long writes are sampled head, middle, and tail so a stub at the end is still seen", () => {
+  const body = `${"a".repeat(2000)}\nMIDDLE-MARKER\n${"b".repeat(2000)}\n// TODO: implement the rest\n`;
+  const summary = describeAction("write", { path: join(cwd, "big.ts"), content: body }, cwd);
+  assert.ok((summary.excerpt?.length ?? 0) <= 1700);
+  assert.match(summary.excerpt ?? "", /^a{100}/);
+  assert.match(summary.excerpt ?? "", /TODO: implement the rest/);
+  assert.match(summary.excerpt ?? "", /… \[\d+ chars\] …/);
+});
+
 test("a retry after a hold asks Jev about approval; an approving reply lets the call through", async () => {
   const config = defaultConfig();
-  const first = await evaluateAction({ tool: "bash", input: { command: "git push --force" }, cwd, task: "push my branch" }, { config: config.action, judge: withSlop(0.9, 0.2, 0, 0) });
+  const first = await evaluateAction({ tool: "bash", input: { command: "git push --force" }, cwd, task: "push my branch" }, { config: config.action, judge: withSlop(0.9, 0.2, {}) });
   assert.equal(first.level, "confirm");
   assert.equal(first.judgment?.approved, undefined);
 
-  const declined = withSlop(0.9, 0.2, 0, 0, 0.1);
+  const declined = withSlop(0.9, 0.2, {}, 0.1);
   const retry = await evaluateAction({ tool: "bash", input: { command: "git push --force" }, cwd, task: "no, just push normally" }, { config: config.action, judge: declined, retryAfterHold: true });
   assert.ok("approved" in (declined.calls[0] as { questions: object }).questions);
   assert.equal(retry.level, "confirm");
   assert.equal(retry.approvedByUser, undefined);
 
-  const approvedJudge = withSlop(0.9, 0.2, 0, 0, 0.95);
+  const approvedJudge = withSlop(0.9, 0.2, {}, 0.95);
   const approved = await evaluateAction({ tool: "bash", input: { command: "git push --force" }, cwd, task: "yes, force push it, I own that branch" }, { config: config.action, judge: approvedJudge, retryAfterHold: true });
   assert.equal(approved.level, "allow");
   assert.equal(approved.approvedByUser, true);

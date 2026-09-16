@@ -1,5 +1,6 @@
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
+import type { ProseVerdict } from "./prose.js";
 import type { StuckVerdict } from "./stuck.js";
 
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
@@ -13,12 +14,14 @@ export interface WidgetConfig {
   action: string;
   stuck: string;
   done: string;
+  prose: string;
 }
 
 export const DEFAULT_TEMPLATES = {
-  action: "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop {slopQuality} · stub {slopStub} · patterns: {patterns} · {flags} · {level}",
+  action: "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop: {slop} · patterns: {patterns} · {flags} · {level}",
   stuck: "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
   done: "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
+  prose: "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}",
 } as const;
 
 export function defaultWidgetConfig(): WidgetConfig {
@@ -67,8 +70,11 @@ export function actionTokens(verdict: Verdict, at = Date.now()): Tokens {
     offTask: fixed(verdict.judgment?.offTask),
     scope: verdict.judgment?.scope.replace(/_/g, " "),
     approved: fixed(verdict.judgment?.approved),
-    slopQuality: verdict.slop ? `${verdict.slop.quality.toFixed(1)}/2` : undefined,
-    slopStub: fixed(verdict.slop?.placeholder),
+    slop: verdict.slopSymptoms?.length ? verdict.slopSymptoms.map(symptom => `${symptom} ${verdict.slop![symptom].toFixed(2)}`).join(", ") : verdict.slop ? "none" : undefined,
+    slopStub: fixed(verdict.slop?.stub),
+    slopComments: fixed(verdict.slop?.comments),
+    slopDead: fixed(verdict.slop?.dead),
+    slopHedging: fixed(verdict.slop?.hedging),
     patterns: verdict.patterns.length ? verdict.patterns.map(hit => hit.id).join(", ") : undefined,
     reasons: verdict.reasons.length ? verdict.reasons.join("; ") : undefined,
     path: verdict.summary.path,
@@ -118,9 +124,25 @@ export function doneTokens(verdict: DoneVerdict, at = Date.now()): Tokens {
   };
 }
 
+export function proseTokens(verdict: ProseVerdict, at = Date.now()): Tokens {
+  return {
+    guard: "prose",
+    time: time(at),
+    wordy: fixed(verdict.scores?.wordy),
+    cliches: fixed(verdict.scores?.cliches),
+    jargon: fixed(verdict.scores?.jargon),
+    status: verdict.nudged ? "nudged" : verdict.flagged.length ? verdict.flagged.join(", ") : "ok",
+    reasons: verdict.flagged.length ? verdict.flagged.join(", ") : undefined,
+    model: verdict.model,
+    ms: verdict.elapsedMs === undefined ? undefined : String(verdict.elapsedMs),
+    flags: verdict.error ? "typesafe error" : undefined,
+  };
+}
+
 /** Token names users can put in templates, for /warden status and the README. */
 export const TOKEN_NAMES = {
-  action: ["tool", "level", "source", "irreversible", "offTask", "scope", "approved", "slopQuality", "slopStub", "patterns", "reasons", "path", "model", "ms", "flags", "time", "guard"],
+  action: ["tool", "level", "source", "irreversible", "offTask", "scope", "approved", "slop", "slopStub", "slopComments", "slopDead", "slopHedging", "patterns", "reasons", "path", "model", "ms", "flags", "time", "guard"],
+  prose: ["wordy", "cliches", "jargon", "status", "reasons", "model", "ms", "flags", "time", "guard"],
   stuck: ["failures", "sameStrategy", "approachChange", "progress", "status", "source", "reasons", "model", "ms", "flags", "time", "guard"],
   done: ["changes", "checks", "checksPassed", "claimsDone", "claimsVerified", "checksApply", "outcome", "status", "reasons", "model", "ms", "flags", "time", "guard"],
 } as const;

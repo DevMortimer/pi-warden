@@ -46,12 +46,23 @@ export interface DoneGuardConfig {
   nudge: boolean;
 }
 
+export interface ProseConfig {
+  enabled: boolean;
+  /** Who reads the agent's replies: "technical", "plain", or a free-text description. Drives the jargon question. */
+  audience: string;
+  /** P(symptom) at or above this counts as a hit. */
+  threshold: number;
+  /** A symptom must hit in this many of the last three replies before the agent is nudged. */
+  trend: number;
+  /** Replies with fewer characters are not judged. */
+  minChars: number;
+}
+
 export interface SlopGuardConfig {
   enabled: boolean;
-  /** Score (0 focused … 2 sloppy) at or above this warns. */
-  quality: number;
-  /** P(placeholder or stub code) at or above this warns. */
-  placeholder: number;
+  /** P(symptom) at or above this is reported for written code: stub, comments, dead, hedging. */
+  threshold: number;
+  prose: ProseConfig;
 }
 
 export type WardenMode = "steer" | "confirm" | "advise";
@@ -77,6 +88,8 @@ export interface WardenConfig {
   slop: SlopGuardConfig;
   /** The status line above the editor and the trace panel. */
   widget: WidgetConfig;
+  /** Show steer messages in the transcript. They are always visible in the trace panel. */
+  steerVisible: boolean;
 }
 
 export const PACKAGE_NAME = "pi-warden";
@@ -99,8 +112,9 @@ export function defaultConfig(): WardenConfig {
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
-    slop: { enabled: true, quality: 1.5, placeholder: 0.7 },
+    slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     widget: defaultWidgetConfig(),
+    steerVisible: false,
   };
 }
 
@@ -155,10 +169,6 @@ export function isMode(value: unknown): value is WardenMode {
   return value === "steer" || value === "confirm" || value === "advise";
 }
 
-function score(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 2 ? value : fallback;
-}
-
 function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number): ActionGuardConfig {
   const withTimeout = { ...base, timeoutMs };
   if (!isObject(raw)) return withTimeout;
@@ -191,9 +201,21 @@ function applyDone(base: DoneGuardConfig, raw: unknown): DoneGuardConfig {
   return { enabled: boolean(raw.enabled, base.enabled), claimsDone: probability(raw.claimsDone, base.claimsDone), nudge: boolean(raw.nudge, base.nudge) };
 }
 
+function applyProse(base: ProseConfig, raw: unknown): ProseConfig {
+  if (!isObject(raw)) return base;
+  return {
+    enabled: boolean(raw.enabled, base.enabled),
+    audience: typeof raw.audience === "string" && raw.audience.trim() ? raw.audience.trim() : base.audience,
+    threshold: probability(raw.threshold, base.threshold),
+    trend: Math.min(3, positiveInteger(raw.trend, base.trend)),
+    minChars: positiveInteger(raw.minChars, base.minChars),
+  };
+}
+
 function applySlop(base: SlopGuardConfig, raw: unknown): SlopGuardConfig {
   if (!isObject(raw)) return base;
-  return { enabled: boolean(raw.enabled, base.enabled), quality: score(raw.quality, base.quality), placeholder: probability(raw.placeholder, base.placeholder) };
+  // 0.2.x used `placeholder` for the stub threshold; it still sets the shared threshold.
+  return { enabled: boolean(raw.enabled, base.enabled), threshold: probability(raw.threshold ?? raw.placeholder, base.threshold), prose: applyProse(base.prose, raw.prose) };
 }
 
 function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
@@ -206,6 +228,7 @@ function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
     action: template(raw.action, base.action),
     stuck: template(raw.stuck, base.stuck),
     done: template(raw.done, base.done),
+    prose: template(raw.prose, base.prose),
   };
 }
 
@@ -238,6 +261,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     ...shared,
     ...applyGuards(base, raw, shared.timeoutMs),
     widget: applyWidget(base.widget, raw.widget),
+    steerVisible: boolean(raw.steerVisible, base.steerVisible),
   };
 }
 

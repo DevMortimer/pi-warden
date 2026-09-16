@@ -53,12 +53,15 @@ export interface Judgment {
   elapsedMs: number;
 }
 
+/** One probability per slop symptom; the steer names the symptoms above the threshold. */
 export interface SlopJudgment {
-  /** 0 focused … 2 sloppy. */
-  quality: number;
-  /** P(placeholder or stub where working code is needed). */
-  placeholder: number;
+  stub: number;
+  comments: number;
+  dead: number;
+  hedging: number;
 }
+export type SlopSymptom = keyof SlopJudgment;
+export const SLOP_SYMPTOMS: readonly SlopSymptom[] = ["stub", "comments", "dead", "hedging"];
 
 export interface Verdict {
   level: Level;
@@ -69,7 +72,8 @@ export interface Verdict {
   reasons: string[];
   judgment?: Judgment;
   slop?: SlopJudgment;
-  /** Set when the slop thresholds were crossed; the level itself is never raised by slop. */
+  /** Symptoms at or above the slop threshold, strongest first. The level itself is never raised by slop. */
+  slopSymptoms?: SlopSymptom[];
   slopReasons?: string[];
   /** True when a previously held call was allowed because the user's latest message approves it. */
   approvedByUser?: boolean;
@@ -102,6 +106,16 @@ const EDIT_LIMIT = 400;
 
 function truncate(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit)}… [${text.length - limit} more chars]`;
+}
+
+/** Head, a slice from the middle, and the tail, so stubs at the end of a long file are still seen. */
+function sample(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const head = Math.floor(limit * 0.6);
+  const mid = Math.floor(limit * 0.2);
+  const tail = limit - head - mid;
+  const middleStart = Math.floor(text.length / 2 - mid / 2);
+  return `${text.slice(0, head)}\n… [${middleStart - head} chars] …\n${text.slice(middleStart, middleStart + mid)}\n… [${text.length - tail - (middleStart + mid)} chars] …\n${text.slice(-tail)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +255,7 @@ export function describeAction(tool: string, input: Record<string, unknown>, cwd
   }
   if (tool === "write" && typeof input.content === "string") {
     summary.bytes = Buffer.byteLength(input.content, "utf8");
-    summary.excerpt = redact(truncate(input.content, EXCERPT_LIMIT));
+    summary.excerpt = redact(sample(input.content, EXCERPT_LIMIT));
   }
   if (tool === "edit" && Array.isArray(input.edits)) {
     summary.editCount = input.edits.length;
@@ -284,12 +298,29 @@ export const questions = {
 };
 
 export const slopQuestions = {
-  slop_quality: score("How does the new code or text that `action` writes read as a change for `task`?", [
-    "Focused: does what `task` needs, clear names, comments only where they add information",
-    "Some filler: comments that restate the code, minor dead code, hedging or repeated text",
-    "Sloppy: placeholder or stub code, TODO where a working implementation is needed, duplicated or commented-out logic, vague or contradictory text",
-  ]),
-  slop_placeholder: noul("Does the content `action` writes leave placeholder, stub, mock, or 'implement later' code where `task` needs a working implementation?"),
+  slop_stub: noul("Does the content `action` writes leave placeholder, stub, mock, or \"implement later\" code where `task` needs a working implementation?", {
+    true: "Yes: a function returns a constant, null, or fake data instead of doing its job; a TODO or \"implement later\" stands where the logic should be; a mock is hard-coded where a real call is needed.",
+    false: "No: the code does what `task` asks, or the incomplete part is clearly outside what `task` asked for.",
+  }),
+  slop_comments: noul("Do the explanatory comments in the content `action` writes mostly restate what the adjacent code already shows, instead of explaining intent, constraints, or non-obvious behaviour? Commented-out code is not an explanatory comment and is judged elsewhere.", {
+    true: "Yes: comments such as \"// increment the counter\" above counter++, \"// return the result\", \"// loop over items\", banners repeating the function name, or doc comments that only repeat parameter names.",
+    false: "No: there are few or no comments, or the comments explain why, an invariant, a workaround, a limitation, a reference, or a decision a reader could not infer from the code.",
+  }),
+  slop_dead: noul("Does the content `action` writes include dead or redundant code: commented-out code, unused imports or variables, duplicated logic, or branches that cannot be reached?", {
+    true: "Yes: blocks of commented-out code, variables or imports that are never used, the same logic written twice, or checks that are always true or false.",
+    false: "No: every line participates in the behaviour.",
+  }),
+  slop_hedging: noul("Does the content `action` writes contain vague or hedging text: \"this should work\", \"for now\", \"might need changes\", TODO notes without a plan, or explanations that say nothing specific?", {
+    true: "Yes: uncertain or apologetic notes in code or docs, placeholders like \"TBD\", or prose that does not commit to what the code does.",
+    false: "No: the text states what the code does and why, or there is no such text.",
+  }),
+};
+
+export const SLOP_LABELS: Record<SlopSymptom, string> = {
+  stub: "stub or placeholder code where a working implementation is needed",
+  comments: "comments that restate the code",
+  dead: "dead or duplicated code",
+  hedging: "hedging or vague notes",
 };
 
 export const approvalQuestion = {
@@ -358,7 +389,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   try {
     const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false });
     const result = await judge.evaluate(request, { signal: combineSignals(config.timeoutMs, options.signal) });
-    const answers = result.answers as typeof result.answers & Partial<Record<"slop_quality" | "slop_placeholder" | "approved", { type: string; noul?: number; score?: number }>>;
+    const answers = result.answers as typeof result.answers & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved", { type: string; noul?: number }>>;
     const judgment: Judgment = {
       irreversible: answers.irreversible.noul,
       offTask: answers.off_task.noul,
@@ -383,12 +414,13 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       reasons.push(`off-task ${percent(judgment.offTask)} (${judgment.scope.replace(/_/g, " ")})`);
     }
     const verdict: Verdict = { level, source: "typesafe", summary, patterns, reasons, judgment };
-    if (options.slop?.enabled && typeof answers.slop_quality?.score === "number" && typeof answers.slop_placeholder?.noul === "number") {
-      verdict.slop = { quality: answers.slop_quality.score, placeholder: answers.slop_placeholder.noul };
-      const slopReasons: string[] = [];
-      if (verdict.slop.quality >= options.slop.quality) slopReasons.push(`quality ${verdict.slop.quality.toFixed(2)}/2 (filler or sloppy)`);
-      if (verdict.slop.placeholder >= options.slop.placeholder) slopReasons.push(`placeholder or stub code ${percent(verdict.slop.placeholder)}`);
-      if (slopReasons.length) verdict.slopReasons = slopReasons;
+    if (options.slop?.enabled && SLOP_SYMPTOMS.every(symptom => typeof answers[`slop_${symptom}`]?.noul === "number")) {
+      verdict.slop = { stub: answers.slop_stub!.noul!, comments: answers.slop_comments!.noul!, dead: answers.slop_dead!.noul!, hedging: answers.slop_hedging!.noul! };
+      const flagged = SLOP_SYMPTOMS.filter(symptom => verdict.slop![symptom] >= options.slop!.threshold).sort((a, b) => verdict.slop![b] - verdict.slop![a]);
+      if (flagged.length) {
+        verdict.slopSymptoms = flagged;
+        verdict.slopReasons = flagged.map(symptom => `${SLOP_LABELS[symptom]} (${percent(verdict.slop![symptom])})`);
+      }
     }
     if (level === "confirm" && judgment.approved !== undefined && judgment.approved >= APPROVAL_THRESHOLD) {
       verdict.level = "allow";

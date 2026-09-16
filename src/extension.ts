@@ -8,22 +8,23 @@ import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, pr
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, steerReason, textApproves } from "./guard.js";
-import type { Verdict } from "./guard.js";
+import { evaluateAction, formatVerdict, SLOP_LABELS, steerReason, textApproves } from "./guard.js";
+import type { SlopSymptom, Verdict } from "./guard.js";
+import { evaluateProse, proseNudge, ProseTrend } from "./prose.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { openTracePanel } from "./panel.js";
 import type { PanelUi } from "./panel.js";
-import { actionDetails, doneDetails, stuckDetails, Trace } from "./trace.js";
+import { actionDetails, doneDetails, proseDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName } from "./trace.js";
-import { TOKEN_NAMES } from "./widget.js";
+import { proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
 
 export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; the last few tool calls and output tails when the agent keeps failing; and the agent's final message when it reports completion without running checks. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
 
-interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; slop: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; errors: number }
-const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, slop: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, errors: 0 });
+interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; slop: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; errors: number }
+const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, slop: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, errors: 0 });
 
 function latestUserPrompt(ctx: ExtensionContext): string | undefined {
   const entries = ctx.sessionManager.getBranch();
@@ -61,6 +62,21 @@ export function confirmMessage(verdict: Verdict): string {
 
 const callKey = (tool: string, input: unknown) => `${tool}\0${JSON.stringify(input)}`;
 
+const SLOP_FIXES: Record<SlopSymptom, string> = {
+  stub: "replace stubs, placeholders, and hard-coded fake data with the working implementation, or state in your reply exactly what is left unimplemented and why",
+  comments: "delete comments that restate the code; keep only those that explain intent, constraints, or non-obvious behaviour",
+  dead: "remove commented-out code, unused imports and variables, duplicated logic, and unreachable branches",
+  hedging: "replace \"should work\", \"for now\", and TODOs without a plan with a definite statement or a concrete follow-up",
+};
+
+/** Names each symptom and its fix; repeats in the session turn the note into a standing rule. */
+export function slopSteer(where: string, symptoms: readonly SlopSymptom[], counts: Record<SlopSymptom, number>): string {
+  const named = symptoms.map(symptom => `${SLOP_LABELS[symptom]}${counts[symptom] >= 3 ? ` (${counts[symptom]}th time this session)` : ""}`).join("; ");
+  const fixes = symptoms.map(symptom => SLOP_FIXES[symptom]).join("; ");
+  const standing = symptoms.some(symptom => counts[symptom] >= 3) ? " Treat this as a standing rule for the rest of the session." : "";
+  return `pi-warden: the content just written to ${where} has ${named}. Fix it in your next edit: ${fixes}.${standing}`;
+}
+
 /** Native Pi registration; importing the root library does not load this module. */
 export default function wardenExtension(pi: ExtensionAPI): void {
   let client: TypeSafe | undefined;
@@ -75,6 +91,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
+  const prose = new ProseTrend();
+  const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
 
   const configFor = (ctx: ExtensionContext | ExtensionCommandContext) => loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
   const consentGiven = (config: WardenConfig) => config.typesafe || process.env.PI_WARDEN_ENABLED === "1";
@@ -110,7 +128,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     trace.push({ at: Date.now(), guard, line, details });
     paint(ctx, config);
   };
-  const steer = (content: string) => pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: true }, { deliverAs: "steer" });
+  const steer = (config: WardenConfig, content: string, options: { deliverAs: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean } = { deliverAs: "steer" }) =>
+    pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: config.steerVisible }, options);
 
   pi.on("session_start", async (_event, ctx) => {
     client = undefined;
@@ -122,6 +141,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     attempts.reset();
     evidence = emptyEvidence();
     doneNudged = false;
+    prose.reset();
+    for (const symptom of Object.keys(slopCounts) as SlopSymptom[]) slopCounts[symptom] = 0;
     if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
   });
 
@@ -165,11 +186,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const mode = activeMode(config, ctx.hasUI);
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
     if (verdict.source !== "read-only") record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) }));
-    if (verdict.slopReasons?.length) {
+    if (verdict.slopSymptoms?.length && verdict.slopReasons) {
       stats.slop++;
+      for (const symptom of verdict.slopSymptoms) slopCounts[symptom]++;
       const where = verdict.summary.path ?? event.toolName;
       if (ctx.hasUI) ctx.ui.notify(`warden · slop · ${where}: ${verdict.slopReasons.join("; ")}`, "warning");
-      steer(`pi-warden: the content just written to ${where} reads as ${verdict.slopReasons.join(" and ")}. Replace stubs and placeholders with working code, remove comments that restate the code, and keep only what the request needs. If something is intentionally left unimplemented, say so in your reply instead of leaving it in the code.`);
+      steer(config, slopSteer(where, verdict.slopSymptoms, slopCounts));
     }
     if (verdict.level === "warn") {
       stats.warned++;
@@ -213,15 +235,30 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!verdict.stuck) return;
     stats.stuck++;
     if (ctx.hasUI) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
-    if (nudge) steer(nudge);
+    if (nudge) steer(config, nudge);
   });
 
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
-    if (!config.enabled || !config.done.enabled || doneNudged || !needsDoneCheck(evidence)) return;
+    if (!config.enabled) return;
     const finalMessage = finalAssistantText(event.messages);
     const judge = judgeFor(config);
     if (!finalMessage || !judge) return;
+    if (config.slop.enabled && config.slop.prose.enabled && finalMessage.length >= config.slop.prose.minChars) {
+      stats.proseChecks++;
+      const verdict = await evaluateProse(latestUserPrompt(ctx), finalMessage, { config: config.slop.prose, judge, timeoutMs: config.timeoutMs, signal: ctx.signal });
+      if (verdict.error) noteError(ctx, verdict.error, undefined);
+      else prose.record(verdict.flagged);
+      const due = verdict.error ? [] : prose.due(config.slop.prose.trend);
+      const nudge = due.length ? proseNudge(due, config.slop.prose.audience, prose.counts) : undefined;
+      if (nudge) { verdict.nudged = true; prose.markNudged(); stats.proseNudges++; }
+      record(ctx, config, "prose", renderTemplate(config.widget.prose, proseTokens(verdict)), proseDetails(verdict, finalMessage, config.slop.prose.audience, nudge));
+      if (nudge) {
+        if (ctx.hasUI) ctx.ui.notify(`warden · prose: ${due.join(", ")} in ${config.slop.prose.trend} of the last 3 replies (agent nudged for the next reply)`, "warning");
+        steer(config, nudge, { deliverAs: "nextTurn" });
+      }
+    }
+    if (!config.done.enabled || doneNudged || !needsDoneCheck(evidence)) return;
     stats.doneChecks++;
     const verdict = await evaluateDone(latestUserPrompt(ctx), finalMessage, evidence, { config: config.done, judge, timeoutMs: config.timeoutMs, signal: ctx.signal });
     if (verdict.error) noteError(ctx, verdict.error, undefined);
@@ -232,7 +269,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) ctx.ui.notify(`warden · done-check: ${verdict.reasons.join("; ")}${nudge ? " (agent asked to verify)" : ""}`, "warning");
     if (nudge) {
       doneNudged = true;
-      pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content: nudge, display: true }, { deliverAs: "followUp", triggerTurn: true });
+      steer(config, nudge, { deliverAs: "followUp", triggerTurn: true });
     }
   });
 
@@ -264,11 +301,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const key = resolveApiKey();
           const source = consentSource(config);
           const usage = client?.getUsage();
-          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop"].filter(Boolean).join(", ");
+          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`].filter(Boolean).join(", ");
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
-            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests.`,
-            `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop quality ${config.slop.quality}, stub ${config.slop.placeholder}; failOpen ${config.action.failOpen}.`,
+            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,
+            `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; failOpen ${config.action.failOpen}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
             `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,

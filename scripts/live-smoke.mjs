@@ -3,6 +3,7 @@ import { defaultConfig } from '../dist/config.js';
 import { AttemptWindow, evaluateStuck, makeAttempt } from '../dist/stuck.js';
 import { emptyEvidence, evaluateDone, recordOutcome } from '../dist/done.js';
 import { evaluateAction } from '../dist/guard.js';
+import { evaluateProse } from '../dist/prose.js';
 
 // Explicitly requested, billable calls with synthetic data only. One request per case.
 const cwd = process.cwd();
@@ -14,7 +15,7 @@ const line = (ok, name, level, detail) => {
   total++; if (!ok) mismatches++;
   console.log(`${ok ? 'ok  ' : 'MISS'} ${name.padEnd(30)} ${String(level).padEnd(9)} ${detail}`);
 };
-const judge = createTypeSafe({ maxRequests: 40 });
+const judge = createTypeSafe({ maxRequests: 60 });
 
 if (!only || only === 'action') {
   console.log('\n# action guard');
@@ -36,19 +37,34 @@ if (!only || only === 'action') {
 }
 
 if (!only || only === 'slop') {
-  console.log('\n# slop (write/edit content quality)');
+  console.log('\n# slop (per-symptom, threshold 0.7) — the full case set lives in scripts/slop-cases.mjs');
   const cases = [
-    { name: 'stub with TODO', task: 'Implement parseDuration(text) returning milliseconds', content: 'export function parseDuration(text: string): number {\n  // TODO: implement later\n  return 0;\n}\n', expect: true },
-    { name: 'mock returning fake data', task: 'Implement fetchUser(id) against the REST API', content: 'export async function fetchUser(id: string) {\n  // placeholder until the API is ready\n  return { id, name: "Test User", email: "test@example.com" };\n}\n', expect: true },
-    { name: 'comment noise (mild, not flagged)', task: 'Add a helper that sums an array', content: '// This function sums an array\nexport function sum(values: number[]): number {\n  // initialize the total to zero\n  let total = 0;\n  // loop over every value\n  for (const value of values) {\n    // add the value to the total\n    total += value;\n  }\n  // return the total\n  return total;\n}\n', expect: false },
-    { name: 'focused implementation', task: 'Implement parseDuration(text) returning milliseconds', content: 'const UNITS: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };\n\nexport function parseDuration(text: string): number {\n  const match = /^(\\d+(?:\\.\\d+)?)\\s*(ms|s|m|h)$/.exec(text.trim());\n  if (!match) throw new Error(`Invalid duration: ${text}`);\n  return Number(match[1]) * UNITS[match[2]];\n}\n', expect: false },
-    { name: 'small focused edit', task: 'Fix the off-by-one in pagination', edits: [{ oldText: 'const end = start + pageSize + 1;', newText: 'const end = start + pageSize;' }], expect: false },
+    { name: 'stub with TODO', task: 'Implement parseDuration(text) returning milliseconds', content: 'export function parseDuration(text: string): number {\n  // TODO: implement later\n  return 0;\n}\n', expect: ['stub', 'hedging'] },
+    { name: 'restating comments', task: 'Add a helper that sums an array', content: '// This function sums an array\nexport function sum(values: number[]): number {\n  // initialize the total to zero\n  let total = 0;\n  // loop over every value\n  for (const value of values) {\n    // add the value to the total\n    total += value;\n  }\n  // return the total\n  return total;\n}\n', expect: ['comments'] },
+    { name: 'commented-out code', task: 'Switch the logger to pino', content: 'import pino from "pino";\n// import winston from "winston";\n// const logger = winston.createLogger({ level: "info" });\nexport const logger = pino({ level: "info" });\n', expect: ['dead'] },
+    { name: 'focused implementation', task: 'Implement parseDuration(text) returning milliseconds', content: 'const UNITS: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };\n\nexport function parseDuration(text: string): number {\n  const match = /^(\\d+(?:\\.\\d+)?)\\s*(ms|s|m|h)$/.exec(text.trim());\n  if (!match) throw new Error(`Invalid duration: ${text}`);\n  return Number(match[1]) * UNITS[match[2]];\n}\n', expect: [] },
+    { name: 'small focused edit', task: 'Fix the off-by-one in pagination', edits: [{ oldText: 'const end = start + pageSize + 1;', newText: 'const end = start + pageSize;' }], expect: [] },
   ];
   for (const item of cases) {
     const input = item.edits ? { path: 'src/x.ts', edits: item.edits } : { path: 'src/x.ts', content: item.content };
     const verdict = await evaluateAction({ tool: item.edits ? 'edit' : 'write', input, cwd, task: item.task }, { config: config.action, judge, slop: config.slop });
-    const flagged = Boolean(verdict.slopReasons?.length);
-    line(flagged === item.expect, item.name, flagged ? 'flagged' : 'clean', `quality=${verdict.slop?.quality.toFixed(2)} placeholder=${verdict.slop?.placeholder.toFixed(2)} (${verdict.judgment?.elapsedMs} ms)${verdict.error ? ' ' + verdict.error : ''}`);
+    const flagged = [...(verdict.slopSymptoms ?? [])].sort();
+    const ok = JSON.stringify(flagged) === JSON.stringify([...item.expect].sort());
+    const s = verdict.slop;
+    line(ok, item.name, flagged.length ? flagged.join(',') : 'clean', `stub=${s?.stub.toFixed(2)} comments=${s?.comments.toFixed(2)} dead=${s?.dead.toFixed(2)} hedging=${s?.hedging.toFixed(2)} (${verdict.judgment?.elapsedMs} ms)${verdict.error ? ' ' + verdict.error : ''}`);
+  }
+  console.log('\n# prose (final reply vs audience)');
+  const proseCases = [
+    { name: 'padded reply', audience: 'technical', task: 'Why does the test fail under TZ=UTC?', reply: 'Great question! Let me walk you through what is happening here. The test fails under TZ=UTC because, as I mentioned, the date handling uses the local calendar day. To summarize: the local day key and the ISO string differ across time zones. In conclusion, the test fails due to the time zone difference. I hope this helps! Let me know if you have any other questions.', expect: ['cliches', 'wordy'] },
+    { name: 'tight reply', audience: 'technical', task: 'Why does the test fail under TZ=UTC?', reply: 'The test builds `new Date(2026, 7, 9, 1, 0)` in local time and asserts that `localDayKey` differs from the ISO date. Under UTC both are the same day, so the second assertion fails. Pin the zone in the test or pick an instant whose local and UTC days differ everywhere.', expect: [] },
+    { name: 'jargon for plain audience', audience: 'plain', task: 'Is the payment bug fixed?', reply: 'Yes. The webhook handler was not verifying the HMAC signature, so replayed idempotency keys hit the ORM before the mutex acquired the row lock, causing a double insert on the ledger table. I added signature verification and wrapped the insert in a serializable transaction.', expect: ['jargon'] },
+  ];
+  for (const item of proseCases) {
+    const verdict = await evaluateProse(item.task, item.reply, { config: { ...config.slop.prose, audience: item.audience }, judge, timeoutMs: 5000 });
+    const flagged = [...verdict.flagged].sort();
+    const ok = JSON.stringify(flagged) === JSON.stringify([...item.expect].sort());
+    const s = verdict.scores;
+    line(ok, item.name, flagged.length ? flagged.join(',') : 'clean', `wordy=${s?.wordy.toFixed(2)} cliches=${s?.cliches.toFixed(2)} jargon=${s?.jargon.toFixed(2)} (${verdict.elapsedMs} ms)${verdict.error ? ' ' + verdict.error : ''}`);
   }
 }
 
