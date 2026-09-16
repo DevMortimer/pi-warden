@@ -7,3 +7,5 @@ export type { ToolOutcome, RunEvidence, DoneJudgment, DoneVerdict, DoneOptions }
 export { redact } from "./redact.js";
 export { defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, PACKAGE_NAME } from "./config.js";
 export type { ActionGuardConfig, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
+export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
+export type { CommandView } from "./tools.js";

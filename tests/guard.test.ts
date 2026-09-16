@@ -290,3 +290,36 @@ test("steerReason explains the hold and the two acceptable moves without echoing
   assert.ok(!text.includes("origin main"));
   assert.match(steerReason(verdict, { canApprove: false }), /once the user has replied with approval/);
 });
+
+test("context-mode and powershell tools are guarded through their command fields", async () => {
+  const config = defaultConfig().action;
+  const j = judge(0.1, 0.1);
+  const readOnly = await evaluateAction({ tool: "ctx_execute", input: { language: "shell", code: "cd ~/app && git status && ls src" }, cwd, task: "look around" }, { config, judge: j });
+  assert.equal(readOnly.source, "read-only");
+  assert.equal(j.calls.length, 0);
+
+  const destructive = await evaluateAction({ tool: "ctx_execute", input: { language: "shell", code: "cd ~/app && git push --force origin main" }, cwd, task: "push" }, { config });
+  assert.equal(destructive.level, "confirm");
+  assert.ok(destructive.patterns.some(hit => hit.id === "git-force-push"));
+  assert.match(destructive.summary.command ?? "", /git push --force/);
+
+  const batch = await evaluateAction({ tool: "ctx_batch_execute", input: { commands: [{ label: "status", command: "git status" }, { label: "nuke", command: "rm -rf /tmp/x" }], queries: ["q"] }, cwd, task: "clean" }, { config });
+  assert.equal(batch.level, "confirm");
+  assert.ok(batch.patterns.some(hit => hit.id === "rm-recursive-dangerous-target"));
+
+  const js = await evaluateAction({ tool: "ctx_execute", input: { language: "javascript", code: "const fs = require('fs'); console.log(fs.readdirSync('.').length)" }, cwd, task: "count files" }, { config, judge: j });
+  assert.equal(js.source, "typesafe", "non-shell code is judged, not shortcut as read-only");
+  assert.equal(j.calls.length, 1);
+  assert.match(js.summary.command ?? "", /readdirSync/);
+
+  const file = await evaluateAction({ tool: "ctx_execute_file", input: { path: "/etc/hosts", language: "javascript", code: "console.log(FILE_CONTENT.length)" }, cwd, task: "size" }, { config, judge: j });
+  assert.equal(file.summary.path, undefined, "ctx_execute_file reads its path; it is not a write target");
+  assert.equal(file.level, "allow");
+
+  const ps = await evaluateAction({ tool: "powershell", input: { command: "Remove-Item -Recurse -Force C:\\\\tmp\\\\x; git reset --hard" }, cwd, task: "x" }, { config });
+  assert.equal(ps.level, "confirm");
+
+  const unknown = await evaluateAction({ tool: "mcp_something", input: { query: "x" }, cwd, task: "x" }, { config: { ...config, tools: [...config.tools, "mcp_something"] }, judge: j });
+  assert.equal(unknown.source, "typesafe");
+  assert.match(unknown.summary.input ?? "", /query/);
+});

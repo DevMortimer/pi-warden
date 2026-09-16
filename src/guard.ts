@@ -5,6 +5,7 @@ import { choice, noul, score, TypeSafeIntegrationError } from "pi-typesafe";
 import type { IntegrationErrorCode, TypeSafe } from "pi-typesafe";
 import type { ActionGuardConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
+import { commandOf } from "./tools.js";
 
 export type Level = "allow" | "warn" | "confirm";
 export type Severity = "destructive" | "risky" | "sensitive";
@@ -165,7 +166,7 @@ function isInside(target: string, cwd: string): boolean {
 export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?: string): PatternHit[] {
   const hits = new Map<string, PatternHit>();
   const add = (hit: PatternHit | undefined) => { if (hit && !hits.has(hit.id)) hits.set(hit.id, hit); };
-  const command = typeof input.command === "string" ? input.command : undefined;
+  const command = commandOf(tool, input)?.command;
   if (command) {
     for (const rule of SHELL_RULES) if (rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
     for (const segment of splitShell(command)) add(classifyRm(segment, cwd));
@@ -229,8 +230,9 @@ function displayPath(target: string, cwd: string): { path: string; location: "in
 
 export function describeAction(tool: string, input: Record<string, unknown>, cwd: string): ActionSummary {
   const summary: ActionSummary = { tool };
-  if (typeof input.command === "string") summary.command = redact(truncate(input.command, COMMAND_LIMIT));
-  if (typeof input.path === "string" && input.path.trim()) {
+  const view = commandOf(tool, input);
+  if (view) summary.command = redact(truncate(view.command, COMMAND_LIMIT));
+  if (typeof input.path === "string" && input.path.trim() && tool !== "ctx_execute_file") {
     const shown = displayPath(input.path, cwd);
     summary.path = shown.path;
     summary.location = shown.location;
@@ -346,7 +348,8 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       reasons.push(`${action.tool === "write" ? "creates" : "changes"} a file outside the project`);
     }
   }
-  if (action.tool === "bash" && patterns.length === 0 && typeof action.input.command === "string" && isReadOnlyCommand(action.input.command)) {
+  const view = commandOf(action.tool, action.input);
+  if (view?.shell && patterns.length === 0 && isReadOnlyCommand(view.command)) {
     return { level, source: "read-only", summary, patterns, reasons };
   }
   if (!judge) return { level, source: "pattern", summary, patterns, reasons };

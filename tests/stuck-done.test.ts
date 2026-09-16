@@ -61,6 +61,9 @@ test("makeAttempt keys the exact call, redacts, and keeps the output tail", () =
   assert.equal(resultFailed(false, { exitCode: 1 }), true);
   assert.equal(resultFailed(false, { exitCode: 0 }), false);
   assert.equal(resultFailed(true, undefined), true);
+  assert.equal(resultFailed(false, undefined, text("```shell\nnpm test\n```\n\n1 failing\n\nCommand exited with code 1")), true, "context-mode reports the exit code inline");
+  assert.equal(resultFailed(false, undefined, text("30 passing\n")), false);
+  assert.equal(makeAttempt("ctx_batch_execute", { commands: [{ label: "a", command: "npm test" }, { label: "b", command: "git diff" }] }, [], false).call, "npm test\ngit diff");
 });
 
 test("AttemptWindow trims, counts failures and exact repeats, and honours the cool-down", () => {
@@ -157,7 +160,14 @@ test("classifyToolResult separates reads, mutations, and checks", () => {
   assert.equal(classifyToolResult("bash", { command: "npx tsc --noEmit && npm run lint" }, false), "check-pass");
   assert.equal(classifyToolResult("bash", { command: "cargo test" }, false), "check-pass");
   assert.equal(classifyToolResult("bash", { command: "pytest -q" }, true), "check-fail");
-  assert.equal(classifyToolResult("ctx_execute", { code: "npm test" }, false), "unknown");
+  assert.equal(classifyToolResult("ctx_execute", { language: "shell", code: "cd app && npm test 2>&1 | tail -5" }, false), "check-pass", "context-mode shell runs count");
+  assert.equal(classifyToolResult("ctx_execute", { language: "javascript", code: "console.log(require('fs').readdirSync('.'))" }, false), "unknown", "non-shell code is neither read nor check");
+  assert.equal(classifyToolResult("ctx_batch_execute", { commands: [{ label: "t", command: "pytest -q" }, { label: "s", command: "git status" }] }, true), "check-fail");
+  assert.equal(classifyToolResult("ctx_execute", { language: "shell", code: "ls -la && git log -3" }, false), "read");
+  assert.equal(classifyToolResult("mcp_something", { query: "x" }, false), "unknown");
+  const viaCtx = emptyEvidence();
+  recordOutcome(viaCtx, "check-pass", { language: "shell", code: "npm test" }, "ctx_execute");
+  assert.deepEqual(viaCtx.checks, [{ call: "npm test", passed: true }]);
 });
 
 test("evidence gates the done-check", () => {

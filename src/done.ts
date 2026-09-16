@@ -3,6 +3,7 @@ import type { DoneGuardConfig } from "./config.js";
 import { isReadOnlyCommand } from "./guard.js";
 import type { Judge } from "./guard.js";
 import { redact } from "./redact.js";
+import { commandOf } from "./tools.js";
 
 export type ToolOutcome = "read" | "mutation" | "check-pass" | "check-fail" | "unknown";
 
@@ -16,9 +17,10 @@ const CHECK_COMMAND = /\b(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lin
 export function classifyToolResult(tool: string, input: Record<string, unknown>, failed: boolean): ToolOutcome {
   if (tool === "write" || tool === "edit") return "mutation";
   if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return "read";
-  if (tool !== "bash" || typeof input.command !== "string") return "unknown";
-  if (CHECK_COMMAND.test(input.command)) return failed ? "check-fail" : "check-pass";
-  return isReadOnlyCommand(input.command) ? "read" : "unknown";
+  const view = commandOf(tool, input);
+  if (!view) return "unknown";
+  if (CHECK_COMMAND.test(view.command)) return failed ? "check-fail" : "check-pass";
+  return view.shell && isReadOnlyCommand(view.command) ? "read" : "unknown";
 }
 
 export interface RunEvidence {
@@ -30,10 +32,11 @@ export function emptyEvidence(): RunEvidence {
   return { mutations: 0, checks: [] };
 }
 
-export function recordOutcome(evidence: RunEvidence, outcome: ToolOutcome, input: Record<string, unknown>): void {
+export function recordOutcome(evidence: RunEvidence, outcome: ToolOutcome, input: Record<string, unknown>, tool = "bash"): void {
   if (outcome === "mutation") evidence.mutations++;
   if (outcome === "check-pass" || outcome === "check-fail") {
-    const call = typeof input.command === "string" ? redact(input.command.length > 200 ? `${input.command.slice(0, 200)}…` : input.command) : "check";
+    const command = commandOf(tool, input)?.command;
+    const call = command !== undefined ? redact(command.length > 200 ? `${command.slice(0, 200)}…` : command) : "check";
     evidence.checks.push({ call, passed: outcome === "check-pass" });
   }
 }

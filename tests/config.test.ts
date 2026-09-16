@@ -25,7 +25,7 @@ test("defaults: guards on, steer mode, TypeSafe consent off, nudges on", () => {
   assert.equal(config.enabled, true);
   assert.equal(config.typesafe, false);
   assert.equal(config.mode, "steer");
-  assert.deepEqual(config.action.tools, ["bash", "write", "edit"]);
+  assert.deepEqual(config.action.tools, ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file", "write", "edit"]);
   assert.equal(config.action.failOpen, true);
   assert.ok(config.action.irreversible.warn < config.action.irreversible.confirm);
   assert.equal(config.stuck.nudge, true);

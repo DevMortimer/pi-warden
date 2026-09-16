@@ -3,6 +3,7 @@ import { noul, score, TypeSafeIntegrationError } from "pi-typesafe";
 import type { StuckGuardConfig } from "./config.js";
 import type { Judge } from "./guard.js";
 import { redact } from "./redact.js";
+import { commandOf, outputReportsFailure } from "./tools.js";
 
 /** One remembered tool result. `key` identifies the exact call; `call` is the redacted view that may leave the machine. */
 export interface Attempt {
@@ -49,11 +50,12 @@ export function resultText(content: ReadonlyArray<{ type: string; text?: string 
   return content.filter(part => part.type === "text" && typeof part.text === "string").map(part => part.text as string).join("\n");
 }
 
-/** Non-zero exit codes count as failures even when the tool did not flag an error. */
-export function resultFailed(isError: boolean, details: unknown): boolean {
+/** Non-zero exit codes count as failures even when the tool did not flag an error; context-mode reports them in the text. */
+export function resultFailed(isError: boolean, details: unknown, content: ReadonlyArray<{ type: string; text?: string }> = []): boolean {
   if (isError) return true;
   const exitCode = details && typeof details === "object" ? (details as { exitCode?: unknown }).exitCode : undefined;
-  return typeof exitCode === "number" && exitCode !== 0;
+  if (typeof exitCode === "number" && exitCode !== 0) return true;
+  return outputReportsFailure(resultText(content));
 }
 
 /** Durations, timestamps, PIDs, and addresses change between identical runs; counts and line numbers stay. */
@@ -66,7 +68,8 @@ function normaliseOutput(text: string): string {
 }
 
 export function makeAttempt(tool: string, input: Record<string, unknown>, content: ReadonlyArray<{ type: string; text?: string }>, failed: boolean): Attempt {
-  const call = typeof input.command === "string" ? input.command
+  const command = commandOf(tool, input)?.command;
+  const call = command !== undefined ? command
     : typeof input.path === "string" ? `${tool} ${input.path}`
     : JSON.stringify(input);
   const text = resultText(content).trim();

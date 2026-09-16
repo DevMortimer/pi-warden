@@ -169,8 +169,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("tool_result", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
-    const failed = resultFailed(event.isError, event.details);
-    if (config.done.enabled) recordOutcome(evidence, classifyToolResult(event.toolName, event.input, failed), event.input);
+    const failed = resultFailed(event.isError, event.details, event.content);
+    if (config.done.enabled) recordOutcome(evidence, classifyToolResult(event.toolName, event.input, failed), event.input, event.toolName);
     if (!config.stuck.enabled) return;
     attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
     if (!attempts.shouldJudge(config.stuck)) return;

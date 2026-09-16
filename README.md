@@ -1,6 +1,6 @@
 # pi-warden
 
-A second pair of eyes for [Pi](https://pi.dev) that makes the agent smarter instead of interrupting you. Before the agent runs a `bash`, `write`, or `edit` call, pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" is held, and the agent is told why so it re-plans or asks you in chat. Three more guards watch the run: a **stuck-loop** detector, a **done-check** for completion claims that no test backed up, and a **slop** note for stubs and filler. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
+A second pair of eyes for [Pi](https://pi.dev) that makes the agent smarter instead of interrupting you. Before the agent runs a `bash`, `write`, or `edit` call (or a shell command through [context-mode](https://www.npmjs.com/package/context-mode)'s `ctx_execute`), pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" is held, and the agent is told why so it re-plans or asks you in chat. Three more guards watch the run: a **stuck-loop** detector, a **done-check** for completion claims that no test backed up, and a **slop** note for stubs and filler. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
 
 ![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
@@ -38,7 +38,7 @@ A `TYPESAFE_API_KEY` environment variable takes precedence over the stored key. 
 
 ### Action guard (`tool_call`)
 
-1. **Skip** read-only tools, and read-only shell lines such as `git status && ls` (no network, no widget).
+1. **Skip** read-only tools, and read-only shell lines such as `git status && ls` (no network, no widget). Guarded by default: `bash`, `powershell`, `write`, `edit`, and context-mode's `ctx_execute`, `ctx_execute_file`, `ctx_batch_execute` (their `code`/`commands` fields are read as the command; non-shell code such as JavaScript is judged but never skipped as read-only). Add other tools with `action.tools`; unknown tools are judged from their JSON input.
 2. **Pattern pass** (offline): force pushes, `git reset --hard`, `git clean -f`, recursive `rm` on absolute/home/variable/parent paths, SQL `DROP`/`TRUNCATE`/`DELETE FROM`, block-device writes, `chmod -R 777`, fork bombs, `curl | sh`, `kill -1`, shutdown, package publishing, infrastructure destroys → **hold**. `rm -rf` on a project path, `git checkout -- .`, `git branch -D`, `git stash drop`, `find -delete`, `sudo` → **warn**. Reads or writes of `.env`, SSH, AWS, npm, kube, and other credential files → **warn**. A `write` that overwrites an existing file outside the project → **hold**; creating or editing outside the project → **warn**.
 3. **Jev judgment** (with consent): one request with the state `{ task, action }` and three questions — `irreversible` (Noul), `off_task` (Noul), `scope` (Choice: expected step, plausible side step, unrelated, unclear). Defaults: irreversible ≥ 0.5 warns, ≥ 0.7 holds; off-task ≥ 0.6 warns, ≥ 0.85 with `unrelated` holds. Pattern results set the floor; Jev can only raise it. For `write`/`edit`, two slop questions ride on the same request.
 4. **Act**, by mode:
@@ -54,7 +54,7 @@ Keeps the last 12 tool results for the current prompt. When the latest result fa
 
 ### Done-check (`agent_end`)
 
-Tracks each run's evidence: code changes (`write`, `edit`) and check commands (`npm test`, `pytest`, `cargo test`, `tsc`, `eslint`, `go test`, `make test`, and similar) with pass/fail. When a run ends with a normal assistant message after code changes and no passing check, one Jev request judges the message: `claims_done`, `claims_verified`, `verification_applies` (Noul), `outcome` (Choice: complete / partial / blocked / other). A completion claim ≥ 0.7 that is not a blocker or question, for a task where checks would mean something (≥ 0.5; prose and file housekeeping score ~0.05), is reported as unverified; a verification claim with no check run is reported as a false claim. With `nudge: true` (default) the agent receives one follow-up turn asking it to run the checks or say plainly that nothing was verified — once per user prompt.
+Tracks each run's evidence: code changes (`write`, `edit`) and check commands (`npm test`, `pytest`, `cargo test`, `tsc`, `eslint`, `go test`, `make test`, and similar, whether run through `bash` or `ctx_execute`) with pass/fail; context-mode's inline `Command exited with code N` counts as a failure. When a run ends with a normal assistant message after code changes and no passing check, one Jev request judges the message: `claims_done`, `claims_verified`, `verification_applies` (Noul), `outcome` (Choice: complete / partial / blocked / other). A completion claim ≥ 0.7 that is not a blocker or question, for a task where checks would mean something (≥ 0.5; prose and file housekeeping score ~0.05), is reported as unverified; a verification claim with no check run is reported as a false claim. With `nudge: true` (default) the agent receives one follow-up turn asking it to run the checks or say plainly that nothing was verified — once per user prompt.
 
 ### Slop (`write`/`edit`, same request as the action guard)
 
@@ -92,7 +92,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
   "maxRequests": 500,
   "action": {
     "enabled": true,
-    "tools": ["bash", "write", "edit"],
+    "tools": ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file", "write", "edit"],
     "failOpen": true,
     "irreversible": { "warn": 0.5, "confirm": 0.7 },
     "offTask": { "warn": 0.6, "confirm": 0.85 }

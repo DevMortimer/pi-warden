@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { COMMAND_TOOLS } from "./tools.js";
 
 export interface Threshold {
   /** P(yes) at or above this shows a warning and continues. */
@@ -86,7 +87,7 @@ export function defaultConfig(): WardenConfig {
     maxRequests: 500,
     action: {
       enabled: true,
-      tools: ["bash", "write", "edit"],
+      tools: [...COMMAND_TOOLS, "write", "edit"],
       failOpen: true,
       timeoutMs: 5000,
       irreversible: { warn: 0.5, confirm: 0.7 },
