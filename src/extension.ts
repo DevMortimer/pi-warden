@@ -2,18 +2,21 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { createTypeSafe, resolveApiKey } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
-import { applyUserOverrides, defaultConfig, loadConfig, PACKAGE_NAME, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
-import type { WardenConfig } from "./config.js";
-import { evaluateAction, formatVerdict } from "./guard.js";
+import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
+import type { WardenConfig, WardenMode } from "./config.js";
+import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
+import type { RunEvidence } from "./done.js";
+import { evaluateAction, formatVerdict, steerReason, textApproves } from "./guard.js";
 import type { Verdict } from "./guard.js";
+import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends the latest user request plus a redacted, truncated summary of each guarded bash, write, or edit call (command text, file path, content excerpt) to api.typesafe.ai before the tool runs. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; the last few tool calls and output tails when the agent keeps failing; and the agent's final message when it reports completion without running checks. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
 
-interface Stats { inspected: number; judged: number; warned: number; confirmed: number; blocked: number; errors: number }
-const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, confirmed: 0, blocked: 0, errors: 0 });
+interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; slop: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; errors: number }
+const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, slop: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, errors: 0 });
 
 function latestUserPrompt(ctx: ExtensionContext): string | undefined {
   const entries = ctx.sessionManager.getBranch();
@@ -27,16 +30,17 @@ function latestUserPrompt(ctx: ExtensionContext): string | undefined {
   return undefined;
 }
 
-function headlessPolicy(config: WardenConfig): "allow" | "block" {
-  const env = process.env.PI_WARDEN_HEADLESS?.trim();
-  return env === "allow" || env === "block" ? env : config.headless;
+function activeMode(config: WardenConfig, hasUI: boolean): WardenMode {
+  const env = process.env.PI_WARDEN_MODE?.trim();
+  const mode = isMode(env) ? env : config.mode;
+  return mode === "confirm" && !hasUI ? "steer" : mode;
 }
 
 function clip(text: string): string {
   return text.length <= CONFIRM_TEXT_LIMIT ? text : `${text.slice(0, CONFIRM_TEXT_LIMIT)}…`;
 }
 
-function confirmMessage(verdict: Verdict): string {
+export function confirmMessage(verdict: Verdict): string {
   const { summary } = verdict;
   const lines: string[] = [];
   if (summary.command !== undefined) lines.push(clip(summary.command));
@@ -48,73 +52,167 @@ function confirmMessage(verdict: Verdict): string {
   return lines.join("\n");
 }
 
+const callKey = (tool: string, input: unknown) => `${tool}\0${JSON.stringify(input)}`;
+
 /** Native Pi registration; importing the root library does not load this module. */
 export default function wardenExtension(pi: ExtensionAPI): void {
   let client: TypeSafe | undefined;
   let budgetExhausted = false;
   let stats = freshStats();
-  let lastVerdict: Verdict | undefined;
+  const widget = new Map<"action" | "stuck" | "done", string>();
+  /** Calls held in steer mode, with the user prompt current at that time; a retry after the user replies asks Jev about approval. */
+  const held = new Map<string, string | undefined>();
+  let attempts = new AttemptWindow(defaultConfig().stuck.window);
+  let evidence: RunEvidence = emptyEvidence();
+  let doneNudged = false;
 
   const configFor = (ctx: ExtensionContext | ExtensionCommandContext) => loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
   const consentGiven = (config: WardenConfig) => config.typesafe || process.env.PI_WARDEN_ENABLED === "1";
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
   const judgeFor = (config: WardenConfig): TypeSafe | undefined => {
     if (!consentGiven(config) || budgetExhausted || !resolveApiKey()) return undefined;
-    return client ??= createTypeSafe({ maxRequests: config.action.maxRequests, timeoutMs: config.action.timeoutMs });
+    return client ??= createTypeSafe({ maxRequests: config.maxRequests, timeoutMs: config.timeoutMs });
   };
+  const noteError = (ctx: ExtensionContext, message: string, code: string | undefined) => {
+    stats.errors++;
+    if (code === "budget") budgetExhausted = true;
+    if (ctx.hasUI) ctx.ui.notify(`warden: ${message}${budgetExhausted ? " Pattern checks continue without TypeSafe for the rest of this session." : ""}`, "warning");
+  };
+  const show = (ctx: ExtensionContext, guard: "action" | "stuck" | "done", line: string) => {
+    widget.set(guard, line);
+    if (ctx.hasUI) ctx.ui.setWidget(WIDGET, [...widget.values()]);
+  };
+  const steer = (content: string) => pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: true }, { deliverAs: "steer" });
 
   pi.on("session_start", async (_event, ctx) => {
     client = undefined;
     budgetExhausted = false;
     stats = freshStats();
-    lastVerdict = undefined;
+    widget.clear();
+    held.clear();
+    attempts.reset();
+    evidence = emptyEvidence();
+    doneNudged = false;
     if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
+  });
+
+  // A new user prompt starts a new attempt history and a new done-check budget.
+  pi.on("before_agent_start", async (_event, ctx) => {
+    attempts = new AttemptWindow(configFor(ctx).stuck.window);
+    doneNudged = false;
+  });
+
+  // Each low-level run collects its own evidence of changes and checks.
+  pi.on("agent_start", async () => {
+    evidence = emptyEvidence();
   });
 
   pi.on("tool_call", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled || !config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
+    const task = latestUserPrompt(ctx);
+    const key = callKey(event.toolName, event.input);
+    const heldAt = held.get(key);
+    const retryAfterHold = held.has(key) && heldAt !== task;
+    const judge = judgeFor(config);
     const verdict = await evaluateAction(
-      { tool: event.toolName, input: event.input, cwd: ctx.cwd, task: latestUserPrompt(ctx) },
-      { config: config.action, judge: judgeFor(config), signal: ctx.signal },
+      { tool: event.toolName, input: event.input, cwd: ctx.cwd, task },
+      { config: config.action, judge, signal: ctx.signal, slop: config.slop, retryAfterHold },
     );
-    lastVerdict = verdict;
+    if (verdict.source === "skipped") return;
     if (verdict.judgment) stats.judged++;
-    if (verdict.source === "error") {
-      stats.errors++;
-      if (verdict.errorCode === "budget") budgetExhausted = true;
-      if (ctx.hasUI) ctx.ui.notify(`warden: ${verdict.error}${budgetExhausted ? " Pattern checks continue without TypeSafe for the rest of this session." : ""}`, "warning");
+    if (verdict.source === "error") noteError(ctx, verdict.error ?? "TypeSafe request failed.", verdict.errorCode);
+    // Offline stand-in for the approval question: the user has replied since the hold and the reply reads as approval.
+    if (retryAfterHold && !judge && verdict.level === "confirm" && textApproves(task)) {
+      verdict.level = "allow";
+      verdict.approvedByUser = true;
+      verdict.reasons = ["user approved in the latest message", ...verdict.reasons];
     }
-    if (ctx.hasUI && verdict.source !== "read-only") ctx.ui.setWidget(WIDGET, [formatVerdict(verdict)]);
+    if (verdict.approvedByUser) {
+      stats.approved++;
+      held.delete(key);
+    }
+    if (verdict.source !== "read-only") show(ctx, "action", formatVerdict(verdict));
+    if (verdict.slopReasons?.length) {
+      stats.slop++;
+      const where = verdict.summary.path ?? event.toolName;
+      if (ctx.hasUI) ctx.ui.notify(`warden · slop · ${where}: ${verdict.slopReasons.join("; ")}`, "warning");
+      steer(`pi-warden: the content just written to ${where} reads as ${verdict.slopReasons.join(" and ")}. Replace stubs and placeholders with working code, remove comments that restate the code, and keep only what the request needs. If something is intentionally left unimplemented, say so in your reply instead of leaving it in the code.`);
+    }
     if (verdict.level === "warn") {
       stats.warned++;
       if (ctx.hasUI) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
       return undefined;
     }
     if (verdict.level !== "confirm") return undefined;
-    stats.confirmed++;
+
+    const mode = activeMode(config, ctx.hasUI);
     const reasons = verdict.reasons.join("; ");
-    if (ctx.hasUI) {
+    if (mode === "advise") {
+      stats.warned++;
+      if (ctx.hasUI) ctx.ui.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
+      return undefined;
+    }
+    if (mode === "confirm") {
       const allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {});
       if (allowed) return undefined;
-      stats.blocked++;
+      stats.held++;
       return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${reasons}). Do not retry it unchanged; ask the user how to proceed.` };
     }
-    if (headlessPolicy(config) === "allow") return undefined;
-    stats.blocked++;
-    return { block: true, reason: `pi-warden blocked this ${event.toolName} call because it needs user confirmation (${reasons}) and no user is present. Choose a safer approach or stop and report. Operators can set PI_WARDEN_HEADLESS=allow to permit such calls.` };
+    stats.held++;
+    held.set(key, task);
+    if (ctx.hasUI) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
+    return { block: true, reason: steerReason(verdict, { canApprove: judge !== undefined }) };
   });
 
-  const actions = ["status", "enable", "disable", "config", "test"];
+  pi.on("tool_result", async (event, ctx) => {
+    const config = configFor(ctx);
+    if (!config.enabled) return;
+    const failed = resultFailed(event.isError, event.details);
+    if (config.done.enabled) recordOutcome(evidence, classifyToolResult(event.toolName, event.input, failed), event.input);
+    if (!config.stuck.enabled) return;
+    attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
+    if (!attempts.shouldJudge(config.stuck)) return;
+    stats.stuckChecks++;
+    const verdict = await evaluateStuck(attempts, latestUserPrompt(ctx), { config: config.stuck, judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
+    if (verdict.error) noteError(ctx, verdict.error, undefined);
+    if (verdict.source === "repeat" && !verdict.stuck) return;
+    show(ctx, "stuck", formatStuck(verdict));
+    if (!verdict.stuck) return;
+    stats.stuck++;
+    if (ctx.hasUI) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${config.stuck.nudge ? " (agent nudged)" : ""}`, "warning");
+    if (config.stuck.nudge) steer(stuckNudge(verdict));
+  });
+
+  pi.on("agent_end", async (event, ctx) => {
+    const config = configFor(ctx);
+    if (!config.enabled || !config.done.enabled || doneNudged || !needsDoneCheck(evidence)) return;
+    const finalMessage = finalAssistantText(event.messages);
+    const judge = judgeFor(config);
+    if (!finalMessage || !judge) return;
+    stats.doneChecks++;
+    const verdict = await evaluateDone(latestUserPrompt(ctx), finalMessage, evidence, { config: config.done, judge, timeoutMs: config.timeoutMs, signal: ctx.signal });
+    if (verdict.error) noteError(ctx, verdict.error, undefined);
+    show(ctx, "done", formatDone(verdict));
+    if (!verdict.unverified) return;
+    stats.unverified++;
+    if (ctx.hasUI) ctx.ui.notify(`warden · done-check: ${verdict.reasons.join("; ")}${config.done.nudge ? " (agent asked to verify)" : ""}`, "warning");
+    if (config.done.nudge) {
+      doneNudged = true;
+      pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content: doneNudge(verdict), display: true }, { deliverAs: "followUp", triggerTurn: true });
+    }
+  });
+
+  const actions = ["status", "enable", "disable", "mode", "config", "test"];
   pi.registerCommand("warden", {
-    description: "pi-warden status, TypeSafe consent, config editor, and a synthetic guard test",
+    description: "pi-warden status, TypeSafe consent, steer/confirm/advise mode, config editor, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
       return matches.length ? matches : null;
     },
     async handler(args, ctx) {
-      const action = args.trim() || "status";
+      const [action = "status", argument] = args.trim().split(/\s+/);
       const report = (text: string, level: "info" | "warning" | "error" = "info") => {
         if (ctx.hasUI) ctx.ui.notify(text, level);
         else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
@@ -125,12 +223,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const key = resolveApiKey();
           const source = consentSource(config);
           const usage = client?.getUsage();
+          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop"].filter(Boolean).join(", ");
           report([
-            `pi-warden: ${config.enabled && config.action.enabled ? "guarding" : "off"} ${config.action.tools.join(", ")}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
-            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.confirmed} asked, ${stats.blocked} blocked, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.action.maxRequests} requests.`,
-            `Thresholds: irreversible warn ${config.action.irreversible.warn} / confirm ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / confirm ${config.action.offTask.confirm}; failOpen ${config.action.failOpen}; headless ${headlessPolicy(config)}.`,
+            `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
+            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests.`,
+            `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop quality ${config.slop.quality}, stub ${config.slop.placeholder}; failOpen ${config.action.failOpen}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
-            lastVerdict ? `Last: ${formatVerdict(lastVerdict)}` : "No guarded tool calls yet this session.",
+            widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
           ].join(" "));
           return;
         }
@@ -151,6 +250,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           report(`TypeSafe judgments disabled in ${path}. Offline pattern checks stay active; set enabled to false there to turn pi-warden off entirely.`);
           return;
         }
+        if (action === "mode") {
+          if (!isMode(argument)) { report(`Mode is ${activeMode(config, ctx.hasUI)}${process.env.PI_WARDEN_MODE ? " (from PI_WARDEN_MODE)" : ""}. Use /warden mode steer | confirm | advise. steer holds risky calls and tells the agent why; confirm asks you with a dialog; advise only reports.`); return; }
+          const path = setUserSetting("mode", argument);
+          report(`Mode set to ${argument} in ${path}.`);
+          return;
+        }
         if (action === "config") {
           if (!ctx.hasUI) { report(`Edit ${userConfigPath()} directly. Defaults: ${JSON.stringify(defaultConfig())}`); return; }
           const current = readUserConfig();
@@ -163,7 +268,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const path = writeUserConfig(parsed as Record<string, unknown>);
           const effective = applyUserOverrides(defaultConfig(), parsed);
           client = undefined;
-          report(`Saved ${path}. Effective: guard ${effective.enabled && effective.action.enabled ? "on" : "off"}, TypeSafe ${effective.typesafe ? "on" : "off"}, tools ${effective.action.tools.join(", ")}, irreversible confirm ≥ ${effective.action.irreversible.confirm}, off-task confirm ≥ ${effective.action.offTask.confirm}.`);
+          report(`Saved ${path}. Effective: guard ${effective.enabled && effective.action.enabled ? "on" : "off"}, mode ${effective.mode}, TypeSafe ${effective.typesafe ? "on" : "off"}, tools ${effective.action.tools.join(", ")}, irreversible hold ≥ ${effective.action.irreversible.confirm}, off-task hold ≥ ${effective.action.offTask.confirm}, stuck ${effective.stuck.enabled ? "on" : "off"}, done-check ${effective.done.enabled ? "on" : "off"}, slop ${effective.slop.enabled ? "on" : "off"}.`);
           return;
         }
         if (action === "test") {
@@ -173,12 +278,16 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Clean up the demo directory" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge },
           );
-          if (ctx.hasUI) ctx.ui.setWidget(WIDGET, [formatVerdict(verdict)]);
+          show(ctx, "action", formatVerdict(verdict));
           report(`${formatVerdict(verdict)}${verdict.reasons.length ? ` — ${verdict.reasons.join("; ")}` : ""}${judge ? "" : " (pattern checks only: TypeSafe judgments are not enabled or no key is configured)"}${verdict.error ? ` — ${verdict.error}` : ""}`);
-          if (ctx.hasUI && verdict.level === "confirm") {
-            // Show the same dialog a real call would get, so users can see what blocking looks like without touching anything.
-            const allowed = await ctx.ui.confirm("warden: allow this bash call? (demo)", `${confirmMessage(verdict)}\n\nThis is /warden test: nothing runs either way.`);
-            report(allowed ? "Demo: you chose Yes, so a real call would have run." : "Demo: you chose No, so a real call would have been blocked and the agent told why.");
+          if (verdict.level === "confirm") {
+            const mode = activeMode(config, ctx.hasUI);
+            if (mode === "confirm" && ctx.hasUI) {
+              const allowed = await ctx.ui.confirm("warden: allow this bash call? (demo)", `${confirmMessage(verdict)}\n\nThis is /warden test: nothing runs either way.`);
+              report(allowed ? "Demo: you chose Yes, so a real call would have run." : "Demo: you chose No, so a real call would have been blocked and the agent told why.");
+            } else {
+              report(`In ${mode} mode a real call would ${mode === "advise" ? "run with this warning shown to you" : "be held and the agent would read"}: "${steerReason(verdict, { canApprove: judge !== undefined })}"`);
+            }
           }
           return;
         }

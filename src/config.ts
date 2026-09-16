@@ -17,20 +17,61 @@ export interface ActionGuardConfig {
   failOpen: boolean;
   /** Per-request TypeSafe timeout. The call is judged as an error after this. */
   timeoutMs: number;
-  /** Maximum TypeSafe requests per session for this guard. */
-  maxRequests: number;
   irreversible: Threshold;
   offTask: Threshold;
 }
+
+export interface StuckGuardConfig {
+  enabled: boolean;
+  /** Tool results remembered per user prompt. */
+  window: number;
+  /** Failures in the window before Jev is asked. */
+  minFailures: number;
+  /** Tool results between two Jev checks. */
+  cooldown: number;
+  /** P(same strategy) at or above this reports the agent as stuck. */
+  sameStrategy: number;
+  /** Also steer the agent with a short message, not only the user. */
+  nudge: boolean;
+}
+
+export interface DoneGuardConfig {
+  enabled: boolean;
+  /** P(final message claims completion) at or above this warns when no check passed in the run. */
+  claimsDone: number;
+  /** Also send the agent a follow-up asking it to verify. Triggers one more LLM turn. */
+  nudge: boolean;
+}
+
+export interface SlopGuardConfig {
+  enabled: boolean;
+  /** Score (0 focused … 2 sloppy) at or above this warns. */
+  quality: number;
+  /** P(placeholder or stub code) at or above this warns. */
+  placeholder: number;
+}
+
+export type WardenMode = "steer" | "confirm" | "advise";
 
 export interface WardenConfig {
   /** Master switch. false disables every guard, including offline pattern checks. */
   enabled: boolean;
   /** Consent to send task and action summaries to api.typesafe.ai. Set by /warden enable; never by a project file. */
   typesafe: boolean;
-  /** Decision when confirmation is required and no UI can ask. PI_WARDEN_HEADLESS overrides it. */
-  headless: "block" | "allow";
+  /**
+   * steer (default): a confirm-level call is held and the agent receives the judgment as its tool result, so it re-plans or asks
+   * the user in chat. confirm: open a dialog and let the user decide (falls back to steer without a UI). advise: never hold; report only.
+   * PI_WARDEN_MODE overrides it.
+   */
+  mode: WardenMode;
+  /** Per-request TypeSafe timeout for every guard. */
+  timeoutMs: number;
+  /** Maximum TypeSafe requests per session across all guards. */
+  maxRequests: number;
   action: ActionGuardConfig;
+  stuck: StuckGuardConfig;
+  done: DoneGuardConfig;
+  slop: SlopGuardConfig;
 }
 
 export const PACKAGE_NAME = "pi-warden";
@@ -40,16 +81,20 @@ export function defaultConfig(): WardenConfig {
   return {
     enabled: true,
     typesafe: false,
-    headless: "block",
+    mode: "steer",
+    timeoutMs: 5000,
+    maxRequests: 500,
     action: {
       enabled: true,
       tools: ["bash", "write", "edit"],
       failOpen: true,
       timeoutMs: 5000,
-      maxRequests: 500,
       irreversible: { warn: 0.5, confirm: 0.7 },
       offTask: { warn: 0.6, confirm: 0.85 },
     },
+    stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, nudge: true },
+    done: { enabled: true, claimsDone: 0.7, nudge: true },
+    slop: { enabled: true, quality: 1.5, placeholder: 0.7 },
   };
 }
 
@@ -100,35 +145,86 @@ function positiveInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
-function applyAction(base: ActionGuardConfig, raw: unknown): ActionGuardConfig {
-  if (!isObject(raw)) return base;
+export function isMode(value: unknown): value is WardenMode {
+  return value === "steer" || value === "confirm" || value === "advise";
+}
+
+function score(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 2 ? value : fallback;
+}
+
+function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number): ActionGuardConfig {
+  const withTimeout = { ...base, timeoutMs };
+  if (!isObject(raw)) return withTimeout;
   const tools = Array.isArray(raw.tools) ? raw.tools.filter((tool): tool is string => typeof tool === "string" && tool.trim().length > 0) : base.tools;
   return {
     enabled: boolean(raw.enabled, base.enabled),
     tools,
     failOpen: boolean(raw.failOpen, base.failOpen),
-    timeoutMs: positiveInteger(raw.timeoutMs, base.timeoutMs),
-    maxRequests: positiveInteger(raw.maxRequests, base.maxRequests),
+    timeoutMs,
     irreversible: threshold(raw.irreversible, base.irreversible),
     offTask: threshold(raw.offTask, base.offTask),
+  };
+}
+
+function applyStuck(base: StuckGuardConfig, raw: unknown): StuckGuardConfig {
+  if (!isObject(raw)) return base;
+  const window = positiveInteger(raw.window, base.window);
+  return {
+    enabled: boolean(raw.enabled, base.enabled),
+    window,
+    minFailures: Math.min(window, positiveInteger(raw.minFailures, base.minFailures)),
+    cooldown: positiveInteger(raw.cooldown, base.cooldown),
+    sameStrategy: probability(raw.sameStrategy, base.sameStrategy),
+    nudge: boolean(raw.nudge, base.nudge),
+  };
+}
+
+function applyDone(base: DoneGuardConfig, raw: unknown): DoneGuardConfig {
+  if (!isObject(raw)) return base;
+  return { enabled: boolean(raw.enabled, base.enabled), claimsDone: probability(raw.claimsDone, base.claimsDone), nudge: boolean(raw.nudge, base.nudge) };
+}
+
+function applySlop(base: SlopGuardConfig, raw: unknown): SlopGuardConfig {
+  if (!isObject(raw)) return base;
+  return { enabled: boolean(raw.enabled, base.enabled), quality: score(raw.quality, base.quality), placeholder: probability(raw.placeholder, base.placeholder) };
+}
+
+/** Shared request settings; `action.timeoutMs`/`action.maxRequests` from 0.1.x files are still honoured. */
+function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeoutMs" | "maxRequests"> {
+  const legacy = isObject(raw.action) ? raw.action : {};
+  return {
+    timeoutMs: positiveInteger(raw.timeoutMs ?? legacy.timeoutMs, base.timeoutMs),
+    maxRequests: positiveInteger(raw.maxRequests ?? legacy.maxRequests, base.maxRequests),
+  };
+}
+
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number): Pick<WardenConfig, "action" | "stuck" | "done" | "slop"> {
+  return {
+    action: applyAction(base.action, raw.action, timeoutMs),
+    stuck: applyStuck(base.stuck, raw.stuck),
+    done: applyDone(base.done, raw.done),
+    slop: applySlop(base.slop, raw.slop),
   };
 }
 
 /** Unknown keys and invalid values fall back to the base; nothing throws on a malformed file. */
 export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConfig {
   if (!isObject(raw)) return base;
+  const shared = applyShared(base, raw);
   return {
     enabled: boolean(raw.enabled, base.enabled),
     typesafe: boolean(raw.typesafe, base.typesafe),
-    headless: raw.headless === "allow" || raw.headless === "block" ? raw.headless : base.headless,
-    action: applyAction(base.action, raw.action),
+    mode: isMode(raw.mode) ? raw.mode : base.mode,
+    ...shared,
+    ...applyGuards(base, raw, shared.timeoutMs),
   };
 }
 
-/** Project files may tune the guard but cannot grant TypeSafe consent or change headless policy. */
+/** Project files may tune the guards but cannot grant TypeSafe consent, change the mode, or raise budgets. */
 export function applyProjectOverrides(base: WardenConfig, raw: unknown): WardenConfig {
   if (!isObject(raw)) return base;
-  return { ...base, enabled: boolean(raw.enabled, base.enabled), action: applyAction(base.action, raw.action) };
+  return { ...base, enabled: boolean(raw.enabled, base.enabled), ...applyGuards(base, raw, base.timeoutMs) };
 }
 
 export interface LoadOptions {
@@ -159,6 +255,6 @@ export function writeUserConfig(raw: Json): string {
 }
 
 /** Persists one top-level user setting without disturbing the rest of the file. */
-export function setUserSetting(key: "typesafe" | "enabled" | "headless", value: boolean | "block" | "allow"): string {
+export function setUserSetting(key: "typesafe" | "enabled" | "mode", value: boolean | WardenMode): string {
   return writeUserConfig({ ...readUserConfig(), [key]: value });
 }

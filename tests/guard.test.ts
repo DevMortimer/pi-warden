@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { describeAction, evaluateAction, isReadOnlyCommand, matchPatterns } from "../src/guard.js";
+import { describeAction, evaluateAction, isReadOnlyCommand, matchPatterns, steerReason, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { redact } from "../src/redact.js";
 
@@ -110,7 +110,7 @@ test("describeAction summarises tool input without leaking secrets or absolute p
   assert.equal(write.path, "sub/new.txt");
   assert.equal(write.location, "inside_project");
   assert.equal(write.exists, false);
-  assert.ok((write.excerpt?.length ?? 0) <= 620);
+  assert.ok((write.excerpt?.length ?? 0) <= 1520);
   assert.equal(write.bytes, 2400);
 
   const overwrite = describeAction("write", { path: join(cwd, "existing.txt"), content: "x" }, cwd);
@@ -212,4 +212,81 @@ test("evaluateAction skips tools that are not guarded", async () => {
   assert.equal(verdict.level, "allow");
   assert.equal(verdict.source, "skipped");
   assert.equal(j.calls.length, 0);
+});
+
+const withSlop = (irreversible: number, offTask: number, quality: number, placeholder: number, approved?: number): Judge & { calls: unknown[] } => {
+  const calls: unknown[] = [];
+  return {
+    calls,
+    async evaluate(request) {
+      calls.push(request);
+      const base = answers(irreversible, offTask) as { answers: Record<string, unknown> };
+      const ids = Object.keys((request as { questions: Record<string, unknown> }).questions);
+      if (ids.includes("slop_quality")) {
+        base.answers.slop_quality = { type: "score", score: quality, confidence: 0.8, probabilities: { "0": 0, "1": 0, "2": 0, [String(Math.round(quality))]: 0.8 } };
+        base.answers.slop_placeholder = { type: "noul", noul: placeholder };
+      }
+      if (ids.includes("approved")) base.answers.approved = { type: "noul", noul: approved ?? 0 };
+      return base as never;
+    },
+  };
+};
+
+test("slop questions join the write/edit request only, and cross thresholds without raising the level", async () => {
+  const config = defaultConfig();
+  const j = withSlop(0.1, 0.1, 1.8, 0.9);
+  const write = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "// TODO implement\nexport function a() { return null as any; }" }, cwd, task: "implement a()" }, { config: config.action, judge: j, slop: config.slop });
+  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "off_task", "scope", "slop_placeholder", "slop_quality"]);
+  assert.equal(write.level, "allow", "slop never blocks");
+  assert.deepEqual(write.slop, { quality: 1.8, placeholder: 0.9 });
+  assert.equal(write.slopReasons?.length, 2);
+
+  const bash = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: config.action, judge: j, slop: config.slop });
+  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "off_task", "scope"], "no slop questions for bash");
+  assert.equal(bash.slop, undefined);
+
+  const clean = await evaluateAction({ tool: "edit", input: { path: join(cwd, "a.ts"), edits: [{ oldText: "a", newText: "b" }] }, cwd, task: "rename" }, { config: config.action, judge: withSlop(0.1, 0.1, 0.2, 0.05), slop: config.slop });
+  assert.ok(clean.slop);
+  assert.equal(clean.slopReasons, undefined);
+
+  const off = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "x" }, cwd, task: "t" }, { config: config.action, judge: j, slop: { ...config.slop, enabled: false } });
+  assert.equal(off.slop, undefined);
+});
+
+test("a retry after a hold asks Jev about approval; an approving reply lets the call through", async () => {
+  const config = defaultConfig();
+  const first = await evaluateAction({ tool: "bash", input: { command: "git push --force" }, cwd, task: "push my branch" }, { config: config.action, judge: withSlop(0.9, 0.2, 0, 0) });
+  assert.equal(first.level, "confirm");
+  assert.equal(first.judgment?.approved, undefined);
+
+  const declined = withSlop(0.9, 0.2, 0, 0, 0.1);
+  const retry = await evaluateAction({ tool: "bash", input: { command: "git push --force" }, cwd, task: "no, just push normally" }, { config: config.action, judge: declined, retryAfterHold: true });
+  assert.ok("approved" in (declined.calls[0] as { questions: object }).questions);
+  assert.equal(retry.level, "confirm");
+  assert.equal(retry.approvedByUser, undefined);
+
+  const approvedJudge = withSlop(0.9, 0.2, 0, 0, 0.95);
+  const approved = await evaluateAction({ tool: "bash", input: { command: "git push --force" }, cwd, task: "yes, force push it, I own that branch" }, { config: config.action, judge: approvedJudge, retryAfterHold: true });
+  assert.equal(approved.level, "allow");
+  assert.equal(approved.approvedByUser, true);
+  assert.match(approved.reasons[0] ?? "", /user approved in the latest message \(0\.95\)/);
+  assert.equal(approved.judgment?.approved, 0.95);
+});
+
+test("textApproves is a conservative offline stand-in", () => {
+  for (const text of ["yes", "Yes, go ahead", "do it", "ok proceed", "approved"]) assert.equal(textApproves(text), true, text);
+  for (const text of ["no", "don't do that", "yes but not like that, use git revert instead", "what does it do?", undefined, ""]) assert.equal(textApproves(text), false, String(text));
+});
+
+test("steerReason explains the hold and the two acceptable moves without echoing the command", async () => {
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push" }, { config: defaultConfig().action, judge: judge(0.9, 0.1) });
+  const text = steerReason(verdict, { canApprove: true });
+  assert.match(text, /held this bash call/);
+  assert.match(text, /git force push/);
+  assert.match(text, /irreversible 0\.90/);
+  assert.match(text, /Do not retry it unchanged/);
+  assert.match(text, /tell the user/);
+  assert.match(text, /retry the same call and pi-warden will let it through/);
+  assert.ok(!text.includes("origin main"));
+  assert.match(steerReason(verdict, { canApprove: false }), /once the user has replied with approval/);
 });

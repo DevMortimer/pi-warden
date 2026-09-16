@@ -42,7 +42,7 @@ const page = `<!doctype html><html><head><meta charset="utf-8"><style>
   h1 small { color:var(--muted); font-weight:500; font-size:22px; margin-left:16px; }
   .tag { font-size:24px; color:var(--fg); margin-top:8px; }
   .tag b { color:var(--accent); font-weight:600; }
-  .meta { text-align:right; color:var(--muted); font-size:17px; line-height:1.55; }
+  .meta { text-align:right; color:var(--muted); font-size:16px; line-height:1.5; white-space:nowrap; }
   .meta code { font-family:var(--mono); color:var(--fg); font-size:16px; }
   .flow { display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; }
   .step { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; position:relative; }
@@ -64,6 +64,7 @@ const page = `<!doctype html><html><head><meta charset="utf-8"><style>
   td.verdict { width:17%; }
   .pill { font-family:var(--mono); font-size:14px; padding:4px 10px; border-radius:999px; font-weight:600; letter-spacing:0.02em; }
   .pill.allow { background:#12351f; color:#3fb950; } .pill.warn { background:#3a2e10; color:#e3b341; } .pill.confirm { background:#3d1a1a; color:#ff7b72; }
+  .pill.confirm::after { content:" → hold"; font-weight:400; opacity:0.8; }
   .note { display:block; color:var(--muted); font-size:13px; margin-top:6px; }
   .pairnote { color:var(--accent); white-space:nowrap; }
   tr.pair td { background:#11161d; }
@@ -79,14 +80,14 @@ const page = `<!doctype html><html><head><meta charset="utf-8"><style>
       <h1>pi-warden <small>guardrails for Pi, built on pi-typesafe</small></h1>
       <div class="tag">Before the agent runs a command, Jev reads <b>the request</b>, not just the command.</div>
     </div>
-    <div class="meta">one TypeSafe request per guarded call · ~250 ms · ~600 input tokens<br>offline pattern checks need no account · fails open on outages</div>
+    <div class="meta">one TypeSafe request per guarded call · ~250 ms · ~600 input tokens<br>holds steer the agent, no dialogs by default · offline checks need no account<br>also: stuck-loop detector · done-check · slop notes</div>
   </header>
 
   <div class="flow">
     <div class="step"><div class="k">1 · agent proposes</div><div class="v"><code>bash</code> · <code>write</code> · <code>edit</code></div></div>
     <div class="step"><div class="k">2 · pattern pass, offline</div><div class="v">force push, reset --hard, rm -rf /, DROP TABLE, .env, curl | sh …</div></div>
     <div class="step"><div class="k">3 · Jev judgment</div><div class="v">irreversible? · off-task? · how does it relate to the request?</div></div>
-    <div class="step"><div class="k">4 · you decide</div><div class="v">allow · warn · <b>confirm</b> dialog; No blocks it and tells the agent why</div></div>
+    <div class="step"><div class="k">4 · steer, don't interrupt</div><div class="v">allow · warn · <b>hold</b>: the agent reads why and re-plans or asks you; your reply approves</div></div>
   </div>
 
   <table>

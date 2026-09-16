@@ -20,37 +20,64 @@ after(async () => {
   await rm(temporary, { recursive: true, force: true });
 });
 
-test("defaults are conservative: guard on, TypeSafe consent off, headless blocks", () => {
+test("defaults: guards on, steer mode, TypeSafe consent off, nudges on", () => {
   const config = defaultConfig();
   assert.equal(config.enabled, true);
   assert.equal(config.typesafe, false);
-  assert.equal(config.headless, "block");
+  assert.equal(config.mode, "steer");
   assert.deepEqual(config.action.tools, ["bash", "write", "edit"]);
   assert.equal(config.action.failOpen, true);
   assert.ok(config.action.irreversible.warn < config.action.irreversible.confirm);
+  assert.equal(config.stuck.nudge, true);
+  assert.equal(config.done.nudge, true);
+  assert.equal(config.slop.enabled, true);
+  assert.equal(config.timeoutMs, config.action.timeoutMs);
 });
 
 test("user overrides accept valid values and ignore junk", () => {
   const config = applyUserOverrides(defaultConfig(), {
-    typesafe: true, headless: "allow", enabled: "yes",
+    typesafe: true, mode: "advise", enabled: "yes", headless: "allow",
     action: { tools: ["bash", 7, ""], irreversible: { warn: 0.9, confirm: 0.6 }, offTask: { confirm: 2 }, timeoutMs: -1, failOpen: false, unknown: 1 },
+    stuck: { minFailures: 20, window: 5, sameStrategy: 0.9, nudge: false },
+    done: { claimsDone: 0.5 },
+    slop: { quality: 1.0, placeholder: 3 },
   });
   assert.equal(config.typesafe, true);
-  assert.equal(config.headless, "allow");
+  assert.equal(config.mode, "advise");
   assert.equal(config.enabled, true, "non-boolean falls back");
   assert.deepEqual(config.action.tools, ["bash"]);
   assert.deepEqual(config.action.irreversible, { warn: 0.6, confirm: 0.6 }, "warn is clamped to confirm");
   assert.equal(config.action.offTask.confirm, 0.85);
   assert.equal(config.action.timeoutMs, 5000);
   assert.equal(config.action.failOpen, false);
+  assert.equal(config.stuck.window, 5);
+  assert.equal(config.stuck.minFailures, 5, "minFailures is clamped to the window");
+  assert.equal(config.stuck.sameStrategy, 0.9);
+  assert.equal(config.stuck.nudge, false);
+  assert.equal(config.done.claimsDone, 0.5);
+  assert.equal(config.slop.quality, 1.0);
+  assert.equal(config.slop.placeholder, 0.7, "out-of-range probability falls back");
+  assert.equal(applyUserOverrides(defaultConfig(), { mode: "loud" }).mode, "steer");
 });
 
-test("project overrides cannot grant consent or change headless policy", () => {
-  const config = applyProjectOverrides(defaultConfig(), { typesafe: true, headless: "allow", action: { tools: ["bash"], irreversible: { confirm: 0.9 } } });
+test("0.1.x files keep working: action.timeoutMs and action.maxRequests are read as shared settings", () => {
+  const config = applyUserOverrides(defaultConfig(), { action: { timeoutMs: 8000, maxRequests: 50 } });
+  assert.equal(config.timeoutMs, 8000);
+  assert.equal(config.action.timeoutMs, 8000);
+  assert.equal(config.maxRequests, 50);
+  const explicit = applyUserOverrides(defaultConfig(), { timeoutMs: 3000, action: { timeoutMs: 8000 } });
+  assert.equal(explicit.timeoutMs, 3000, "top-level wins");
+});
+
+test("project overrides cannot grant consent, change the mode, or raise budgets", () => {
+  const config = applyProjectOverrides(defaultConfig(), { typesafe: true, mode: "advise", maxRequests: 9999, timeoutMs: 1, action: { tools: ["bash"], irreversible: { confirm: 0.9 } }, stuck: { enabled: false } });
   assert.equal(config.typesafe, false);
-  assert.equal(config.headless, "block");
+  assert.equal(config.mode, "steer");
+  assert.equal(config.maxRequests, 500);
+  assert.equal(config.action.timeoutMs, 5000);
   assert.deepEqual(config.action.tools, ["bash"]);
   assert.equal(config.action.irreversible.confirm, 0.9);
+  assert.equal(config.stuck.enabled, false);
 });
 
 test("loadConfig merges user then trusted project file, and survives malformed files", async () => {

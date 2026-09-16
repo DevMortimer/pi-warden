@@ -1,7 +1,7 @@
 {
   "name": "pi-warden",
-  "version": "0.1.2",
-  "description": "Harness guardrails for Pi built on pi-typesafe: pattern checks plus Jev judgments flag irreversible or off-task bash, write, and edit calls before they run.",
+  "version": "0.2.0",
+  "description": "Guardrails for Pi built on pi-typesafe that steer the agent instead of interrupting you: Jev judges irreversible and off-task tool calls before they run, detects stuck loops, checks unverified done claims, and flags slop.",
   "type": "module",
   "license": "MIT",
   "author": "Ryan Gapac",

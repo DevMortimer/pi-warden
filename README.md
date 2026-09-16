@@ -1,6 +1,6 @@
 # pi-warden
 
-A second pair of eyes for [Pi](https://pi.dev). Before the agent runs a `bash`, `write`, or `edit` call, pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" stops for your confirmation. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
+A second pair of eyes for [Pi](https://pi.dev) that makes the agent smarter instead of interrupting you. Before the agent runs a `bash`, `write`, or `edit` call, pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" is held, and the agent is told why so it re-plans or asks you in chat. Three more guards watch the run: a **stuck-loop** detector, a **done-check** for completion claims that no test backed up, and a **slop** note for stubs and filler. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
 
 ![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
@@ -10,10 +10,13 @@ The verdicts above are real output from `npm run test:live`. Independent project
 
 Agents are good at picking the next command and bad at noticing when that command is out of proportion to the request. Pattern lists catch `rm -rf /` and force pushes; they cannot tell `db:reset` when you asked for a reset from `db:reset` when you asked for a column. A generative model can, but a second LLM call per tool call is slow and expensive. Jev is a System One model: it returns calibrated probabilities instead of text, in a quarter of a second, for a fraction of a cent. That makes it cheap enough to sit in front of **every** guarded call:
 
-- **Irreversible actions get a dialog** before they run: history rewrites, deleted untracked work, dropped tables, overwritten files outside the project, publishes and deploys. You decide; a declined call is blocked with a one-line reason the agent can act on, not a stack trace.
-- **Scope drift gets flagged.** Poems in a bugfix, refactors nobody asked for, dependency installs unrelated to the task: warned at 0.6, confirmed at 0.85 when Jev also calls the action `unrelated`.
+- **Irreversible actions are held, not run**: history rewrites, deleted untracked work, dropped tables, overwritten files outside the project, publishes and deploys. The agent receives the judgment as its tool result — what was flagged, the scores, and two acceptable next moves: find a recoverable alternative, or explain the action to you and wait. If you approve in chat, the retry goes through; Jev reads your reply as the approval. No modal dialog unless you ask for one (`/warden mode confirm`).
+- **Scope drift gets flagged.** Poems in a bugfix, refactors nobody asked for, dependency installs unrelated to the task: warned to you at 0.6, held at 0.85 when Jev also calls the action `unrelated`.
+- **Loops get broken.** Three failures with the same strategy (same command with cosmetic changes, same error after each edit) earn the agent a steer: re-read the error, form a new hypothesis, or report the blocker. Exact repeats are caught offline; Jev tells "investigating between failures" from "flailing" — 0.32 vs 0.93 in the smoke run.
+- **"Done" gets checked.** When the final message reports completion after file changes and no test, build, or lint passed in that run, the agent is asked to verify before you read a false "all green". A claim that tests passed when none ran is called out as such. Once per prompt, so it cannot loop.
+- **Slop gets a note.** Stub functions, `TODO: implement later`, mocks returning fake data, filler comments: scored on the same request as the action guard (zero extra latency) and steered back to the agent after the write, never held.
 - **Nothing slows down the boring calls.** Read-only shell lines are skipped without a request; anything else costs one request of ~600 input tokens.
-- **It degrades gracefully.** Offline pattern checks run with no account at all. On an API timeout or outage the call is allowed with a warning (configurable), and the reasons never include your command text or upstream error bodies.
+- **It degrades gracefully.** Offline pattern checks and exact-repeat detection run with no account at all. On an API timeout or outage the call is allowed with a warning (configurable), and reasons never include your command text or upstream error bodies.
 
 ## Install
 
@@ -31,16 +34,33 @@ Requires Pi 0.85 or newer and Node.js 22.19 or newer. Pattern checks work with n
 
 A `TYPESAFE_API_KEY` environment variable takes precedence over the stored key. Without step 2, pi-warden still guards with offline pattern checks only.
 
-## What it does on each guarded call
+## How the guards work
+
+### Action guard (`tool_call`)
 
 1. **Skip** read-only tools, and read-only shell lines such as `git status && ls` (no network, no widget).
-2. **Pattern pass** (offline): force pushes, `git reset --hard`, `git clean -f`, recursive `rm` on absolute/home/variable/parent paths, SQL `DROP`/`TRUNCATE`/`DELETE FROM`, block-device writes, `chmod -R 777`, fork bombs, `curl | sh`, `kill -1`, shutdown, package publishing, infrastructure destroys → **confirm**. `rm -rf` on a project path, `git checkout -- .`, `git branch -D`, `git stash drop`, `find -delete`, `sudo` → **warn**. Reads or writes of `.env`, SSH, AWS, npm, kube, and other credential files → **warn**. A `write` that overwrites an existing file outside the project → **confirm**; creating or editing outside the project → **warn**.
-3. **Jev judgment** (with consent): one request with the state `{ task, action }` and three questions — `irreversible` (Noul), `off_task` (Noul), `scope` (Choice: expected step, plausible side step, unrelated, unclear). Defaults: irreversible ≥ 0.5 warns, ≥ 0.7 confirms; off-task ≥ 0.6 warns, ≥ 0.85 with `unrelated` confirms. Pattern results set the floor; Jev can only raise it.
-4. **Act**: allow silently, warn with a notification, or ask with `ctx.ui.confirm`. The widget above the editor shows the last verdict, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`.
+2. **Pattern pass** (offline): force pushes, `git reset --hard`, `git clean -f`, recursive `rm` on absolute/home/variable/parent paths, SQL `DROP`/`TRUNCATE`/`DELETE FROM`, block-device writes, `chmod -R 777`, fork bombs, `curl | sh`, `kill -1`, shutdown, package publishing, infrastructure destroys → **hold**. `rm -rf` on a project path, `git checkout -- .`, `git branch -D`, `git stash drop`, `find -delete`, `sudo` → **warn**. Reads or writes of `.env`, SSH, AWS, npm, kube, and other credential files → **warn**. A `write` that overwrites an existing file outside the project → **hold**; creating or editing outside the project → **warn**.
+3. **Jev judgment** (with consent): one request with the state `{ task, action }` and three questions — `irreversible` (Noul), `off_task` (Noul), `scope` (Choice: expected step, plausible side step, unrelated, unclear). Defaults: irreversible ≥ 0.5 warns, ≥ 0.7 holds; off-task ≥ 0.6 warns, ≥ 0.85 with `unrelated` holds. Pattern results set the floor; Jev can only raise it. For `write`/`edit`, two slop questions ride on the same request.
+4. **Act**, by mode:
+   - `steer` (default): a hold blocks the call and returns the judgment to the agent as the tool result, with the two acceptable next moves. You see a notification and the widget line; the agent keeps working. When the agent asks you and your reply approves the action (Jev: `approved` ≥ 0.7, or an offline yes/go-ahead heuristic without consent), the identical retry is allowed once.
+   - `confirm`: a hold opens a `ctx.ui.confirm` dialog; No blocks with a short reason. Without a UI this falls back to `steer`.
+   - `advise`: never holds; every judgment is reported to you only.
 
-Headless runs (`pi -p`, JSON mode) cannot ask, so a confirm-level call is **blocked** unless `PI_WARDEN_HEADLESS=allow` or `"headless": "allow"` is set. Consent in headless runs comes from `PI_WARDEN_ENABLED=1`.
+   Warn-level verdicts notify you and continue in every mode. The widget above the editor shows the last verdict of each guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`.
 
-If TypeSafe cannot answer (timeout after 5 s, outage, budget), the call is allowed with a warning (`failOpen: true`). Set `failOpen` to `false` to ask instead. When the per-session request budget is spent, pi-warden says so once and continues with pattern checks.
+### Stuck detector (`tool_result`)
+
+Keeps the last 12 tool results for the current prompt. When the latest result failed and at least 3 failures have accumulated, it first checks for exact repeats offline (same call, same output with timings and addresses normalised). Otherwise one Jev request judges the sequence: `same_strategy` (Noul), `approach_change` (Score: identical / cosmetic / meaningfully different), `progress` (Noul). Same-strategy ≥ 0.7 counts as stuck: you get a notification, and with `nudge: true` (default) the agent gets a steer message asking for a new hypothesis or a blocker report. At most one Jev check per 3 results.
+
+### Done-check (`agent_end`)
+
+Tracks each run's evidence: code changes (`write`, `edit`) and check commands (`npm test`, `pytest`, `cargo test`, `tsc`, `eslint`, `go test`, `make test`, and similar) with pass/fail. When a run ends with a normal assistant message after code changes and no passing check, one Jev request judges the message: `claims_done`, `claims_verified`, `verification_applies` (Noul), `outcome` (Choice: complete / partial / blocked / other). A completion claim ≥ 0.7 that is not a blocker or question, for a task where checks would mean something (≥ 0.5; prose and file housekeeping score ~0.05), is reported as unverified; a verification claim with no check run is reported as a false claim. With `nudge: true` (default) the agent receives one follow-up turn asking it to run the checks or say plainly that nothing was verified — once per user prompt.
+
+### Slop (`write`/`edit`, same request as the action guard)
+
+`slop_quality` (Score: focused / some filler / sloppy) and `slop_placeholder` (Noul: stub or placeholder where working code is needed). Quality ≥ 1.5 or placeholder ≥ 0.7 notifies you and steers the agent to replace stubs and remove filler. Never holds a call.
+
+If TypeSafe cannot answer (timeout after 5 s, outage, budget), an action-guard call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead), and the other guards simply skip. When the per-session request budget is spent, pi-warden says so once and continues with offline checks. Consent in headless runs comes from `PI_WARDEN_ENABLED=1`; `PI_WARDEN_MODE` overrides the mode.
 
 ## Commands
 
@@ -49,8 +69,9 @@ If TypeSafe cannot answer (timeout after 5 s, outage, budget), the call is allow
 | `/warden status` | Guard state, consent source, key source, session counts, thresholds, config paths, last verdict |
 | `/warden enable` | Show the data notice, prompt for a key if none is stored, and save consent for Jev judgments |
 | `/warden disable` | Stop Jev judgments; pattern checks continue |
+| `/warden mode steer\|confirm\|advise` | Choose how holds are handled; without an argument, show the current mode |
 | `/warden config` | Edit the user config JSON in Pi's editor and save it |
-| `/warden test` | Evaluate one synthetic destructive action and show the verdict |
+| `/warden test` | Evaluate one synthetic destructive action and show the verdict and what the agent would be told |
 
 ## Configuration
 
@@ -60,27 +81,30 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
 {
   "enabled": true,
   "typesafe": false,
-  "headless": "block",
+  "mode": "steer",
+  "timeoutMs": 5000,
+  "maxRequests": 500,
   "action": {
     "enabled": true,
     "tools": ["bash", "write", "edit"],
     "failOpen": true,
-    "timeoutMs": 5000,
-    "maxRequests": 500,
     "irreversible": { "warn": 0.5, "confirm": 0.7 },
     "offTask": { "warn": 0.6, "confirm": 0.85 }
-  }
+  },
+  "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
+  "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
+  "slop": { "enabled": true, "quality": 1.5, "placeholder": 0.7 }
 }
 ```
 
-A project may add `.pi/pi-warden.json` with `enabled` and `action` overrides (for example stricter thresholds or extra guarded tools). Project files are read only when Pi trusts the project, and they can never grant `typesafe` consent or change `headless`. Environment: `PI_WARDEN_ENABLED=1` (consent), `PI_WARDEN_HEADLESS=allow|block`.
+A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides (for example stricter thresholds, extra guarded tools, or `"done": { "enabled": false }`). Project files are read only when Pi trusts the project, and they can never grant `typesafe` consent, change `mode`, or raise `timeoutMs`/`maxRequests`. Environment: `PI_WARDEN_ENABLED=1` (consent), `PI_WARDEN_MODE=steer|confirm|advise`. Files from 0.1.x that set `action.timeoutMs`/`action.maxRequests` keep working.
 
 ## Data handling
 
-- With consent, each guarded call sends to `https://api.typesafe.ai`: your latest prompt (truncated to 1500 characters), the tool name, the command (truncated to 2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 600-character content excerpt for `write`, and the first three edit pairs (200 characters each) for `edit`. No other files, history, or telemetry.
+- With consent, each guarded call sends to `https://api.typesafe.ai`: your latest prompt (truncated to 1500 characters), the tool name, the command (truncated to 2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character content excerpt for `write`, and the first three edit pairs (400 characters each) for `edit`. The stuck detector sends the last 12 tool calls (300 characters each) with 400-character output tails; the done-check sends the agent's final message (2000 characters) and the run's check commands. No other files, history, or telemetry.
 - Obvious credentials in the action (`Authorization` headers, `TOKEN=`/`SECRET=` assignments, `sk-`, `ghp_`, `AKIA`, JWTs, URL passwords, PEM blocks) are replaced with `[redacted]` before sending. This is best-effort; do not rely on it for prompts that contain secrets.
-- The block reason returned to the agent names the tool and the reasons, not the command text. UI errors never include upstream response bodies or keys.
-- Judgments are model output. Thresholds are yours to tune; the dialog is the decision.
+- Text returned or steered to the agent names the tool, the reasons, and the scores, not the command text. UI errors never include upstream response bodies or keys.
+- Judgments are model output. Thresholds are yours to tune; a hold is information for the agent and for you, not a verdict on either.
 
 ## For extension authors
 
@@ -94,19 +118,20 @@ const verdict = await evaluateAction(
   { tool: "bash", input: { command: "git push --force" }, cwd: process.cwd(), task: "push my branch" },
   { config: defaultConfig().action, judge: createTypeSafe() },   // omit judge for pattern checks only
 );
-verdict.level;      // "allow" | "warn" | "confirm"
+verdict.level;      // "allow" | "warn" | "confirm"  (confirm = hold in steer mode)
 verdict.reasons;    // ["destructive: git force push", "irreversible 0.91"]
-verdict.judgment;   // { irreversible, offTask, scope, scopeConfidence, model, elapsedMs }
+verdict.judgment;   // { irreversible, offTask, scope, scopeConfidence, approved?, model, elapsedMs }
+steerReason(verdict, { canApprove: true });   // the text the agent receives for a hold
 ```
 
-Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`, `formatVerdict`, `questions`, and the config helpers.
+Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`, `formatVerdict`, the question sets, the stuck detector (`AttemptWindow`, `makeAttempt`, `evaluateStuck`, `stuckNudge`), the done-check (`classifyToolResult`, `recordOutcome`, `needsDoneCheck`, `evaluateDone`, `doneNudge`), and the config helpers.
 
 ## Development
 
 ```bash
 npm install
 npm run check        # typecheck, offline tests (mocked transport), build
-npm run test:live    # nine billable synthetic judgments against api.typesafe.ai (key from .env or the stored login)
+npm run test:live    # 28 billable synthetic judgments across all guards (key from .env or the stored login); pass action|slop|approval|stuck|done for one group
 npm run dev:pi       # start Pi with this working tree plus an installed pi-typesafe
 npm run preview      # re-render docs/preview.png from the recorded live verdicts (needs a Chrome binary)
 ```

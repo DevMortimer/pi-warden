@@ -1,5 +1,9 @@
-export { evaluateAction, describeAction, matchPatterns, isReadOnlyCommand, buildRequest, formatVerdict, questions } from "./guard.js";
-export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, Level, PatternHit, ScopeLabel, Severity, Verdict } from "./guard.js";
+export { evaluateAction, describeAction, matchPatterns, isReadOnlyCommand, buildRequest, formatVerdict, steerReason, textApproves, questions, slopQuestions, approvalQuestion } from "./guard.js";
+export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, Level, PatternHit, ScopeLabel, Severity, Verdict } from "./guard.js";
+export { AttemptWindow, makeAttempt, resultFailed, resultText, evaluateStuck, buildStuckRequest, stuckQuestions, stuckNudge, formatStuck } from "./stuck.js";
+export type { Attempt, StuckJudgment, StuckVerdict, StuckOptions } from "./stuck.js";
+export { classifyToolResult, recordOutcome, emptyEvidence, needsDoneCheck, finalAssistantText, evaluateDone, buildDoneRequest, doneQuestions, doneNudge, formatDone } from "./done.js";
+export type { ToolOutcome, RunEvidence, DoneJudgment, DoneVerdict, DoneOptions } from "./done.js";
 export { redact } from "./redact.js";
-export { defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, PACKAGE_NAME } from "./config.js";
-export type { ActionGuardConfig, Threshold, WardenConfig, LoadOptions } from "./config.js";
+export { defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, PACKAGE_NAME } from "./config.js";
+export type { ActionGuardConfig, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";

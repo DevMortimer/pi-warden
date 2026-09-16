@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { choice, noul, TypeSafeIntegrationError } from "pi-typesafe";
+import { choice, noul, score, TypeSafeIntegrationError } from "pi-typesafe";
 import type { IntegrationErrorCode, TypeSafe } from "pi-typesafe";
-import type { ActionGuardConfig } from "./config.js";
+import type { ActionGuardConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
 
 export type Level = "allow" | "warn" | "confirm";
@@ -45,8 +45,17 @@ export interface Judgment {
   offTask: number;
   scope: ScopeLabel;
   scopeConfidence: number;
+  /** P(the latest user message approves this exact action); only asked when a previously held call is retried. */
+  approved?: number;
   model: string;
   elapsedMs: number;
+}
+
+export interface SlopJudgment {
+  /** 0 focused … 2 sloppy. */
+  quality: number;
+  /** P(placeholder or stub where working code is needed). */
+  placeholder: number;
 }
 
 export interface Verdict {
@@ -57,6 +66,11 @@ export interface Verdict {
   /** Human-readable reasons without secrets or full commands. */
   reasons: string[];
   judgment?: Judgment;
+  slop?: SlopJudgment;
+  /** Set when the slop thresholds were crossed; the level itself is never raised by slop. */
+  slopReasons?: string[];
+  /** True when a previously held call was allowed because the user's latest message approves it. */
+  approvedByUser?: boolean;
   /** Safe TypeSafe error message when the judge could not answer. */
   error?: string;
   errorCode?: IntegrationErrorCode;
@@ -70,6 +84,10 @@ export interface EvaluateOptions {
   /** Omit to run offline pattern checks only (no consent, no network). */
   judge?: Judge | undefined;
   signal?: AbortSignal | undefined;
+  /** Adds quality questions for write/edit content to the same request. */
+  slop?: SlopGuardConfig | undefined;
+  /** This exact call was held earlier and the user has replied since: ask whether the reply approves it. */
+  retryAfterHold?: boolean | undefined;
 }
 
 const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2 };
@@ -77,8 +95,8 @@ const higher = (a: Level, b: Level): Level => (LEVEL_RANK[a] >= LEVEL_RANK[b] ? 
 
 const TASK_LIMIT = 1500;
 const COMMAND_LIMIT = 2000;
-const EXCERPT_LIMIT = 600;
-const EDIT_LIMIT = 200;
+const EXCERPT_LIMIT = 1500;
+const EDIT_LIMIT = 400;
 
 function truncate(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit)}… [${text.length - limit} more chars]`;
@@ -237,7 +255,7 @@ export function describeAction(tool: string, input: Record<string, unknown>, cwd
 }
 
 // ---------------------------------------------------------------------------
-// TypeSafe request: named state fields, three independent questions.
+// TypeSafe request: named state fields, independent questions. Slop and approval questions join the same request.
 
 export const questions = {
   irreversible: noul(
@@ -262,13 +280,37 @@ export const questions = {
   }),
 };
 
-export function buildRequest(summary: ActionSummary, task: string | undefined) {
+export const slopQuestions = {
+  slop_quality: score("How does the new code or text that `action` writes read as a change for `task`?", [
+    "Focused: does what `task` needs, clear names, comments only where they add information",
+    "Some filler: comments that restate the code, minor dead code, hedging or repeated text",
+    "Sloppy: placeholder or stub code, TODO where a working implementation is needed, duplicated or commented-out logic, vague or contradictory text",
+  ]),
+  slop_placeholder: noul("Does the content `action` writes leave placeholder, stub, mock, or 'implement later' code where `task` needs a working implementation?"),
+};
+
+export const approvalQuestion = {
+  approved: noul(
+    "Does `task` (the user's latest message) explicitly approve running `action`, which was held earlier for the user's decision?",
+    {
+      true: "Yes: the message says to go ahead with this action or with the deletion, push, reset, or change it performs.",
+      false: "No: the message declines, asks for something else, changes the approach, or does not address this action.",
+    },
+  ),
+};
+
+function hasContent(summary: ActionSummary): boolean {
+  return (summary.excerpt?.trim().length ?? 0) > 0 || (summary.edits?.some(edit => edit.newText.trim().length > 0) ?? false);
+}
+
+export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean } = {}) {
+  const wantSlop = extras.slop && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary);
   return {
     state: {
       task: task?.trim() ? truncate(task.trim(), TASK_LIMIT) : "(no user request recorded in this session)",
       action: summary as unknown as Record<string, string | number | boolean>,
     },
-    questions,
+    questions: { ...questions, ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}) },
   };
 }
 
@@ -278,6 +320,7 @@ function combineSignals(timeoutMs: number, signal?: AbortSignal): AbortSignal {
 }
 
 const percent = (value: number) => value.toFixed(2);
+const APPROVAL_THRESHOLD = 0.7;
 
 // ---------------------------------------------------------------------------
 
@@ -309,15 +352,18 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   if (!judge) return { level, source: "pattern", summary, patterns, reasons };
 
   try {
-    const result = await judge.evaluate(buildRequest(summary, action.task), { signal: combineSignals(config.timeoutMs, options.signal) });
+    const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false });
+    const result = await judge.evaluate(request, { signal: combineSignals(config.timeoutMs, options.signal) });
+    const answers = result.answers as typeof result.answers & Partial<Record<"slop_quality" | "slop_placeholder" | "approved", { type: string; noul?: number; score?: number }>>;
     const judgment: Judgment = {
-      irreversible: result.answers.irreversible.noul,
-      offTask: result.answers.off_task.noul,
-      scope: result.answers.scope.choice,
-      scopeConfidence: result.answers.scope.confidence,
+      irreversible: answers.irreversible.noul,
+      offTask: answers.off_task.noul,
+      scope: answers.scope.choice,
+      scopeConfidence: answers.scope.confidence,
       model: result.model,
       elapsedMs: result.elapsedMs,
     };
+    if (typeof answers.approved?.noul === "number") judgment.approved = answers.approved.noul;
     if (judgment.irreversible >= config.irreversible.confirm) {
       level = higher(level, "confirm");
       reasons.push(`irreversible ${percent(judgment.irreversible)}`);
@@ -332,7 +378,20 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       level = higher(level, "warn");
       reasons.push(`off-task ${percent(judgment.offTask)} (${judgment.scope.replace(/_/g, " ")})`);
     }
-    return { level, source: "typesafe", summary, patterns, reasons, judgment };
+    const verdict: Verdict = { level, source: "typesafe", summary, patterns, reasons, judgment };
+    if (options.slop?.enabled && typeof answers.slop_quality?.score === "number" && typeof answers.slop_placeholder?.noul === "number") {
+      verdict.slop = { quality: answers.slop_quality.score, placeholder: answers.slop_placeholder.noul };
+      const slopReasons: string[] = [];
+      if (verdict.slop.quality >= options.slop.quality) slopReasons.push(`quality ${verdict.slop.quality.toFixed(2)}/2 (filler or sloppy)`);
+      if (verdict.slop.placeholder >= options.slop.placeholder) slopReasons.push(`placeholder or stub code ${percent(verdict.slop.placeholder)}`);
+      if (slopReasons.length) verdict.slopReasons = slopReasons;
+    }
+    if (level === "confirm" && judgment.approved !== undefined && judgment.approved >= APPROVAL_THRESHOLD) {
+      verdict.level = "allow";
+      verdict.approvedByUser = true;
+      verdict.reasons = [`user approved in the latest message (${percent(judgment.approved)})`, ...reasons];
+    }
+    return verdict;
   } catch (error) {
     const known = error instanceof TypeSafeIntegrationError ? error : undefined;
     const message = known?.message ?? "TypeSafe request failed.";
@@ -346,11 +405,33 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
 }
 
+/** Offline stand-in for the approval question when TypeSafe is not available. */
+export function textApproves(task: string | undefined): boolean {
+  return /\b(?:yes|yep|yeah|go ahead|do it|proceed|approved?|confirm(?:ed)?|ok(?:ay)?|sure|please do|run it)\b/i.test(task ?? "") && !/\b(?:no|don't|do not|stop|wait|instead|not)\b/i.test(task ?? "");
+}
+
+/**
+ * The text the agent receives when a call is held. It explains the judgment and the two acceptable next moves,
+ * so the model re-plans instead of retrying. Contains no command text (the model already has it) and no secrets.
+ */
+export function steerReason(verdict: Verdict, options: { canApprove: boolean }): string {
+  const what = verdict.reasons.join("; ");
+  const lines = [
+    `pi-warden held this ${verdict.summary.tool} call before it ran: ${what}.`,
+    "Do not retry it unchanged. Either (1) reach the goal with a recoverable alternative that stays inside the project (a targeted path, a dry run, a move instead of a delete, a normal push), or (2) if this exact action is genuinely required, stop and tell the user in one or two sentences what it does, what cannot be undone, and why it is needed, then wait for their reply.",
+  ];
+  if (options.canApprove) lines.push("If the user's reply approves it, retry the same call and pi-warden will let it through.");
+  else lines.push("pi-warden allows the same call again once the user has replied with approval.");
+  return lines.join(" ");
+}
+
 /** One-line rendering for widgets and logs. Includes no command text. */
 export function formatVerdict(verdict: Verdict): string {
   const parts = [`warden · ${verdict.summary.tool}`];
   if (verdict.judgment) parts.push(`irreversible ${percent(verdict.judgment.irreversible)}`, `off-task ${percent(verdict.judgment.offTask)}`, verdict.judgment.scope.replace(/_/g, " "));
+  if (verdict.slop) parts.push(`slop ${verdict.slop.quality.toFixed(1)}/2`, `stub ${percent(verdict.slop.placeholder)}`);
   if (verdict.patterns.length) parts.push(`patterns: ${verdict.patterns.map(hit => hit.id).join(", ")}`);
+  if (verdict.approvedByUser) parts.push("user approved");
   if (verdict.source === "error") parts.push("typesafe error");
   if (verdict.source === "read-only") parts.push("read-only");
   parts.push(verdict.level);
