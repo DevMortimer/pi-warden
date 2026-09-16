@@ -58,7 +58,13 @@ Tracks each run's evidence: code changes (`write`, `edit`) and check commands (`
 
 ### Slop (`write`/`edit`, same request as the action guard)
 
-`slop_quality` (Score: focused / some filler / sloppy) and `slop_placeholder` (Noul: stub or placeholder where working code is needed). Quality ≥ 1.5 or placeholder ≥ 0.7 notifies you and steers the agent to replace stubs and remove filler. Never holds a call.
+pi-warden cannot rewrite code — Jev only judges — so slop is handled as a feedback loop through the agent:
+
+1. When the agent calls `write` or `edit`, two questions ride on the action guard's request (no extra latency): `slop_quality`, a Score over three described levels — *focused* (does what the task needs, comments only where they add information) / *some filler* (comments restating the code, minor dead code, hedging) / *sloppy* (stub or placeholder code, TODO where a working implementation is needed, duplicated or commented-out logic, vague text) — and `slop_placeholder`, a Noul: does the content leave placeholder, stub, mock, or "implement later" code where `task` needs a working implementation? Jev sees the first 1500 characters of a `write` or the first three replacement texts of an `edit`, plus your request, so "needed" is judged against what you asked for.
+2. Quality ≥ 1.5 or placeholder ≥ 0.7 (config `slop`) trips the note. Below that, nothing happens.
+3. The write **goes through** — holding it would leave a half-written file. Instead the agent receives a steer message before its next LLM call: *"pi-warden: the content just written to `src/x.ts` reads as quality 1.90/2 (filler or sloppy) and placeholder or stub code 0.92. Replace stubs and placeholders with working code, remove comments that restate the code, and keep only what the request needs. If something is intentionally left unimplemented, say so in your reply instead of leaving it in the code."* The agent fixes the file on its next turn; you see a notification and `slop 1.9/2 · stub 0.92` in the widget.
+
+From the live smoke: a `// TODO: implement later` stub scored quality 2.00 / placeholder 0.99, a mock returning fake user data 2.00 / 0.98, a focused implementation 0.00 / 0.02, and a function with only restating comments 0.87 / 0.02 — deliberately below the threshold, because the guard is for stubs and filler that change behaviour, not for style. Not covered: code written through bash heredocs, content past the excerpt limits, and the agent's prose replies.
 
 If TypeSafe cannot answer (timeout after 5 s, outage, budget), an action-guard call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead), and the other guards simply skip. When the per-session request budget is spent, pi-warden says so once and continues with offline checks. Consent in headless runs comes from `PI_WARDEN_ENABLED=1`; `PI_WARDEN_MODE` overrides the mode.
 
