@@ -55,9 +55,6 @@
     "check": "npm run typecheck && npm test && npm run build",
     "prepack": "npm run build"
   },
-  "dependencies": {
-    "pi-typesafe": "^0.2.3"
-  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.1 <1",
     "@earendil-works/pi-tui": ">=0.85.1 <1"
@@ -76,5 +73,8 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.23.13",
     "typescript": "^6.0.0"
+  },
+  "dependencies": {
+    "pi-typesafe": "^0.3.0"
   }
 }

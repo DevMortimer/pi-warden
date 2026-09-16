@@ -9,7 +9,6 @@ Independent project. Not affiliated with TypeSafe AI or the Pi authors.
 ## Install
 
 ```bash
-pi install npm:pi-typesafe   # provides /typesafe login and the shared key store
 pi install npm:pi-warden
 ```
 
@@ -17,11 +16,11 @@ Requires Pi 0.85 or newer and Node.js 22.19 or newer. Pattern checks work with n
 
 ## Setup
 
-1. Run `/typesafe login` once and paste your key (or set `TYPESAFE_API_KEY`). pi-warden reads the same stored key; it never handles or displays the value.
-2. Run `/warden enable`, read the data notice, and confirm. Consent is saved to `~/.pi/agent/pi-warden/config.json`, so it survives restarts until you run `/warden disable`.
+1. Get a key at [console.typesafe.ai](https://console.typesafe.ai) (API Keys).
+2. Run `/warden enable`. Read the data notice and confirm; if no key is configured yet, paste it at the hidden prompt. The key is verified against the API and saved to `~/.pi/agent/pi-typesafe/auth.json` with owner-only permissions, shared with [pi-typesafe](https://github.com/DevMortimer/pi-typesafe) and anything else built on it. Consent is saved to `~/.pi/agent/pi-warden/config.json`, so judgments stay on in every new session until you run `/warden disable`.
 3. Optionally run `/warden test` to see one synthetic verdict.
 
-Without step 2, pi-warden still guards with offline pattern checks only.
+A `TYPESAFE_API_KEY` environment variable takes precedence over the stored key. Without step 2, pi-warden still guards with offline pattern checks only.
 
 ## What it does on each guarded call
 
@@ -39,7 +38,7 @@ If TypeSafe cannot answer (timeout after 5 s, outage, budget), the call is allow
 | Command | Effect |
 | --- | --- |
 | `/warden status` | Guard state, consent source, key source, session counts, thresholds, config paths, last verdict |
-| `/warden enable` | Show the data notice and save consent for Jev judgments |
+| `/warden enable` | Show the data notice, prompt for a key if none is stored, and save consent for Jev judgments |
 | `/warden disable` | Stop Jev judgments; pattern checks continue |
 | `/warden config` | Edit the user config JSON in Pi's editor and save it |
 | `/warden test` | Evaluate one synthetic destructive action and show the verdict |
@@ -98,7 +97,7 @@ Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`,
 ```bash
 npm install
 npm run check        # typecheck, offline tests (mocked transport), build
-npm run test:live    # nine billable synthetic judgments against api.typesafe.ai (key from .env or /typesafe login)
+npm run test:live    # nine billable synthetic judgments against api.typesafe.ai (key from .env or the stored login)
 npm run dev:pi       # start Pi with this working tree plus an installed pi-typesafe
 ```
 

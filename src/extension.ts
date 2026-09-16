@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createTypeSafe, resolveApiKey } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
+import { ensureApiKey } from "pi-typesafe/ui";
 import { applyUserOverrides, defaultConfig, loadConfig, PACKAGE_NAME, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig } from "./config.js";
 import { evaluateAction, formatVerdict } from "./guard.js";
@@ -125,7 +126,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const source = consentSource(config);
           const usage = client?.getUsage();
           report([
-            `pi-warden: ${config.enabled && config.action.enabled ? "guarding" : "off"} ${config.action.tools.join(", ")}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? `from ${key.source === "stored" ? "/typesafe login" : "TYPESAFE_API_KEY"}` : "missing (run /typesafe login or set TYPESAFE_API_KEY)"}.`,
+            `pi-warden: ${config.enabled && config.action.enabled ? "guarding" : "off"} ${config.action.tools.join(", ")}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.confirmed} asked, ${stats.blocked} blocked, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.action.maxRequests} requests.`,
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / confirm ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / confirm ${config.action.offTask.confirm}; failOpen ${config.action.failOpen}; headless ${headlessPolicy(config)}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
@@ -134,13 +135,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "enable") {
-          if (!resolveApiKey()) { report("No TypeSafe API key found. Run /typesafe login (from the pi-typesafe package) or set TYPESAFE_API_KEY, then run /warden enable again.", "warning"); return; }
-          if (!ctx.hasUI) { report("Consent needs an interactive session. For headless runs set PI_WARDEN_ENABLED=1 explicitly.", "warning"); return; }
+          if (!ctx.hasUI) { report("Consent needs an interactive session. For headless runs set PI_WARDEN_ENABLED=1 and TYPESAFE_API_KEY explicitly.", "warning"); return; }
           if (!await ctx.ui.confirm("Enable TypeSafe judgments for pi-warden?", disclosure)) return;
+          // One flow: consent, then a key if none is configured yet (hidden input, verified, stored for every pi-typesafe consumer).
+          const key = await ensureApiKey(ctx);
+          if (!key) { report("No key entered; pi-warden stays on pattern checks only. Run /warden enable again when you have a key from console.typesafe.ai.", "warning"); return; }
           const path = setUserSetting("typesafe", true);
           client = undefined;
           budgetExhausted = false;
-          report(`TypeSafe judgments enabled and saved to ${path}. Guarded calls now get irreversible and off-task scores; /warden disable turns this off.`);
+          report(`TypeSafe judgments enabled and saved to ${path}${key.login ? `; key verified (${key.login.models} model${key.login.models === 1 ? "" : "s"}) and stored at ${key.login.path}` : ` using the ${key.source === "stored" ? "stored key" : "key from TYPESAFE_API_KEY"}`}. This stays on in new sessions until /warden disable.`);
           return;
         }
         if (action === "disable") {

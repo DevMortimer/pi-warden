@@ -30,8 +30,12 @@ const ui = {
   confirm: async (title: string, message: string) => { confirms.push({ title, message }); return confirmResult; },
   editor: async () => editorText,
   setWidget: (_id: string, lines: string[] | undefined) => { widgets.push(lines); },
+  custom: async () => { keyPrompts++; return keyInput; },
   input: async () => { throw new Error("input must not be used"); },
 };
+let keyPrompts = 0;
+let keyInput: string | undefined;
+let modelListCalls = 0;
 const sessionManager = {
   getBranch: () => prompt === undefined ? [] : [
     { type: "message", message: { role: "assistant", content: [{ type: "text", text: "ignored" }] } },
@@ -59,7 +63,11 @@ before(async () => {
   process.env.TYPESAFE_API_KEY = "offline-test-key";
   delete process.env.PI_WARDEN_ENABLED;
   delete process.env.PI_WARDEN_HEADLESS;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith("/v1/models")) {
+      modelListCalls++;
+      return Response.json({ models: [{ name: "jev-latest", description: "", release_date: "2026-01-01" }] });
+    }
     networkCalls++;
     if (failNetwork) return new Response("upstream body must not leak", { status: 503 });
     return Response.json({
@@ -94,6 +102,8 @@ before(async () => {
 beforeEach(async () => {
   notices.length = 0; widgets.length = 0; confirms.length = 0;
   confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; prompt = "Run the test suite";
+  keyPrompts = 0; keyInput = undefined; modelListCalls = 0;
+  await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   await rm(configPath(), { force: true });
   await sessionStart();
@@ -261,13 +271,44 @@ test("/warden status, enable, disable, and test report and persist consent", asy
   assert.match(notices.at(-1)!.text, /Unknown action/);
 });
 
-test("/warden enable refuses without a key", async () => {
+test("/warden enable with an existing key does not prompt for one", async () => {
+  await runCommand("enable");
+  assert.equal(keyPrompts, 0);
+  assert.match(notices.at(-1)!.text, /using the key from TYPESAFE_API_KEY/);
+  assert.match(notices.at(-1)!.text, /stays on in new sessions/);
+});
+
+test("/warden enable without a key asks for one after consent, verifies it, stores it, and then judges with it", async () => {
   delete process.env.TYPESAFE_API_KEY;
+  const storedKeyPath = join(temporary, "agent", "pi-typesafe", "auth.json");
   try {
+    keyInput = undefined;
     await runCommand("enable");
-    assert.match(notices.at(-1)!.text, /No TypeSafe API key/);
-    assert.equal(confirms.length, 0);
-    await assert.rejects(readFile(configPath()));
+    assert.equal(confirms.length, 1, "disclosure comes first");
+    assert.equal(keyPrompts, 1);
+    assert.match(notices.at(-1)!.text, /No key entered/);
+    await assert.rejects(readFile(configPath()), "consent is not saved without a key");
+
+    keyInput = "nope";
+    await runCommand("enable");
+    assert.match(notices.at(-1)!.text, /does not look like a TypeSafe API key/);
+    assert.ok(!notices.at(-1)!.text.includes("nope"));
+    assert.equal(modelListCalls, 0);
+
+    keyInput = "ts_live_key_0123456789abcdef";
+    await runCommand("enable");
+    assert.equal(modelListCalls, 1);
+    assert.deepEqual(JSON.parse(await readFile(configPath(), "utf8")), { typesafe: true });
+    assert.deepEqual(JSON.parse(await readFile(storedKeyPath, "utf8")), { apiKey: keyInput });
+    assert.match(notices.at(-1)!.text, /key verified \(1 model\) and stored at/);
+    assert.ok(notices.every(notice => !notice.text.includes("ts_live_key")), "the key is never echoed");
+
+    nextAnswers = { irreversible: 0.2, off_task: 0.1, scope: "expected_step" };
+    await toolCall("bash", { command: "npm test" });
+    assert.equal(networkCalls, 1, "the stored key powers judgments in the same session");
+
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /enabled via \/warden enable; key stored \(shared with pi-typesafe\)/);
   } finally {
     process.env.TYPESAFE_API_KEY = "offline-test-key";
   }
