@@ -256,16 +256,21 @@ test("/warden status, enable, disable, and test report and persist consent", asy
   assert.match(notices.at(-1)!.text, /enabled and saved/);
 
   await runCommand("test");
-  assert.equal(confirms.length, 3, "test asks before spending a request");
+  assert.equal(confirms.length, 4, "test asks before spending a request, then shows the demo dialog");
   assert.equal(networkCalls, 1);
-  assert.match(notices.at(-1)!.text, /^warden · bash · irreversible/);
-  assert.match(notices.at(-1)!.text, /rm-recursive-dangerous-target/);
+  assert.match(notices.at(-2)!.text, /^warden · bash · irreversible/);
+  assert.match(notices.at(-2)!.text, /rm-recursive-dangerous-target/);
+  assert.match(confirms.at(-1)!.title, /\(demo\)/);
+  assert.match(confirms.at(-1)!.message, /rm -rf \/tmp\/pi-warden-demo[\s\S]*nothing runs either way/);
+  assert.match(notices.at(-1)!.text, /Demo: you chose Yes/);
 
   await runCommand("disable");
   assert.deepEqual(JSON.parse(await readFile(configPath(), "utf8")), { typesafe: false });
+  confirmResult = false;
   await runCommand("test");
   assert.equal(networkCalls, 1, "disabled: no request");
-  assert.match(notices.at(-1)!.text, /pattern checks only/);
+  assert.match(notices.at(-2)!.text, /pattern checks only/);
+  assert.match(notices.at(-1)!.text, /Demo: you chose No/);
 
   await runCommand("bogus");
   assert.match(notices.at(-1)!.text, /Unknown action/);

@@ -175,6 +175,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           );
           if (ctx.hasUI) ctx.ui.setWidget(WIDGET, [formatVerdict(verdict)]);
           report(`${formatVerdict(verdict)}${verdict.reasons.length ? ` — ${verdict.reasons.join("; ")}` : ""}${judge ? "" : " (pattern checks only: TypeSafe judgments are not enabled or no key is configured)"}${verdict.error ? ` — ${verdict.error}` : ""}`);
+          if (ctx.hasUI && verdict.level === "confirm") {
+            // Show the same dialog a real call would get, so users can see what blocking looks like without touching anything.
+            const allowed = await ctx.ui.confirm("warden: allow this bash call? (demo)", `${confirmMessage(verdict)}\n\nThis is /warden test: nothing runs either way.`);
+            report(allowed ? "Demo: you chose Yes, so a real call would have run." : "Demo: you chose No, so a real call would have been blocked and the agent told why.");
+          }
           return;
         }
         report(`Unknown action "${action}". Use: ${actions.join(", ")}.`, "warning");
