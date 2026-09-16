@@ -17,6 +17,7 @@ import { redact } from "./redact.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
+import { ContextLedger, formatLedger } from "./saver.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName } from "./trace.js";
@@ -114,6 +115,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let doneNudged = false;
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
+  const ledger = new ContextLedger();
 
   // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
   let shapeReported = false;
@@ -178,6 +180,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     evidence = emptyEvidence();
     doneNudged = false;
     prose.reset();
+    ledger.reset();
     for (const symptom of Object.keys(slopCounts) as SlopSymptom[]) slopCounts[symptom] = 0;
     if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
   });
@@ -193,9 +196,18 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     evidence = emptyEvidence();
   });
 
+  // Every turn that runs after a compression is a turn that did not carry the removed text.
+  pi.on("turn_end", async () => {
+    ledger.turnEnd();
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     const config = configFor(ctx);
-    if (!config.enabled || !config.action.enabled || !config.action.tools.includes(event.toolName)) return;
+    if (!config.enabled) return;
+    // A read of a stored full output means the excerpt was not enough; that is the number that tunes context.confidence.
+    const recalled = ledger.noteAccess(JSON.stringify(event.input));
+    if (recalled) record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: "full output recalled" }), [`the agent went back to ${recalled}`, formatLedger(ledger.snapshot())]);
+    if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
     const task = latestUserPrompt(ctx);
     const key = callKey(event.toolName, event.input);
@@ -270,6 +282,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (output.error) noteError(ctx, output.error, output.errorCode);
     let content = event.content;
     const notice = securityNotice(output);
+    if (config.context.enabled && textBlocks.length === 1 && text.length >= config.context.tailMinChars) ledger.candidate();
     const excerpt = compressOutput(text, output.retention);
     if (excerpt && !ctx.signal?.aborted) {
       try {
@@ -278,9 +291,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement) - (notice ? Buffer.byteLength(notice) * 2 + 4 : 0);
         if (bytesSaved > 0) {
           content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
+          ledger.record(path, bytesSaved);
           record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
             `retention: ${output.retention}; confidence ${output.confidence?.toFixed(2)}; ${output.model}; ${output.elapsedMs} ms`,
             `saved ${bytesSaved} bytes; full output: ${path}`,
+            formatLedger(ledger.snapshot()),
           ]);
         }
       } catch {
@@ -391,6 +406,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; failOpen ${config.action.failOpen}.`,
+            formatLedger(ledger.snapshot()),
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
             `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode; each toggles the sidebar). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,

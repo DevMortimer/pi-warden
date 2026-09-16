@@ -288,6 +288,28 @@ test("security weaknesses in written content share the action request and produc
   assert.ok(notices.some(notice => /security weakness/.test(notice.text)));
 });
 
+test("the context saver keeps a ledger: candidates, compressions, token-turns, recalls, and a status line", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false } }));
+  nextAnswers = { retention: "summary_only" };
+  const full = "progress complete\n".repeat(2000);
+  const result = await toolResult("bash", { command: "npm test" }, full, false) as { content: Array<{ text: string }> };
+  const path = result.content[0]!.text.match(/Full output: (.+)/)![1]!;
+  try {
+    nextAnswers = { retention: "all" };
+    await toolResult("read", { path: "big.txt" }, "unique line ".repeat(1500), false);
+    await fire("turn_end", { turnIndex: 1, message: {}, toolResults: [] });
+    await fire("turn_end", { turnIndex: 2, message: {}, toolResults: [] });
+    await toolCall("read", { path });
+    assert.ok(widgets.at(-1)?.some(line => /context · read · full output recalled/.test(line)), "a recall shows on the status line");
+    await runCommand("status");
+    const status = notices.at(-1)!.text;
+    assert.match(status, /Context saver: 2 large outputs, 1 compressed, \d+\.\d KB removed \(~\d+ tokens\), ~\d+ token-turns spared over 2 turns, 1 recall of the full output \(100%\)/);
+  } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
+  await sessionStart();
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /no tool output large enough to consider this session/);
+});
+
 test("read-only tools and read-only shell commands pass without network or dialogs", async () => {
   assert.equal(await toolCall("read", { path: "/etc/hosts" }), undefined);
   assert.equal(await toolCall("bash", { command: "git status && ls" }), undefined);
