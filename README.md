@@ -6,6 +6,18 @@ A second pair of eyes for [Pi](https://pi.dev) that makes the agent smarter inst
 
 The verdicts above are real output from `npm run test:live`. Independent project; not affiliated with TypeSafe AI or the Pi authors.
 
+## Philosophy
+
+pi-warden is a harness for the agent, not a gate for the user. It watches every tool call, tool result, and reply, asks Jev small typed questions about them, and acts through the agent's own context — a held call, a steer message, a compressed output — rather than through dialogs. Jev decides; code applies the decision; the LLM is never asked to judge itself. Everything warden does is visible in the trace panel, and nothing is rewritten in your session file.
+
+Three jobs, in order of maturity:
+
+| Pillar | What it means | Status |
+| --- | --- | --- |
+| **Security** | Irreversible or off-task actions are held with a reason the agent can act on; credential files, force pushes, destructive SQL, and remote-script execution are caught offline; secrets are redacted before anything leaves the machine. Next: injected instructions inside tool output (web pages, issues, files) flagged and quarantined; insecure patterns in written code steered. | built · extending |
+| **Deslopify** | Stubs, placeholders, filler, and restating comments in written code earn a scored nudge; the agent fixes them on the next turn. Next: per-symptom scores instead of one quality number, and wordy or AI-flavoured replies scored against an audience setting. | built for code · prose planned |
+| **Context saving** | Jev judges which tool outputs are worth keeping; code compresses them. Only at moments that cannot cost a prompt-cache miss: when an output arrives (before it enters the cache), when the cache is measurably cold, or when Pi compacts anyway. Works alongside prompt-cache optimizers because it never touches the system prompt or a warm prefix. | planned |
+
 ## Why a coding agent needs this
 
 Agents are good at picking the next command and bad at noticing when that command is out of proportion to the request. Pattern lists catch `rm -rf /` and force pushes; they cannot tell `db:reset` when you asked for a reset from `db:reset` when you asked for a column. A generative model can, but a second LLM call per tool call is slow and expensive. Jev is a System One model: it returns calibrated probabilities instead of text, in a quarter of a second, for a fraction of a cent. That makes it cheap enough to sit in front of **every** guarded call:
