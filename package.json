@@ -1,0 +1,80 @@
+{
+  "name": "pi-warden",
+  "version": "0.1.0",
+  "description": "Harness guardrails for Pi built on pi-typesafe: pattern checks plus Jev judgments flag irreversible or off-task bash, write, and edit calls before they run.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Ryan Gapac",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DevMortimer/pi-warden.git"
+  },
+  "homepage": "https://github.com/DevMortimer/pi-warden#readme",
+  "bugs": "https://github.com/DevMortimer/pi-warden/issues",
+  "funding": "https://github.com/sponsors/DevMortimer",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "typesafe",
+    "jev",
+    "guardrails",
+    "harness-engineering"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./extension": {
+      "types": "./dist/extension.d.ts",
+      "import": "./dist/extension.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ],
+    "image": "https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:live": "node --env-file-if-exists=.env scripts/live-smoke.mjs",
+    "dev:pi": "node scripts/dev-pi.mjs",
+    "check": "npm run typecheck && npm test && npm run build",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "pi-typesafe": "^0.2.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.85.1 <1",
+    "@earendil-works/pi-tui": ">=0.85.1 <1"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "^0.85.1",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.23.13",
+    "typescript": "^6.0.0"
+  }
+}
