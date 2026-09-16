@@ -1,9 +1,10 @@
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
 import type { ProseVerdict } from "./prose.js";
+import type { RunawayVerdict } from "./runaway.js";
 import type { Attempt, StuckVerdict } from "./stuck.js";
 
-export type GuardName = "action" | "stuck" | "done" | "prose" | "security" | "context";
+export type GuardName = "action" | "stuck" | "done" | "prose" | "security" | "context" | "runaway";
 
 export interface TraceEntry {
   at: number;
@@ -79,6 +80,16 @@ export function doneDetails(verdict: DoneVerdict, finalMessage: string, told?: s
   if (verdict.judgment) lines.push(`jev: claims done ${percent(verdict.judgment.claimsDone)} · claims verified ${percent(verdict.judgment.claimsVerified)} · checks apply ${percent(verdict.judgment.verificationApplies)} · ${verdict.judgment.outcome} · ${verdict.judgment.model} · ${verdict.judgment.elapsedMs} ms`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
+  if (told) lines.push(`agent told: ${clip(told, 400)}`);
+  return lines;
+}
+
+export function runawayDetails(verdict: RunawayVerdict, told: string | undefined, recovering: boolean): string[] {
+  const lines = [
+    `repeated: ${clip(verdict.block, 200)}`,
+    `${verdict.count} times in ${verdict.chars} chars of ${verdict.kind}; signal: ${verdict.signal === "block" ? "identical paragraph" : "recurring trailing phrase"}`,
+    recovering ? "run stopped; one follow-up turn started" : "run stopped; not restarted",
+  ];
   if (told) lines.push(`agent told: ${clip(told, 400)}`);
   return lines;
 }

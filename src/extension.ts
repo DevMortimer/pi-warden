@@ -19,12 +19,13 @@ import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
 import { redact } from "./redact.js";
+import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
 import type { PanelController, PanelUi } from "./panel.js";
-import { actionDetails, doneDetails, proseDetails, stuckDetails, Trace } from "./trace.js";
+import { actionDetails, doneDetails, proseDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName } from "./trace.js";
 import { proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
 
@@ -33,8 +34,8 @@ export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to a
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
 
-interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; slop: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; errors: number }
-const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, slop: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, errors: 0 });
+interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; slop: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number }
+const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, slop: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0 });
 
 function latestUserPrompt(ctx: ExtensionContext): string | undefined {
   const entries = ctx.sessionManager.getBranch();
@@ -137,6 +138,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
+  const runaway = new RunawayMonitor();
+  // Runs stopped by the runaway guard for the current user prompt; the first one gets a recovery turn, later ones wait for the user.
+  let runawayStops = 0;
+  let pendingRunaway: { nudge: string; recover: boolean } | undefined;
   // Probed once per session, outside any tool_result handler; the footer under excerpts names this command.
   let searchTool: Promise<SearchTool> | undefined;
 
@@ -204,6 +209,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     doneNudged = false;
     prose.reset();
     ledger.reset();
+    runaway.reset();
+    runawayStops = 0;
+    pendingRunaway = undefined;
     searchTool = undefined;
     for (const symptom of Object.keys(slopCounts) as SlopSymptom[]) slopCounts[symptom] = 0;
     if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
@@ -213,7 +221,34 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (_event, ctx) => {
     attempts = new AttemptWindow(configFor(ctx).stuck.window);
     doneNudged = false;
+    runaway.reset();
+    runawayStops = 0;
+    pendingRunaway = undefined;
     actionGuard.turnEnd();
+  });
+
+  // Each assistant message is judged on its own; Pi does not forward the stream's own "start" event, so this is the reset.
+  pi.on("message_start", async event => {
+    if (event.message.role === "assistant") runaway.reset();
+  });
+
+  // Per token this only appends to a buffer; every 256 characters the buffer is checked for identical blocks, with code only.
+  pi.on("message_update", async (event, ctx) => {
+    const kind = runaway.feed(event.assistantMessageEvent);
+    if (!kind || runaway.stopped) return;
+    const config = configFor(ctx);
+    if (!config.enabled || !config.runaway.enabled) return;
+    const verdict = runaway.check(kind, config.runaway);
+    if (!verdict) return;
+    stats.runaway++;
+    runawayStops++;
+    const recover = config.runaway.recover && runawayStops === 1;
+    const nudge = runawayNudge(verdict, recover);
+    pendingRunaway = { nudge, recover };
+    record(ctx, config, "runaway", formatRunaway(verdict, recover, config.widget.runaway), runawayDetails(verdict, nudge, recover));
+    if (ctx.hasUI) ctx.ui.notify(`warden · runaway: the same ${verdict.kind} block repeated ${verdict.count} times in ${verdict.chars} chars; run stopped${recover ? " (agent gets one follow-up turn)" : " (not restarted: second time for this prompt)"}`, "error");
+    // Interactive Pi restores the user's queued messages to the editor before aborting; the follow-up is queued in agent_end, after that.
+    ctx.abort();
   });
 
   // Each low-level run collects its own evidence of changes and checks.
@@ -394,6 +429,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    if (pendingRunaway) {
+      const { nudge, recover } = pendingRunaway;
+      pendingRunaway = undefined;
+      // A follow-up queued here continues the run once the aborted message is in place; without recovery the note is appended only.
+      if (recover) pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content: nudge, display: true }, { deliverAs: "followUp", triggerTurn: true });
+      else pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content: nudge, display: true }, { triggerTurn: false });
+      return;
+    }
     const finalMessage = finalAssistantText(event.messages);
     const judge = judgeFor(config);
     if (!finalMessage || !judge) return;
@@ -462,11 +505,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const key = resolveApiKey();
           const source = consentSource(config);
           const usage = client?.getUsage();
-          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.context.enabled && "context"].filter(Boolean).join(", ");
+          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.context.enabled && "context", config.runaway.enabled && "runaway"].filter(Boolean).join(", ");
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
-            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,
-            `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; failOpen ${config.action.failOpen}.`,
+            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,
+            `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",

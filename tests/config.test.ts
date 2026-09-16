@@ -43,7 +43,9 @@ test("user overrides accept valid values and ignore junk", () => {
     stuck: { minFailures: 20, window: 5, sameStrategy: 0.9, nudge: false },
     done: { claimsDone: 0.5 },
     slop: { placeholder: 0.6, prose: { audience: "plain", trend: 9, threshold: 2 } },
+    runaway: { repeats: 1, thinkingRepeats: 0.5, minChars: 100, recover: false },
   });
+  assert.deepEqual(config.runaway, { enabled: true, repeats: 2, thinkingRepeats: 10, minChars: 100, recover: false }, "one occurrence is not a repeat; a fraction is junk");
   assert.equal(config.typesafe, true);
   assert.equal(config.mode, "advise");
   assert.equal(config.enabled, true, "non-boolean falls back");
@@ -113,6 +115,7 @@ test("regression: hostile config files cannot leave a guard's `.enabled` derefer
     { path: ["action"], raw: [undefined, null, false, "x", [], { enabled: null }] },
     { path: ["stuck"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
     { path: ["done"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
+    { path: ["runaway"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
     { path: ["slop"], raw: hostile },
     { path: ["widget"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
   ] as const;

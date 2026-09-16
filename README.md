@@ -1,6 +1,6 @@
 # pi-warden
 
-A second pair of eyes for [Pi](https://pi.dev) that makes the agent smarter instead of interrupting you. Before the agent runs a `bash`, `write`, or `edit` call (or a shell command through [context-mode](https://www.npmjs.com/package/context-mode)'s `ctx_execute`), pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" is held, and the agent is told why so it re-plans or asks you in chat. More guards watch the run: a **stuck-loop** detector, a **done-check** for completion claims that no test backed up, **slop** notes for stubs, filler, and padded replies, a check for **injected instructions** in tool output, and a **context saver** that replaces repeated tool results with a note, keeps exact failing tests and errors from large runner output, and points recalls at a search instead of a whole-file read. Every verdict lands on a status line above the editor; **click it** (fullscreen mode), press `ctrl+shift+w`, or run `/warden trace` to open a live trace sidebar with the scores, the reasons, and exactly what the agent was told. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
+A second pair of eyes for [Pi](https://pi.dev) that makes the agent smarter instead of interrupting you. Before the agent runs a `bash`, `write`, or `edit` call (or a shell command through [context-mode](https://www.npmjs.com/package/context-mode)'s `ctx_execute`), pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" is held, and the agent is told why so it re-plans or asks you in chat. More guards watch the run: a **stuck-loop** detector, a **runaway** guard that stops a reply repeating the same block over and over, a **done-check** for completion claims that no test backed up, **slop** notes for stubs, filler, and padded replies, a check for **injected instructions** in tool output, and a **context saver** that replaces repeated tool results with a note, keeps exact failing tests and errors from large runner output, and points recalls at a search instead of a whole-file read. Every verdict lands on a status line above the editor; **click it** (fullscreen mode), press `ctrl+shift+w`, or run `/warden trace` to open a live trace sidebar with the scores, the reasons, and exactly what the agent was told. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
 
 ![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
@@ -63,6 +63,10 @@ A `TYPESAFE_API_KEY` environment variable takes precedence over the stored key. 
 ### Stuck detector (`tool_result`)
 
 Keeps the last 12 tool results for the current prompt. When the latest result failed and at least 3 failures have accumulated, it first checks for exact repeats offline (same call, same output with timings and addresses normalised). Otherwise one Jev request judges the sequence: `same_strategy` (Noul), `approach_change` (Score: identical / cosmetic / meaningfully different), `progress` (Noul). Same-strategy ≥ 0.7 counts as stuck: you get a notification, and with `nudge: true` (default) the agent gets a steer message asking for a new hypothesis or a blocker report. At most one Jev check per 3 results.
+
+### Runaway guard (`message_update`)
+
+A model that degenerates mid-reply repeats the same lines over and over — *"PR green. Merge. Executing:"* followed by the same command block, thirty times, and no tool call — until the token limit or you press Esc. Nothing else stops it, because no tool runs and no turn ends. pi-warden reads the stream as it arrives: per token it only appends to a buffer; every 256 characters it counts identical paragraphs (normalised, at least 24 characters) and checks whether the text ends with one unit repeated back to back. When a block repeats `repeats` times (4) in the reply, or `thinkingRepeats` times (10) in thinking, the run is aborted and you get an error-level notification. Code only: nothing is sent anywhere, so this works without TypeSafe consent. With `recover: true` (default) the agent then gets one follow-up turn, shown in the transcript, that names the repeat and asks for the one next step — call the tool, or answer in three sentences, or ask you; a second runaway for the same prompt is stopped and left for you. Calibrated on 43,000 local assistant messages: ordinary replies repeat a paragraph twice at most, thinking up to seven times while drafting code, and the one runaway repeated its block 28 times; the guard stopped only that one, at half its length.
 
 ### Done-check (`agent_end`)
 
@@ -141,11 +145,12 @@ Templates in `config.widget` control the text. Segments are separated by ` · `;
   "done": "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
   "prose": "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}",
   "security": "warden · security · {tool} · injection {injection} · exfiltration {exfiltration} · {status}",
-  "context": "warden · context · {tool} · {retention} · saved {bytesSaved} bytes"
+  "context": "warden · context · {tool} · {retention} · saved {bytesSaved} bytes",
+  "runaway": "warden · runaway · {kind} · {count}× repeated · {chars} chars · {signal} · {status}"
 }
 ```
 
-Tokens — action: `tool level source irreversible offTask scope approved slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time`; prose: `wordy cliches jargon status reasons model ms flags time`; stuck: `failures sameStrategy approachChange progress status source reasons model ms flags time`; done: `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`. Security tokens: `tool injection exfiltration status`; context tokens: `tool retention bytesSaved`. A minimal line: `"action": "⚔ {tool} {level} · {irreversible}/{offTask}"`. Set `"enabled": false` to hide the line (the trace and panel keep working); `"shortcut": ""` disables the keybinding.
+Tokens — action: `tool level source irreversible offTask scope approved slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time`; prose: `wordy cliches jargon status reasons model ms flags time`; stuck: `failures sameStrategy approachChange progress status source reasons model ms flags time`; done: `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`. Security tokens: `tool injection exfiltration status`; context tokens: `tool retention bytesSaved`; runaway tokens: `kind count chars signal block status time`. A minimal line: `"action": "⚔ {tool} {level} · {irreversible}/{offTask}"`. Set `"enabled": false` to hide the line (the trace and panel keep working); `"shortcut": ""` disables the keybinding.
 
 ## Configuration
 
@@ -169,6 +174,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
   "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
   "security": { "enabled": true, "threshold": 0.7 },
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7 },
+  "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
   "slop": {
     "enabled": true,
     "threshold": 0.7,
@@ -183,7 +189,7 @@ A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides (f
 
 ## Data handling
 
-- With consent, each guarded call sends to `https://api.typesafe.ai`: your latest prompt (truncated to 1500 characters), the tool name, the command (truncated to 2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample for `write`, and the first three edit pairs (400 characters each) for `edit`. The stuck detector sends the last 12 tool calls (300 characters each) with 400-character output tails; the done-check and the prose check send the agent's final message (2000 and 2500 characters) with the run's check commands and the audience description. Scope and retention requests also carry up to eight prior user/assistant text messages (750 redacted characters each). Output checks send a redacted head/tail sample up to 6000 characters plus size, line counts, and tool name; the format question uses that same sample. Duplicate detection sends nothing. No unrelated files or telemetry.
+- With consent, each guarded call sends to `https://api.typesafe.ai`: your latest prompt (truncated to 1500 characters), the tool name, the command (truncated to 2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample for `write`, and the first three edit pairs (400 characters each) for `edit`. The stuck detector sends the last 12 tool calls (300 characters each) with 400-character output tails; the done-check and the prose check send the agent's final message (2000 and 2500 characters) with the run's check commands and the audience description. Scope and retention requests also carry up to eight prior user/assistant text messages (750 redacted characters each). Output checks send a redacted head/tail sample up to 6000 characters plus size, line counts, and tool name; the format question uses that same sample. Duplicate detection and the runaway guard send nothing. No unrelated files or telemetry.
 - Obvious credentials in the action (`Authorization` headers, `TOKEN=`/`SECRET=` assignments, `sk-`, `ghp_`, `AKIA`, JWTs, URL passwords, PEM blocks) are replaced with `[redacted]` before sending. This is best-effort; do not rely on it for prompts that contain secrets.
 - Text returned or steered to the agent names the tool, the reasons, and the scores, not the command text. UI errors never include upstream response bodies or keys.
 - Judgments are model output. Thresholds are yours to tune; a hold is information for the agent and for you, not a verdict on either.
@@ -212,7 +218,7 @@ steerReason(verdict, { canApprove: true });   // the text the agent receives for
 
 `evaluateAction` judges one call. What spans calls in a session, the hold → reply → retry approval and the batched judging of sibling tool calls, is `ActionGuard`: `inspect(call, conversation, options)` returns the same `Verdict`, `hold(task)` records a hold, `turnEnd()` and `reset()` follow Pi's turn and session.
 
-Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`, `formatVerdict`, the question sets, the stuck detector (`AttemptWindow`, `makeAttempt`, `evaluateStuck`, `stuckNudge`), the done-check (`classifyToolResult`, `recordOutcome`, `needsDoneCheck`, `evaluateDone`, `doneNudge`), and the config helpers.
+Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`, `formatVerdict`, the question sets, the stuck detector (`AttemptWindow`, `makeAttempt`, `evaluateStuck`, `stuckNudge`), the runaway guard (`RunawayMonitor`, `findRepeats`, `runawayNudge`), the done-check (`classifyToolResult`, `recordOutcome`, `needsDoneCheck`, `evaluateDone`, `doneNudge`), and the config helpers.
 
 ## Development
 

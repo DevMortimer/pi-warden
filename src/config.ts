@@ -85,6 +85,18 @@ export interface ContextConfig {
   formatConfidence: number;
 }
 
+export interface RunawayConfig {
+  enabled: boolean;
+  /** Identical text paragraphs in one streaming reply before the run is stopped. Ordinary replies repeat a paragraph twice at most. */
+  repeats: number;
+  /** The same limit for thinking, where code drafting repeats paragraphs legitimately. */
+  thinkingRepeats: number;
+  /** Characters streamed before the first check. */
+  minChars: number;
+  /** After stopping, start one follow-up turn that names the repeat and asks for the one next step; once per user prompt. */
+  recover: boolean;
+}
+
 export type RecallTool = "auto" | "rg" | "ag" | "ugrep" | "git-grep" | "grep" | "select-string" | "findstr" | "none";
 const RECALL_TOOLS: readonly RecallTool[] = ["auto", "rg", "ag", "ugrep", "git-grep", "grep", "select-string", "findstr", "none"];
 
@@ -115,6 +127,7 @@ export interface WardenConfig {
   slop: SlopGuardConfig;
   security: SecurityConfig;
   context: ContextConfig;
+  runaway: RunawayConfig;
   /** The status line above the editor and the trace panel. */
   widget: WidgetConfig;
   /** Show steer messages in the transcript. They are always visible in the trace panel. */
@@ -123,7 +136,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 3;
+export const CONFIG_SCHEMA = 4;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -146,6 +159,7 @@ export function defaultConfig(): WardenConfig {
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7 },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7 },
+    runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     widget: defaultWidgetConfig(),
     steerVisible: false,
   };
@@ -229,6 +243,18 @@ function applyStuck(base: StuckGuardConfig, raw: unknown): StuckGuardConfig {
   };
 }
 
+function applyRunaway(base: RunawayConfig, raw: unknown): RunawayConfig {
+  if (!isObject(raw)) return base;
+  return {
+    enabled: boolean(raw.enabled, base.enabled),
+    // One occurrence is not a repeat, so the floor is 2.
+    repeats: Math.max(2, positiveInteger(raw.repeats, base.repeats)),
+    thinkingRepeats: Math.max(2, positiveInteger(raw.thinkingRepeats, base.thinkingRepeats)),
+    minChars: positiveInteger(raw.minChars, base.minChars),
+    recover: boolean(raw.recover, base.recover),
+  };
+}
+
 function applyDone(base: DoneGuardConfig, raw: unknown): DoneGuardConfig {
   if (!isObject(raw)) return base;
   return { enabled: boolean(raw.enabled, base.enabled), claimsDone: probability(raw.claimsDone, base.claimsDone), nudge: boolean(raw.nudge, base.nudge) };
@@ -266,6 +292,7 @@ function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
     prose: template(raw.prose, base.prose),
     security: template(raw.security, base.security),
     context: template(raw.context, base.context),
+    runaway: template(raw.runaway, base.runaway),
   };
 }
 
@@ -278,8 +305,9 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "context"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "context" | "runaway"> {
   return {
+    runaway: applyRunaway(base.runaway, raw.runaway),
     action: applyAction(base.action, raw.action, timeoutMs),
     stuck: applyStuck(base.stuck, raw.stuck),
     done: applyDone(base.done, raw.done),

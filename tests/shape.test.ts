@@ -24,8 +24,20 @@ test("regression: the live crash shape (slop without prose) and older module sha
   assert.equal(result.config.action.enabled, true, "present sections keep working");
   // The exact expression that threw in Ryan's sessions.
   assert.doesNotThrow(() => result.config.slop.enabled && result.config.slop.prose.enabled && 300 >= result.config.slop.prose.minChars);
-  assert.match(shapeWarning(result.missing, undefined), /security, context, slop\.prose .* schema pre-3, extension expects 3.*restart Pi/);
+  assert.match(shapeWarning(result.missing, undefined), /security, context, slop\.prose .* schema pre-3, extension expects 4.*restart Pi/);
   const empty = completeConfig(undefined);
-  assert.ok(empty.missing.length >= 7);
+  assert.ok(empty.missing.length >= 8);
   assert.equal(empty.config.enabled, true);
+});
+
+test("a 0.7 config module without the runaway section disables that guard and renders the default widget line", () => {
+  const older = defaultConfig() as unknown as Record<string, unknown>;
+  delete older.runaway;
+  const widget = { ...(older.widget as Record<string, unknown>) };
+  delete widget.runaway;
+  older.widget = widget;
+  const result = completeConfig(older as never);
+  assert.deepEqual(result.missing, ["runaway"]);
+  assert.equal(result.config.runaway.enabled, false);
+  assert.equal(result.config.widget.runaway, defaultConfig().widget.runaway);
 });

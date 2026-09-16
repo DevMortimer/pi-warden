@@ -1,6 +1,7 @@
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
 import type { ProseVerdict } from "./prose.js";
+import type { RunawayVerdict } from "./runaway.js";
 import type { StuckVerdict } from "./stuck.js";
 
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
@@ -19,6 +20,7 @@ export interface WidgetConfig {
   prose: string;
   security: string;
   context: string;
+  runaway: string;
 }
 
 export const DEFAULT_TEMPLATES = {
@@ -28,6 +30,7 @@ export const DEFAULT_TEMPLATES = {
   prose: "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}",
   security: "warden · security · {tool} · injection {injection} · exfiltration {exfiltration} · {status}",
   context: "warden · context · {tool} · {retention} · saved {bytesSaved} bytes",
+  runaway: "warden · runaway · {kind} · {count}× repeated · {chars} chars · {signal} · {status}",
 } as const;
 
 export function defaultWidgetConfig(): WidgetConfig {
@@ -111,6 +114,19 @@ export function stuckTokens(verdict: StuckVerdict, at = Date.now()): Tokens {
   };
 }
 
+export function runawayTokens(verdict: RunawayVerdict, recovering: boolean, at = Date.now()): Tokens {
+  return {
+    guard: "runaway",
+    time: time(at),
+    kind: verdict.kind,
+    count: String(verdict.count),
+    chars: String(verdict.chars),
+    signal: verdict.signal,
+    block: verdict.block,
+    status: recovering ? "stopped, recovering" : "stopped",
+  };
+}
+
 export function doneTokens(verdict: DoneVerdict, at = Date.now()): Tokens {
   return {
     guard: "done",
@@ -149,6 +165,7 @@ export function proseTokens(verdict: ProseVerdict, at = Date.now()): Tokens {
 export const TOKEN_NAMES = {
   security: ["tool", "injection", "exfiltration", "status"],
   context: ["tool", "retention", "bytesSaved"],
+  runaway: ["kind", "count", "chars", "signal", "block", "status", "time", "guard"],
   action: ["tool", "level", "source", "irreversible", "offTask", "scope", "approved", "slop", "slopStub", "slopComments", "slopDead", "slopHedging", "patterns", "reasons", "path", "model", "ms", "flags", "time", "guard"],
   prose: ["wordy", "cliches", "jargon", "status", "reasons", "model", "ms", "flags", "time", "guard"],
   stuck: ["failures", "sameStrategy", "approachChange", "progress", "status", "source", "reasons", "model", "ms", "flags", "time", "guard"],

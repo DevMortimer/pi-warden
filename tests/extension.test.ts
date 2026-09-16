@@ -557,6 +557,81 @@ test("stuck detection: exact repeats are caught offline, varied failures ask Jev
   assert.equal(networkCalls, 2, "a new prompt resets the window");
 });
 
+test("runaway guard: a reply that repeats its block is aborted mid-stream, recovers once per prompt, and needs no TypeSafe", async () => {
+  const aborts: number[] = [];
+  const ctx = context({ abort: () => { aborts.push(Date.now()); } });
+  const loop = "Stop. PR green. Merge. Executing:\n\n```bash\ngh pr merge 1234 --merge\n```\n\n";
+  const streamReply = async (text: string, kind = "text") => {
+    await fire("message_start", { message: { role: "assistant", content: [] } }, ctx);
+    await fire("message_update", { message: {}, assistantMessageEvent: { type: `${kind}_start`, contentIndex: 0 } }, ctx);
+    for (let index = 0; index < text.length && aborts.length === abortsBefore; index += 5) {
+      await fire("message_update", { message: {}, assistantMessageEvent: { type: `${kind}_delta`, contentIndex: 0, delta: text.slice(index, index + 5) } }, ctx);
+    }
+  };
+  let abortsBefore = 0;
+  await newPrompt("merge the PR once it is green", ctx);
+  await streamReply(loop.repeat(30));
+  assert.equal(aborts.length, 1, "the run is aborted before the loop finishes");
+  assert.equal(networkCalls, 0, "code only: nothing is sent to TypeSafe");
+  assert.match(widgets.at(-1)!.at(-1)!, /warden · runaway · text · \d+× repeated · \d+ chars · block · stopped, recovering/);
+  assert.match(notices.at(-1)!.text, /warden · runaway: the same text block repeated \d+ times .* run stopped \(agent gets one follow-up turn\)/);
+  assert.equal(notices.at(-1)!.level, "error");
+  assert.equal(sentMessages.length, 0, "the follow-up waits for agent_end so Pi can restore queued user messages first");
+  // Pi ends the aborted run; the follow-up queued here starts the recovery turn.
+  await fire("agent_end", { messages: [{ role: "user", content: "merge the PR once it is green" }, { role: "assistant", content: [{ type: "text", text: loop.repeat(6) }], stopReason: "aborted" }] }, ctx);
+  assert.equal(sentMessages.length, 1);
+  assert.deepEqual(sentMessages[0]!.options, { deliverAs: "followUp", triggerTurn: true });
+  assert.equal((sentMessages[0]!.message as { display?: boolean }).display, true, "the user sees why the agent restarted");
+  assert.match(sentMessages[0]!.message.content, /pi-warden stopped your reply: the same text block repeated \d+ times \(".*"\) and no tool was called\. Do not restate/);
+
+  // The recovery turn loops again: stop it, but do not restart a second time for this prompt.
+  abortsBefore = 1;
+  await streamReply(loop.repeat(30));
+  assert.equal(aborts.length, 2);
+  assert.match(widgets.at(-1)!.at(-1)!, /runaway · text .* stopped$/);
+  assert.match(notices.at(-1)!.text, /not restarted: second time for this prompt/);
+  await fire("agent_end", { messages: [{ role: "assistant", content: [{ type: "text", text: loop.repeat(6) }], stopReason: "aborted" }] }, ctx);
+  assert.equal(sentMessages.length, 2);
+  assert.deepEqual(sentMessages[1]!.options, { triggerTurn: false }, "appended as context for the next user prompt, no new turn");
+  assert.match(sentMessages[1]!.message.content, /not restarted\. Wait for the user\./);
+
+  // Ordinary long replies stream through untouched; a new prompt makes recovery available again.
+  abortsBefore = 2;
+  await newPrompt("explain the merge", ctx);
+  const prose = Array.from({ length: 40 }, (_, index) => `Paragraph ${index} explains one distinct part of the merge process in its own words.`).join("\n\n");
+  await streamReply(prose);
+  assert.equal(aborts.length, 2, "distinct paragraphs are not a runaway");
+  await streamReply(loop.repeat(30));
+  assert.equal(aborts.length, 3);
+  assert.match(widgets.at(-1)!.at(-1)!, /stopped, recovering$/);
+  await fire("agent_end", { messages: [{ role: "assistant", content: [{ type: "text", text: loop }], stopReason: "aborted" }] }, ctx);
+  assert.equal(sentMessages.length, 3);
+  assert.deepEqual(sentMessages[2]!.options, { deliverAs: "followUp", triggerTurn: true });
+
+  // Thinking has a higher threshold; disabling the guard or recovery is honoured.
+  abortsBefore = 3;
+  await newPrompt("think about it", ctx);
+  await streamReply(loop.repeat(8), "thinking");
+  assert.equal(aborts.length, 3, "8 repeats in thinking is drafting, not a runaway");
+  await streamReply(loop.repeat(30), "thinking");
+  assert.equal(aborts.length, 4);
+  assert.match(widgets.at(-1)!.at(-1)!, /runaway · thinking · \d+× repeated/);
+  await fire("agent_end", { messages: [], stopReason: "aborted" }, ctx);
+  abortsBefore = 4;
+  await writeFile(configPath(), JSON.stringify({ runaway: { recover: false } }));
+  await newPrompt("merge again", ctx);
+  await streamReply(loop.repeat(30));
+  assert.equal(aborts.length, 5);
+  assert.match(widgets.at(-1)!.at(-1)!, /stopped$/);
+  await fire("agent_end", { messages: [] }, ctx);
+  assert.deepEqual(sentMessages.at(-1)!.options, { triggerTurn: false });
+  abortsBefore = 5;
+  await writeFile(configPath(), JSON.stringify({ runaway: { enabled: false } }));
+  await newPrompt("merge once more", ctx);
+  await streamReply(loop.repeat(30));
+  assert.equal(aborts.length, 5, "disabled: the stream is left alone");
+});
+
 test("done-check: an unverified completion claim after file changes gets one follow-up per prompt", async () => {
   await grantConsent();
   await newPrompt("fix the parser bug");
