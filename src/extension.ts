@@ -376,7 +376,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (config.done.enabled) recordOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
     const verdict = await stuckCheck;
     if (!verdict) return patch;
-    if (verdict.error) noteError(ctx, verdict.error, undefined);
+    if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     if (verdict.source === "repeat" && !verdict.stuck) return patch;
     const nudge = verdict.stuck && config.stuck.nudge ? stuckNudge(verdict) : undefined;
     record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
@@ -404,7 +404,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (proseCheck) {
       stats.proseChecks++;
       const verdict = await proseCheck;
-      if (verdict.error) noteError(ctx, verdict.error, undefined);
+      if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
       else prose.record(verdict.flagged);
       const due = verdict.error ? [] : prose.due(config.slop.prose.trend);
       const nudge = due.length ? proseNudge(due, config.slop.prose.audience, prose.counts) : undefined;
@@ -418,7 +418,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!doneCheck) return;
     stats.doneChecks++;
     const verdict = await doneCheck;
-    if (verdict.error) noteError(ctx, verdict.error, undefined);
+    if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     const nudge = verdict.unverified && config.done.nudge ? doneNudge(verdict) : undefined;
     record(ctx, config, "done", formatDone(verdict, config.widget.done), doneDetails(verdict, finalMessage, nudge));
     if (!verdict.unverified) return;

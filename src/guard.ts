@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { choice, noul, score, TypeSafeIntegrationError } from "pi-typesafe";
-import type { IntegrationErrorCode, TypeSafe } from "pi-typesafe";
+import { choice, noul, score } from "pi-typesafe";
+import type { IntegrationErrorCode } from "pi-typesafe";
 import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
+import { askJev } from "./jev.js";
+import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 import { commandOf } from "./tools.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
@@ -92,8 +94,7 @@ export interface Verdict {
   errorCode?: IntegrationErrorCode;
 }
 
-/** The subset of pi-typesafe's client the guard needs; tests supply a fake. */
-export type Judge = Pick<TypeSafe, "evaluate">;
+export type { Judge } from "./jev.js";
 
 export interface EvaluateOptions {
   config: ActionGuardConfig;
@@ -371,11 +372,6 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
   };
 }
 
-function combineSignals(timeoutMs: number, signal?: AbortSignal): AbortSignal {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
-}
-
 const percent = (value: number) => value.toFixed(2);
 const APPROVAL_THRESHOLD = 0.7;
 
@@ -413,79 +409,76 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   if (!judge) return { level, source: "pattern", summary, patterns, reasons };
 
-  try {
-    const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context });
-    const result = await judge.evaluate(request, { signal: combineSignals(config.timeoutMs, options.signal) });
-    const answers = result.answers as typeof result.answers & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk", { type: string; noul?: number }>>;
-    const judgment: Judgment = {
-      irreversible: answers.irreversible.noul,
-      offTask: answers.off_task.noul,
-      scope: answers.scope.choice,
-      scopeConfidence: answers.scope.confidence,
-      model: result.model,
-      elapsedMs: result.elapsedMs,
-    };
-    if (typeof answers.approved?.noul === "number") judgment.approved = answers.approved.noul;
-    if (typeof answers.mutates?.noul === "number") judgment.mutates = answers.mutates.noul;
-    if (deferSensitive) {
-      for (const hit of patterns) {
-        if (hit.severity !== "sensitive") continue;
-        if ((judgment.mutates ?? 1) >= 0.5) { level = higher(level, "warn"); reasons.push(`${hit.severity}: ${hit.label}`); }
-        else reasons.push(`${hit.label} (read-only, not warned)`);
-      }
-    }
-    // write/edit always change something; a command that Jev judges read-only is warned about, never held, for scope alone.
-    const canChange = summary.tool === "write" || summary.tool === "edit" || (judgment.mutates ?? 1) >= 0.5;
-    if (judgment.irreversible >= config.irreversible.confirm) {
-      level = higher(level, "confirm");
-      reasons.push(`irreversible ${percent(judgment.irreversible)}`);
-    } else if (judgment.irreversible >= config.irreversible.warn) {
-      level = higher(level, "warn");
-      reasons.push(`possibly irreversible ${percent(judgment.irreversible)}`);
-    }
-    if (judgment.offTask >= config.offTask.confirm && judgment.scope === "unrelated" && canChange) {
-      level = higher(level, "confirm");
-      reasons.push(`off-task ${percent(judgment.offTask)} (unrelated to the request)`);
-    } else if (judgment.offTask >= config.offTask.confirm && judgment.scope === "unrelated") {
-      level = higher(level, "warn");
-      reasons.push(`off-task ${percent(judgment.offTask)} (unrelated, but read-only: not held)`);
-    } else if (judgment.offTask >= config.offTask.warn && judgment.scope !== "unclear") {
-      level = higher(level, "warn");
-      reasons.push(`off-task ${percent(judgment.offTask)} (${judgment.scope.replace(/_/g, " ")})`);
-    }
-    if (options.security?.enabled && typeof answers.security_risk?.noul === "number") {
-      judgment.securityRisk = answers.security_risk.noul;
-      if (judgment.securityRisk >= options.security.threshold) {
-        level = higher(level, "warn");
-        reasons.push(`possible security weakness ${percent(judgment.securityRisk)} in written content`);
-      }
-    }
-    const verdict: Verdict = { level, source: "typesafe", summary, patterns, reasons, judgment };
-    if (options.slop?.enabled && SLOP_SYMPTOMS.every(symptom => typeof answers[`slop_${symptom}`]?.noul === "number")) {
-      verdict.slop = { stub: answers.slop_stub!.noul!, comments: answers.slop_comments!.noul!, dead: answers.slop_dead!.noul!, hedging: answers.slop_hedging!.noul! };
-      const flagged = SLOP_SYMPTOMS.filter(symptom => verdict.slop![symptom] >= options.slop!.threshold).sort((a, b) => verdict.slop![b] - verdict.slop![a]);
-      if (flagged.length) {
-        verdict.slopSymptoms = flagged;
-        verdict.slopReasons = flagged.map(symptom => `${SLOP_LABELS[symptom]} (${percent(verdict.slop![symptom])})`);
-      }
-    }
-    if (level === "confirm" && judgment.approved !== undefined && judgment.approved >= APPROVAL_THRESHOLD) {
-      verdict.level = "allow";
-      verdict.approvedByUser = true;
-      verdict.reasons = [`user approved in the latest message (${percent(judgment.approved)})`, ...reasons];
-    }
-    return verdict;
-  } catch (error) {
-    const known = error instanceof TypeSafeIntegrationError ? error : undefined;
-    const message = known?.message ?? "TypeSafe request failed.";
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context });
+  const result = await askJev(judge, request, { timeoutMs: config.timeoutMs, signal: options.signal });
+  if (!result.ok) {
     if (!config.failOpen) {
       level = higher(level, "confirm");
       reasons.push("TypeSafe unavailable and failOpen is false");
     } else {
       reasons.push("TypeSafe unavailable; allowed by failOpen");
     }
-    return { level, source: "error", summary, patterns, reasons, error: message, ...(known ? { errorCode: known.code } : {}) };
+    return { level, source: "error", summary, patterns, reasons, error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   }
+  const answers = result.answers as typeof result.answers & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk", { type: string; noul?: number }>>;
+  const judgment: Judgment = {
+    irreversible: answers.irreversible.noul,
+    offTask: answers.off_task.noul,
+    scope: answers.scope.choice,
+    scopeConfidence: answers.scope.confidence,
+    model: result.model,
+    elapsedMs: result.elapsedMs,
+  };
+  if (typeof answers.approved?.noul === "number") judgment.approved = answers.approved.noul;
+  if (typeof answers.mutates?.noul === "number") judgment.mutates = answers.mutates.noul;
+  if (deferSensitive) {
+    for (const hit of patterns) {
+      if (hit.severity !== "sensitive") continue;
+      if ((judgment.mutates ?? 1) >= 0.5) { level = higher(level, "warn"); reasons.push(`${hit.severity}: ${hit.label}`); }
+      else reasons.push(`${hit.label} (read-only, not warned)`);
+    }
+  }
+  // write/edit always change something; a command that Jev judges read-only is warned about, never held, for scope alone.
+  const canChange = summary.tool === "write" || summary.tool === "edit" || (judgment.mutates ?? 1) >= 0.5;
+  if (judgment.irreversible >= config.irreversible.confirm) {
+    level = higher(level, "confirm");
+    reasons.push(`irreversible ${percent(judgment.irreversible)}`);
+  } else if (judgment.irreversible >= config.irreversible.warn) {
+    level = higher(level, "warn");
+    reasons.push(`possibly irreversible ${percent(judgment.irreversible)}`);
+  }
+  if (judgment.offTask >= config.offTask.confirm && judgment.scope === "unrelated" && canChange) {
+    level = higher(level, "confirm");
+    reasons.push(`off-task ${percent(judgment.offTask)} (unrelated to the request)`);
+  } else if (judgment.offTask >= config.offTask.confirm && judgment.scope === "unrelated") {
+    level = higher(level, "warn");
+    reasons.push(`off-task ${percent(judgment.offTask)} (unrelated, but read-only: not held)`);
+  } else if (judgment.offTask >= config.offTask.warn && judgment.scope !== "unclear") {
+    level = higher(level, "warn");
+    reasons.push(`off-task ${percent(judgment.offTask)} (${judgment.scope.replace(/_/g, " ")})`);
+  }
+  if (options.security?.enabled && typeof answers.security_risk?.noul === "number") {
+    judgment.securityRisk = answers.security_risk.noul;
+    if (judgment.securityRisk >= options.security.threshold) {
+      level = higher(level, "warn");
+      reasons.push(`possible security weakness ${percent(judgment.securityRisk)} in written content`);
+    }
+  }
+  const verdict: Verdict = { level, source: "typesafe", summary, patterns, reasons, judgment };
+  if (options.slop?.enabled && SLOP_SYMPTOMS.every(symptom => typeof answers[`slop_${symptom}`]?.noul === "number")) {
+    verdict.slop = { stub: answers.slop_stub!.noul!, comments: answers.slop_comments!.noul!, dead: answers.slop_dead!.noul!, hedging: answers.slop_hedging!.noul! };
+    const flagged = SLOP_SYMPTOMS.filter(symptom => verdict.slop![symptom] >= options.slop!.threshold).sort((a, b) => verdict.slop![b] - verdict.slop![a]);
+    if (flagged.length) {
+      verdict.slopSymptoms = flagged;
+      verdict.slopReasons = flagged.map(symptom => `${SLOP_LABELS[symptom]} (${percent(verdict.slop![symptom])})`);
+    }
+  }
+  if (level === "confirm" && judgment.approved !== undefined && judgment.approved >= APPROVAL_THRESHOLD) {
+    verdict.level = "allow";
+    verdict.approvedByUser = true;
+    verdict.reasons = [`user approved in the latest message (${percent(judgment.approved)})`, ...reasons];
+  }
+  return verdict;
 }
 
 /** Offline stand-in for the approval question when TypeSafe is not available. */

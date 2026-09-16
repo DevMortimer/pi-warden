@@ -1,10 +1,12 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { choice, noul, TypeSafeIntegrationError } from "pi-typesafe";
+import { choice, noul } from "pi-typesafe";
 import type { IntegrationErrorCode } from "pi-typesafe";
 import type { ContextConfig, SecurityConfig } from "./config.js";
-import type { Judge, TaskMessage } from "./guard.js";
+import type { TaskMessage } from "./guard.js";
+import { askJev } from "./jev.js";
+import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 
 export type Retention = "all" | "errors_and_summary" | "summary_only";
@@ -78,29 +80,27 @@ export async function evaluateOutput(tool: string, text: string, task: string | 
   const security = options.security.enabled && (contentTool || text.length >= 2048);
   const compress = options.context.enabled && options.compressible !== false && text.length >= options.context.tailMinChars;
   if (!text.trim() || options.signal?.aborted || !options.judge || (!security && !compress)) return verdict;
-  try {
-    const timeout = AbortSignal.timeout(options.timeoutMs);
-    const result = await options.judge.evaluate(buildOutputRequest(tool, text, task, security, compress, options.taskContext), { signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout });
-    const answers = result.answers;
-    if (security) {
-      verdict.injection = answers.injection!.noul;
-      verdict.exfiltration = answers.exfiltration!.noul;
-      verdict.suspicious = verdict.injection >= options.security.threshold || verdict.exfiltration >= options.security.threshold;
-    }
-    if (compress) {
-      const answer = answers.retention!;
-      // The gate is P(full output is not needed); an absent probability fails safe and keeps everything.
-      const keepAll = answer.probabilities?.all;
-      verdict.confidence = typeof keepAll === "number" ? 1 - keepAll : 0;
-      if (verdict.confidence >= options.context.confidence && (answer.choice === "errors_and_summary" || answer.choice === "summary_only")) verdict.retention = answer.choice;
-    }
-    verdict.model = result.model;
-    verdict.elapsedMs = result.elapsedMs;
-  } catch (error) {
-    verdict.retention = "all";
-    verdict.error = error instanceof TypeSafeIntegrationError ? error.message : "TypeSafe output check failed.";
-    if (error instanceof TypeSafeIntegrationError) verdict.errorCode = error.code;
+  const result = await askJev(options.judge, buildOutputRequest(tool, text, task, security, compress, options.taskContext), { timeoutMs: options.timeoutMs, signal: options.signal });
+  if (!result.ok) {
+    verdict.error = result.error;
+    if (result.errorCode) verdict.errorCode = result.errorCode;
+    return verdict;
   }
+  const answers = result.answers;
+  if (security) {
+    verdict.injection = answers.injection!.noul;
+    verdict.exfiltration = answers.exfiltration!.noul;
+    verdict.suspicious = verdict.injection >= options.security.threshold || verdict.exfiltration >= options.security.threshold;
+  }
+  if (compress) {
+    const answer = answers.retention!;
+    // The gate is P(full output is not needed); an absent probability fails safe and keeps everything.
+    const keepAll = answer.probabilities?.all;
+    verdict.confidence = typeof keepAll === "number" ? 1 - keepAll : 0;
+    if (verdict.confidence >= options.context.confidence && (answer.choice === "errors_and_summary" || answer.choice === "summary_only")) verdict.retention = answer.choice;
+  }
+  verdict.model = result.model;
+  verdict.elapsedMs = result.elapsedMs;
   return verdict;
 }
 

@@ -657,6 +657,24 @@ test("TypeSafe failures fail open with a warning and never leak the upstream bod
   assert.deepEqual(widgets.at(-1), ["warden · bash · typesafe error · allow"]);
 });
 
+test("regression: a budget error from an end-of-turn guard stops every later request, not only the action guard's", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, maxRequests: 1 }));
+  await newPrompt("explain the bug");
+  assert.equal(await toolCall("bash", { command: "npm test" }), undefined);
+  assert.equal(networkCalls, 1, "the single allowed request goes to the action guard");
+  // The second attempt is refused by the client before any network call: pi-typesafe raises a `budget` error.
+  await agentEnd("Great question! Let me walk you through it. ".repeat(6));
+  assert.equal(networkCalls, 1);
+  assert.match(notices.at(-1)!.text, /Pattern checks continue without TypeSafe for the rest of this session/, "the prose check's budget code reaches the session state");
+  assert.match(widgets.at(-1)!.at(-1)!, /warden · prose · typesafe error/);
+
+  notices.length = 0;
+  assert.equal(await toolCall("bash", { command: "npm run lint" }), undefined);
+  assert.equal(networkCalls, 1);
+  assert.deepEqual(notices, [], "no further TypeSafe error is reported");
+  assert.equal(widgets.at(-1)![0], "warden · bash · allow", "pattern checks only, no error flag");
+});
+
 test("PI_WARDEN_ENABLED=1 grants consent for headless runs", async () => {
   process.env.PI_WARDEN_ENABLED = "1";
   try {

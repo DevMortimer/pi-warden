@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { noul, score, TypeSafeIntegrationError } from "pi-typesafe";
+import { noul, score } from "pi-typesafe";
+import type { IntegrationErrorCode } from "pi-typesafe";
 import type { StuckGuardConfig } from "./config.js";
-import type { Judge } from "./guard.js";
+import { askJev } from "./jev.js";
+import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 import { commandOf, outputReportsFailure } from "./tools.js";
 import { DEFAULT_TEMPLATES, renderTemplate, stuckTokens } from "./widget.js";
@@ -34,6 +36,7 @@ export interface StuckVerdict {
   reasons: string[];
   judgment?: StuckJudgment;
   error?: string;
+  errorCode?: IntegrationErrorCode;
 }
 
 const CALL_LIMIT = 300;
@@ -166,24 +169,20 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   }
   if (!options.judge) return { stuck: false, source: "repeat", failures, reasons: [] };
   window.markJudged();
-  try {
-    const timeout = AbortSignal.timeout(options.timeoutMs);
-    const result = await options.judge.evaluate(buildStuckRequest(window.attempts, task), { signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout });
-    const judgment: StuckJudgment = {
-      sameStrategy: result.answers.same_strategy.noul,
-      approachChange: result.answers.approach_change.score,
-      progress: result.answers.progress.noul,
-      model: result.model,
-      elapsedMs: result.elapsedMs,
-    };
-    const stuck = judgment.sameStrategy >= options.config.sameStrategy;
-    const reasons = stuck
-      ? [`${failures} failures with the same strategy (${judgment.sameStrategy.toFixed(2)}), approach change ${judgment.approachChange.toFixed(1)}/2, progress ${judgment.progress.toFixed(2)}`]
-      : [];
-    return { stuck, source: "typesafe", failures, reasons, judgment };
-  } catch (error) {
-    return { stuck: false, source: "error", failures, reasons: [], error: error instanceof TypeSafeIntegrationError ? error.message : "TypeSafe request failed." };
-  }
+  const result = await askJev(options.judge, buildStuckRequest(window.attempts, task), { timeoutMs: options.timeoutMs, signal: options.signal });
+  if (!result.ok) return { stuck: false, source: "error", failures, reasons: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
+  const judgment: StuckJudgment = {
+    sameStrategy: result.answers.same_strategy.noul,
+    approachChange: result.answers.approach_change.score,
+    progress: result.answers.progress.noul,
+    model: result.model,
+    elapsedMs: result.elapsedMs,
+  };
+  const stuck = judgment.sameStrategy >= options.config.sameStrategy;
+  const reasons = stuck
+    ? [`${failures} failures with the same strategy (${judgment.sameStrategy.toFixed(2)}), approach change ${judgment.approachChange.toFixed(1)}/2, progress ${judgment.progress.toFixed(2)}`]
+    : [];
+  return { stuck, source: "typesafe", failures, reasons, judgment };
 }
 
 /** Steering text for the agent. Names the pattern and asks for a change of method, not another retry. */

@@ -1,6 +1,8 @@
-import { noul, TypeSafeIntegrationError } from "pi-typesafe";
+import { noul } from "pi-typesafe";
+import type { IntegrationErrorCode } from "pi-typesafe";
 import type { ProseConfig } from "./config.js";
-import type { Judge } from "./guard.js";
+import { askJev } from "./jev.js";
+import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 
 export type ProseSymptom = "wordy" | "cliches" | "jargon";
@@ -46,6 +48,7 @@ export interface ProseVerdict {
   model?: string;
   elapsedMs?: number;
   error?: string;
+  errorCode?: IntegrationErrorCode;
 }
 
 export function buildProseRequest(task: string | undefined, reply: string, audience: string) {
@@ -67,15 +70,11 @@ export interface ProseOptions {
 }
 
 export async function evaluateProse(task: string | undefined, reply: string, options: ProseOptions): Promise<ProseVerdict> {
-  try {
-    const timeout = AbortSignal.timeout(options.timeoutMs);
-    const result = await options.judge.evaluate(buildProseRequest(task, reply, options.config.audience), { signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout });
-    const scores: Record<ProseSymptom, number> = { wordy: result.answers.wordy.noul, cliches: result.answers.cliches.noul, jargon: result.answers.jargon.noul };
-    const flagged = PROSE_SYMPTOMS.filter(symptom => scores[symptom] >= options.config.threshold).sort((a, b) => scores[b] - scores[a]);
-    return { scores, flagged, model: result.model, elapsedMs: result.elapsedMs };
-  } catch (error) {
-    return { flagged: [], error: error instanceof TypeSafeIntegrationError ? error.message : "TypeSafe request failed." };
-  }
+  const result = await askJev(options.judge, buildProseRequest(task, reply, options.config.audience), { timeoutMs: options.timeoutMs, signal: options.signal });
+  if (!result.ok) return { flagged: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
+  const scores: Record<ProseSymptom, number> = { wordy: result.answers.wordy.noul, cliches: result.answers.cliches.noul, jargon: result.answers.jargon.noul };
+  const flagged = PROSE_SYMPTOMS.filter(symptom => scores[symptom] >= options.config.threshold).sort((a, b) => scores[b] - scores[a]);
+  return { scores, flagged, model: result.model, elapsedMs: result.elapsedMs };
 }
 
 /**

@@ -1,7 +1,9 @@
-import { choice, noul, TypeSafeIntegrationError } from "pi-typesafe";
+import { choice, noul } from "pi-typesafe";
+import type { IntegrationErrorCode } from "pi-typesafe";
 import type { DoneGuardConfig } from "./config.js";
 import { isReadOnlyCommand } from "./guard.js";
-import type { Judge } from "./guard.js";
+import { askJev } from "./jev.js";
+import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 import { commandOf } from "./tools.js";
 import { DEFAULT_TEMPLATES, doneTokens, renderTemplate } from "./widget.js";
@@ -127,6 +129,7 @@ export interface DoneVerdict {
   evidence: RunEvidence;
   judgment?: DoneJudgment;
   error?: string;
+  errorCode?: IntegrationErrorCode;
 }
 
 export function buildDoneRequest(task: string | undefined, finalMessage: string, evidence: RunEvidence) {
@@ -150,29 +153,25 @@ export interface DoneOptions {
 }
 
 export async function evaluateDone(task: string | undefined, finalMessage: string, evidence: RunEvidence, options: DoneOptions): Promise<DoneVerdict> {
-  try {
-    const timeout = AbortSignal.timeout(options.timeoutMs);
-    const result = await options.judge.evaluate(buildDoneRequest(task, finalMessage, evidence), { signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout });
-    const judgment: DoneJudgment = {
-      claimsDone: result.answers.claims_done.noul,
-      claimsVerified: result.answers.claims_verified.noul,
-      verificationApplies: result.answers.verification_applies.noul,
-      outcome: result.answers.outcome.choice,
-      model: result.model,
-      elapsedMs: result.elapsedMs,
-    };
-    const unverified = judgment.claimsDone >= options.config.claimsDone && judgment.outcome !== "blocked" && judgment.verificationApplies >= APPLIES_THRESHOLD;
-    const falseClaim = unverified && judgment.claimsVerified >= 0.7 && evidence.checks.length === 0;
-    const reasons: string[] = [];
-    if (unverified) {
-      const failed = evidence.checks.filter(check => !check.passed).length;
-      reasons.push(`reports completion (${judgment.claimsDone.toFixed(2)}) after ${evidence.mutations} file change${evidence.mutations === 1 ? "" : "s"} with ${failed ? `${failed} failed check${failed === 1 ? "" : "s"} and no passing one` : "no test, build, or lint run"}`);
-    }
-    if (falseClaim) reasons.push(`claims checks passed (${judgment.claimsVerified.toFixed(2)}) but none ran`);
-    return { unverified, falseClaim, reasons, evidence, judgment };
-  } catch (error) {
-    return { unverified: false, falseClaim: false, reasons: [], evidence, error: error instanceof TypeSafeIntegrationError ? error.message : "TypeSafe request failed." };
+  const result = await askJev(options.judge, buildDoneRequest(task, finalMessage, evidence), { timeoutMs: options.timeoutMs, signal: options.signal });
+  if (!result.ok) return { unverified: false, falseClaim: false, reasons: [], evidence, error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
+  const judgment: DoneJudgment = {
+    claimsDone: result.answers.claims_done.noul,
+    claimsVerified: result.answers.claims_verified.noul,
+    verificationApplies: result.answers.verification_applies.noul,
+    outcome: result.answers.outcome.choice,
+    model: result.model,
+    elapsedMs: result.elapsedMs,
+  };
+  const unverified = judgment.claimsDone >= options.config.claimsDone && judgment.outcome !== "blocked" && judgment.verificationApplies >= APPLIES_THRESHOLD;
+  const falseClaim = unverified && judgment.claimsVerified >= 0.7 && evidence.checks.length === 0;
+  const reasons: string[] = [];
+  if (unverified) {
+    const failed = evidence.checks.filter(check => !check.passed).length;
+    reasons.push(`reports completion (${judgment.claimsDone.toFixed(2)}) after ${evidence.mutations} file change${evidence.mutations === 1 ? "" : "s"} with ${failed ? `${failed} failed check${failed === 1 ? "" : "s"} and no passing one` : "no test, build, or lint run"}`);
   }
+  if (falseClaim) reasons.push(`claims checks passed (${judgment.claimsVerified.toFixed(2)}) but none ran`);
+  return { unverified, falseClaim, reasons, evidence, judgment };
 }
 
 /** Follow-up for the agent: verify or say plainly that nothing was verified. */
