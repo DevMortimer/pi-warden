@@ -11,8 +11,10 @@ import type { RunEvidence } from "./done.js";
 import { evaluateAction, formatVerdict, steerReason, textApproves } from "./guard.js";
 import type { Verdict } from "./guard.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
-import { actionDetails, doneDetails, openTracePanel, stuckDetails, Trace } from "./trace.js";
-import type { GuardName, PanelUi } from "./trace.js";
+import { openTracePanel } from "./panel.js";
+import type { PanelUi } from "./panel.js";
+import { actionDetails, doneDetails, stuckDetails, Trace } from "./trace.js";
+import type { GuardName } from "./trace.js";
 import { TOKEN_NAMES } from "./widget.js";
 
 export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; the last few tool calls and output tails when the agent keeps failing; and the agent's final message when it reports completion without running checks. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
