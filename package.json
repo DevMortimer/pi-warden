@@ -1,6 +1,6 @@
 {
   "name": "pi-warden",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Harness guardrails for Pi built on pi-typesafe: pattern checks plus Jev judgments flag irreversible or off-task bash, write, and edit calls before they run.",
   "type": "module",
   "license": "MIT",
