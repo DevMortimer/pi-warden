@@ -60,6 +60,25 @@ function recentTaskContext(ctx: ExtensionContext): TaskMessage[] {
   return messages.reverse();
 }
 
+/**
+ * Tool calls of the assistant message being preflighted. Pi runs `tool_call` hooks for sibling calls one after another,
+ * so judging them one request at a time costs one round trip per call; judging them together costs one round trip.
+ */
+export function siblingToolCalls(ctx: ExtensionContext): Array<{ id: string; name: string; input: Record<string, unknown> }> {
+  const entries = ctx.sessionManager.getBranch();
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry?.type !== "message") continue;
+    if (entry.message.role !== "assistant") return [];
+    const content = entry.message.content;
+    if (!Array.isArray(content)) return [];
+    return content.flatMap(part => part.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string"
+      ? [{ id: part.id, name: part.name, input: (part.arguments ?? {}) as Record<string, unknown> }]
+      : []);
+  }
+  return [];
+}
+
 function activeMode(config: WardenConfig, hasUI: boolean): WardenMode {
   const env = process.env.PI_WARDEN_MODE?.trim();
   const mode = isMode(env) ? env : config.mode;
@@ -106,6 +125,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const trace = new Trace();
   let panel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
+  /** Judgments for tool calls of the current assistant message, keyed by tool call id; `used` marks preflighted ones. */
+  const prejudged = new Map<string, { key: string; verdict: Promise<Verdict>; used: boolean }>();
   /**
    * Steer-mode hold state. After a hold, the next guarded call that runs under a *new* user prompt asks Jev whether that
    * prompt approves it. The retry rarely repeats the held string byte for byte (a `command -v` dropped, a different
@@ -193,6 +214,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (_event, ctx) => {
     attempts = new AttemptWindow(configFor(ctx).stuck.window);
     doneNudged = false;
+    prejudged.clear();
   });
 
   // Each low-level run collects its own evidence of changes and checks.
@@ -203,6 +225,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Every turn that runs after a compression is a turn that did not carry the removed text.
   pi.on("turn_end", async () => {
     ledger.turnEnd();
+    // Siblings that were never preflighted (an earlier one terminated the batch, or Esc) do not outlive their turn.
+    prejudged.clear();
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -217,10 +241,25 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // A hold happened under an earlier prompt and the user has since replied: ask whether the reply approves this action.
     const retryAfterHold = holdPending && lastHoldPrompt !== task;
     const judge = judgeFor(config);
-    const verdict = await evaluateAction(
-      { tool: event.toolName, input: event.input, cwd: ctx.cwd, task, context: recentTaskContext(ctx) },
-      { config: config.action, judge, signal: ctx.signal, slop: config.slop, security: config.security, retryAfterHold },
-    );
+    const context = recentTaskContext(ctx);
+    const options = { config: config.action, judge, signal: ctx.signal, slop: config.slop, security: config.security, retryAfterHold };
+    const judgeCall = (tool: string, input: Record<string, unknown>) => evaluateAction({ tool, input, cwd: ctx.cwd, task, context }, options);
+    // Sibling calls in the same assistant message are preflighted one after another; their requests go out together.
+    // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
+    if (judge && !retryAfterHold) {
+      for (const sibling of siblingToolCalls(ctx)) {
+        if (sibling.id === event.toolCallId || prejudged.has(sibling.id) || !config.action.tools.includes(sibling.name)) continue;
+        const verdict = judgeCall(sibling.name, sibling.input);
+        verdict.catch(() => undefined);
+        prejudged.set(sibling.id, { key: JSON.stringify(sibling.input), verdict, used: false });
+      }
+    }
+    // An earlier hook may have changed this call's input; a stale judgment is discarded, not reused.
+    const key = JSON.stringify(event.input);
+    const ready = prejudged.get(event.toolCallId);
+    const pending = ready && !ready.used && ready.key === key && !retryAfterHold ? ready.verdict : judgeCall(event.toolName, event.input);
+    prejudged.set(event.toolCallId, { key, verdict: pending, used: true });
+    const verdict = await pending;
     if (verdict.source === "skipped") return;
     if (verdict.judgment?.securityRisk !== undefined && verdict.judgment.securityRisk >= config.security.threshold) {
       steer(config, "pi-warden: the proposed write may introduce a security weakness. Check for embedded credentials, disabled TLS, unsafe command/SQL interpolation, broad permissions, or bypassed verification; use a safe implementation instead.");
@@ -279,6 +318,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!config.enabled) return;
     const textBlocks = event.content.filter(part => part.type === "text");
     const text = textBlocks.map(part => part.text).join("\n");
+    // Repeat detection uses the original result, so its request goes out together with the output check.
+    const failed = resultFailed(event.isError, event.details, event.content);
+    const stuckCheck = (() => {
+      if (!config.stuck.enabled) return undefined;
+      attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
+      if (!attempts.shouldJudge(config.stuck)) return undefined;
+      stats.stuckChecks++;
+      return evaluateStuck(attempts, latestUserPrompt(ctx), { config: config.stuck, judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
+    })();
     const output = await evaluateOutput(event.toolName, text, latestUserPrompt(ctx), {
       security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
       signal: ctx.signal, compressible: textBlocks.length === 1, taskContext: recentTaskContext(ctx),
@@ -324,14 +372,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       ]);
     }
     const patch = content === event.content ? undefined : { content };
-    // Checks and repeat detection use the original result, not the excerpts or security banner.
-    const failed = resultFailed(event.isError, event.details, event.content);
+    // Checks use the original result, not the excerpts or security banner.
     if (config.done.enabled) recordOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
-    if (!config.stuck.enabled) return patch;
-    attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
-    if (!attempts.shouldJudge(config.stuck)) return patch;
-    stats.stuckChecks++;
-    const verdict = await evaluateStuck(attempts, latestUserPrompt(ctx), { config: config.stuck, judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
+    const verdict = await stuckCheck;
+    if (!verdict) return patch;
     if (verdict.error) noteError(ctx, verdict.error, undefined);
     if (verdict.source === "repeat" && !verdict.stuck) return patch;
     const nudge = verdict.stuck && config.stuck.nudge ? stuckNudge(verdict) : undefined;
@@ -349,9 +393,17 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const finalMessage = finalAssistantText(event.messages);
     const judge = judgeFor(config);
     if (!finalMessage || !judge) return;
-    if (config.slop.enabled && config.slop.prose.enabled && finalMessage.length >= config.slop.prose.minChars) {
+    // Pi shows the agent as working until this hook returns, so the two independent checks share one round trip.
+    const task = latestUserPrompt(ctx);
+    const proseCheck = config.slop.enabled && config.slop.prose.enabled && finalMessage.length >= config.slop.prose.minChars
+      ? evaluateProse(task, finalMessage, { config: config.slop.prose, judge, timeoutMs: config.timeoutMs, signal: ctx.signal })
+      : undefined;
+    const doneCheck = config.done.enabled && !doneNudged && needsDoneCheck(evidence)
+      ? evaluateDone(task, finalMessage, evidence, { config: config.done, judge, timeoutMs: config.timeoutMs, signal: ctx.signal })
+      : undefined;
+    if (proseCheck) {
       stats.proseChecks++;
-      const verdict = await evaluateProse(latestUserPrompt(ctx), finalMessage, { config: config.slop.prose, judge, timeoutMs: config.timeoutMs, signal: ctx.signal });
+      const verdict = await proseCheck;
       if (verdict.error) noteError(ctx, verdict.error, undefined);
       else prose.record(verdict.flagged);
       const due = verdict.error ? [] : prose.due(config.slop.prose.trend);
@@ -363,9 +415,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         steer(config, nudge, { deliverAs: "nextTurn" });
       }
     }
-    if (!config.done.enabled || doneNudged || !needsDoneCheck(evidence)) return;
+    if (!doneCheck) return;
     stats.doneChecks++;
-    const verdict = await evaluateDone(latestUserPrompt(ctx), finalMessage, evidence, { config: config.done, judge, timeoutMs: config.timeoutMs, signal: ctx.signal });
+    const verdict = await doneCheck;
     if (verdict.error) noteError(ctx, verdict.error, undefined);
     const nudge = verdict.unverified && config.done.nudge ? doneNudge(verdict) : undefined;
     record(ctx, config, "done", formatDone(verdict, config.widget.done), doneDetails(verdict, finalMessage, nudge));

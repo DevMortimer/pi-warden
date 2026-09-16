@@ -439,6 +439,48 @@ test("with consent, Jev judgments drive warn and hold, and the widget shows scor
   assert.match(offTask?.reason ?? "", /off-task 0\.95 \(unrelated to the request\)/);
 });
 
+test("sibling tool calls of one assistant message are judged in one overlapping batch; a changed input is judged afresh", async () => {
+  await grantConsent();
+  const siblings = [
+    { type: "toolCall", id: "call-a", name: "bash", arguments: { command: "npm test" } },
+    { type: "toolCall", id: "call-b", name: "bash", arguments: { command: "npm run lint" } },
+    { type: "toolCall", id: "call-c", name: "read", arguments: { path: "README.md" } },
+    { type: "toolCall", id: "call-d", name: "write", arguments: { path: join(temporary, "note.txt"), content: "hello" } },
+  ];
+  const ctx = context({ sessionManager: { getBranch: () => [...sessionManager.getBranch().slice(0, -1), { type: "message", message: { role: "assistant", content: siblings } }] } });
+  // Requests are held open until every expected sibling request has been started, which proves they overlap.
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started: string[] = [];
+  const batched = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const body = JSON.parse(String(init?.body)) as { state: { action?: { command?: string; path?: string } } };
+    started.push(body.state.action?.command ?? body.state.action?.path ?? "?");
+    if (started.length >= 3) release();
+    await gate;
+    return batched(input, init);
+  };
+  try {
+    const first = fire("tool_call", { toolName: "bash", toolCallId: "call-a", input: { command: "npm test" } }, ctx);
+    await gate;
+    assert.deepEqual(started.map(command => command.includes("note.txt") ? "note.txt" : command).sort(), ["note.txt", "npm run lint", "npm test"], "the read is not guarded; the other three requests are in flight together");
+    assert.equal(await first, undefined);
+    assert.equal(await fire("tool_call", { toolName: "bash", toolCallId: "call-b", input: { command: "npm run lint" } }, ctx), undefined);
+    assert.equal(await fire("tool_call", { toolName: "write", toolCallId: "call-d", input: { path: join(temporary, "note.txt"), content: "hello" } }, ctx), undefined);
+    assert.equal(networkCalls, 3, "each sibling is judged exactly once");
+    assert.deepEqual(widgets.at(-1), ["warden · write · irreversible 0.10 · off-task 0.10 · expected step · slop: none · allow"]);
+
+    // Another hook rewrote call-b's input before pi-warden saw it: the stored judgment is stale and a fresh one is made.
+    await fire("turn_end", { turnIndex: 0 }, ctx);
+    assert.equal(await fire("tool_call", { toolName: "bash", toolCallId: "call-a", input: { command: "npm test" } }, ctx), undefined);
+    assert.equal(await fire("tool_call", { toolName: "bash", toolCallId: "call-b", input: { command: "npm run lint -- --fix" } }, ctx), undefined);
+    assert.equal(networkCalls, 7, "three prejudged plus one fresh judgment for the changed input");
+    assert.equal(requests.at(-1)?.state.action && (requests.at(-1)!.state.action as { command: string }).command, "npm run lint -- --fix");
+  } finally {
+    globalThis.fetch = batched;
+  }
+});
+
 test("slop symptoms steer the agent after the write without holding it; steers are hidden from the transcript by default and escalate on repeats", async () => {
   await grantConsent();
   nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_stub: 0.92, slop_hedging: 0.75, slop_comments: 0.1, slop_dead: 0.1 };
