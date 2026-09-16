@@ -206,6 +206,8 @@ verdict.judgment;   // { irreversible, offTask, scope, scopeConfidence, approved
 steerReason(verdict, { canApprove: true });   // the text the agent receives for a hold
 ```
 
+`evaluateAction` judges one call. What spans calls in a session, the hold → reply → retry approval and the batched judging of sibling tool calls, is `ActionGuard`: `inspect(call, conversation, options)` returns the same `Verdict`, `hold(task)` records a hold, `turnEnd()` and `reset()` follow Pi's turn and session.
+
 Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`, `formatVerdict`, the question sets, the stuck detector (`AttemptWindow`, `makeAttempt`, `evaluateStuck`, `stuckNudge`), the done-check (`classifyToolResult`, `recordOutcome`, `needsDoneCheck`, `evaluateDone`, `doneNudge`), and the config helpers.
 
 ## Development

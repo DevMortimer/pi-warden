@@ -336,61 +336,33 @@ test("without consent, only pattern checks run: risky warns, destructive is held
   assert.equal(networkCalls, 0);
 });
 
-test("a held call retried after an approving reply is allowed; without a reply or approval it stays held", async () => {
+test("the Action guard is wired to the session: the prompt is the task, siblings come from the branch, session_start resets", async () => {
+  // Holds, approval, and sibling prejudging are tested at the guard's interface in tests/action-guard.test.ts.
   prompt = "push my branch";
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
-  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "same prompt: the user has not replied");
-  prompt = "hmm, why is that needed?";
-  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "a question is not approval");
   prompt = "yes, go ahead and force push";
-  assert.equal(await toolCall("bash", { command: "git push --force" }), undefined, "offline approval heuristic");
+  assert.equal(await toolCall("bash", { command: "git push --force" }), undefined, "the reply reaches the guard as the task and releases the hold");
   assert.match(widgets.at(-1)![0]!, /user approved · allow$/);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /1 held, 1 approved on retry/, "the hook counts the hold and the approval");
+
+  await sessionStart();
   prompt = "push my branch";
-  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "approval is consumed; a new hold starts");
-
-  await grantConsent();
-  prompt = "yes do it";
-  nextAnswers = { irreversible: 0.9, off_task: 0.1, scope: "expected_step", approved: 0.2 };
-  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "Jev decides on retry: 0.2 is not approval");
-  assert.ok("approved" in requests.at(-1)!.questions, "the approval question was asked");
-  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "still 0.2: held again");
-  assert.ok("approved" in requests.at(-1)!.questions, "a re-hold under the same reply keeps asking; the reply is not consumed by a hold");
-  prompt = "YES. Force push it now, I own that branch.";
-  nextAnswers = { irreversible: 0.9, off_task: 0.1, scope: "expected_step", approved: 0.95 };
-  assert.equal(await toolCall("bash", { command: "git push --force" }), undefined);
-  assert.match(widgets.at(-1)![0]!, /user approved/);
-});
-
-test("regression: approval applies to the action, not the exact command string; a re-hold under the reply keeps it valid", async () => {
-  // Ryan, 2026-09-16: held `command -v supabase; supabase db reset`, user said "Yes you can.", the agent retried without the
-  // `command -v` prefix and was held twice more, then fell back to DROP DATABASE. The approval question was never asked.
-  await grantConsent();
-  prompt = "prove the three migrations";
-  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95 };
-  assert.equal((await toolCall("bash", { command: "cd wt && command -v supabase; supabase db reset 2>&1 | tail -25", timeout: 600 }))?.block, true);
-  prompt = "Yes you can.";
-  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95, approved: 0.93 };
-  assert.equal(await toolCall("bash", { command: "cd wt && supabase db reset 2>&1 | tail -25", timeout: 600 }), undefined, "reworded retry after approval runs");
-  assert.ok("approved" in requests.at(-1)!.questions, "Jev was asked whether the reply approves this action");
-  assert.match(widgets.at(-1)![0]!, /user approved/);
-
-  // Same shape, but Jev says the reply does not approve the first retry (0.2); a second, reworded retry must still be asked.
-  prompt = "wipe the local db and replay migrations";
-  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95 };
-  assert.equal((await toolCall("bash", { command: "supabase db reset" }))?.block, true);
-  prompt = "Yes you can.";
-  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95, approved: 0.2 };
-  assert.equal((await toolCall("bash", { command: "supabase db reset 2>&1 | tail -25" }))?.block, true, "held again: 0.2 is not approval");
-  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95, approved: 0.9 };
-  assert.equal(await toolCall("bash", { command: "supabase db reset 2>&1 | tail -40" }), undefined, "the re-hold did not consume the user's reply");
-
-  // An unrelated destructive call after a yes is still judged, and a low approval score keeps it held.
-  prompt = "clean up";
-  nextAnswers = { irreversible: 0.9, off_task: 0.2, scope: "expected_step", mutates: 0.95 };
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
-  prompt = "yes";
-  nextAnswers = { irreversible: 0.95, off_task: 0.9, scope: "unrelated", mutates: 0.95, approved: 0.05 };
-  assert.equal((await toolCall("bash", { command: "rm -rf ~/Documents" }))?.block, true, "a yes to one action does not approve a different one");
+  await sessionStart();
+  prompt = "yes, go ahead and force push";
+  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "a new session carries no hold to approve");
+
+  await grantConsent();
+  const siblings = [
+    { type: "toolCall", id: "call-a", name: "bash", arguments: { command: "npm test" } },
+    { type: "toolCall", id: "call-b", name: "bash", arguments: { command: "npm run lint" } },
+  ];
+  const ctx = context({ sessionManager: { getBranch: () => [...sessionManager.getBranch().slice(0, -1), { type: "message", message: { role: "assistant", content: siblings } }] } });
+  assert.equal(await fire("tool_call", { toolName: "bash", toolCallId: "call-a", input: { command: "npm test" } }, ctx), undefined);
+  assert.equal(networkCalls, 2, "the sibling from the session branch is judged with the first call");
+  assert.equal(await fire("tool_call", { toolName: "bash", toolCallId: "call-b", input: { command: "npm run lint" } }, ctx), undefined);
+  assert.equal(networkCalls, 2, "and its judgment is reused for its own hook");
 });
 
 test("mode confirm shows a dialog; mode advise only reports; PI_WARDEN_MODE overrides the file", async () => {
@@ -437,48 +409,6 @@ test("with consent, Jev judgments drive warn and hold, and the widget shows scor
   const offTask = await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" });
   assert.equal(offTask?.block, true);
   assert.match(offTask?.reason ?? "", /off-task 0\.95 \(unrelated to the request\)/);
-});
-
-test("sibling tool calls of one assistant message are judged in one overlapping batch; a changed input is judged afresh", async () => {
-  await grantConsent();
-  const siblings = [
-    { type: "toolCall", id: "call-a", name: "bash", arguments: { command: "npm test" } },
-    { type: "toolCall", id: "call-b", name: "bash", arguments: { command: "npm run lint" } },
-    { type: "toolCall", id: "call-c", name: "read", arguments: { path: "README.md" } },
-    { type: "toolCall", id: "call-d", name: "write", arguments: { path: join(temporary, "note.txt"), content: "hello" } },
-  ];
-  const ctx = context({ sessionManager: { getBranch: () => [...sessionManager.getBranch().slice(0, -1), { type: "message", message: { role: "assistant", content: siblings } }] } });
-  // Requests are held open until every expected sibling request has been started, which proves they overlap.
-  let release: () => void = () => undefined;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const started: string[] = [];
-  const batched = globalThis.fetch;
-  globalThis.fetch = async (input, init) => {
-    const body = JSON.parse(String(init?.body)) as { state: { action?: { command?: string; path?: string } } };
-    started.push(body.state.action?.command ?? body.state.action?.path ?? "?");
-    if (started.length >= 3) release();
-    await gate;
-    return batched(input, init);
-  };
-  try {
-    const first = fire("tool_call", { toolName: "bash", toolCallId: "call-a", input: { command: "npm test" } }, ctx);
-    await gate;
-    assert.deepEqual(started.map(command => command.includes("note.txt") ? "note.txt" : command).sort(), ["note.txt", "npm run lint", "npm test"], "the read is not guarded; the other three requests are in flight together");
-    assert.equal(await first, undefined);
-    assert.equal(await fire("tool_call", { toolName: "bash", toolCallId: "call-b", input: { command: "npm run lint" } }, ctx), undefined);
-    assert.equal(await fire("tool_call", { toolName: "write", toolCallId: "call-d", input: { path: join(temporary, "note.txt"), content: "hello" } }, ctx), undefined);
-    assert.equal(networkCalls, 3, "each sibling is judged exactly once");
-    assert.deepEqual(widgets.at(-1), ["warden · write · irreversible 0.10 · off-task 0.10 · expected step · slop: none · allow"]);
-
-    // Another hook rewrote call-b's input before pi-warden saw it: the stored judgment is stale and a fresh one is made.
-    await fire("turn_end", { turnIndex: 0 }, ctx);
-    assert.equal(await fire("tool_call", { toolName: "bash", toolCallId: "call-a", input: { command: "npm test" } }, ctx), undefined);
-    assert.equal(await fire("tool_call", { toolName: "bash", toolCallId: "call-b", input: { command: "npm run lint -- --fix" } }, ctx), undefined);
-    assert.equal(networkCalls, 7, "three prejudged plus one fresh judgment for the changed input");
-    assert.equal(requests.at(-1)?.state.action && (requests.at(-1)!.state.action as { command: string }).command, "npm run lint -- --fix");
-  } finally {
-    globalThis.fetch = batched;
-  }
 });
 
 test("slop symptoms steer the agent after the write without holding it; steers are hidden from the transcript by default and escalate on repeats", async () => {

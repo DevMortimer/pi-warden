@@ -4,12 +4,14 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { createTypeSafe, resolveApiKey } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
+import { ActionGuard } from "./action-guard.js";
+import type { ToolCallRef } from "./action-guard.js";
 import * as configModule from "./config.js";
 import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, SLOP_LABELS, steerReason, textApproves } from "./guard.js";
+import { evaluateAction, formatVerdict, SLOP_LABELS, steerReason } from "./guard.js";
 import type { SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { evaluateProse, proseNudge, ProseTrend } from "./prose.js";
 import { compressOutput, evaluateOutput, saveOutput, securityNotice } from "./output.js";
@@ -64,7 +66,7 @@ function recentTaskContext(ctx: ExtensionContext): TaskMessage[] {
  * Tool calls of the assistant message being preflighted. Pi runs `tool_call` hooks for sibling calls one after another,
  * so judging them one request at a time costs one round trip per call; judging them together costs one round trip.
  */
-export function siblingToolCalls(ctx: ExtensionContext): Array<{ id: string; name: string; input: Record<string, unknown> }> {
+export function siblingToolCalls(ctx: ExtensionContext): ToolCallRef[] {
   const entries = ctx.sessionManager.getBranch();
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
@@ -73,7 +75,7 @@ export function siblingToolCalls(ctx: ExtensionContext): Array<{ id: string; nam
     const content = entry.message.content;
     if (!Array.isArray(content)) return [];
     return content.flatMap(part => part.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string"
-      ? [{ id: part.id, name: part.name, input: (part.arguments ?? {}) as Record<string, unknown> }]
+      ? [{ id: part.id, tool: part.name, input: (part.arguments ?? {}) as Record<string, unknown> }]
       : []);
   }
   return [];
@@ -125,15 +127,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const trace = new Trace();
   let panel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
-  /** Judgments for tool calls of the current assistant message, keyed by tool call id; `used` marks preflighted ones. */
-  const prejudged = new Map<string, { key: string; verdict: Promise<Verdict>; used: boolean }>();
-  /**
-   * Steer-mode hold state. After a hold, the next guarded call that runs under a *new* user prompt asks Jev whether that
-   * prompt approves it. The retry rarely repeats the held string byte for byte (a `command -v` dropped, a different
-   * timeout), so approval is judged against the action itself, not matched against the earlier command text.
-   */
-  let lastHoldPrompt: string | undefined;
-  let holdPending = false;
+  const actionGuard = new ActionGuard();
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
@@ -199,8 +193,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     widget.clear();
     trace.clear();
     panel?.close();
-    lastHoldPrompt = undefined;
-    holdPending = false;
+    actionGuard.reset();
     attempts.reset();
     evidence = emptyEvidence();
     doneNudged = false;
@@ -214,7 +207,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (_event, ctx) => {
     attempts = new AttemptWindow(configFor(ctx).stuck.window);
     doneNudged = false;
-    prejudged.clear();
+    actionGuard.turnEnd();
   });
 
   // Each low-level run collects its own evidence of changes and checks.
@@ -225,8 +218,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Every turn that runs after a compression is a turn that did not carry the removed text.
   pi.on("turn_end", async () => {
     ledger.turnEnd();
-    // Siblings that were never preflighted (an earlier one terminated the batch, or Esc) do not outlive their turn.
-    prejudged.clear();
+    actionGuard.turnEnd();
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -238,44 +230,19 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
     const task = latestUserPrompt(ctx);
-    // A hold happened under an earlier prompt and the user has since replied: ask whether the reply approves this action.
-    const retryAfterHold = holdPending && lastHoldPrompt !== task;
     const judge = judgeFor(config);
-    const context = recentTaskContext(ctx);
-    const options = { config: config.action, judge, signal: ctx.signal, slop: config.slop, security: config.security, retryAfterHold };
-    const judgeCall = (tool: string, input: Record<string, unknown>) => evaluateAction({ tool, input, cwd: ctx.cwd, task, context }, options);
-    // Sibling calls in the same assistant message are preflighted one after another; their requests go out together.
-    // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
-    if (judge && !retryAfterHold) {
-      for (const sibling of siblingToolCalls(ctx)) {
-        if (sibling.id === event.toolCallId || prejudged.has(sibling.id) || !config.action.tools.includes(sibling.name)) continue;
-        const verdict = judgeCall(sibling.name, sibling.input);
-        verdict.catch(() => undefined);
-        prejudged.set(sibling.id, { key: JSON.stringify(sibling.input), verdict, used: false });
-      }
-    }
-    // An earlier hook may have changed this call's input; a stale judgment is discarded, not reused.
-    const key = JSON.stringify(event.input);
-    const ready = prejudged.get(event.toolCallId);
-    const pending = ready && !ready.used && ready.key === key && !retryAfterHold ? ready.verdict : judgeCall(event.toolName, event.input);
-    prejudged.set(event.toolCallId, { key, verdict: pending, used: true });
-    const verdict = await pending;
+    const verdict = await actionGuard.inspect(
+      { id: event.toolCallId, tool: event.toolName, input: event.input },
+      { task, context: recentTaskContext(ctx), siblings: siblingToolCalls(ctx) },
+      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security },
+    );
     if (verdict.source === "skipped") return;
     if (verdict.judgment?.securityRisk !== undefined && verdict.judgment.securityRisk >= config.security.threshold) {
       steer(config, "pi-warden: the proposed write may introduce a security weakness. Check for embedded credentials, disabled TLS, unsafe command/SQL interpolation, broad permissions, or bypassed verification; use a safe implementation instead.");
     }
     if (verdict.judgment) stats.judged++;
     if (verdict.source === "error") noteError(ctx, verdict.error ?? "TypeSafe request failed.", verdict.errorCode);
-    // Offline stand-in for the approval question: the user has replied since the hold and the reply reads as approval.
-    if (retryAfterHold && !judge && verdict.level === "confirm" && textApproves(task)) {
-      verdict.level = "allow";
-      verdict.approvedByUser = true;
-      verdict.reasons = ["user approved in the latest message", ...verdict.reasons];
-    }
-    if (verdict.approvedByUser) {
-      stats.approved++;
-      holdPending = false;
-    }
+    if (verdict.approvedByUser) stats.approved++;
     const mode = activeMode(config, ctx.hasUI);
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
     if (verdict.source !== "read-only") record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) }));
@@ -306,9 +273,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${reasons}). Do not retry it unchanged; ask the user how to proceed.` };
     }
     stats.held++;
-    // A re-hold under the user's reply keeps the original reference prompt; otherwise the reply could never approve anything.
-    if (!holdPending) lastHoldPrompt = task;
-    holdPending = true;
+    actionGuard.hold(task);
     if (ctx.hasUI) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
     return { block: true, reason: told ?? steerReason(verdict, { canApprove: judge !== undefined }) };
   });

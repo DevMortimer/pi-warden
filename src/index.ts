@@ -1,6 +1,8 @@
-export { evaluateAction, describeAction, matchPatterns, isReadOnlyCommand, buildRequest, formatVerdict, steerReason, textApproves, questions, slopQuestions, approvalQuestion, securityQuestion } from "./guard.js";
+export { evaluateAction, describeAction, matchPatterns, isReadOnlyCommand, buildRequest, formatVerdict, steerReason, questions, slopQuestions, approvalQuestion, securityQuestion } from "./guard.js";
 export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, ScopeLabel, Severity, Verdict } from "./guard.js";
 export { SLOP_SYMPTOMS, SLOP_LABELS } from "./guard.js";
+export { ActionGuard } from "./action-guard.js";
+export type { Conversation, InspectOptions, ToolCallRef } from "./action-guard.js";
 export { evaluateProse, buildProseRequest, proseQuestions, proseNudge, describeAudience, ProseTrend, PROSE_SYMPTOMS, PROSE_LABELS } from "./prose.js";
 export type { ProseSymptom, ProseVerdict, ProseOptions } from "./prose.js";
 export { AttemptWindow, makeAttempt, resultFailed, resultText, evaluateStuck, buildStuckRequest, stuckQuestions, stuckNudge, formatStuck } from "./stuck.js";
