@@ -8,8 +8,10 @@ export type WidgetPlacement = "aboveEditor" | "belowEditor";
 export interface WidgetConfig {
   enabled: boolean;
   placement: WidgetPlacement;
-  /** Keyboard shortcut that opens the trace panel; empty string disables it. */
+  /** Keyboard shortcut that toggles the trace sidebar; empty string disables it. */
   shortcut: string;
+  /** Sidebar width: a percentage string such as "40%" or a column count. */
+  panelWidth: string | number;
   /** Templates per guard. Segments are separated by " · "; a segment whose token has no value is dropped. */
   action: string;
   stuck: string;
@@ -29,7 +31,7 @@ export const DEFAULT_TEMPLATES = {
 } as const;
 
 export function defaultWidgetConfig(): WidgetConfig {
-  return { enabled: true, placement: "aboveEditor", shortcut: "ctrl+shift+w", ...DEFAULT_TEMPLATES };
+  return { enabled: true, placement: "aboveEditor", shortcut: "ctrl+shift+w", panelWidth: "40%", ...DEFAULT_TEMPLATES };
 }
 
 export type Tokens = Record<string, string | undefined>;

@@ -6,17 +6,27 @@ interface ThemeLike { fg(color: string, text: string): string; bold(text: string
 
 const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", confirm: "error", stuck: "error", "false claim": "error" };
 
+export interface PanelActions {
+  /** Remove the sidebar. */
+  close(): void;
+  /** Keep the sidebar visible but give keyboard input back to the editor. */
+  unfocus(): void;
+}
+
 /**
- * Side panel listing the trace newest-first, live-updating while open. Keys: ↑/↓/j/k scroll a line, PgUp/PgDn a page,
- * Home/End jump, c clears the trace, Esc or q closes. Wheel scrolling works in fullscreen mode.
+ * Sidebar listing the trace newest-first, live-updating while open. It opens without taking keyboard input: the editor
+ * keeps working while it is visible. A click inside it (fullscreen mode) focuses it; then ↑/↓/j/k scroll a line,
+ * PgUp/PgDn a page, Home/End jump, c clears the trace, Esc returns input to the editor, and q closes. Wheel scrolling
+ * works without focus.
  */
 export class TracePanel implements Component {
-  focused = true;
+  /** Set by the TUI when keyboard focus changes. */
+  focused = false;
   private scroll = 0;
   private viewport = 20;
   private readonly unsubscribe: () => void;
 
-  constructor(private readonly trace: Trace, private readonly theme: ThemeLike, private readonly close: () => void, private readonly requestRender: () => void, private readonly title = "pi-warden trace") {
+  constructor(private readonly trace: Trace, private readonly theme: ThemeLike, private readonly actions: PanelActions, private readonly requestRender: () => void, private readonly title = "pi-warden trace") {
     this.unsubscribe = trace.subscribe(() => this.requestRender());
   }
 
@@ -31,10 +41,12 @@ export class TracePanel implements Component {
     const { theme } = this;
     const entries = this.trace.entries();
     const out: string[] = [];
-    out.push(theme.bold(theme.fg("accent", ` ${this.title}`)) + theme.fg("muted", ` · ${entries.length} event${entries.length === 1 ? "" : "s"} · ↑↓ PgUp PgDn scroll · c clear · esc close`));
+    const keys = this.focused ? "↑↓ PgUp PgDn scroll · c clear · esc back to editor · q close" : "click for keys · wheel scrolls · /warden trace closes";
+    out.push(theme.bold(theme.fg("accent", `${this.title}`)) + theme.fg("muted", ` · ${entries.length} event${entries.length === 1 ? "" : "s"}`));
+    out.push(theme.fg("muted", keys));
     out.push(theme.fg("muted", "─".repeat(Math.max(0, width))));
     if (!entries.length) {
-      out.push(theme.fg("muted", " No guarded activity yet this session. Verdicts, Jev scores, and what the agent was told will appear here."));
+      for (const line of wrapTextWithAnsi(theme.fg("muted", "No guarded activity yet this session. Verdicts, Jev scores, and what the agent was told will appear here."), Math.max(10, width))) out.push(line);
       return out.map(line => truncateToWidth(line, width, ""));
     }
     for (let index = entries.length - 1; index >= 0; index--) {
@@ -55,16 +67,20 @@ export class TracePanel implements Component {
     return out.map(line => truncateToWidth(line, width, ""));
   }
 
+  /** A left border makes the overlay read as a pane; the content column is two cells narrower. */
   render(width: number): string[] {
-    const all = this.lines(width);
+    const border = theme_fg(this.theme, "muted", "│ ");
+    const inner = Math.max(10, width - 2);
+    const all = this.lines(inner);
     const maxScroll = Math.max(0, all.length - this.viewport);
     if (this.scroll > maxScroll) this.scroll = maxScroll;
     const visible = all.slice(this.scroll, this.scroll + this.viewport);
     if (all.length > this.viewport) {
       const last = visible.length - 1;
-      visible[last] = truncateToWidth(theme_fg(this.theme, "muted", ` … ${all.length - this.scroll - this.viewport > 0 ? `${all.length - this.scroll - this.viewport} more lines below` : "end"} · ${this.scroll} above`), width, "");
+      visible[last] = truncateToWidth(theme_fg(this.theme, "muted", `… ${all.length - this.scroll - this.viewport > 0 ? `${all.length - this.scroll - this.viewport} more lines below` : "end"} · ${this.scroll} above`), inner, "");
     }
-    return visible;
+    while (visible.length < this.viewport) visible.push("");
+    return visible.map(line => border + line);
   }
 
   /** The overlay tells us how tall we may be through the layout; fall back to a fixed viewport otherwise. */
@@ -73,7 +89,8 @@ export class TracePanel implements Component {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) { this.close(); return; }
+    if (data === "q" || matchesKey(data, Key.ctrl("c"))) { this.actions.close(); return; }
+    if (matchesKey(data, Key.escape)) { this.actions.unfocus(); this.requestRender(); return; }
     if (matchesKey(data, Key.up) || data === "k") this.scroll = Math.max(0, this.scroll - 1);
     else if (matchesKey(data, Key.down) || data === "j") this.scroll += 1;
     else if (matchesKey(data, Key.pageUp)) this.scroll = Math.max(0, this.scroll - this.viewport);
@@ -90,6 +107,7 @@ export class TracePanel implements Component {
       this.scroll = Math.max(0, this.scroll + (event.wheelDelta ?? 0) * 3);
       return { handled: true, render: true };
     }
+    if (event.type === "press" && event.button === "left") return { handled: true, focus: true, render: true };
     return undefined;
   }
 }
@@ -102,15 +120,29 @@ export interface PanelUi {
   custom<T>(factory: (tui: { requestRender(): void; terminal?: { rows: number } }, theme: ThemeLike, keybindings: unknown, done: (result: T) => void) => Component & { dispose?(): void }, options?: Record<string, unknown>): Promise<T>;
 }
 
-/** Open the trace as a right-hand overlay. Resolves when the user closes it. */
-export function openTracePanel(ui: PanelUi, trace: Trace): Promise<void> {
-  return ui.custom<void>((tui, theme, _keybindings, done) => {
-    const panel = new TracePanel(trace, theme, () => done(), () => tui.requestRender());
+export interface PanelController {
+  /** Resolves when the sidebar has been removed, by the user or by close(). */
+  closed: Promise<void>;
+  close(): void;
+}
+
+/**
+ * Open the trace as a right-hand sidebar. Pi's public UI API offers floating overlays but no side dock that narrows the
+ * transcript, so the sidebar covers the right part of the screen; `nonCapturing` keeps the editor focused.
+ */
+export function openTracePanel(ui: PanelUi, trace: Trace, options: { width?: string | number } = {}): PanelController {
+  let close: () => void = () => {};
+  let unfocus: () => void = () => {};
+  const closed = ui.custom<void>((tui, theme, _keybindings, done) => {
+    close = () => done();
+    const panel = new TracePanel(trace, theme, { close, unfocus: () => unfocus() }, () => tui.requestRender());
     const rows = tui.terminal?.rows;
-    if (typeof rows === "number") panel.setViewport(Math.floor(rows * 0.9) - 2);
+    if (typeof rows === "number") panel.setViewport(rows - 2);
     return panel;
   }, {
     overlay: true,
-    overlayOptions: { anchor: "right-center", width: "48%", minWidth: 56, maxHeight: "90%", margin: { right: 1 } },
+    overlayOptions: { anchor: "right-center", width: options.width ?? "40%", minWidth: 44, maxHeight: "100%", nonCapturing: true },
+    onHandle: (handle: { unfocus(): void }) => { unfocus = () => handle.unfocus(); },
   });
+  return { closed, close: () => close() };
 }

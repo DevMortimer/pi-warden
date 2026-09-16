@@ -112,11 +112,15 @@ The action guard receives the latest user message plus up to eight previous user
 | `/warden mode steer\|confirm\|advise` | Choose how holds are handled; without an argument, show the current mode |
 | `/warden config` | Edit the user config JSON in Pi's editor and save it |
 | `/warden test` | Evaluate one synthetic destructive action and show the verdict and what the agent would be told |
-| `/warden trace` | Open the trace panel (or print the last 20 events without a UI) |
+| `/warden trace` | Toggle the trace sidebar (or print the last 20 events without a UI) |
 
-## Status line and trace panel
+## Status line and trace sidebar
 
-The line above the editor shows the latest verdict per guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`. Every verdict is also kept in a session trace with what was inspected (redacted command or path), the pattern hits, Jev's scores with model and latency, the reasons, and the exact text the agent was told. Open the panel with `/warden trace`, `ctrl+shift+w`, or by clicking the status line (clicks need Pi's fullscreen mode: `tuiMode: "fullscreen"` in settings, because regular mode leaves the mouse to the terminal). The panel is a right-hand overlay, newest first, live-updating while the agent works; ↑↓/PgUp/PgDn scroll, `c` clears, Esc closes.
+The line above the editor shows the latest verdict per guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`. Every verdict is also kept in a session trace with what was inspected (redacted command or path), the pattern hits, Jev's scores with model and latency, the reasons, and the exact text the agent was told.
+
+`/warden trace`, `ctrl+shift+w`, and a click on the status line each **toggle a right-hand sidebar** with that trace, newest first, live-updating while the agent works. The sidebar does not take the keyboard: you keep typing in the editor while it is open. Click inside it to give it the keys (↑↓/PgUp/PgDn scroll, `c` clears, Esc hands input back to the editor, `q` closes); the wheel scrolls it without focus. `widget.panelWidth` sets its width (`"40%"` or a column count).
+
+Clicks and the wheel need Pi's fullscreen mode (`tuiMode: "fullscreen"` in `/settings`); regular mode leaves the mouse to the terminal for scrollback. If the mouse does nothing in fullscreen, the terminal is not reporting it: in macOS Terminal.app enable View → Allow Mouse Reporting (⌘R). Pi's extension API offers floating overlays but no side dock that narrows the transcript, so the sidebar covers the right part of the screen instead of pushing the transcript aside.
 
 Templates in `config.widget` control the text. Segments are separated by ` · `; a segment whose token has no value for that verdict is dropped, so optional information disappears together with its label:
 
@@ -125,6 +129,7 @@ Templates in `config.widget` control the text. Segments are separated by ` · `;
   "enabled": true,
   "placement": "aboveEditor",
   "shortcut": "ctrl+shift+w",
+  "panelWidth": "40%",
   "action": "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop: {slop} · patterns: {patterns} · {flags} · {level}",
   "stuck": "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
   "done": "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
@@ -163,7 +168,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
     "threshold": 0.7,
     "prose": { "enabled": true, "audience": "technical", "threshold": 0.7, "trend": 2, "minChars": 200 }
   },
-  "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w" },
+  "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "steerVisible": false
 }
 ```

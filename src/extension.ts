@@ -15,7 +15,7 @@ import { compressOutput, evaluateOutput, saveOutput, securityNotice } from "./ou
 import { redact } from "./redact.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { openTracePanel } from "./panel.js";
-import type { PanelUi } from "./panel.js";
+import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName } from "./trace.js";
 import { proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
@@ -103,7 +103,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let stats = freshStats();
   const widget = new Map<GuardName, string>();
   const trace = new Trace();
-  let panelOpen = false;
+  let panel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
   /** Calls held in steer mode, with the user prompt current at that time; a retry after the user replies asks Jev about approval. */
   const held = new Map<string, string | undefined>();
@@ -125,10 +125,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (code === "budget") budgetExhausted = true;
     if (ctx.hasUI) ctx.ui.notify(`warden: ${message}${budgetExhausted ? " Pattern checks continue without TypeSafe for the rest of this session." : ""}`, "warning");
   };
-  const openPanel = (ui: PanelUi | undefined) => {
-    if (!ui || panelOpen) return;
-    panelOpen = true;
-    openTracePanel(ui, trace).catch(() => undefined).finally(() => { panelOpen = false; });
+  /** Click, shortcut, and /warden trace all toggle the same sidebar. */
+  const togglePanel = (ui: PanelUi | undefined, config: WardenConfig) => {
+    if (!ui) return;
+    if (panel) { panel.close(); return; }
+    const opened = openTracePanel(ui, trace, { width: config.widget.panelWidth });
+    panel = opened;
+    opened.closed.catch(() => undefined).finally(() => { if (panel === opened) panel = undefined; });
   };
   const paint = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig) => {
     if (!ctx.hasUI) return;
@@ -138,7 +141,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // A custom component so a click (fullscreen mode) opens the trace panel; plain lines otherwise look the same.
     ctx.ui.setWidget(WIDGET, (_tui, theme) => new MouseRegion(new Text(lines.map(line => theme.fg("muted", line)).join("\n"), 0, 0), event => {
       if (event.type !== "click" || event.button !== "left") return undefined;
-      openPanel(lastUi);
+      togglePanel(lastUi, config);
       return { handled: true };
     }), { placement: config.widget.placement });
   };
@@ -156,6 +159,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     stats = freshStats();
     widget.clear();
     trace.clear();
+    panel?.close();
     held.clear();
     attempts.reset();
     evidence = emptyEvidence();
@@ -345,8 +349,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const shortcut = loadConfig().widget.shortcut;
   if (/^(?:(?:ctrl|shift|alt|super)\+)+[a-z0-9]+$|^f\d{1,2}$/i.test(shortcut)) {
     pi.registerShortcut(shortcut as KeyId, {
-      description: "Open the pi-warden trace panel",
-      handler: async ctx => { if (ctx.hasUI) openPanel(ctx.ui as unknown as PanelUi); },
+      description: "Toggle the pi-warden trace sidebar",
+      handler: async ctx => { if (ctx.hasUI) togglePanel(ctx.ui as unknown as PanelUi, configFor(ctx)); },
     });
   }
 
@@ -376,7 +380,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; failOpen ${config.action.failOpen}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
-            `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,
+            `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode; each toggles the sidebar). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,
           ].join(" "));
           return;
         }
@@ -386,7 +390,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             report(entries.length ? entries.slice(-20).map(entry => `${new Date(entry.at).toTimeString().slice(0, 8)} ${entry.guard}: ${entry.line}${entry.details.length ? `\n  ${entry.details.join("\n  ")}` : ""}`).join("\n") : "No guarded activity yet this session.");
             return;
           }
-          openPanel(ctx.ui as unknown as PanelUi);
+          togglePanel(ctx.ui as unknown as PanelUi, config);
           return;
         }
         if (action === "enable") {

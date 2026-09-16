@@ -692,7 +692,7 @@ test("/warden config validates JSON and saves the user file", async () => {
   assert.equal(networkCalls, 1, "write is no longer a guarded tool");
 });
 
-test("the widget is a clickable component: a left click opens the trace panel as a right-hand overlay, live-updating", async () => {
+test("the widget is a clickable component: a left click toggles a non-capturing right-hand sidebar, live-updating", async () => {
   await grantConsent();
   nextAnswers = { irreversible: 0.2, off_task: 0.1, scope: "expected_step" };
   await toolCall("bash", { command: "npm test" });
@@ -704,16 +704,25 @@ test("the widget is a clickable component: a left click opens the trace panel as
   assert.deepEqual(result, { handled: true });
   assert.equal(customCalls.length, 1);
   assert.equal(customCalls[0]!.options?.overlay, true);
-  assert.deepEqual((customCalls[0]!.options?.overlayOptions as Record<string, unknown>).anchor, "right-center");
-  const panel = openPanels[0]!;
+  const overlayOptions = customCalls[0]!.options?.overlayOptions as Record<string, unknown>;
+  assert.equal(overlayOptions.anchor, "right-center");
+  assert.equal(overlayOptions.nonCapturing, true, "the editor keeps keyboard input while the sidebar is open");
+  assert.equal(overlayOptions.width, "40%");
+  const panel = openPanels[0]! as typeof openPanels[0] & { focused: boolean; handleMouse(event: Record<string, unknown>): unknown };
+  assert.match(panel.render(120).join("\n"), /click for keys · wheel scrolls/);
+  assert.deepEqual(panel.handleMouse({ type: "press", button: "left", x: 2, y: 3 }), { handled: true, focus: true, render: true }, "a click inside asks the TUI for focus");
+  panel.focused = true;
+  assert.match(panel.render(120).join("\n"), /esc back to editor · q close/);
+  assert.ok(panel.render(120).every(line => line.startsWith("│ ")), "a left border marks the pane");
   let text = panel.render(120).join("\n");
   assert.match(text, /pi-warden trace · 1 event/);
   assert.match(text, /action\s+warden · bash · irreversible 0\.20/);
   assert.match(text, /· ran: npm test/);
   assert.match(text, /· jev: irreversible 0\.20 · off-task 0\.10 · expected step/);
 
-  widgetComponent!.handleMouse!({ type: "click", button: "left", x: 1, y: 0 });
-  assert.equal(customCalls.length, 1, "a second click does not open a second panel");
+  panel.handleInput("\x1b");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(customCalls.length, 1, "escape hands input back without closing");
 
   nextAnswers = { irreversible: 0.92, off_task: 0.1, scope: "expected_step" };
   const rendersBefore = renders;
@@ -725,10 +734,11 @@ test("the widget is a clickable component: a left click opens the trace panel as
   assert.match(text, /· mode: steer/);
   assert.match(text, /· agent told: pi-warden held this bash call/);
 
-  panel.handleInput("\x1b");
-  await new Promise(resolve => setTimeout(resolve, 0));
   widgetComponent!.handleMouse!({ type: "click", button: "left", x: 1, y: 0 });
-  assert.equal(customCalls.length, 2, "after closing, the panel can be opened again");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(customCalls.length, 1, "a second click closes the open sidebar");
+  widgetComponent!.handleMouse!({ type: "click", button: "left", x: 1, y: 0 });
+  assert.equal(customCalls.length, 2, "a third click opens it again");
   openPanels[1]!.handleInput("c");
   assert.match(openPanels[1]!.render(100).join("\n"), /No guarded activity yet/);
   openPanels[1]!.handleInput("q");
@@ -738,8 +748,9 @@ test("/warden trace opens the panel with a UI and prints the trace without one; 
   await grantConsent();
   await runCommand("trace");
   assert.equal(customCalls.length, 1);
-  openPanels[0]!.handleInput("\x1b");
+  await runCommand("trace");
   await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(customCalls.length, 1, "/warden trace toggles the sidebar closed");
 
   await newPrompt("make the tests pass");
   for (let index = 0; index < 3; index++) await toolResult("bash", { command: "npm test" }, "1 failing", true);
@@ -768,11 +779,15 @@ test("/warden trace opens the panel with a UI and prints the trace without one; 
 });
 
 test("widget templates come from config and unknown or empty tokens drop their segment", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, widget: { action: "{time} {tool} → {level} · irr {irreversible} · pat {patterns} · {nonsense}", placement: "belowEditor" } }));
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, widget: { action: "{time} {tool} → {level} · irr {irreversible} · pat {patterns} · {nonsense}", placement: "belowEditor", panelWidth: 60 } }));
   nextAnswers = { irreversible: 0.33, off_task: 0.1, scope: "expected_step" };
   await toolCall("bash", { command: "npm test" });
   assert.equal(widgetPlacement, "belowEditor");
   assert.match(widgets.at(-1)![0]!, /^\d{2}:\d{2}:\d{2} bash → allow · irr 0\.33$/);
+  widgetComponent!.handleMouse!({ type: "click", button: "left", x: 1, y: 0 });
+  assert.equal((customCalls.at(-1)!.options?.overlayOptions as Record<string, unknown>).width, 60, "panelWidth from config");
+  openPanels.at(-1)!.handleInput("q");
+  await new Promise(resolve => setTimeout(resolve, 0));
 
   await writeFile(configPath(), JSON.stringify({ widget: { enabled: false } }));
   await toolCall("bash", { command: "rm -rf dist" });

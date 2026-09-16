@@ -243,6 +243,8 @@ function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
     enabled: boolean(raw.enabled, base.enabled),
     placement: raw.placement === "belowEditor" || raw.placement === "aboveEditor" ? raw.placement : base.placement,
     shortcut: typeof raw.shortcut === "string" ? raw.shortcut.trim() : base.shortcut,
+    panelWidth: typeof raw.panelWidth === "number" && Number.isSafeInteger(raw.panelWidth) && raw.panelWidth >= 20 ? raw.panelWidth
+      : typeof raw.panelWidth === "string" && /^[1-9]\d?%$/.test(raw.panelWidth.trim()) ? raw.panelWidth.trim() : base.panelWidth,
     action: template(raw.action, base.action),
     stuck: template(raw.stuck, base.stuck),
     done: template(raw.done, base.done),
