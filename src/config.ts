@@ -109,6 +109,8 @@ export interface WardenConfig {
 }
 
 export const PACKAGE_NAME = "pi-warden";
+/** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
+export const CONFIG_SCHEMA = 3;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {

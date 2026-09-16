@@ -4,6 +4,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { createTypeSafe, resolveApiKey } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
+import * as configModule from "./config.js";
 import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
@@ -15,6 +16,7 @@ import { compressOutput, evaluateOutput, saveOutput, securityNotice } from "./ou
 import { redact } from "./redact.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { openTracePanel } from "./panel.js";
+import { completeConfig, shapeWarning } from "./shape.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName } from "./trace.js";
@@ -113,7 +115,18 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
 
-  const configFor = (ctx: ExtensionContext | ExtensionCommandContext) => loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+  // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
+  let shapeReported = false;
+  const configFor = (ctx: ExtensionContext | ExtensionCommandContext): WardenConfig => {
+    const { config, missing } = completeConfig(loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() }));
+    if (missing.length && !shapeReported) {
+      shapeReported = true;
+      // A namespace read stays undefined (not a link error) when an older config module lacks the export.
+      const text = shapeWarning(missing, (configModule as { CONFIG_SCHEMA?: number }).CONFIG_SCHEMA);
+      if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
+    }
+    return config;
+  };
   const consentGiven = (config: WardenConfig) => config.typesafe || process.env.PI_WARDEN_ENABLED === "1";
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
   const judgeFor = (config: WardenConfig): TypeSafe | undefined => {

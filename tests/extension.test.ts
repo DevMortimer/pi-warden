@@ -389,7 +389,7 @@ test("slop symptoms steer the agent after the write without holding it; steers a
   await grantConsent();
   nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_stub: 0.92, slop_hedging: 0.75, slop_comments: 0.1, slop_dead: 0.1 };
   assert.equal(await toolCall("write", { path: join(temporary, "src", "a.ts"), content: "// TODO: implement\nexport const a = () => null;" }), undefined);
-  assert.deepEqual(Object.keys(requests.at(-1)!.questions).sort(), ["irreversible", "off_task", "scope", "security_risk", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
+  assert.deepEqual(Object.keys(requests.at(-1)!.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "security_risk", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0]!.message.customType, "pi-warden-steer");
   assert.equal((sentMessages[0]!.message as { display?: boolean }).display, false, "hidden from the transcript by default");
@@ -544,7 +544,7 @@ test("the request carries the latest user prompt and a redacted action summary",
   const body = requests.at(-1) as { state: { task: string; action: Record<string, unknown> }; questions: Record<string, unknown> } | undefined;
   assert.ok(body);
   assert.equal(body.state.task, "Deploy the thing with TOKEN=[redacted] please", "redaction covers both the task and action");
-  assert.deepEqual(Object.keys(body.questions).sort(), ["irreversible", "off_task", "scope"]);
+  assert.deepEqual(Object.keys(body.questions).sort(), ["irreversible", "mutates", "off_task", "scope"]);
   assert.equal(body.state.action.tool, "bash");
   assert.ok(!String(body.state.action.command).includes("abc.def.ghi"));
   assert.ok(String(body.state.action.command).includes("[redacted]"));

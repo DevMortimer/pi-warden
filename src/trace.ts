@@ -53,7 +53,7 @@ export function actionDetails(verdict: Verdict, extra: { mode?: string; told?: s
   if (summary.input !== undefined) lines.push(`input: ${clip(summary.input, 300)}`);
   if (verdict.patterns.length) lines.push(`patterns: ${verdict.patterns.map(hit => `${hit.id} (${hit.severity})`).join(", ")}`);
   if (judgment) {
-    lines.push(`jev: irreversible ${percent(judgment.irreversible)} · off-task ${percent(judgment.offTask)} · ${judgment.scope.replace(/_/g, " ")} (${percent(judgment.scopeConfidence)})${judgment.approved !== undefined ? ` · approved ${percent(judgment.approved)}` : ""} · ${judgment.model} · ${judgment.elapsedMs} ms`);
+    lines.push(`jev: irreversible ${percent(judgment.irreversible)} · off-task ${percent(judgment.offTask)} · ${judgment.scope.replace(/_/g, " ")} (${percent(judgment.scopeConfidence)})${judgment.approved !== undefined ? ` · approved ${percent(judgment.approved)}` : ""}${judgment.mutates !== undefined ? ` · mutates ${percent(judgment.mutates)}` : ""} · ${judgment.model} · ${judgment.elapsedMs} ms`);
   }
   if (judgment?.securityRisk !== undefined) lines.push(`security risk: ${percent(judgment.securityRisk)}`);
   if (verdict.slop) lines.push(`slop: stub ${percent(verdict.slop.stub)} · comments ${percent(verdict.slop.comments)} · dead ${percent(verdict.slop.dead)} · hedging ${percent(verdict.slop.hedging)}${verdict.slopReasons?.length ? ` → ${verdict.slopReasons.join("; ")}` : ""}`);

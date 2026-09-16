@@ -10,7 +10,9 @@ export type { ToolOutcome, RunEvidence, DoneJudgment, DoneVerdict, DoneOptions }
 export { evaluateOutput, buildOutputRequest, outputQuestions, compressOutput, saveOutput, securityNotice } from "./output.js";
 export type { Retention, OutputVerdict, OutputOptions } from "./output.js";
 export { redact } from "./redact.js";
-export { defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, PACKAGE_NAME } from "./config.js";
+export { completeConfig, shapeWarning, EXPECTED_SCHEMA } from "./shape.js";
+export type { ShapeResult } from "./shape.js";
+export { CONFIG_SCHEMA, defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, PACKAGE_NAME } from "./config.js";
 export type { ActionGuardConfig, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, ProseConfig, SecurityConfig, ContextConfig, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
 export type { CommandView } from "./tools.js";

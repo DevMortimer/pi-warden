@@ -16,20 +16,38 @@ before(async () => {
 });
 after(async () => { await rm(cwd, { recursive: true, force: true }); });
 
-const answers = (irreversible: number, offTask: number, scope = "expected_step", confidence = 0.9) => ({
+const answers = (irreversible: number, offTask: number, scope = "expected_step", confidence = 0.9, mutates?: number) => ({
   model: "jev-test", elapsedMs: 12, usage: { input_tokens: 40, output_tokens: 0 },
   answers: {
     irreversible: { type: "noul" as const, noul: irreversible },
     off_task: { type: "noul" as const, noul: offTask },
     scope: { type: "choice" as const, choice: scope, confidence, probabilities: { [scope]: confidence } },
+    ...(mutates === undefined ? {} : { mutates: { type: "noul" as const, noul: mutates } }),
   },
 });
-const judge = (irreversible: number, offTask: number, scope?: string): Judge & { calls: unknown[] } => {
+const judge = (irreversible: number, offTask: number, scope?: string, mutates?: number): Judge & { calls: unknown[] } => {
   const calls: unknown[] = [];
-  return { calls, async evaluate(request) { calls.push(request); return answers(irreversible, offTask, scope) as never; } };
+  return { calls, async evaluate(request) { calls.push(request); return answers(irreversible, offTask, scope, 0.9, mutates) as never; } };
 };
 const failingJudge = (code: "timeout" | "http" = "timeout"): Judge => ({
   async evaluate() { throw new TypeSafeIntegrationError(code, `synthetic ${code}`); },
+});
+
+test("off-task alone holds only actions that can change something; read-only commands are warned, not held", async () => {
+  const config = defaultConfig().action;
+  const inspect = { tool: "bash", input: { command: "cat package.json; node -e \"console.log(require('./package.json').version)\"" }, cwd, task: "Update the README image" };
+  const readOnly = await evaluateAction(inspect, { config, judge: judge(0.05, 0.91, "unrelated", 0.05) });
+  assert.equal(readOnly.level, "warn");
+  assert.match(readOnly.reasons.join("; "), /read-only: not held/);
+  const changes = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config, judge: judge(0.2, 0.91, "unrelated", 0.95) });
+  assert.equal(changes.level, "confirm");
+  const unknown = await evaluateAction(inspect, { config, judge: judge(0.05, 0.91, "unrelated") });
+  assert.equal(unknown.level, "confirm", "without a mutates answer the old rule applies");
+  const write = await evaluateAction({ tool: "write", input: { path: "poem.txt", content: "roses" }, cwd, task: "Fix the login bug" }, { config, judge: judge(0.05, 0.95, "unrelated", 0.05) });
+  assert.equal(write.level, "confirm", "write and edit always change something");
+  const probe = judge(0.05, 0.05, "expected_step", 0.05);
+  await evaluateAction(inspect, { config, judge: probe });
+  assert.ok("mutates" in (probe.calls[0] as { questions: Record<string, unknown> }).questions, "the question is part of the single action request");
 });
 
 test("missing scope context is not itself off-task evidence, while unrelated work still holds", async () => {
@@ -153,7 +171,7 @@ test("evaluateAction sends named state fields and three questions", async () => 
   const j = judge(0.2, 0.1);
   await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests and fix failures" }, { config: defaultConfig().action, judge: j });
   const request = j.calls[0] as { state: Record<string, unknown>; questions: Record<string, { type: string }> };
-  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "off_task", "scope"]);
+  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "mutates", "off_task", "scope"]);
   assert.equal(request.questions.irreversible?.type, "noul");
   assert.equal(request.questions.scope?.type, "choice");
   assert.equal(request.state.task, "Run the tests and fix failures");
@@ -245,7 +263,7 @@ test("slop questions join the write/edit request only, score per symptom, and ne
   const config = defaultConfig();
   const j = withSlop(0.1, 0.1, { stub: 0.95, hedging: 0.8, comments: 0.2 });
   const write = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "// TODO implement\nexport function a() { return null as any; }" }, cwd, task: "implement a()" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "off_task", "scope", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
+  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
   assert.equal(write.level, "allow", "slop never blocks");
   assert.deepEqual(write.slop, { stub: 0.95, comments: 0.2, dead: 0.05, hedging: 0.8 });
   assert.deepEqual(write.slopSymptoms, ["stub", "hedging"], "strongest first");
@@ -253,7 +271,7 @@ test("slop questions join the write/edit request only, score per symptom, and ne
   assert.match(formatVerdict(write), /slop: stub 0\.95, hedging 0\.80/);
 
   const bash = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "off_task", "scope"], "no slop questions for bash");
+  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope"], "no slop questions for bash");
   assert.equal(bash.slop, undefined);
 
   const clean = await evaluateAction({ tool: "edit", input: { path: join(cwd, "a.ts"), edits: [{ oldText: "a", newText: "b" }] }, cwd, task: "rename" }, { config: config.action, judge: withSlop(0.1, 0.1, {}), slop: config.slop });
