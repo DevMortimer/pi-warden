@@ -1,4 +1,4 @@
-export { evaluateAction, describeAction, matchPatterns, isReadOnlyCommand, buildRequest, formatVerdict, steerReason, textApproves, questions, slopQuestions, approvalQuestion } from "./guard.js";
+export { evaluateAction, describeAction, matchPatterns, isReadOnlyCommand, buildRequest, formatVerdict, steerReason, textApproves, questions, slopQuestions, approvalQuestion, securityQuestion } from "./guard.js";
 export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, ScopeLabel, Severity, Verdict } from "./guard.js";
 export { SLOP_SYMPTOMS, SLOP_LABELS } from "./guard.js";
 export { evaluateProse, buildProseRequest, proseQuestions, proseNudge, describeAudience, ProseTrend, PROSE_SYMPTOMS, PROSE_LABELS } from "./prose.js";
@@ -7,9 +7,11 @@ export { AttemptWindow, makeAttempt, resultFailed, resultText, evaluateStuck, bu
 export type { Attempt, StuckJudgment, StuckVerdict, StuckOptions } from "./stuck.js";
 export { classifyToolResult, recordOutcome, emptyEvidence, needsDoneCheck, finalAssistantText, evaluateDone, buildDoneRequest, doneQuestions, doneNudge, formatDone } from "./done.js";
 export type { ToolOutcome, RunEvidence, DoneJudgment, DoneVerdict, DoneOptions } from "./done.js";
+export { evaluateOutput, buildOutputRequest, outputQuestions, compressOutput, saveOutput, securityNotice } from "./output.js";
+export type { Retention, OutputVerdict, OutputOptions } from "./output.js";
 export { redact } from "./redact.js";
 export { defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, PACKAGE_NAME } from "./config.js";
-export type { ActionGuardConfig, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, ProseConfig, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
+export type { ActionGuardConfig, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, ProseConfig, SecurityConfig, ContextConfig, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
 export type { CommandView } from "./tools.js";
 export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, TOKEN_NAMES } from "./widget.js";

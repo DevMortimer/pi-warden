@@ -8,15 +8,15 @@ The verdicts above are real output from `npm run test:live`. Independent project
 
 ## Philosophy
 
-pi-warden is a harness for the agent, not a gate for the user. It watches every tool call, tool result, and reply, asks Jev small typed questions about them, and acts through the agent's own context — a held call, a steer message, a compressed output — rather than through dialogs. Jev decides; code applies the decision; the LLM is never asked to judge itself. Everything warden does is visible in the trace panel, and nothing is rewritten in your session file.
+pi-warden is a harness for the agent, not a gate for the user. It watches every tool call, tool result, and reply, asks Jev small typed questions about them, and acts through the agent's own context — a held call, a steer message, a compressed output — rather than through dialogs. Jev decides; code applies the decision; the LLM is never asked to judge itself. Guard decisions are visible in the trace panel. Existing session entries are never rewritten; output warnings and excerpts are applied before a new tool result enters the session.
 
 Three jobs, in order of maturity:
 
 | Pillar | What it means | Status |
 | --- | --- | --- |
-| **Security** | Irreversible or off-task actions are held with a reason the agent can act on; credential files, force pushes, destructive SQL, and remote-script execution are caught offline; secrets are redacted before anything leaves the machine. Next: injected instructions inside tool output (web pages, issues, files) flagged and quarantined; insecure patterns in written code steered. | built · extending |
+| **Security** | Action holds and offline patterns protect risky operations. Tool-output checks flag possible injected instructions and credential shapes; insecure written code gets a targeted steer. Output notices are advisory, not a sandbox or a guarantee that an attack is contained. | built |
 | **Deslopify** | Written code is scored per symptom — stubs, restating comments, dead code, hedging — and the agent gets a nudge naming the symptom and its fix; repeats become a standing rule. Replies are scored for wordiness, assistant clichés, and jargon against an `audience` setting, and a trend across replies shapes the next one. | built |
-| **Context saving** | Jev judges which tool outputs are worth keeping; code compresses them. Only at moments that cannot cost a prompt-cache miss: when an output arrives (before it enters the cache), when the cache is measurably cold, or when Pi compacts anyway. Works alongside prompt-cache optimizers because it never touches the system prompt or a warm prefix. | planned |
+| **Context saving** | Jev selects a retention policy for large new tool results; code keeps deterministic excerpts and an exact local copy. Only tail compression is implemented. Cold-cache pruning and compaction integration remain planned. The system prompt and existing history are untouched. | tail MVP |
 
 ## Why a coding agent needs this
 
@@ -88,6 +88,20 @@ Nudges from the stuck, done, slop, and prose guards are custom messages in the a
 
 If TypeSafe cannot answer (timeout after 5 s, outage, budget), an action-guard call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead), and the other guards simply skip. When the per-session request budget is spent, pi-warden says so once and continues with offline checks. Consent in headless runs comes from `PI_WARDEN_ENABLED=1`; `PI_WARDEN_MODE` overrides the mode.
 
+### Tool-output security and tail compression
+
+With consent, content-bearing tools (`read`, fetch/search tools and named MCP equivalents) are checked for instructions that redirect the assistant or request private data. Other tools, including shell/context-mode tools, are checked from 2048 characters. Jev receives a redacted 6000-character head/tail sample, so attacks in an unsampled middle can be missed. A score at or above `security.threshold` adds an untrusted-data notice around the text and a hidden steer. Local credential-shape checks work without network access and warn not to echo or commit possible secrets. Images, result details, error flags, and usage are preserved.
+
+Written code gets a `security_risk` question in the existing action request: hardcoded credentials, disabled TLS checks, unsafe shell/SQL interpolation, broad permissions, or bypassed verification. A threshold crossing warns and steers; it does not authorize an action or automatically block otherwise safe edits.
+
+For a single text block of at least `context.tailMinChars`, the same output request asks Jev to choose `all`, `errors_and_summary`, or `summary_only`. The full result stays when P(keep all) exceeds `1 - context.confidence` (default: keep when Jev gives `all` more than 0.2), when the probability is missing, or on any request error. Code—not Jev—keeps bounded diagnostic/head/tail excerpts. An exact copy is written to an owner-only temporary directory before replacement; the excerpt links to it. If storage fails, the original stays. Multiple text blocks keep their layout and are not compressed. Trace and widget show the actual bytes saved. No extra steer is persisted for compression alone.
+
+This MVP is always tail-only: set `context.enabled: false` to stop compression. It never prunes a warm prefix, changes the system prompt, or edits historical session entries. Full-output files can contain secrets; they remain in the OS temporary directory until you or the OS remove them. Excerpts can omit relevant evidence; read the linked file before making a decision that needs it.
+
+### Task continuity
+
+The action guard receives the latest user message plus up to eight previous user/assistant text messages, limited to 750 redacted characters each. This keeps follow-ups and side comments from replacing the task. New user instructions override earlier ones; assistant text supplies context, not permission. Approval of a held action still uses only the latest user message. `unclear` scope alone no longer triggers an off-task warning; irreversible-action checks are unchanged. Long handoffs outside that bounded context can still require the user to restate the task.
+
 ## Commands
 
 | Command | Effect |
@@ -114,11 +128,13 @@ Templates in `config.widget` control the text. Segments are separated by ` · `;
   "action": "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop: {slop} · patterns: {patterns} · {flags} · {level}",
   "stuck": "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
   "done": "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
-  "prose": "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}"
+  "prose": "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}",
+  "security": "warden · security · {tool} · injection {injection} · exfiltration {exfiltration} · {status}",
+  "context": "warden · context · {tool} · {retention} · saved {bytesSaved} bytes"
 }
 ```
 
-Tokens — action: `tool level source irreversible offTask scope approved slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time`; prose: `wordy cliches jargon status reasons model ms flags time`; stuck: `failures sameStrategy approachChange progress status source reasons model ms flags time`; done: `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`. A minimal line: `"action": "⚔ {tool} {level} · {irreversible}/{offTask}"`. Set `"enabled": false` to hide the line (the trace and panel keep working); `"shortcut": ""` disables the keybinding.
+Tokens — action: `tool level source irreversible offTask scope approved slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time`; prose: `wordy cliches jargon status reasons model ms flags time`; stuck: `failures sameStrategy approachChange progress status source reasons model ms flags time`; done: `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`. Security tokens: `tool injection exfiltration status`; context tokens: `tool retention bytesSaved`. A minimal line: `"action": "⚔ {tool} {level} · {irreversible}/{offTask}"`. Set `"enabled": false` to hide the line (the trace and panel keep working); `"shortcut": ""` disables the keybinding.
 
 ## Configuration
 
@@ -140,6 +156,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
   },
   "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
   "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
+  "security": { "enabled": true, "threshold": 0.7 },
+  "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8 },
   "slop": {
     "enabled": true,
     "threshold": 0.7,
@@ -154,10 +172,14 @@ A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides (f
 
 ## Data handling
 
-- With consent, each guarded call sends to `https://api.typesafe.ai`: your latest prompt (truncated to 1500 characters), the tool name, the command (truncated to 2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample for `write`, and the first three edit pairs (400 characters each) for `edit`. The stuck detector sends the last 12 tool calls (300 characters each) with 400-character output tails; the done-check and the prose check send the agent's final message (2000 and 2500 characters) with the run's check commands and the audience description. No other files, history, or telemetry.
+- With consent, each guarded call sends to `https://api.typesafe.ai`: your latest prompt (truncated to 1500 characters), the tool name, the command (truncated to 2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample for `write`, and the first three edit pairs (400 characters each) for `edit`. The stuck detector sends the last 12 tool calls (300 characters each) with 400-character output tails; the done-check and the prose check send the agent's final message (2000 and 2500 characters) with the run's check commands and the audience description. Scope and retention requests also carry up to eight prior user/assistant text messages (750 redacted characters each). Output checks send a redacted head/tail sample up to 6000 characters plus size and tool name. No unrelated files or telemetry.
 - Obvious credentials in the action (`Authorization` headers, `TOKEN=`/`SECRET=` assignments, `sk-`, `ghp_`, `AKIA`, JWTs, URL passwords, PEM blocks) are replaced with `[redacted]` before sending. This is best-effort; do not rely on it for prompts that contain secrets.
 - Text returned or steered to the agent names the tool, the reasons, and the scores, not the command text. UI errors never include upstream response bodies or keys.
 - Judgments are model output. Thresholds are yours to tune; a hold is information for the agent and for you, not a verdict on either.
+
+### After updating the package
+
+Run `/reload` in each existing Pi session after an update. If an existing session still reports `Cannot read properties of undefined (reading 'enabled')` while a fresh session works, restart that session to replace loaded modules. Version labels alone do not prove that all in-memory modules match the files on disk. Current config loading merges missing legacy fields with defaults; regression tests cover malformed and pre-prose config files. A persistent crash after restart needs its new stack trace and a redacted config example.
 
 ## For extension authors
 
@@ -184,7 +206,8 @@ Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`,
 ```bash
 npm install
 npm run check        # typecheck, offline tests (mocked transport), build
-npm run test:live    # 31 billable synthetic judgments across all guards (key from .env or the stored login); pass action|slop|approval|stuck|done for one group
+npm run test:live    # 43 billable synthetic judgments across all guards (key from .env or the stored login); pass action|slop|approval|stuck|done|security for one group
+node scripts/security-cases.mjs [context]   # the 12-case output-security, task-continuity, and retention set on its own
 npm run dev:pi       # start Pi with this working tree plus an installed pi-typesafe
 node scripts/slop-cases.mjs   # 22 billable cases that tune the slop and prose questions
 npm run preview      # re-render docs/preview.png from the recorded live verdicts (needs a Chrome binary)

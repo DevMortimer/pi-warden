@@ -9,8 +9,10 @@ import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
 import { evaluateAction, formatVerdict, SLOP_LABELS, steerReason, textApproves } from "./guard.js";
-import type { SlopSymptom, Verdict } from "./guard.js";
+import type { SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { evaluateProse, proseNudge, ProseTrend } from "./prose.js";
+import { compressOutput, evaluateOutput, saveOutput, securityNotice } from "./output.js";
+import { redact } from "./redact.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { openTracePanel } from "./panel.js";
 import type { PanelUi } from "./panel.js";
@@ -18,7 +20,7 @@ import { actionDetails, doneDetails, proseDetails, stuckDetails, Trace } from ".
 import type { GuardName } from "./trace.js";
 import { proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; the last few tool calls and output tails when the agent keeps failing; and the agent's final message when it reports completion without running checks. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; and redacted tool-output samples for security and tail compression. Compression stores an exact, owner-only copy in a temporary file on this machine. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -36,6 +38,23 @@ function latestUserPrompt(ctx: ExtensionContext): string | undefined {
     return content.filter((part): part is { type: "text"; text: string } => part.type === "text").map(part => part.text).join("\n");
   }
   return undefined;
+}
+
+/** Scope context only: approval still comes from latestUserPrompt, never from this history. */
+function recentTaskContext(ctx: ExtensionContext): TaskMessage[] {
+  const entries = ctx.sessionManager.getBranch();
+  const messages: TaskMessage[] = [];
+  let skippedLatestUser = false;
+  for (let index = entries.length - 1; index >= 0 && messages.length < 8; index--) {
+    const entry = entries[index];
+    if (entry?.type !== "message") continue;
+    if (entry.message.role !== "user" && entry.message.role !== "assistant") continue;
+    const { role, content } = entry.message;
+    if (role === "user" && !skippedLatestUser) { skippedLatestUser = true; continue; }
+    const text = typeof content === "string" ? content : content.filter(part => part.type === "text").map(part => part.text).join("\n");
+    if (text.trim()) messages.push({ role, text: redact(text).slice(0, 750) });
+  }
+  return messages.reverse();
 }
 
 function activeMode(config: WardenConfig, hasUI: boolean): WardenMode {
@@ -167,10 +186,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const retryAfterHold = held.has(key) && heldAt !== task;
     const judge = judgeFor(config);
     const verdict = await evaluateAction(
-      { tool: event.toolName, input: event.input, cwd: ctx.cwd, task },
-      { config: config.action, judge, signal: ctx.signal, slop: config.slop, retryAfterHold },
+      { tool: event.toolName, input: event.input, cwd: ctx.cwd, task, context: recentTaskContext(ctx) },
+      { config: config.action, judge, signal: ctx.signal, slop: config.slop, security: config.security, retryAfterHold },
     );
     if (verdict.source === "skipped") return;
+    if (verdict.judgment?.securityRisk !== undefined && verdict.judgment.securityRisk >= config.security.threshold) {
+      steer(config, "pi-warden: the proposed write may introduce a security weakness. Check for embedded credentials, disabled TLS, unsafe command/SQL interpolation, broad permissions, or bypassed verification; use a safe implementation instead.");
+    }
     if (verdict.judgment) stats.judged++;
     if (verdict.source === "error") noteError(ctx, verdict.error ?? "TypeSafe request failed.", verdict.errorCode);
     // Offline stand-in for the approval question: the user has replied since the hold and the reply reads as approval.
@@ -221,21 +243,67 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("tool_result", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    const textBlocks = event.content.filter(part => part.type === "text");
+    const text = textBlocks.map(part => part.text).join("\n");
+    const output = await evaluateOutput(event.toolName, text, latestUserPrompt(ctx), {
+      security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
+      signal: ctx.signal, compressible: textBlocks.length === 1, taskContext: recentTaskContext(ctx),
+    });
+    if (ctx.signal?.aborted) return;
+    if (output.error) noteError(ctx, output.error, output.errorCode);
+    let content = event.content;
+    const notice = securityNotice(output);
+    const excerpt = compressOutput(text, output.retention);
+    if (excerpt && !ctx.signal?.aborted) {
+      try {
+        const path = await saveOutput(text);
+        const replacement = `${excerpt}\n\nFull output: ${path}`;
+        const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement) - (notice ? Buffer.byteLength(notice) * 2 + 4 : 0);
+        if (bytesSaved > 0) {
+          content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
+          record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
+            `retention: ${output.retention}; confidence ${output.confidence?.toFixed(2)}; ${output.model}; ${output.elapsedMs} ms`,
+            `saved ${bytesSaved} bytes; full output: ${path}`,
+          ]);
+        }
+      } catch {
+        noteError(ctx, "Could not store full output; keeping it unchanged.", undefined);
+      }
+    }
+    if (notice && textBlocks.length) {
+      let index = 0;
+      content = content.map(part => {
+        if (part.type !== "text") return part;
+        index++;
+        return { ...part, text: `${index === 1 ? `${notice}\n\n` : ""}${part.text}${index === textBlocks.length ? `\n\n${notice}` : ""}` };
+      });
+      steer(config, notice);
+      record(ctx, config, "security", renderTemplate(config.widget.security, {
+        tool: event.toolName, injection: output.injection?.toFixed(2), exfiltration: output.exfiltration?.toFixed(2),
+        status: [output.suspicious && "untrusted instructions", output.secret && "possible credentials"].filter(Boolean).join(", "),
+      }), [
+        `jev: injection ${output.injection?.toFixed(2) ?? "not judged"}; exfiltration ${output.exfiltration?.toFixed(2) ?? "not judged"}`,
+        `output sample: ${redact(text).slice(0, 300)}`, `agent told: ${notice}`,
+      ]);
+    }
+    const patch = content === event.content ? undefined : { content };
+    // Checks and repeat detection use the original result, not the excerpts or security banner.
     const failed = resultFailed(event.isError, event.details, event.content);
     if (config.done.enabled) recordOutcome(evidence, classifyToolResult(event.toolName, event.input, failed), event.input, event.toolName);
-    if (!config.stuck.enabled) return;
+    if (!config.stuck.enabled) return patch;
     attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
-    if (!attempts.shouldJudge(config.stuck)) return;
+    if (!attempts.shouldJudge(config.stuck)) return patch;
     stats.stuckChecks++;
     const verdict = await evaluateStuck(attempts, latestUserPrompt(ctx), { config: config.stuck, judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
     if (verdict.error) noteError(ctx, verdict.error, undefined);
-    if (verdict.source === "repeat" && !verdict.stuck) return;
+    if (verdict.source === "repeat" && !verdict.stuck) return patch;
     const nudge = verdict.stuck && config.stuck.nudge ? stuckNudge(verdict) : undefined;
     record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
-    if (!verdict.stuck) return;
+    if (!verdict.stuck) return patch;
     stats.stuck++;
     if (ctx.hasUI) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
     if (nudge) steer(config, nudge);
+    return patch;
   });
 
   pi.on("agent_end", async (event, ctx) => {
@@ -301,7 +369,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const key = resolveApiKey();
           const source = consentSource(config);
           const usage = client?.getUsage();
-          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`].filter(Boolean).join(", ");
+          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.context.enabled && "context (tail-only)"].filter(Boolean).join(", ");
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,

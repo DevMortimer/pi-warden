@@ -3,7 +3,7 @@ import type { Verdict } from "./guard.js";
 import type { ProseVerdict } from "./prose.js";
 import type { Attempt, StuckVerdict } from "./stuck.js";
 
-export type GuardName = "action" | "stuck" | "done" | "prose";
+export type GuardName = "action" | "stuck" | "done" | "prose" | "security" | "context";
 
 export interface TraceEntry {
   at: number;
@@ -55,6 +55,7 @@ export function actionDetails(verdict: Verdict, extra: { mode?: string; told?: s
   if (judgment) {
     lines.push(`jev: irreversible ${percent(judgment.irreversible)} · off-task ${percent(judgment.offTask)} · ${judgment.scope.replace(/_/g, " ")} (${percent(judgment.scopeConfidence)})${judgment.approved !== undefined ? ` · approved ${percent(judgment.approved)}` : ""} · ${judgment.model} · ${judgment.elapsedMs} ms`);
   }
+  if (judgment?.securityRisk !== undefined) lines.push(`security risk: ${percent(judgment.securityRisk)}`);
   if (verdict.slop) lines.push(`slop: stub ${percent(verdict.slop.stub)} · comments ${percent(verdict.slop.comments)} · dead ${percent(verdict.slop.dead)} · hedging ${percent(verdict.slop.hedging)}${verdict.slopReasons?.length ? ` → ${verdict.slopReasons.join("; ")}` : ""}`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);

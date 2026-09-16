@@ -65,6 +65,20 @@ export interface SlopGuardConfig {
   prose: ProseConfig;
 }
 
+export interface SecurityConfig {
+  enabled: boolean;
+  /** P(injection or exfiltration) at or above this adds an untrusted-output notice. */
+  threshold: number;
+}
+
+export interface ContextConfig {
+  enabled: boolean;
+  /** Only new tool output is compressed; warm history and system prompts are never changed. */
+  tailMinChars: number;
+  /** Minimum P(the full output is not needed), 1 - P(all), before code removes output. */
+  confidence: number;
+}
+
 export type WardenMode = "steer" | "confirm" | "advise";
 
 export interface WardenConfig {
@@ -86,6 +100,8 @@ export interface WardenConfig {
   stuck: StuckGuardConfig;
   done: DoneGuardConfig;
   slop: SlopGuardConfig;
+  security: SecurityConfig;
+  context: ContextConfig;
   /** The status line above the editor and the trace panel. */
   widget: WidgetConfig;
   /** Show steer messages in the transcript. They are always visible in the trace panel. */
@@ -113,6 +129,8 @@ export function defaultConfig(): WardenConfig {
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
+    security: { enabled: true, threshold: 0.7 },
+    context: { enabled: true, tailMinChars: 12000, confidence: 0.8 },
     widget: defaultWidgetConfig(),
     steerVisible: false,
   };
@@ -229,6 +247,8 @@ function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
     stuck: template(raw.stuck, base.stuck),
     done: template(raw.done, base.done),
     prose: template(raw.prose, base.prose),
+    security: template(raw.security, base.security),
+    context: template(raw.context, base.context),
   };
 }
 
@@ -241,12 +261,21 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number): Pick<WardenConfig, "action" | "stuck" | "done" | "slop"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "context"> {
   return {
     action: applyAction(base.action, raw.action, timeoutMs),
     stuck: applyStuck(base.stuck, raw.stuck),
     done: applyDone(base.done, raw.done),
     slop: applySlop(base.slop, raw.slop),
+    security: isObject(raw.security) ? {
+      enabled: boolean(raw.security.enabled, base.security.enabled),
+      threshold: probability(raw.security.threshold, base.security.threshold),
+    } : base.security,
+    context: isObject(raw.context) ? {
+      enabled: boolean(raw.context.enabled, base.context.enabled),
+      tailMinChars: positiveInteger(raw.context.tailMinChars, base.context.tailMinChars),
+      confidence: probability(raw.context.confidence, base.context.confidence),
+    } : base.context,
   };
 }
 

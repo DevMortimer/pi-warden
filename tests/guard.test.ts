@@ -32,6 +32,16 @@ const failingJudge = (code: "timeout" | "http" = "timeout"): Judge => ({
   async evaluate() { throw new TypeSafeIntegrationError(code, `synthetic ${code}`); },
 });
 
+test("missing scope context is not itself off-task evidence, while unrelated work still holds", async () => {
+  const action = { tool: "write", input: { path: "src/output.ts", content: "export const output = 1;" }, cwd, task: "Nice, the guard works :)" };
+  const unclear = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.1, 0.95, "unclear") });
+  assert.equal(unclear.level, "allow");
+  const unrelated = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.1, 0.95, "unrelated") });
+  assert.equal(unrelated.level, "confirm");
+  const destructive = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.95, 0.95, "unclear") });
+  assert.equal(destructive.level, "confirm", "missing context does not disable irreversible-action protection");
+});
+
 test("redact removes common credential shapes and keeps the rest", () => {
   const text = "curl -H 'Authorization: Bearer abc.def.ghi' -d 'TOKEN=sk-live-0123456789abcdef' https://user:pass@example.com AKIAABCDEFGHIJKLMNOP ghp_0123456789abcdefghijklmnopqrstuvwxyz";
   const out = redact(text);

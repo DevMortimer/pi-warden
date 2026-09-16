@@ -15,6 +15,8 @@ export interface WidgetConfig {
   stuck: string;
   done: string;
   prose: string;
+  security: string;
+  context: string;
 }
 
 export const DEFAULT_TEMPLATES = {
@@ -22,6 +24,8 @@ export const DEFAULT_TEMPLATES = {
   stuck: "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
   done: "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
   prose: "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}",
+  security: "warden · security · {tool} · injection {injection} · exfiltration {exfiltration} · {status}",
+  context: "warden · context · {tool} · {retention} · saved {bytesSaved} bytes",
 } as const;
 
 export function defaultWidgetConfig(): WidgetConfig {
@@ -141,6 +145,8 @@ export function proseTokens(verdict: ProseVerdict, at = Date.now()): Tokens {
 
 /** Token names users can put in templates, for /warden status and the README. */
 export const TOKEN_NAMES = {
+  security: ["tool", "injection", "exfiltration", "status"],
+  context: ["tool", "retention", "bytesSaved"],
   action: ["tool", "level", "source", "irreversible", "offTask", "scope", "approved", "slop", "slopStub", "slopComments", "slopDead", "slopHedging", "patterns", "reasons", "path", "model", "ms", "flags", "time", "guard"],
   prose: ["wordy", "cliches", "jargon", "status", "reasons", "model", "ms", "flags", "time", "guard"],
   stuck: ["failures", "sameStrategy", "approachChange", "progress", "status", "source", "reasons", "model", "ms", "flags", "time", "guard"],

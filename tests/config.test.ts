@@ -105,3 +105,31 @@ test("loadConfig merges user then trusted project file, and survives malformed f
   setUserSetting("enabled", false);
   assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { typesafe: true, enabled: false });
 });
+
+// Legacy and malformed config sections must preserve the objects dereferenced by event handlers.
+test("regression: hostile config files cannot leave a guard's `.enabled` dereference undefined", () => {
+  const hostile = [undefined, null, false, 0, "yes", [], { enabled: null }, { prose: null }, { prose: false }, { prose: 3 }, { prose: [] }];
+  const guards = [
+    { path: ["action"], raw: [undefined, null, false, "x", [], { enabled: null }] },
+    { path: ["stuck"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
+    { path: ["done"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
+    { path: ["slop"], raw: hostile },
+    { path: ["widget"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
+  ] as const;
+  for (const guard of guards) {
+    for (const value of guard.raw) {
+      for (const apply of [applyUserOverrides, applyProjectOverrides]) {
+        const config = apply(defaultConfig(), { [guard.path[0]]: value });
+        const section = config[guard.path[0]];
+        assert.equal(typeof section.enabled, "boolean", `${apply.name} ${guard.path[0]}: ${JSON.stringify(value)}`);
+      }
+    }
+  }
+  // The exact crash-site chain: agent_end reads `config.slop.enabled && config.slop.prose.enabled && config.slop.prose.minChars`.
+  for (const value of hostile) {
+    const config = applyUserOverrides(defaultConfig(), { slop: value });
+    assert.equal(typeof config.slop.enabled, "boolean");
+    assert.equal(typeof config.slop.prose.enabled, "boolean");
+    assert.equal(typeof config.slop.prose.minChars, "number");
+  }
+});

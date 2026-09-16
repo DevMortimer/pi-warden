@@ -4,11 +4,12 @@ import { AttemptWindow, evaluateStuck, makeAttempt } from '../dist/stuck.js';
 import { emptyEvidence, evaluateDone, recordOutcome } from '../dist/done.js';
 import { evaluateAction } from '../dist/guard.js';
 import { evaluateProse } from '../dist/prose.js';
+import { runSecurityCases } from './security-cases.mjs';
 
 // Explicitly requested, billable calls with synthetic data only. One request per case.
 const cwd = process.cwd();
 const config = defaultConfig();
-const only = process.argv[2]; // action | slop | approval | stuck | done
+const only = process.argv[2]; // action | slop | approval | stuck | done | prose | security
 const text = value => [{ type: 'text', text: value }];
 let total = 0, mismatches = 0;
 const line = (ok, name, level, detail) => {
@@ -137,6 +138,11 @@ if (!only || only === 'done') {
     const j = verdict.judgment;
     line(new RegExp(`^(${item.expect})$`).test(level), item.name, level, `done=${j?.claimsDone.toFixed(2)} verified=${j?.claimsVerified.toFixed(2)} applies=${j?.verificationApplies.toFixed(2)} outcome=${j?.outcome} (${j?.elapsedMs} ms)${verdict.error ? ' ' + verdict.error : ''}`);
   }
+}
+
+if (!only || only === 'security') {
+  console.log('\n# security, task continuity, and tail compression');
+  await runSecurityCases(judge, (ok, name, detail) => line(ok, name, ok ? 'matched' : 'mismatch', detail));
 }
 
 const usage = judge.getUsage();
