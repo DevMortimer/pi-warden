@@ -353,12 +353,44 @@ test("a held call retried after an approving reply is allowed; without a reply o
   nextAnswers = { irreversible: 0.9, off_task: 0.1, scope: "expected_step", approved: 0.2 };
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "Jev decides on retry: 0.2 is not approval");
   assert.ok("approved" in requests.at(-1)!.questions, "the approval question was asked");
-  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "no new reply: not asked again");
-  assert.ok(!("approved" in requests.at(-1)!.questions));
+  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "still 0.2: held again");
+  assert.ok("approved" in requests.at(-1)!.questions, "a re-hold under the same reply keeps asking; the reply is not consumed by a hold");
   prompt = "YES. Force push it now, I own that branch.";
   nextAnswers = { irreversible: 0.9, off_task: 0.1, scope: "expected_step", approved: 0.95 };
   assert.equal(await toolCall("bash", { command: "git push --force" }), undefined);
   assert.match(widgets.at(-1)![0]!, /user approved/);
+});
+
+test("regression: approval applies to the action, not the exact command string; a re-hold under the reply keeps it valid", async () => {
+  // Ryan, 2026-09-16: held `command -v supabase; supabase db reset`, user said "Yes you can.", the agent retried without the
+  // `command -v` prefix and was held twice more, then fell back to DROP DATABASE. The approval question was never asked.
+  await grantConsent();
+  prompt = "prove the three migrations";
+  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95 };
+  assert.equal((await toolCall("bash", { command: "cd wt && command -v supabase; supabase db reset 2>&1 | tail -25", timeout: 600 }))?.block, true);
+  prompt = "Yes you can.";
+  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95, approved: 0.93 };
+  assert.equal(await toolCall("bash", { command: "cd wt && supabase db reset 2>&1 | tail -25", timeout: 600 }), undefined, "reworded retry after approval runs");
+  assert.ok("approved" in requests.at(-1)!.questions, "Jev was asked whether the reply approves this action");
+  assert.match(widgets.at(-1)![0]!, /user approved/);
+
+  // Same shape, but Jev says the reply does not approve the first retry (0.2); a second, reworded retry must still be asked.
+  prompt = "wipe the local db and replay migrations";
+  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95 };
+  assert.equal((await toolCall("bash", { command: "supabase db reset" }))?.block, true);
+  prompt = "Yes you can.";
+  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95, approved: 0.2 };
+  assert.equal((await toolCall("bash", { command: "supabase db reset 2>&1 | tail -25" }))?.block, true, "held again: 0.2 is not approval");
+  nextAnswers = { irreversible: 0.87, off_task: 0.1, scope: "expected_step", mutates: 0.95, approved: 0.9 };
+  assert.equal(await toolCall("bash", { command: "supabase db reset 2>&1 | tail -40" }), undefined, "the re-hold did not consume the user's reply");
+
+  // An unrelated destructive call after a yes is still judged, and a low approval score keeps it held.
+  prompt = "clean up";
+  nextAnswers = { irreversible: 0.9, off_task: 0.2, scope: "expected_step", mutates: 0.95 };
+  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
+  prompt = "yes";
+  nextAnswers = { irreversible: 0.95, off_task: 0.9, scope: "unrelated", mutates: 0.95, approved: 0.05 };
+  assert.equal((await toolCall("bash", { command: "rm -rf ~/Documents" }))?.block, true, "a yes to one action does not approve a different one");
 });
 
 test("mode confirm shows a dialog; mode advise only reports; PI_WARDEN_MODE overrides the file", async () => {

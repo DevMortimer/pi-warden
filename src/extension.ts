@@ -82,8 +82,6 @@ export function confirmMessage(verdict: Verdict): string {
   return lines.join("\n");
 }
 
-const callKey = (tool: string, input: unknown) => `${tool}\0${JSON.stringify(input)}`;
-
 const SLOP_FIXES: Record<SlopSymptom, string> = {
   stub: "replace stubs, placeholders, and hard-coded fake data with the working implementation, or state in your reply exactly what is left unimplemented and why",
   comments: "delete comments that restate the code; keep only those that explain intent, constraints, or non-obvious behaviour",
@@ -108,8 +106,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const trace = new Trace();
   let panel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
-  /** Calls held in steer mode, with the user prompt current at that time; a retry after the user replies asks Jev about approval. */
-  const held = new Map<string, string | undefined>();
+  /**
+   * Steer-mode hold state. After a hold, the next guarded call that runs under a *new* user prompt asks Jev whether that
+   * prompt approves it. The retry rarely repeats the held string byte for byte (a `command -v` dropped, a different
+   * timeout), so approval is judged against the action itself, not matched against the earlier command text.
+   */
+  let lastHoldPrompt: string | undefined;
+  let holdPending = false;
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
@@ -175,7 +178,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     widget.clear();
     trace.clear();
     panel?.close();
-    held.clear();
+    lastHoldPrompt = undefined;
+    holdPending = false;
     attempts.reset();
     evidence = emptyEvidence();
     doneNudged = false;
@@ -210,9 +214,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
     const task = latestUserPrompt(ctx);
-    const key = callKey(event.toolName, event.input);
-    const heldAt = held.get(key);
-    const retryAfterHold = held.has(key) && heldAt !== task;
+    // A hold happened under an earlier prompt and the user has since replied: ask whether the reply approves this action.
+    const retryAfterHold = holdPending && lastHoldPrompt !== task;
     const judge = judgeFor(config);
     const verdict = await evaluateAction(
       { tool: event.toolName, input: event.input, cwd: ctx.cwd, task, context: recentTaskContext(ctx) },
@@ -232,7 +235,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (verdict.approvedByUser) {
       stats.approved++;
-      held.delete(key);
+      holdPending = false;
     }
     const mode = activeMode(config, ctx.hasUI);
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
@@ -264,7 +267,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${reasons}). Do not retry it unchanged; ask the user how to proceed.` };
     }
     stats.held++;
-    held.set(key, task);
+    // A re-hold under the user's reply keeps the original reference prompt; otherwise the reply could never approve anything.
+    if (!holdPending) lastHoldPrompt = task;
+    holdPending = true;
     if (ctx.hasUI) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
     return { block: true, reason: told ?? steerReason(verdict, { canApprove: judge !== undefined }) };
   });
@@ -321,7 +326,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const patch = content === event.content ? undefined : { content };
     // Checks and repeat detection use the original result, not the excerpts or security banner.
     const failed = resultFailed(event.isError, event.details, event.content);
-    if (config.done.enabled) recordOutcome(evidence, classifyToolResult(event.toolName, event.input, failed), event.input, event.toolName);
+    if (config.done.enabled) recordOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
     if (!config.stuck.enabled) return patch;
     attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
     if (!attempts.shouldJudge(config.stuck)) return patch;

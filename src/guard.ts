@@ -390,7 +390,11 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   const patterns = matchPatterns(action.tool, action.input, action.cwd);
   const reasons: string[] = [];
   let level: Level = "allow";
+  // A shell command that merely mentions a secrets file (grep for key names, cat .env.example) is decided after Jev
+  // says whether it can write; write/edit on such a path, and offline runs, keep the immediate warning.
+  const deferSensitive = judge !== undefined && (action.tool !== "write" && action.tool !== "edit");
   for (const hit of patterns) {
+    if (hit.severity === "sensitive" && deferSensitive) continue;
     level = higher(level, hit.severity === "destructive" ? "confirm" : "warn");
     reasons.push(`${hit.severity}: ${hit.label}`);
   }
@@ -423,6 +427,13 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     };
     if (typeof answers.approved?.noul === "number") judgment.approved = answers.approved.noul;
     if (typeof answers.mutates?.noul === "number") judgment.mutates = answers.mutates.noul;
+    if (deferSensitive) {
+      for (const hit of patterns) {
+        if (hit.severity !== "sensitive") continue;
+        if ((judgment.mutates ?? 1) >= 0.5) { level = higher(level, "warn"); reasons.push(`${hit.severity}: ${hit.label}`); }
+        else reasons.push(`${hit.label} (read-only, not warned)`);
+      }
+    }
     // write/edit always change something; a command that Jev judges read-only is warned about, never held, for scope alone.
     const canChange = summary.tool === "write" || summary.tool === "edit" || (judgment.mutates ?? 1) >= 0.5;
     if (judgment.irreversible >= config.irreversible.confirm) {

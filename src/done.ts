@@ -15,13 +15,35 @@ const CHECK_COMMAND = /\b(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lin
  * What a finished tool call contributes to the run's evidence. Only write/edit count as code changes: shell side effects
  * (deleting a temp dir, installing a package) are too varied to demand a test run for. Custom tools are unknown.
  */
-export function classifyToolResult(tool: string, input: Record<string, unknown>, failed: boolean): ToolOutcome {
+export function classifyToolResult(tool: string, input: Record<string, unknown>, failed: boolean, output?: string): ToolOutcome {
   if (tool === "write" || tool === "edit") return "mutation";
   if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return "read";
   const view = commandOf(tool, input);
   if (!view) return "unknown";
   if (CHECK_COMMAND.test(view.command)) return failed ? "check-fail" : "check-pass";
+  // A test runner launched from inside a script (ctx_execute JavaScript, a Python wrapper) leaves no runner name in the
+  // command text, but its output still carries the runner's summary. Judge that summary instead.
+  const summary = output === undefined ? undefined : checkSummary(output);
+  if (summary) return summary === "fail" || failed ? "check-fail" : "check-pass";
   return view.shell && isReadOnlyCommand(view.command) ? "read" : "unknown";
+}
+
+/**
+ * Recognise a test/type-check runner's own summary in tool output: node:test, jest/vitest, pytest, cargo, go test,
+ * tsc. Returns the outcome the summary reports, or undefined when no runner summary is present.
+ */
+export function checkSummary(output: string): "pass" | "fail" | undefined {
+  const tail = output.slice(-6000);
+  const nodeTest = /\u2139 (?:tests|pass|fail) \d+/.test(tail) && /\u2139 fail (\d+)/.exec(tail);
+  if (nodeTest) return Number(nodeTest[1]) > 0 ? "fail" : "pass";
+  const jest = /^Tests:\s+(?:(\d+) failed, )?.*?\d+ total/m.exec(tail);
+  if (jest) return jest[1] && Number(jest[1]) > 0 ? "fail" : "pass";
+  const pytest = /^=+ .*?(?:(\d+) failed|(\d+) error).*?in [\d.]+s/m.exec(tail) ?? /^=+ (\d+) passed.*? in [\d.]+s =+$/m.exec(tail);
+  if (pytest) return /\d+ (?:failed|error)/.test(pytest[0]) ? "fail" : "pass";
+  const cargoOrGo = /^test result: (ok|FAILED)\./m.exec(tail) ?? /^(ok|FAIL)\s+\S+\s+[\d.]+s$/m.exec(tail);
+  if (cargoOrGo) return cargoOrGo[1] === "ok" ? "pass" : "fail";
+  if (/\berror TS\d{4}:/.test(tail)) return "fail";
+  return undefined;
 }
 
 export interface RunEvidence {
