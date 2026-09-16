@@ -1,10 +1,19 @@
 # pi-warden
 
-Harness guardrails for [Pi](https://pi.dev), built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe). Before the agent runs a `bash`, `write`, or `edit` call, pi-warden checks it twice: a fast offline pattern pass for the obvious hazards, then one TypeSafe (Jev) request that scores how **irreversible** and how **off-task** the action is relative to your latest request. High scores open a confirm dialog; you decide, and a declined call is blocked with a short reason the agent can act on.
+A second pair of eyes for [Pi](https://pi.dev). Before the agent runs a `bash`, `write`, or `edit` call, pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" stops for your confirmation. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
 
-Independent project. Not affiliated with TypeSafe AI or the Pi authors.
+![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
-![Pi asking for confirmation before a destructive command, with pi-warden's irreversible and off-task scores in the dialog](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
+The verdicts above are real output from `npm run test:live`. Independent project; not affiliated with TypeSafe AI or the Pi authors.
+
+## Why a coding agent needs this
+
+Agents are good at picking the next command and bad at noticing when that command is out of proportion to the request. Pattern lists catch `rm -rf /` and force pushes; they cannot tell `db:reset` when you asked for a reset from `db:reset` when you asked for a column. A generative model can, but a second LLM call per tool call is slow and expensive. Jev is a System One model: it returns calibrated probabilities instead of text, in a quarter of a second, for a fraction of a cent. That makes it cheap enough to sit in front of **every** guarded call:
+
+- **Irreversible actions get a dialog** before they run: history rewrites, deleted untracked work, dropped tables, overwritten files outside the project, publishes and deploys. You decide; a declined call is blocked with a one-line reason the agent can act on, not a stack trace.
+- **Scope drift gets flagged.** Poems in a bugfix, refactors nobody asked for, dependency installs unrelated to the task: warned at 0.6, confirmed at 0.85 when Jev also calls the action `unrelated`.
+- **Nothing slows down the boring calls.** Read-only shell lines are skipped without a request; anything else costs one request of ~600 input tokens.
+- **It degrades gracefully.** Offline pattern checks run with no account at all. On an API timeout or outage the call is allowed with a warning (configurable), and the reasons never include your command text or upstream error bodies.
 
 ## Install
 
@@ -99,6 +108,7 @@ npm install
 npm run check        # typecheck, offline tests (mocked transport), build
 npm run test:live    # nine billable synthetic judgments against api.typesafe.ai (key from .env or the stored login)
 npm run dev:pi       # start Pi with this working tree plus an installed pi-typesafe
+npm run preview      # re-render docs/preview.png from the recorded live verdicts (needs a Chrome binary)
 ```
 
 ## License

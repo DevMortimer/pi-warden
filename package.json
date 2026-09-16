@@ -52,6 +52,7 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "test:live": "node --env-file-if-exists=.env scripts/live-smoke.mjs",
     "dev:pi": "node scripts/dev-pi.mjs",
+    "preview": "node scripts/render-preview.mjs",
     "check": "npm run typecheck && npm test && npm run build",
     "prepack": "npm run build"
   },
