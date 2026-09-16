@@ -31,13 +31,36 @@ const ui = {
   notify: (text: string, level = "info") => { notices.push({ text, level }); },
   confirm: async (title: string, message: string) => { confirms.push({ title, message }); return confirmResult; },
   editor: async () => editorText,
-  setWidget: (_id: string, lines: string[] | undefined) => { widgets.push(lines); },
-  custom: async () => { keyPrompts++; return keyInput; },
+  setWidget: (_id: string, content: string[] | ((tui: unknown, theme: unknown) => { render(width: number): string[]; handleMouse?(event: unknown): unknown }) | undefined, options?: { placement?: string }) => {
+    if (typeof content === "function") {
+      widgetComponent = content({ requestRender() {} }, fakeTheme);
+      widgets.push(widgetComponent.render(400).map(line => line.trimEnd()).filter(Boolean));
+    } else {
+      widgetComponent = undefined;
+      widgets.push(content);
+    }
+    widgetPlacement = options?.placement;
+  },
+  custom: async (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => unknown, options?: Record<string, unknown>) => {
+    customCalls.push({ options });
+    if (!options?.overlay) { keyPrompts++; return keyInput; }
+    // Overlay: build the panel, drive it like the TUI would, and resolve when it closes itself.
+    return new Promise(resolve => {
+      const panel = factory({ requestRender() { renders++; }, terminal: { rows: 40 } }, fakeTheme, {}, resolve) as { render(width: number): string[]; handleInput(data: string): void; dispose?(): void };
+      openPanels.push(panel);
+    });
+  },
   input: async () => { throw new Error("input must not be used"); },
 };
 let keyPrompts = 0;
 let keyInput: string | undefined;
 let modelListCalls = 0;
+const fakeTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text, italic: (text: string) => text };
+let widgetComponent: { render(width: number): string[]; handleMouse?(event: unknown): unknown } | undefined;
+let widgetPlacement: string | undefined;
+const customCalls: Array<{ options?: Record<string, unknown> | undefined }> = [];
+const openPanels: Array<{ render(width: number): string[]; handleInput(data: string): void; dispose?(): void }> = [];
+let renders = 0;
 const sessionManager = {
   getBranch: () => prompt === undefined ? [] : [
     { type: "message", message: { role: "assistant", content: [{ type: "text", text: "ignored" }] } },
@@ -125,6 +148,7 @@ beforeEach(async () => {
   notices.length = 0; widgets.length = 0; confirms.length = 0;
   confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; prompt = "Run the test suite";
   keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0;
+  widgetComponent = undefined; widgetPlacement = undefined; customCalls.length = 0; openPanels.length = 0; renders = 0;
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   await rm(configPath(), { force: true });
@@ -498,4 +522,91 @@ test("/warden config validates JSON and saves the user file", async () => {
   assert.equal((await toolCall("bash", { command: "npm test" }))?.block, true, "new thresholds apply immediately");
   assert.equal(await toolCall("write", { path: join(temporary, "a.txt"), content: "x" }), undefined);
   assert.equal(networkCalls, 1, "write is no longer a guarded tool");
+});
+
+test("the widget is a clickable component: a left click opens the trace panel as a right-hand overlay, live-updating", async () => {
+  await grantConsent();
+  nextAnswers = { irreversible: 0.2, off_task: 0.1, scope: "expected_step" };
+  await toolCall("bash", { command: "npm test" });
+  assert.equal(widgetPlacement, "aboveEditor");
+  assert.ok(widgetComponent?.handleMouse, "widget handles mouse events");
+
+  assert.equal(widgetComponent!.handleMouse!({ type: "move", button: "none", x: 1, y: 0 }), undefined, "moves are ignored");
+  const result = widgetComponent!.handleMouse!({ type: "click", button: "left", x: 1, y: 0 });
+  assert.deepEqual(result, { handled: true });
+  assert.equal(customCalls.length, 1);
+  assert.equal(customCalls[0]!.options?.overlay, true);
+  assert.deepEqual((customCalls[0]!.options?.overlayOptions as Record<string, unknown>).anchor, "right-center");
+  const panel = openPanels[0]!;
+  let text = panel.render(120).join("\n");
+  assert.match(text, /pi-warden trace · 1 event/);
+  assert.match(text, /action\s+warden · bash · irreversible 0\.20/);
+  assert.match(text, /· ran: npm test/);
+  assert.match(text, /· jev: irreversible 0\.20 · off-task 0\.10 · expected step/);
+
+  widgetComponent!.handleMouse!({ type: "click", button: "left", x: 1, y: 0 });
+  assert.equal(customCalls.length, 1, "a second click does not open a second panel");
+
+  nextAnswers = { irreversible: 0.92, off_task: 0.1, scope: "expected_step" };
+  const rendersBefore = renders;
+  await toolCall("bash", { command: "npm run db:reset" });
+  assert.ok(renders > rendersBefore, "the open panel re-renders when the trace changes");
+  text = panel.render(120).join("\n");
+  assert.match(text, /2 events/);
+  assert.ok(text.indexOf("db:reset") < text.indexOf("npm test"), "newest first");
+  assert.match(text, /· mode: steer/);
+  assert.match(text, /· agent told: pi-warden held this bash call/);
+
+  panel.handleInput("\x1b");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  widgetComponent!.handleMouse!({ type: "click", button: "left", x: 1, y: 0 });
+  assert.equal(customCalls.length, 2, "after closing, the panel can be opened again");
+  openPanels[1]!.handleInput("c");
+  assert.match(openPanels[1]!.render(100).join("\n"), /No guarded activity yet/);
+  openPanels[1]!.handleInput("q");
+});
+
+test("/warden trace opens the panel with a UI and prints the trace without one; stuck and done events carry details", async () => {
+  await grantConsent();
+  await runCommand("trace");
+  assert.equal(customCalls.length, 1);
+  openPanels[0]!.handleInput("\x1b");
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  await newPrompt("make the tests pass");
+  for (let index = 0; index < 3; index++) await toolResult("bash", { command: "npm test" }, "1 failing", true);
+  await toolResult("edit", { path: "src/a.ts", edits: [] }, "ok", false);
+  nextAnswers = { claims_done: 0.9, claims_verified: 0.1, verification_applies: 0.9, outcome: "complete" };
+  await agentEnd("Fixed it.");
+  await runCommand("trace");
+  const text = openPanels[1]!.render(140).join("\n");
+  assert.match(text, /stuck\s+warden · stuck · 3 failures · exact repeat · stuck/);
+  assert.match(text, /· 1\. ✗ npm test → 1 failing/);
+  assert.match(text, /· agent told: pi-warden: the same call failed 3 times/);
+  assert.match(text, /done\s+warden · done-check · 1 changes/);
+  assert.match(text, /· final message: Fixed it\./);
+  assert.match(text, /· evidence: 1 code change; checks: npm test → failed/);
+  openPanels[1]!.handleInput("q");
+
+  const headless = context({ hasUI: false });
+  const messages: string[] = [];
+  const originalSend = sentMessages.length;
+  await runCommand("trace", headless);
+  const printed = sentMessages.slice(originalSend).map(entry => entry.message.content);
+  messages.push(...printed);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0]!, /stuck: warden · stuck/);
+  assert.match(messages[0]!, /done: warden · done-check/);
+});
+
+test("widget templates come from config and unknown or empty tokens drop their segment", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, widget: { action: "{time} {tool} → {level} · irr {irreversible} · pat {patterns} · {nonsense}", placement: "belowEditor" } }));
+  nextAnswers = { irreversible: 0.33, off_task: 0.1, scope: "expected_step" };
+  await toolCall("bash", { command: "npm test" });
+  assert.equal(widgetPlacement, "belowEditor");
+  assert.match(widgets.at(-1)![0]!, /^\d{2}:\d{2}:\d{2} bash → allow · irr 0\.33$/);
+
+  await writeFile(configPath(), JSON.stringify({ widget: { enabled: false } }));
+  await toolCall("bash", { command: "rm -rf dist" });
+  assert.equal(widgets.at(-1), undefined, "widget disabled clears the line");
 });

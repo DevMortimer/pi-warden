@@ -6,6 +6,7 @@ import type { IntegrationErrorCode, TypeSafe } from "pi-typesafe";
 import type { ActionGuardConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { commandOf } from "./tools.js";
+import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
 export type Level = "allow" | "warn" | "confirm";
 export type Severity = "destructive" | "risky" | "sensitive";
@@ -428,15 +429,7 @@ export function steerReason(verdict: Verdict, options: { canApprove: boolean }):
   return lines.join(" ");
 }
 
-/** One-line rendering for widgets and logs. Includes no command text. */
-export function formatVerdict(verdict: Verdict): string {
-  const parts = [`warden · ${verdict.summary.tool}`];
-  if (verdict.judgment) parts.push(`irreversible ${percent(verdict.judgment.irreversible)}`, `off-task ${percent(verdict.judgment.offTask)}`, verdict.judgment.scope.replace(/_/g, " "));
-  if (verdict.slop) parts.push(`slop ${verdict.slop.quality.toFixed(1)}/2`, `stub ${percent(verdict.slop.placeholder)}`);
-  if (verdict.patterns.length) parts.push(`patterns: ${verdict.patterns.map(hit => hit.id).join(", ")}`);
-  if (verdict.approvedByUser) parts.push("user approved");
-  if (verdict.source === "error") parts.push("typesafe error");
-  if (verdict.source === "read-only") parts.push("read-only");
-  parts.push(verdict.level);
-  return parts.join(" · ");
+/** One-line rendering for widgets and logs. Includes no command text. Templates: see widget.ts. */
+export function formatVerdict(verdict: Verdict, template: string = DEFAULT_TEMPLATES.action): string {
+  return renderTemplate(template, actionTokens(verdict));
 }

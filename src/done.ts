@@ -4,6 +4,7 @@ import { isReadOnlyCommand } from "./guard.js";
 import type { Judge } from "./guard.js";
 import { redact } from "./redact.js";
 import { commandOf } from "./tools.js";
+import { DEFAULT_TEMPLATES, doneTokens, renderTemplate } from "./widget.js";
 
 export type ToolOutcome = "read" | "mutation" | "check-pass" | "check-fail" | "unknown";
 
@@ -159,10 +160,6 @@ export function doneNudge(verdict: DoneVerdict): string {
   return `pi-warden: ${verdict.reasons.join("; ")}. ${detail} Then report the actual result. If no check exists or can run, say so explicitly instead of presenting the work as done.`;
 }
 
-export function formatDone(verdict: DoneVerdict): string {
-  const parts = [`warden · done-check · ${verdict.evidence.mutations} changes · ${verdict.evidence.checks.filter(check => check.passed).length}/${verdict.evidence.checks.length} checks passed`];
-  if (verdict.judgment) parts.push(`claims done ${verdict.judgment.claimsDone.toFixed(2)}`, `claims verified ${verdict.judgment.claimsVerified.toFixed(2)}`, `checks apply ${verdict.judgment.verificationApplies.toFixed(2)}`, verdict.judgment.outcome);
-  if (verdict.error) parts.push("typesafe error");
-  parts.push(verdict.falseClaim ? "false claim" : verdict.unverified ? "unverified" : "ok");
-  return parts.join(" · ");
+export function formatDone(verdict: DoneVerdict, template: string = DEFAULT_TEMPLATES.done): string {
+  return renderTemplate(template, doneTokens(verdict));
 }

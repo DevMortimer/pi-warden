@@ -1,4 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { MouseRegion, Text } from "@earendil-works/pi-tui";
+import type { KeyId } from "@earendil-works/pi-tui";
 import { createTypeSafe, resolveApiKey } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
@@ -9,6 +11,9 @@ import type { RunEvidence } from "./done.js";
 import { evaluateAction, formatVerdict, steerReason, textApproves } from "./guard.js";
 import type { Verdict } from "./guard.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
+import { actionDetails, doneDetails, openTracePanel, stuckDetails, Trace } from "./trace.js";
+import type { GuardName, PanelUi } from "./trace.js";
+import { TOKEN_NAMES } from "./widget.js";
 
 export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; the last few tool calls and output tails when the agent keeps failing; and the agent's final message when it reports completion without running checks. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
@@ -59,7 +64,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let client: TypeSafe | undefined;
   let budgetExhausted = false;
   let stats = freshStats();
-  const widget = new Map<"action" | "stuck" | "done", string>();
+  const widget = new Map<GuardName, string>();
+  const trace = new Trace();
+  let panelOpen = false;
+  let lastUi: PanelUi | undefined;
   /** Calls held in steer mode, with the user prompt current at that time; a retry after the user replies asks Jev about approval. */
   const held = new Map<string, string | undefined>();
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
@@ -78,9 +86,27 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (code === "budget") budgetExhausted = true;
     if (ctx.hasUI) ctx.ui.notify(`warden: ${message}${budgetExhausted ? " Pattern checks continue without TypeSafe for the rest of this session." : ""}`, "warning");
   };
-  const show = (ctx: ExtensionContext, guard: "action" | "stuck" | "done", line: string) => {
+  const openPanel = (ui: PanelUi | undefined) => {
+    if (!ui || panelOpen) return;
+    panelOpen = true;
+    openTracePanel(ui, trace).catch(() => undefined).finally(() => { panelOpen = false; });
+  };
+  const paint = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig) => {
+    if (!ctx.hasUI) return;
+    lastUi = ctx.ui as unknown as PanelUi;
+    if (!config.widget.enabled || widget.size === 0) { ctx.ui.setWidget(WIDGET, undefined); return; }
+    const lines = [...widget.values()];
+    // A custom component so a click (fullscreen mode) opens the trace panel; plain lines otherwise look the same.
+    ctx.ui.setWidget(WIDGET, (_tui, theme) => new MouseRegion(new Text(lines.map(line => theme.fg("muted", line)).join("\n"), 0, 0), event => {
+      if (event.type !== "click" || event.button !== "left") return undefined;
+      openPanel(lastUi);
+      return { handled: true };
+    }), { placement: config.widget.placement });
+  };
+  const record = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig, guard: GuardName, line: string, details: string[]) => {
     widget.set(guard, line);
-    if (ctx.hasUI) ctx.ui.setWidget(WIDGET, [...widget.values()]);
+    trace.push({ at: Date.now(), guard, line, details });
+    paint(ctx, config);
   };
   const steer = (content: string) => pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: true }, { deliverAs: "steer" });
 
@@ -89,6 +115,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     budgetExhausted = false;
     stats = freshStats();
     widget.clear();
+    trace.clear();
     held.clear();
     attempts.reset();
     evidence = emptyEvidence();
@@ -133,7 +160,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       stats.approved++;
       held.delete(key);
     }
-    if (verdict.source !== "read-only") show(ctx, "action", formatVerdict(verdict));
+    const mode = activeMode(config, ctx.hasUI);
+    const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
+    if (verdict.source !== "read-only") record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) }));
     if (verdict.slopReasons?.length) {
       stats.slop++;
       const where = verdict.summary.path ?? event.toolName;
@@ -147,7 +176,6 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (verdict.level !== "confirm") return undefined;
 
-    const mode = activeMode(config, ctx.hasUI);
     const reasons = verdict.reasons.join("; ");
     if (mode === "advise") {
       stats.warned++;
@@ -163,7 +191,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     stats.held++;
     held.set(key, task);
     if (ctx.hasUI) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
-    return { block: true, reason: steerReason(verdict, { canApprove: judge !== undefined }) };
+    return { block: true, reason: told ?? steerReason(verdict, { canApprove: judge !== undefined }) };
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -178,11 +206,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const verdict = await evaluateStuck(attempts, latestUserPrompt(ctx), { config: config.stuck, judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
     if (verdict.error) noteError(ctx, verdict.error, undefined);
     if (verdict.source === "repeat" && !verdict.stuck) return;
-    show(ctx, "stuck", formatStuck(verdict));
+    const nudge = verdict.stuck && config.stuck.nudge ? stuckNudge(verdict) : undefined;
+    record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
     if (!verdict.stuck) return;
     stats.stuck++;
-    if (ctx.hasUI) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${config.stuck.nudge ? " (agent nudged)" : ""}`, "warning");
-    if (config.stuck.nudge) steer(stuckNudge(verdict));
+    if (ctx.hasUI) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
+    if (nudge) steer(nudge);
   });
 
   pi.on("agent_end", async (event, ctx) => {
@@ -194,19 +223,29 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     stats.doneChecks++;
     const verdict = await evaluateDone(latestUserPrompt(ctx), finalMessage, evidence, { config: config.done, judge, timeoutMs: config.timeoutMs, signal: ctx.signal });
     if (verdict.error) noteError(ctx, verdict.error, undefined);
-    show(ctx, "done", formatDone(verdict));
+    const nudge = verdict.unverified && config.done.nudge ? doneNudge(verdict) : undefined;
+    record(ctx, config, "done", formatDone(verdict, config.widget.done), doneDetails(verdict, finalMessage, nudge));
     if (!verdict.unverified) return;
     stats.unverified++;
-    if (ctx.hasUI) ctx.ui.notify(`warden · done-check: ${verdict.reasons.join("; ")}${config.done.nudge ? " (agent asked to verify)" : ""}`, "warning");
-    if (config.done.nudge) {
+    if (ctx.hasUI) ctx.ui.notify(`warden · done-check: ${verdict.reasons.join("; ")}${nudge ? " (agent asked to verify)" : ""}`, "warning");
+    if (nudge) {
       doneNudged = true;
-      pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content: doneNudge(verdict), display: true }, { deliverAs: "followUp", triggerTurn: true });
+      pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content: nudge, display: true }, { deliverAs: "followUp", triggerTurn: true });
     }
   });
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test"];
+  // Shortcuts are registered once at load; a shape check keeps a typo in the config file from being registered.
+  const shortcut = loadConfig().widget.shortcut;
+  if (/^(?:(?:ctrl|shift|alt|super)\+)+[a-z0-9]+$|^f\d{1,2}$/i.test(shortcut)) {
+    pi.registerShortcut(shortcut as KeyId, {
+      description: "Open the pi-warden trace panel",
+      handler: async ctx => { if (ctx.hasUI) openPanel(ctx.ui as unknown as PanelUi); },
+    });
+  }
+
+  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace"];
   pi.registerCommand("warden", {
-    description: "pi-warden status, TypeSafe consent, steer/confirm/advise mode, config editor, and a synthetic guard test",
+    description: "pi-warden status, TypeSafe consent, steer/confirm/advise mode, config editor, trace panel, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
       return matches.length ? matches : null;
@@ -230,7 +269,17 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop quality ${config.slop.quality}, stub ${config.slop.placeholder}; failOpen ${config.action.failOpen}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
+            `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,
           ].join(" "));
+          return;
+        }
+        if (action === "trace") {
+          if (!ctx.hasUI) {
+            const entries = trace.entries();
+            report(entries.length ? entries.slice(-20).map(entry => `${new Date(entry.at).toTimeString().slice(0, 8)} ${entry.guard}: ${entry.line}${entry.details.length ? `\n  ${entry.details.join("\n  ")}` : ""}`).join("\n") : "No guarded activity yet this session.");
+            return;
+          }
+          openPanel(ctx.ui as unknown as PanelUi);
           return;
         }
         if (action === "enable") {
@@ -278,7 +327,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Clean up the demo directory" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge },
           );
-          show(ctx, "action", formatVerdict(verdict));
+          record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode: activeMode(config, ctx.hasUI) }));
           report(`${formatVerdict(verdict)}${verdict.reasons.length ? ` — ${verdict.reasons.join("; ")}` : ""}${judge ? "" : " (pattern checks only: TypeSafe judgments are not enabled or no key is configured)"}${verdict.error ? ` — ${verdict.error}` : ""}`);
           if (verdict.level === "confirm") {
             const mode = activeMode(config, ctx.hasUI);

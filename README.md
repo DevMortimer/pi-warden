@@ -78,6 +78,26 @@ If TypeSafe cannot answer (timeout after 5 s, outage, budget), an action-guard c
 | `/warden mode steer\|confirm\|advise` | Choose how holds are handled; without an argument, show the current mode |
 | `/warden config` | Edit the user config JSON in Pi's editor and save it |
 | `/warden test` | Evaluate one synthetic destructive action and show the verdict and what the agent would be told |
+| `/warden trace` | Open the trace panel (or print the last 20 events without a UI) |
+
+## Status line and trace panel
+
+The line above the editor shows the latest verdict per guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`. Every verdict is also kept in a session trace with what was inspected (redacted command or path), the pattern hits, Jev's scores with model and latency, the reasons, and the exact text the agent was told. Open the panel with `/warden trace`, `ctrl+shift+w`, or by clicking the status line (clicks need Pi's fullscreen mode: `tuiMode: "fullscreen"` in settings, because regular mode leaves the mouse to the terminal). The panel is a right-hand overlay, newest first, live-updating while the agent works; ↑↓/PgUp/PgDn scroll, `c` clears, Esc closes.
+
+Templates in `config.widget` control the text. Segments are separated by ` · `; a segment whose token has no value for that verdict is dropped, so optional information disappears together with its label:
+
+```json
+"widget": {
+  "enabled": true,
+  "placement": "aboveEditor",
+  "shortcut": "ctrl+shift+w",
+  "action": "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop {slopQuality} · stub {slopStub} · patterns: {patterns} · {flags} · {level}",
+  "stuck": "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
+  "done": "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}"
+}
+```
+
+Tokens — action: `tool level source irreversible offTask scope approved slopQuality slopStub patterns reasons path model ms flags time`; stuck: `failures sameStrategy approachChange progress status source reasons model ms flags time`; done: `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`. A minimal line: `"action": "⚔ {tool} {level} · {irreversible}/{offTask}"`. Set `"enabled": false` to hide the line (the trace and panel keep working); `"shortcut": ""` disables the keybinding.
 
 ## Configuration
 
@@ -99,7 +119,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
   },
   "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
   "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
-  "slop": { "enabled": true, "quality": 1.5, "placeholder": 0.7 }
+  "slop": { "enabled": true, "quality": 1.5, "placeholder": 0.7 },
+  "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w" }
 }
 ```
 

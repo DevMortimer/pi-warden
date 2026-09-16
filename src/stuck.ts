@@ -4,6 +4,7 @@ import type { StuckGuardConfig } from "./config.js";
 import type { Judge } from "./guard.js";
 import { redact } from "./redact.js";
 import { commandOf, outputReportsFailure } from "./tools.js";
+import { DEFAULT_TEMPLATES, renderTemplate, stuckTokens } from "./widget.js";
 
 /** One remembered tool result. `key` identifies the exact call; `call` is the redacted view that may leave the machine. */
 export interface Attempt {
@@ -190,11 +191,6 @@ export function stuckNudge(verdict: StuckVerdict): string {
   return `pi-warden: ${verdict.reasons.join("; ")}. Stop retrying. Re-read the last error output carefully, state a new hypothesis about the cause, and either gather the missing information (read the relevant file, check versions or paths) or try a different method. If two different methods have failed, report the blocker to the user with the exact error instead of trying again.`;
 }
 
-export function formatStuck(verdict: StuckVerdict): string {
-  const parts = [`warden · stuck · ${verdict.failures} failures`];
-  if (verdict.judgment) parts.push(`same strategy ${verdict.judgment.sameStrategy.toFixed(2)}`, `change ${verdict.judgment.approachChange.toFixed(1)}/2`, `progress ${verdict.judgment.progress.toFixed(2)}`);
-  if (verdict.source === "repeat" && verdict.stuck) parts.push("exact repeat");
-  if (verdict.source === "error") parts.push("typesafe error");
-  parts.push(verdict.stuck ? "stuck" : "ok");
-  return parts.join(" · ");
+export function formatStuck(verdict: StuckVerdict, template: string = DEFAULT_TEMPLATES.stuck): string {
+  return renderTemplate(template, stuckTokens(verdict));
 }

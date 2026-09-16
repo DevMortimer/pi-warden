@@ -2,6 +2,8 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { COMMAND_TOOLS } from "./tools.js";
+import { defaultWidgetConfig } from "./widget.js";
+import type { WidgetConfig } from "./widget.js";
 
 export interface Threshold {
   /** P(yes) at or above this shows a warning and continues. */
@@ -73,6 +75,8 @@ export interface WardenConfig {
   stuck: StuckGuardConfig;
   done: DoneGuardConfig;
   slop: SlopGuardConfig;
+  /** The status line above the editor and the trace panel. */
+  widget: WidgetConfig;
 }
 
 export const PACKAGE_NAME = "pi-warden";
@@ -96,6 +100,7 @@ export function defaultConfig(): WardenConfig {
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
     slop: { enabled: true, quality: 1.5, placeholder: 0.7 },
+    widget: defaultWidgetConfig(),
   };
 }
 
@@ -191,6 +196,19 @@ function applySlop(base: SlopGuardConfig, raw: unknown): SlopGuardConfig {
   return { enabled: boolean(raw.enabled, base.enabled), quality: score(raw.quality, base.quality), placeholder: probability(raw.placeholder, base.placeholder) };
 }
 
+function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
+  if (!isObject(raw)) return base;
+  const template = (value: unknown, fallback: string) => (typeof value === "string" && value.trim() ? value : fallback);
+  return {
+    enabled: boolean(raw.enabled, base.enabled),
+    placement: raw.placement === "belowEditor" || raw.placement === "aboveEditor" ? raw.placement : base.placement,
+    shortcut: typeof raw.shortcut === "string" ? raw.shortcut.trim() : base.shortcut,
+    action: template(raw.action, base.action),
+    stuck: template(raw.stuck, base.stuck),
+    done: template(raw.done, base.done),
+  };
+}
+
 /** Shared request settings; `action.timeoutMs`/`action.maxRequests` from 0.1.x files are still honoured. */
 function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeoutMs" | "maxRequests"> {
   const legacy = isObject(raw.action) ? raw.action : {};
@@ -219,6 +237,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     mode: isMode(raw.mode) ? raw.mode : base.mode,
     ...shared,
     ...applyGuards(base, raw, shared.timeoutMs),
+    widget: applyWidget(base.widget, raw.widget),
   };
 }
 

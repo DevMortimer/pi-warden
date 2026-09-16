@@ -9,3 +9,7 @@ export { defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, i
 export type { ActionGuardConfig, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
 export type { CommandView } from "./tools.js";
+export { renderTemplate, actionTokens, stuckTokens, doneTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, TOKEN_NAMES } from "./widget.js";
+export type { WidgetConfig, WidgetPlacement, Tokens } from "./widget.js";
+export { Trace, actionDetails, stuckDetails, doneDetails } from "./trace.js";
+export type { TraceEntry, GuardName } from "./trace.js";
