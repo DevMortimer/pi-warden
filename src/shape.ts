@@ -39,12 +39,17 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     done: section("done", { ...off, claimsDone: 1, nudge: false }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1 }),
-    context: section("context", { ...off, tailMinChars: 1, confidence: 1 }),
+    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1 }),
     widget: section("widget", { ...off, placement: "aboveEditor", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "" }),
   };
   if (typeof config.slop.prose !== "object" || config.slop.prose === null) {
     missing.push("slop.prose");
     config.slop = { ...config.slop, prose: proseOff() };
+  }
+  // 0.7 added fields inside the context section; an older config module leaves them undefined.
+  if (typeof config.context.duplicateMinChars !== "number" || typeof config.context.formatConfidence !== "number" || typeof config.context.recallTool !== "string") {
+    missing.push("context.saver");
+    config.context = { ...config.context, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1 };
   }
   if (typeof config.widget.panelWidth !== "string" && typeof config.widget.panelWidth !== "number") config.widget = { ...config.widget, panelWidth: "40%" };
   return { config, missing };

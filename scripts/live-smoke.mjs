@@ -5,11 +5,12 @@ import { emptyEvidence, evaluateDone, recordOutcome } from '../dist/done.js';
 import { evaluateAction } from '../dist/guard.js';
 import { evaluateProse } from '../dist/prose.js';
 import { runSecurityCases } from './security-cases.mjs';
+import { runContextCases } from './context-cases.mjs';
 
 // Explicitly requested, billable calls with synthetic data only. One request per case.
 const cwd = process.cwd();
 const config = defaultConfig();
-const only = process.argv[2]; // action | slop | approval | stuck | done | prose | security
+const only = process.argv[2]; // action | slop | approval | stuck | done | prose | security | context
 const text = value => [{ type: 'text', text: value }];
 let total = 0, mismatches = 0;
 const line = (ok, name, level, detail) => {
@@ -141,8 +142,13 @@ if (!only || only === 'done') {
 }
 
 if (!only || only === 'security') {
-  console.log('\n# security, task continuity, and tail compression');
+  console.log('\n# security and task continuity');
   await runSecurityCases(judge, (ok, name, detail) => line(ok, name, ok ? 'matched' : 'mismatch', detail));
+}
+
+if (!only || only === 'context') {
+  console.log('\n# context saver: retention and format');
+  await runContextCases(judge, (ok, name, detail) => line(ok, name, ok ? 'matched' : 'mismatch', detail));
 }
 
 const usage = judge.getUsage();

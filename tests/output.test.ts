@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig, applyUserOverrides, applyProjectOverrides } from "../src/config.js";
 import type { Judge } from "../src/guard.js";
-import { buildOutputRequest, compressOutput, evaluateOutput, saveOutput, securityNotice } from "../src/output.js";
+import { buildOutputRequest, compressOutput, duplicateNote, evaluateOutput, outputKey, saveOutput, securityNotice } from "../src/output.js";
 
 const options = () => ({ security: defaultConfig().security, context: defaultConfig().context, timeoutMs: 1000 });
 const judge = (injection = 0.1, exfiltration = 0.1, retention = "all", confidence = 0.95): Judge => ({
@@ -44,8 +44,45 @@ test("bounded output requests redact before sampling and batch independent quest
   const serialized = JSON.stringify(request);
   assert.ok(!serialized.includes("private-value"));
   assert.ok(!serialized.includes("xxxx"));
-  assert.deepEqual(Object.keys(request.questions), ["injection", "exfiltration", "retention"]);
-  assert.ok(serialized.length < 8000);
+  assert.deepEqual(Object.keys(request.questions), ["injection", "exfiltration", "retention", "format"]);
+  assert.ok(serialized.length < 10000);
+});
+
+test("a recognised format above formatConfidence selects the parser; other, low probability, or absent markers fall back", async () => {
+  const vitest = `${"progress complete\n".repeat(1500)} ❯ tests/a.test.ts (2 tests | 1 failed) 12ms\n   × adds numbers\n     → expected 3 to be 4\n\n Test Files  1 failed (1)\n      Tests  1 failed | 1 passed (2)\n`;
+  const withFormat = (format: string, probability: number): Judge => ({
+    async evaluate() {
+      return { model: "jev-test", elapsedMs: 1, answers: {
+        injection: { type: "noul", noul: 0.1 }, exfiltration: { type: "noul", noul: 0.1 },
+        retention: { type: "choice", choice: "errors_and_summary", confidence: 0.9, probabilities: { all: 0.1, errors_and_summary: 0.9 } },
+        format: { type: "choice", choice: format, confidence: probability, probabilities: { [format]: probability, other: 1 - probability } },
+      } } as never;
+    },
+  });
+  const parsed = await evaluateOutput("bash", vitest, "run the tests", { ...options(), judge: withFormat("vitest_jest", 0.9) });
+  assert.equal(parsed.format, "vitest_jest");
+  const excerpt = compressOutput(vitest, parsed.retention, parsed.format)!;
+  assert.match(excerpt, /vitest_jest format/);
+  assert.match(excerpt, /× adds numbers/);
+  assert.match(excerpt, /expected 3 to be 4/);
+  assert.match(excerpt, /Tests {2}1 failed/);
+  assert.ok(!excerpt.includes("[head excerpt]"));
+  const unsure = await evaluateOutput("bash", vitest, "run the tests", { ...options(), judge: withFormat("vitest_jest", 0.5) });
+  assert.equal(unsure.format, undefined);
+  assert.equal(unsure.formatConfidence, 0.5);
+  const other = await evaluateOutput("bash", vitest, "run the tests", { ...options(), judge: withFormat("other", 0.95) });
+  assert.equal(other.format, undefined);
+  // Jev names a format whose markers are absent: the generic excerpt is used, nothing is lost.
+  assert.match(compressOutput(log(), "errors_and_summary", "tsc")!, /\[head excerpt\]/);
+});
+
+test("output keys ignore colour codes and trailing whitespace; the duplicate note names the earlier tool and size", () => {
+  const plain = "line one\nline two\n";
+  assert.equal(outputKey(plain), outputKey("\u001b[32mline one\u001b[0m   \nline two  \n\n"));
+  assert.notEqual(outputKey(plain), outputKey("line one\nline three\n"));
+  const note = duplicateNote("x\n".repeat(1000), "bash");
+  assert.match(note, /duplicate; this 2000-character, 1001-line output is identical to an earlier bash result/);
+  assert.ok(note.length < 300);
 });
 
 test("security thresholds are judgments, never permission; short shell output skips network", async () => {

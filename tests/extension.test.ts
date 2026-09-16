@@ -240,7 +240,8 @@ test("tail compression stores exact full output and preserves done-check evidenc
     assert.match(result.content[0]!.text, /ERROR: exact failure/);
     assert.ok(result.content[0]!.text.length < full.length);
     assert.equal(networkCalls, 1, "security and retention share one request");
-    assert.deepEqual(Object.keys(requests[0]!.questions).sort(), ["exfiltration", "injection", "retention"]);
+    assert.deepEqual(Object.keys(requests[0]!.questions).sort(), ["exfiltration", "format", "injection", "retention"]);
+    assert.match(result.content[0]!.text, /To recall a part, .*offset and limit\. Do not read the whole file\./);
     const contextLine = widgets.at(-1)?.find(line => /context.*saved \d+ bytes/.test(line));
     assert.ok(contextLine);
     assert.equal(Number(contextLine.match(/saved (\d+) bytes/)![1]), Buffer.byteLength(full) - Buffer.byteLength(result.content[0]!.text));
@@ -303,11 +304,55 @@ test("the context saver keeps a ledger: candidates, compressions, token-turns, r
     assert.ok(widgets.at(-1)?.some(line => /context · read · full output recalled/.test(line)), "a recall shows on the status line");
     await runCommand("status");
     const status = notices.at(-1)!.text;
-    assert.match(status, /Context saver: 2 large outputs, 1 compressed, \d+\.\d KB removed \(~\d+ tokens\), ~\d+ token-turns spared over 2 turns, 1 recall of the full output \(100%\)/);
+    assert.match(status, /Context saver: 2 large outputs, 1 compressed, 0 duplicates dropped, \d+\.\d KB removed \(~\d+ tokens\), ~\d+ token-turns spared over 2 turns, 1 recall of the full output \(100%; 1 whole-file, 0 scoped\)/);
   } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
   await sessionStart();
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /no tool output large enough to consider this session/);
+});
+
+test("an identical repeated result becomes a duplicate note with a stored copy, without a Jev request", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false } }));
+  nextAnswers = { retention: "all" };
+  const full = "unique line " + "x".repeat(3000) + "\nERROR: kept once\n";
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "the first result stays");
+  assert.equal(networkCalls, 1);
+  const result = await toolResult("bash", { command: "npm test" }, `\u001b[31m${full}\u001b[0m  `, true) as { content: Array<{ type: string; text: string }> };
+  assert.equal(networkCalls, 1, "a duplicate is decided by code");
+  const text = result.content[0]!.text;
+  assert.match(text, /duplicate; this \d+-character, 3-line output is identical to an earlier bash result/);
+  const path = text.match(/Full output: (.+)/)![1]!;
+  try {
+    assert.match(await readFile(path, "utf8"), /ERROR: kept once/);
+    assert.match(text, /Do not read the whole file/);
+    assert.ok(widgets.at(-1)?.some(line => /context · bash · duplicate/.test(line)));
+    // A third copy reuses the stored file instead of writing another.
+    const again = await toolResult("read", { path: "log.txt" }, full, false) as { content: Array<{ text: string }> };
+    assert.equal(again.content[0]!.text.match(/Full output: (.+)/)![1], path);
+    // Reading the stored copy back is a recall, never a duplicate or a compression.
+    await toolCall("read", { path });
+    assert.equal(await toolResult("read", { path }, full, false), undefined);
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /2 duplicates dropped/);
+    assert.match(notices.at(-1)!.text, /0 recalls of the full output/, "duplicate copies are not compression recalls");
+  } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
+  // Below duplicateMinChars nothing is replaced.
+  assert.equal(await toolResult("bash", { command: "ls" }, "a\nb\n", false), undefined);
+  assert.equal(await toolResult("bash", { command: "ls" }, "a\nb\n", false), undefined);
+});
+
+test("recall kinds: a scoped search keeps the saving, a whole-file read is counted as such", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { recallTool: "grep" } }));
+  nextAnswers = { retention: "summary_only" };
+  const first = await toolResult("bash", { command: "npm test" }, "progress complete\n".repeat(2000), false) as { content: Array<{ text: string }> };
+  const path = first.content[0]!.text.match(/Full output: (.+)/)![1]!;
+  try {
+    assert.match(first.content[0]!.text, /grep -n -C 3 -E '<pattern>'/, "the configured tool is named without probing");
+    await toolCall("bash", { command: `grep -n -C 3 -E 'error' '${path}'` });
+    assert.ok(widgets.at(-1)?.some(line => /full output recalled \(scoped\)/.test(line)));
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /1 recall of the full output \(100%; 0 whole-file, 1 scoped\)/);
+  } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
 });
 
 test("read-only tools and read-only shell commands pass without network or dialogs", async () => {

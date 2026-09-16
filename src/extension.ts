@@ -14,7 +14,10 @@ import type { RunEvidence } from "./done.js";
 import { evaluateAction, formatVerdict, SLOP_LABELS, steerReason } from "./guard.js";
 import type { SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { evaluateProse, proseNudge, ProseTrend } from "./prose.js";
-import { compressOutput, evaluateOutput, saveOutput, securityNotice } from "./output.js";
+import { compressOutput, duplicateNote, evaluateOutput, outputKey, saveOutput, securityNotice } from "./output.js";
+import type { OutputVerdict } from "./output.js";
+import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
+import type { SearchTool } from "./recall.js";
 import { redact } from "./redact.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { openTracePanel } from "./panel.js";
@@ -25,7 +28,7 @@ import { actionDetails, doneDetails, proseDetails, stuckDetails, Trace } from ".
 import type { GuardName } from "./trace.js";
 import { proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; and redacted tool-output samples for security and tail compression. Compression stores an exact, owner-only copy in a temporary file on this machine. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; and redacted tool-output samples for security and context saving (retention and output format). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -134,6 +137,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
+  // Probed once per session, outside any tool_result handler; the footer under excerpts names this command.
+  let searchTool: Promise<SearchTool> | undefined;
 
   // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
   let shapeReported = false;
@@ -199,6 +204,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     doneNudged = false;
     prose.reset();
     ledger.reset();
+    searchTool = undefined;
     for (const symptom of Object.keys(slopCounts) as SlopSymptom[]) slopCounts[symptom] = 0;
     if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
   });
@@ -225,8 +231,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const config = configFor(ctx);
     if (!config.enabled) return;
     // A read of a stored full output means the excerpt was not enough; that is the number that tunes context.confidence.
-    const recalled = ledger.noteAccess(JSON.stringify(event.input));
-    if (recalled) record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: "full output recalled" }), [`the agent went back to ${recalled}`, formatLedger(ledger.snapshot())]);
+    // A whole-file read also undoes the saving, so the kind of access is kept apart.
+    const serializedInput = JSON.stringify(event.input);
+    const storedPath = ledger.storedPathIn(serializedInput);
+    if (storedPath) {
+      const kind = classifyRecall(event.toolName, event.input, storedPath);
+      const recalled = ledger.noteAccess(serializedInput, kind);
+      if (recalled) record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: `full output recalled (${kind})` }), [`the agent went back to ${recalled} (${kind === "full" ? "whole-file read" : "scoped access"})`, formatLedger(ledger.snapshot())]);
+    }
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
     const task = latestUserPrompt(ctx);
@@ -292,7 +304,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       stats.stuckChecks++;
       return evaluateStuck(attempts, latestUserPrompt(ctx), { config: config.stuck, judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
     })();
-    const output = await evaluateOutput(event.toolName, text, latestUserPrompt(ctx), {
+    // A recall brings stored text back on purpose: it is not judged, compressed, or dropped again.
+    const recallRead = ledger.storedPathIn(JSON.stringify(event.input)) !== undefined;
+    // Duplicate detection is code only: an identical result adds nothing, whatever Jev would say about it.
+    const key = config.context.enabled && !recallRead && textBlocks.length === 1 && text.length >= config.context.duplicateMinChars ? outputKey(text) : undefined;
+    const earlier = key ? ledger.duplicateOf(key) : undefined;
+    const output: OutputVerdict = earlier || recallRead ? { secret: false, suspicious: false, retention: "all" } : await evaluateOutput(event.toolName, text, latestUserPrompt(ctx), {
       security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
       signal: ctx.signal, compressible: textBlocks.length === 1, taskContext: recentTaskContext(ctx),
     });
@@ -300,18 +317,39 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (output.error) noteError(ctx, output.error, output.errorCode);
     let content = event.content;
     const notice = securityNotice(output);
-    if (config.context.enabled && textBlocks.length === 1 && text.length >= config.context.tailMinChars) ledger.candidate();
-    const excerpt = compressOutput(text, output.retention);
+    const recallTool = await (searchTool ??= detectSearchTool(config.context.recallTool));
+    let storedPath: string | undefined;
+    if (earlier && key) {
+      try {
+        storedPath = earlier.path ?? await saveOutput(text);
+        const replacement = `${duplicateNote(text, earlier.tool)}\n\n${recallInstruction(recallTool, storedPath)}`;
+        const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement);
+        if (bytesSaved > 0) {
+          content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
+          ledger.duplicate(bytesSaved);
+          ledger.remember(key, earlier.tool, storedPath);
+          record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: "duplicate", bytesSaved: String(bytesSaved) }), [
+            `identical to an earlier ${earlier.tool} result; saved ${bytesSaved} bytes; full output: ${storedPath}`,
+            formatLedger(ledger.snapshot()),
+          ]);
+        }
+      } catch {
+        noteError(ctx, "Could not store full output; keeping it unchanged.", undefined);
+      }
+    }
+    if (config.context.enabled && !earlier && !recallRead && textBlocks.length === 1 && text.length >= config.context.tailMinChars) ledger.candidate();
+    const excerpt = earlier ? undefined : compressOutput(text, output.retention, output.format);
     if (excerpt && !ctx.signal?.aborted) {
       try {
         const path = await saveOutput(text);
-        const replacement = `${excerpt}\n\nFull output: ${path}`;
+        const replacement = `${excerpt}\n\n${recallInstruction(recallTool, path)}`;
         const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement) - (notice ? Buffer.byteLength(notice) * 2 + 4 : 0);
         if (bytesSaved > 0) {
           content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
           ledger.record(path, bytesSaved);
+          storedPath = path;
           record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
-            `retention: ${output.retention}; confidence ${output.confidence?.toFixed(2)}; ${output.model}; ${output.elapsedMs} ms`,
+            `retention: ${output.retention}; confidence ${output.confidence?.toFixed(2)}; format ${output.format ?? "generic"}${output.formatConfidence === undefined ? "" : ` (${output.formatConfidence.toFixed(2)})`}; ${output.model}; ${output.elapsedMs} ms`,
             `saved ${bytesSaved} bytes; full output: ${path}`,
             formatLedger(ledger.snapshot()),
           ]);
@@ -320,6 +358,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         noteError(ctx, "Could not store full output; keeping it unchanged.", undefined);
       }
     }
+    if (key && !earlier) ledger.remember(key, event.toolName, storedPath);
     if (notice && textBlocks.length) {
       let index = 0;
       content = content.map(part => {
@@ -423,7 +462,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const key = resolveApiKey();
           const source = consentSource(config);
           const usage = client?.getUsage();
-          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.context.enabled && "context (tail-only)"].filter(Boolean).join(", ");
+          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.context.enabled && "context"].filter(Boolean).join(", ");
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,

@@ -77,6 +77,19 @@ export interface ContextConfig {
   tailMinChars: number;
   /** Minimum P(the full output is not needed), 1 - P(all), before code removes output. */
   confidence: number;
+  /** A text result at least this long that repeats an earlier result of this session is replaced by a short note (code only). */
+  duplicateMinChars: number;
+  /** Search command named in the recall footer; `auto` detects one at load. */
+  recallTool: RecallTool;
+  /** Minimum P(format) before a format-specific parser builds the excerpt instead of the generic head/tail one. */
+  formatConfidence: number;
+}
+
+export type RecallTool = "auto" | "rg" | "ag" | "ugrep" | "git-grep" | "grep" | "select-string" | "findstr" | "none";
+const RECALL_TOOLS: readonly RecallTool[] = ["auto", "rg", "ag", "ugrep", "git-grep", "grep", "select-string", "findstr", "none"];
+
+export function isRecallTool(value: unknown): value is RecallTool {
+  return typeof value === "string" && (RECALL_TOOLS as readonly string[]).includes(value);
 }
 
 export type WardenMode = "steer" | "confirm" | "advise";
@@ -132,7 +145,7 @@ export function defaultConfig(): WardenConfig {
     done: { enabled: true, claimsDone: 0.7, nudge: true },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7 },
-    context: { enabled: true, tailMinChars: 12000, confidence: 0.8 },
+    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7 },
     widget: defaultWidgetConfig(),
     steerVisible: false,
   };
@@ -279,6 +292,9 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number): Pick<War
       enabled: boolean(raw.context.enabled, base.context.enabled),
       tailMinChars: positiveInteger(raw.context.tailMinChars, base.context.tailMinChars),
       confidence: probability(raw.context.confidence, base.context.confidence),
+      duplicateMinChars: positiveInteger(raw.context.duplicateMinChars, base.context.duplicateMinChars),
+      recallTool: isRecallTool(raw.context.recallTool) ? raw.context.recallTool : base.context.recallTool,
+      formatConfidence: probability(raw.context.formatConfidence, base.context.formatConfidence),
     } : base.context,
   };
 }

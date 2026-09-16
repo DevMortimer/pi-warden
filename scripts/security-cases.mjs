@@ -33,24 +33,11 @@ export async function runSecurityCases(judge, report) {
     const onTask = !verdict.reasons.some(reason => /off-task/.test(reason));
     report(!verdict.error && onTask === item.allowed, item.name, `off-task=${verdict.judgment?.offTask.toFixed(2)} scope=${verdict.judgment?.scope} level=${verdict.level}`);
   }
-  await runContextCases(judge, report);
-}
-
-export async function runContextCases(judge, report) {
-  const config = defaultConfig();
-  for (const item of [
-    { name: 'compress repetitive log', task: 'Run the tests and report failures', text: 'progress: tests running\n'.repeat(1500) + 'ERROR: expected true, got false\nexit code 1', compress: true },
-    { name: 'keep exact requested output', task: 'Print the complete output exactly; do not omit any lines', text: 'progress: tests running\n'.repeat(1500), compress: false },
-    { name: 'keep source file', task: 'Review this source file for bugs', text: Array.from({ length: 800 }, (_, i) => `export const value${i} = ${i};`).join('\n'), compress: false },
-  ]) {
-    const verdict = await evaluateOutput('read', item.text, item.task, { security: config.security, context: config.context, timeoutMs: config.timeoutMs, judge });
-    report(!verdict.error && (verdict.retention !== 'all') === item.compress, item.name, `retention=${verdict.retention} confidence=${verdict.confidence?.toFixed(2)}`);
-  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let failures = 0;
-  await (process.argv[2] === 'context' ? runContextCases : runSecurityCases)(createTypeSafe({ maxRequests: 20 }), (ok, name, detail) => {
+  await runSecurityCases(createTypeSafe({ maxRequests: 20 }), (ok, name, detail) => {
     if (!ok) failures++;
     console.log(`${ok ? 'ok' : 'MISS'} ${name}: ${detail}`);
   });
