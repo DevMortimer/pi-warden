@@ -44,7 +44,11 @@ test("user overrides accept valid values and ignore junk", () => {
     done: { claimsDone: 0.5 },
     slop: { placeholder: 0.6, prose: { audience: "plain", trend: 9, threshold: 2 } },
     runaway: { repeats: 1, thinkingRepeats: 0.5, minChars: 100, recover: false },
+    notify: { enabled: false, cooldownMs: 0, command: ["my-notifier", "{title}", "{body}"] },
   });
+  assert.deepEqual(config.notify, { enabled: false, cooldownMs: 0, command: ["my-notifier", "{title}", "{body}"] });
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { notify: { cooldownMs: -5, command: ["", "x"] } }).notify, defaultConfig().notify, "a negative cooldown and a blank executable are junk");
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { notify: { command: ["ok", 7] } }).notify.command, [], "a non-string argument rejects the whole command");
   assert.deepEqual(config.runaway, { enabled: true, repeats: 2, thinkingRepeats: 10, minChars: 100, recover: false }, "one occurrence is not a repeat; a fraction is junk");
   assert.equal(config.typesafe, true);
   assert.equal(config.mode, "advise");
@@ -85,6 +89,9 @@ test("project overrides cannot grant consent, change the mode, or raise budgets"
   assert.deepEqual(config.action.tools, ["bash"]);
   assert.equal(config.action.irreversible.confirm, 0.9);
   assert.equal(config.stuck.enabled, false);
+  const quiet = applyProjectOverrides(defaultConfig(), { notify: { enabled: false, command: ["evil"] } });
+  assert.equal(quiet.notify.enabled, false, "a project may switch notifications off");
+  assert.deepEqual(quiet.notify.command, [], "but never names a command to run");
 });
 
 test("loadConfig merges user then trusted project file, and survives malformed files", async () => {
@@ -116,6 +123,7 @@ test("regression: hostile config files cannot leave a guard's `.enabled` derefer
     { path: ["stuck"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
     { path: ["done"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
     { path: ["runaway"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
+    { path: ["notify"], raw: [undefined, null, true, 7, "x", [], { enabled: null, command: "x" }] },
     { path: ["slop"], raw: hostile },
     { path: ["widget"], raw: [undefined, null, true, 7, "x", [], { enabled: null }] },
   ] as const;

@@ -632,6 +632,82 @@ test("runaway guard: a reply that repeats its block is aborted mid-stream, recov
   assert.equal(aborts.length, 5, "disabled: the stream is left alone");
 });
 
+test("desktop notifications: a hold, a confirm dialog, and a runaway stop each call the notifier once per cooldown; headless and disabled stay quiet", async () => {
+  const log = join(temporary, "notify.log");
+  await rm(log, { force: true });
+  const forcePush = { command: "git push --force origin main" };
+  const command = [process.execPath, "-e", "require('node:fs').appendFileSync(process.argv[1], process.env.PI_WARDEN_TITLE + ' | ' + process.env.PI_WARDEN_BODY + ' | ' + process.argv[2] + '\\n')", log, "{body}"];
+  const lines = async (expected: number) => {
+    for (let waited = 0; waited < 5000; waited += 50) {
+      const text = await readFile(log, "utf8").catch(() => "");
+      const rows = text.split("\n").filter(Boolean);
+      if (rows.length >= expected) return rows;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean);
+  };
+  await writeFile(configPath(), JSON.stringify({ notify: { command, cooldownMs: 0 } }));
+  await sessionStart();
+  await newPrompt("clean up");
+  const held = await toolCall("bash", forcePush);
+  assert.equal(held?.block, true);
+  let rows = await lines(1);
+  assert.equal(rows.length, 1);
+  assert.match(rows[0]!, /^pi-warden \| Held bash: destructive: git force push\. The agent will re-plan or ask you in chat\. \| Held bash/);
+  assert.ok(!rows[0]!.includes("origin main"), "the command itself is not sent to the desktop");
+
+  process.env.PI_WARDEN_MODE = "confirm";
+  try {
+    confirmResult = false;
+    await toolCall("bash", forcePush);
+    rows = await lines(2);
+    assert.match(rows[1]!, /Waiting for you: allow this bash call\? destructive: git force push/);
+  } finally { delete process.env.PI_WARDEN_MODE; }
+
+  const aborts: number[] = [];
+  const ctx = context({ abort: () => { aborts.push(1); } });
+  await fire("message_start", { message: { role: "assistant", content: [] } }, ctx);
+  await fire("message_update", { message: {}, assistantMessageEvent: { type: "text_start", contentIndex: 0 } }, ctx);
+  const loop = "Stop. PR green. Merge. Executing:\n\n```bash\ngh pr merge 1234 --merge\n```\n\n".repeat(30);
+  for (let index = 0; index < loop.length && aborts.length === 0; index += 5) {
+    await fire("message_update", { message: {}, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: loop.slice(index, index + 5) } }, ctx);
+  }
+  assert.equal(aborts.length, 1);
+  rows = await lines(3);
+  assert.match(rows[2]!, /Runaway stopped: the same text block repeated \d+ times\. The agent gets one recovery turn\./);
+
+  // Cooldown: sibling holds in one turn produce one notification.
+  await writeFile(configPath(), JSON.stringify({ notify: { command, cooldownMs: 60_000 } }));
+  await sessionStart();
+  await newPrompt("clean up again");
+  await toolCall("bash", forcePush);
+  await toolCall("bash", { command: "npm run db:reset" });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  rows = await lines(4);
+  assert.equal(rows.length, 4, "the second hold within the cooldown is not announced");
+
+  // Headless runs and subagents have nobody to call; a disabled config is silent; a project file cannot set the command.
+  await sessionStart();
+  await newPrompt("headless", context({ hasUI: false }));
+  await toolCall("bash", forcePush, context({ hasUI: false }));
+  await writeFile(configPath(), JSON.stringify({ notify: { enabled: false, command } }));
+  await sessionStart();
+  await newPrompt("quiet");
+  await toolCall("bash", forcePush);
+  const projectPath = join(temporary, ".pi", "pi-warden.json");
+  await mkdir(join(temporary, ".pi"), { recursive: true });
+  try {
+    const tagged = (tag: string) => [process.execPath, "-e", "require('node:fs').appendFileSync(process.argv[1], process.argv[2] + '\\n')", log, tag];
+    await writeFile(configPath(), JSON.stringify({ notify: { enabled: true, cooldownMs: 0, command: tagged("USER") } }));
+    await writeFile(projectPath, JSON.stringify({ notify: { command: tagged("PROJECT"), enabled: true } }));
+    await sessionStart();
+    await newPrompt("project");
+    await toolCall("bash", forcePush);
+  } finally { await rm(projectPath, { force: true }); }
+  rows = await lines(5);
+  assert.deepEqual(rows.slice(4), ["USER"], "headless, disabled, and project-configured runs add nothing; the user's command is the one that runs");
+});
+
 test("done-check: an unverified completion claim after file changes gets one follow-up per prompt", async () => {
   await grantConsent();
   await newPrompt("fix the parser bug");

@@ -42,6 +42,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     security: section("security", { ...off, threshold: 1 }),
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1 }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
+    notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
     widget: section("widget", { ...off, placement: "aboveEditor", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "" }),
   };
   if (typeof config.slop.prose !== "object" || config.slop.prose === null) {

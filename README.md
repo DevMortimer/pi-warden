@@ -1,6 +1,6 @@
 # pi-warden
 
-A second pair of eyes for [Pi](https://pi.dev) that makes the agent smarter instead of interrupting you. Before the agent runs a `bash`, `write`, or `edit` call (or a shell command through [context-mode](https://www.npmjs.com/package/context-mode)'s `ctx_execute`), pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" is held, and the agent is told why so it re-plans or asks you in chat. More guards watch the run: a **stuck-loop** detector, a **runaway** guard that stops a reply repeating the same block over and over, a **done-check** for completion claims that no test backed up, **slop** notes for stubs, filler, and padded replies, a check for **injected instructions** in tool output, and a **context saver** that replaces repeated tool results with a note, keeps exact failing tests and errors from large runner output, and points recalls at a search instead of a whole-file read. Every verdict lands on a status line above the editor; **click it** (fullscreen mode), press `ctrl+shift+w`, or run `/warden trace` to open a live trace sidebar with the scores, the reasons, and exactly what the agent was told. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
+A second pair of eyes for [Pi](https://pi.dev) that makes the agent smarter instead of interrupting you. Before the agent runs a `bash`, `write`, or `edit` call (or a shell command through [context-mode](https://www.npmjs.com/package/context-mode)'s `ctx_execute`), pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" is held, and the agent is told why so it re-plans or asks you in chat. More guards watch the run: a **stuck-loop** detector, a **runaway** guard that stops a reply repeating the same block over and over, **desktop notifications** when the agent needs you back, a **done-check** for completion claims that no test backed up, **slop** notes for stubs, filler, and padded replies, a check for **injected instructions** in tool output, and a **context saver** that replaces repeated tool results with a note, keeps exact failing tests and errors from large runner output, and points recalls at a search instead of a whole-file read. Every verdict lands on a status line above the editor; **click it** (fullscreen mode), press `ctrl+shift+w`, or run `/warden trace` to open a live trace sidebar with the scores, the reasons, and exactly what the agent was told. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
 
 ![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
@@ -92,6 +92,10 @@ Nudges from the stuck, done, slop, and prose guards are custom messages in the a
 
 If TypeSafe cannot answer (timeout after 5 s, outage, budget), an action-guard call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead), and the other guards simply skip. When the per-session request budget is spent, pi-warden says so once and continues with offline checks. Consent in headless runs comes from `PI_WARDEN_ENABLED=1`; `PI_WARDEN_MODE` overrides the mode.
 
+### Desktop notifications
+
+You are rarely watching the terminal while the agent works, so the moments that need you reach the desktop: a held call the agent is about to ask you about, a confirm dialog waiting for an answer, and a runaway stop. macOS uses `osascript` (Notification Center, with a sound); Linux tries `notify-send`, `dunstify`, `gdbus`, `kdialog`, `zenity`, then `powershell.exe` for WSL; Windows shows a toast through PowerShell. The notifier is probed once per session; the text is the reason, never the command. Interactive sessions only — a headless run or a subagent has nobody to call — and one notification per `cooldownMs` (10 s), so sibling holds in one turn do not stack. `"notify": { "enabled": false }` turns it off; `"command": ["curl", "-d", "{body}", "https://ntfy.sh/your-topic"]` in the user file replaces the desktop tool with your own relay (no shell; `{title}`/`{body}` are replaced and also set as `PI_WARDEN_TITLE`/`PI_WARDEN_BODY`). A project file may switch notifications off but never names a command.
+
 ### Tool-output security and context saving
 
 With consent, content-bearing tools (`read`, fetch/search tools and named MCP equivalents) are checked for instructions that redirect the assistant or request private data. Other tools, including shell/context-mode tools, are checked from 2048 characters. Jev receives a redacted 6000-character head/tail sample, so attacks in an unsampled middle can be missed. A score at or above `security.threshold` adds an untrusted-data notice around the text and a hidden steer. Local credential-shape checks work without network access and warn not to echo or commit possible secrets. Images, result details, error flags, and usage are preserved.
@@ -175,6 +179,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
   "security": { "enabled": true, "threshold": 0.7 },
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7 },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
+  "notify": { "enabled": true, "cooldownMs": 10000, "command": [] },
   "slop": {
     "enabled": true,
     "threshold": 0.7,
@@ -185,7 +190,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
 }
 ```
 
-A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides (for example stricter thresholds, extra guarded tools, or `"done": { "enabled": false }`). Project files are read only when Pi trusts the project, and they can never grant `typesafe` consent, change `mode`, or raise `timeoutMs`/`maxRequests`. Environment: `PI_WARDEN_ENABLED=1` (consent), `PI_WARDEN_MODE=steer|confirm|advise`. Files from 0.1.x that set `action.timeoutMs`/`action.maxRequests` keep working.
+A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides (for example stricter thresholds, extra guarded tools, or `"done": { "enabled": false }`). Project files are read only when Pi trusts the project, and they can never grant `typesafe` consent, change `mode`, raise `timeoutMs`/`maxRequests`, or set `notify.command`. Environment: `PI_WARDEN_ENABLED=1` (consent), `PI_WARDEN_MODE=steer|confirm|advise`. Files from 0.1.x that set `action.timeoutMs`/`action.maxRequests` keep working.
 
 ## Data handling
 
@@ -218,7 +223,7 @@ steerReason(verdict, { canApprove: true });   // the text the agent receives for
 
 `evaluateAction` judges one call. What spans calls in a session, the hold → reply → retry approval and the batched judging of sibling tool calls, is `ActionGuard`: `inspect(call, conversation, options)` returns the same `Verdict`, `hold(task)` records a hold, `turnEnd()` and `reset()` follow Pi's turn and session.
 
-Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`, `formatVerdict`, the question sets, the stuck detector (`AttemptWindow`, `makeAttempt`, `evaluateStuck`, `stuckNudge`), the runaway guard (`RunawayMonitor`, `findRepeats`, `runawayNudge`), the done-check (`classifyToolResult`, `recordOutcome`, `needsDoneCheck`, `evaluateDone`, `doneNudge`), and the config helpers.
+Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`, `formatVerdict`, the question sets, the stuck detector (`AttemptWindow`, `makeAttempt`, `evaluateStuck`, `stuckNudge`), the runaway guard (`RunawayMonitor`, `findRepeats`, `runawayNudge`), the notifier (`detectNotifier`, `notifierCommand`, `sendNotification`), the done-check (`classifyToolResult`, `recordOutcome`, `needsDoneCheck`, `evaluateDone`, `doneNudge`), and the config helpers.
 
 ## Development
 

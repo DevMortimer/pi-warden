@@ -19,6 +19,8 @@ import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
 import { redact } from "./redact.js";
+import { detectNotifier, sendNotification } from "./notify.js";
+import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { openTracePanel } from "./panel.js";
@@ -144,6 +146,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let pendingRunaway: { nudge: string; recover: boolean } | undefined;
   // Probed once per session, outside any tool_result handler; the footer under excerpts names this command.
   let searchTool: Promise<SearchTool> | undefined;
+  // Desktop notifier, probed on first use; undefined after the probe means this machine has no route to the desktop.
+  let notifier: Promise<NotifierName | undefined> | undefined;
+  let lastNotifiedAt = 0;
 
   // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
   let shapeReported = false;
@@ -195,6 +200,19 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   };
   const steer = (config: WardenConfig, content: string, options: { deliverAs: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean } = { deliverAs: "steer" }) =>
     pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: config.steerVisible }, options);
+  /**
+   * Desktop notification for a moment that needs the user back at the terminal. Interactive sessions only: a headless run
+   * or a subagent has nobody to call, and several of them would flood the desktop. Fire-and-forget; failures are silent.
+   */
+  const notifyDesktop = (ctx: ExtensionContext, config: WardenConfig, body: string) => {
+    if (!ctx.hasUI || !config.notify.enabled) return;
+    const now = Date.now();
+    if (now - lastNotifiedAt < config.notify.cooldownMs) return;
+    lastNotifiedAt = now;
+    if (config.notify.command.length) { void sendNotification(config.notify.command, { title: "pi-warden", body }).catch(() => false); return; }
+    notifier ??= detectNotifier();
+    void notifier.then(name => (name ? sendNotification(name, { title: "pi-warden", body }) : false)).catch(() => false);
+  };
 
   pi.on("session_start", async (_event, ctx) => {
     client = undefined;
@@ -213,6 +231,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     runawayStops = 0;
     pendingRunaway = undefined;
     searchTool = undefined;
+    notifier = undefined;
+    lastNotifiedAt = 0;
     for (const symptom of Object.keys(slopCounts) as SlopSymptom[]) slopCounts[symptom] = 0;
     if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
   });
@@ -247,6 +267,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     pendingRunaway = { nudge, recover };
     record(ctx, config, "runaway", formatRunaway(verdict, recover, config.widget.runaway), runawayDetails(verdict, nudge, recover));
     if (ctx.hasUI) ctx.ui.notify(`warden · runaway: the same ${verdict.kind} block repeated ${verdict.count} times in ${verdict.chars} chars; run stopped${recover ? " (agent gets one follow-up turn)" : " (not restarted: second time for this prompt)"}`, "error");
+    notifyDesktop(ctx, config, `Runaway stopped: the same ${verdict.kind} block repeated ${verdict.count} times. ${recover ? "The agent gets one recovery turn." : "Second time for this prompt; the agent is waiting for you."}`);
     // Interactive Pi restores the user's queued messages to the editor before aborting; the follow-up is queued in agent_end, after that.
     ctx.abort();
   });
@@ -314,6 +335,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       return undefined;
     }
     if (mode === "confirm") {
+      notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
       const allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {});
       if (allowed) return undefined;
       stats.held++;
@@ -322,6 +344,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     stats.held++;
     actionGuard.hold(task);
     if (ctx.hasUI) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
+    notifyDesktop(ctx, config, `Held ${event.toolName}: ${reasons}. The agent will re-plan or ask you in chat.`);
     return { block: true, reason: told ?? steerReason(verdict, { canApprove: judge !== undefined }) };
   });
 
@@ -505,12 +528,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const key = resolveApiKey();
           const source = consentSource(config);
           const usage = client?.getUsage();
-          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.context.enabled && "context", config.runaway.enabled && "runaway"].filter(Boolean).join(", ");
+          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.context.enabled && "context", config.runaway.enabled && "runaway", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),
+            `Desktop notifications: ${config.notify.enabled ? `on (${config.notify.command.length ? `command ${config.notify.command[0]}` : (await (notifier ??= detectNotifier())) ?? "no notifier found on this machine"}; cooldown ${config.notify.cooldownMs} ms)` : "off"}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
             `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode; each toggles the sidebar). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,

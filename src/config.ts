@@ -97,6 +97,18 @@ export interface RunawayConfig {
   recover: boolean;
 }
 
+export interface NotifyConfig {
+  /** Desktop notification when the agent needs you: a held call it will ask about, a confirm dialog, a stopped runaway. */
+  enabled: boolean;
+  /** Sibling holds in one turn produce one notification; a second within this many milliseconds is skipped. */
+  cooldownMs: number;
+  /**
+   * Your own notifier as an argv (no shell), for ssh sessions or a phone relay: `{title}` and `{body}` in an argument are
+   * replaced, and both are in PI_WARDEN_TITLE / PI_WARDEN_BODY. Empty: detect the desktop's own tool. User file only.
+   */
+  command: string[];
+}
+
 export type RecallTool = "auto" | "rg" | "ag" | "ugrep" | "git-grep" | "grep" | "select-string" | "findstr" | "none";
 const RECALL_TOOLS: readonly RecallTool[] = ["auto", "rg", "ag", "ugrep", "git-grep", "grep", "select-string", "findstr", "none"];
 
@@ -128,6 +140,7 @@ export interface WardenConfig {
   security: SecurityConfig;
   context: ContextConfig;
   runaway: RunawayConfig;
+  notify: NotifyConfig;
   /** The status line above the editor and the trace panel. */
   widget: WidgetConfig;
   /** Show steer messages in the transcript. They are always visible in the trace panel. */
@@ -160,6 +173,7 @@ export function defaultConfig(): WardenConfig {
     security: { enabled: true, threshold: 0.7 },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7 },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
+    notify: { enabled: true, cooldownMs: 10000, command: [] },
     widget: defaultWidgetConfig(),
     steerVisible: false,
   };
@@ -255,6 +269,14 @@ function applyRunaway(base: RunawayConfig, raw: unknown): RunawayConfig {
   };
 }
 
+function applyNotify(base: NotifyConfig, raw: unknown, allowCommand: boolean): NotifyConfig {
+  if (!isObject(raw)) return base;
+  const cooldown = typeof raw.cooldownMs === "number" && Number.isSafeInteger(raw.cooldownMs) && raw.cooldownMs >= 0 ? raw.cooldownMs : base.cooldownMs;
+  const command = allowCommand && Array.isArray(raw.command) && raw.command.every((arg): arg is string => typeof arg === "string") && (raw.command.length === 0 || raw.command[0]!.trim())
+    ? [...raw.command] : base.command;
+  return { enabled: boolean(raw.enabled, base.enabled), cooldownMs: cooldown, command };
+}
+
 function applyDone(base: DoneGuardConfig, raw: unknown): DoneGuardConfig {
   if (!isObject(raw)) return base;
   return { enabled: boolean(raw.enabled, base.enabled), claimsDone: probability(raw.claimsDone, base.claimsDone), nudge: boolean(raw.nudge, base.nudge) };
@@ -305,9 +327,11 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "context" | "runaway"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "context" | "runaway" | "notify"> {
   return {
     runaway: applyRunaway(base.runaway, raw.runaway),
+    // A project file may switch notifications off or on, but never names a command to run.
+    notify: applyNotify(base.notify, raw.notify, source === "user"),
     action: applyAction(base.action, raw.action, timeoutMs),
     stuck: applyStuck(base.stuck, raw.stuck),
     done: applyDone(base.done, raw.done),
@@ -336,7 +360,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     typesafe: boolean(raw.typesafe, base.typesafe),
     mode: isMode(raw.mode) ? raw.mode : base.mode,
     ...shared,
-    ...applyGuards(base, raw, shared.timeoutMs),
+    ...applyGuards(base, raw, shared.timeoutMs, "user"),
     widget: applyWidget(base.widget, raw.widget),
     steerVisible: boolean(raw.steerVisible, base.steerVisible),
   };
@@ -345,7 +369,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
 /** Project files may tune the guards but cannot grant TypeSafe consent, change the mode, or raise budgets. */
 export function applyProjectOverrides(base: WardenConfig, raw: unknown): WardenConfig {
   if (!isObject(raw)) return base;
-  return { ...base, enabled: boolean(raw.enabled, base.enabled), ...applyGuards(base, raw, base.timeoutMs) };
+  return { ...base, enabled: boolean(raw.enabled, base.enabled), ...applyGuards(base, raw, base.timeoutMs, "project") };
 }
 
 export interface LoadOptions {
