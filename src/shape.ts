@@ -35,7 +35,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     timeoutMs: source.timeoutMs ?? 5000,
     maxRequests: source.maxRequests ?? 500,
     steerVisible: source.steerVisible ?? false,
-    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, confirm: 1 }, feedbackLog: false }),
+    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, confirm: 1 }, intentMismatch: 1, feedbackLog: false }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, nudge: false }),
     done: section("done", { ...off, claimsDone: 1, nudge: false }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
@@ -58,6 +58,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.widget.panelWidth !== "string" && typeof config.widget.panelWidth !== "number") config.widget = { ...config.widget, panelWidth: "40%" };
   // The feedback log flag was added inside the action section later than the section itself; an older config module leaves it undefined and the log stays on.
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };
+  if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.8 };
   // The runaway guard added its template later than the other sections; an older widget section renders the default line.
   if (typeof config.widget.runaway !== "string") config.widget = { ...config.widget, runaway: DEFAULT_TEMPLATES.runaway };
   if (typeof config.widget.rules !== "string") config.widget = { ...config.widget, rules: DEFAULT_TEMPLATES.rules };

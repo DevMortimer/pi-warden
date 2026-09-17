@@ -69,6 +69,7 @@ const time = (at: number) => new Date(at).toTimeString().slice(0, 8);
 export function actionTokens(verdict: Verdict, at = Date.now()): Tokens {
   const flags = [
     verdict.approvedByUser ? "user approved" : undefined,
+    verdict.intentMismatch ? "off plan" : undefined,
     verdict.source === "error" ? "typesafe error" : undefined,
     verdict.source === "read-only" ? "read-only" : undefined,
   ].filter(Boolean).join(", ");
@@ -82,6 +83,8 @@ export function actionTokens(verdict: Verdict, at = Date.now()): Tokens {
     offTask: fixed(verdict.judgment?.offTask),
     scope: verdict.judgment?.scope.replace(/_/g, " "),
     approved: fixed(verdict.judgment?.approved),
+    intent: fixed(verdict.judgment?.intentMismatch),
+    plan: verdict.plan === undefined ? undefined : (verdict.plan.length <= 80 ? verdict.plan : `${verdict.plan.slice(0, 80)}…`).replace(/\s+/g, " "),
     slop: verdict.slopSymptoms?.length ? verdict.slopSymptoms.map(symptom => `${symptom} ${verdict.slop![symptom].toFixed(2)}`).join(", ") : verdict.slop ? "none" : undefined,
     slopStub: fixed(verdict.slop?.stub),
     slopComments: fixed(verdict.slop?.comments),
@@ -187,7 +190,7 @@ export const TOKEN_NAMES = {
   context: ["tool", "retention", "bytesSaved"],
   runaway: ["kind", "count", "chars", "signal", "block", "status", "time", "guard"],
   rules: ["tool", "path", "asked", "violations", "status", "source", "reasons", "model", "ms", "flags", "time", "guard"],
-  action: ["tool", "level", "source", "irreversible", "offTask", "scope", "approved", "slop", "slopStub", "slopComments", "slopDead", "slopHedging", "patterns", "reasons", "path", "model", "ms", "flags", "time", "guard"],
+  action: ["tool", "level", "source", "irreversible", "offTask", "scope", "approved", "intent", "plan", "slop", "slopStub", "slopComments", "slopDead", "slopHedging", "patterns", "reasons", "path", "model", "ms", "flags", "time", "guard"],
   prose: ["wordy", "cliches", "jargon", "status", "reasons", "model", "ms", "flags", "time", "guard"],
   stuck: ["failures", "sameStrategy", "approachChange", "progress", "status", "source", "reasons", "model", "ms", "flags", "time", "guard"],
   done: ["changes", "checks", "checksPassed", "claimsDone", "claimsVerified", "checksApply", "outcome", "status", "reasons", "model", "ms", "flags", "time", "guard"],

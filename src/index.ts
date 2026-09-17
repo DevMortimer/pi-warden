@@ -1,4 +1,4 @@
-export { evaluateAction, describeAction, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, steerReason, questions, slopQuestions, approvalQuestion, securityQuestion, regretQuestions } from "./guard.js";
+export { evaluateAction, describeAction, describePlan, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, steerReason, intentSteer, questions, intentQuestion, slopQuestions, approvalQuestion, securityQuestion, regretQuestions } from "./guard.js";
 export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, PreviousAction, ScannedCommand, ScopeLabel, Severity, Verdict } from "./guard.js";
 export { SLOP_SYMPTOMS, SLOP_LABELS } from "./guard.js";
 export { ActionGuard } from "./action-guard.js";

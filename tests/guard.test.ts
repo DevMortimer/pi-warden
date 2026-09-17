@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, describeAction, evaluateAction, formatVerdict, isReadOnlyCommand, matchPatterns, steerReason, stripDataText, textApproves } from "../src/guard.js";
+import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, steerReason, stripDataText, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { redact } from "../src/redact.js";
 
@@ -405,6 +405,56 @@ test("the regret question rides the request with last turn's allowed calls; a lo
   assert.equal(verdict.judgment?.regretted, 0.9);
   assert.equal(verdict.judgment?.regretTarget, "a2");
   assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "regret_target", "regretted", "scope"]);
+});
+
+test("the agent's plan travels with the request and is judged for intent mismatch; an empty plan asks nothing", async () => {
+  const config = defaultConfig();
+  const secretPlan = "Now I will remove the build directory. TOKEN=sk-synthetic-0123456789abcdef";
+  const request = buildRequest(describeAction("bash", { command: "rm -rf build" }, cwd), "clean the build", { plan: secretPlan });
+  assert.match(String(request.state.plan), /^Now I will remove the build directory\. TOKEN=\[redacted\]/);
+  assert.ok("intent_mismatch" in request.questions);
+  assert.ok(!("plan" in buildRequest(describeAction("bash", { command: "rm -rf build" }, cwd), "t", { plan: "  \n" }).state), "blank plan: no field");
+  assert.ok(!("intent_mismatch" in buildRequest(describeAction("bash", { command: "rm -rf build" }, cwd), "t").questions), "no plan: no question");
+  const long = buildRequest(describeAction("bash", { command: "ls" }, cwd), "t", { plan: "p".repeat(900) });
+  assert.ok(String(long.state.plan).length < 560 && /more chars\]$/.test(String(long.state.plan)), "plans are bounded");
+
+  const withIntent = (mismatch: number, mutates = 0.9): Judge & { calls: unknown[] } => {
+    const calls: unknown[] = [];
+    return {
+      calls,
+      async evaluate(request) {
+        calls.push(request);
+        const base = answers(0.1, 0.1, "expected_step", 0.9, mutates) as { answers: Record<string, unknown> };
+        if ("intent_mismatch" in (request as { questions: object }).questions) base.answers.intent_mismatch = { type: "noul", noul: mismatch };
+        return base as never;
+      },
+    };
+  };
+  const drift = await evaluateAction({ tool: "bash", input: { command: "rm -rf build" }, cwd, task: "clean the build", plan: "Let me first list what is in build/ before removing anything." }, { config: config.action, judge: withIntent(0.9) });
+  assert.equal(drift.level, "warn");
+  assert.equal(drift.intentMismatch, true);
+  assert.equal(drift.judgment?.intentMismatch, 0.9);
+  assert.match(drift.reasons.join("; "), /intent mismatch 0\.90 \(the call differs from the agent's stated plan\)/);
+  assert.equal(drift.plan, "Let me first list what is in build/ before removing anything.");
+  assert.match(formatVerdict(drift), /off plan · warn$/);
+  assert.match(intentSteer(drift), /^pi-warden: this bash call does something different from what you said you were about to do \(intent mismatch 0\.90\)\. It ran\./);
+
+  const readOnly = await evaluateAction({ tool: "bash", input: { command: "npm run check:manifest" }, cwd, task: "clean the build", plan: "I will delete build/ now." }, { config: config.action, judge: withIntent(0.9, 0.05) });
+  assert.equal(readOnly.level, "allow", "a call that changes nothing is never warned about for drifting from the plan");
+  assert.equal(readOnly.intentMismatch, undefined);
+  assert.equal(readOnly.judgment?.intentMismatch, 0.9, "the score is still recorded");
+
+  const inStep = await evaluateAction({ tool: "bash", input: { command: "npm run clean" }, cwd, task: "clean the build", plan: "Running the clean script now." }, { config: config.action, judge: withIntent(0.05) });
+  assert.equal(inStep.level, "allow");
+  assert.equal(inStep.intentMismatch, undefined);
+
+  const below = await evaluateAction({ tool: "bash", input: { command: "npm run clean" }, cwd, task: "clean the build", plan: "Let me look at build/ first." }, { config: { ...config.action, intentMismatch: 0.95 }, judge: withIntent(0.9) });
+  assert.equal(below.level, "allow", "the threshold is configurable");
+  assert.equal(below.intentMismatch, undefined);
+
+  const offline = await evaluateAction({ tool: "bash", input: { command: "rm -rf build" }, cwd, task: "clean the build", plan: "Removing build/." }, { config: config.action });
+  assert.equal(offline.plan, "Removing build/.", "pattern-only verdicts keep the plan for the trace");
+  assert.equal(offline.judgment, undefined);
 });
 
 test("textApproves is a conservative offline stand-in", () => {

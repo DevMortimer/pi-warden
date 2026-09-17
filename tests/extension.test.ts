@@ -391,6 +391,57 @@ test("without consent, only pattern checks run: risky warns, destructive is held
   assert.equal(networkCalls, 0);
 });
 
+test("the agent's plan comes from the message that makes the call, falls back to its latest text under the prompt, and a mismatch steers", async () => {
+  await grantConsent();
+  prompt = "Verify the RPC endpoint end to end";
+  const branch = (...tail: Array<Record<string, unknown>>) => context({ sessionManager: { getBranch: () => [
+    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Earlier turn text that must not be used." }] } },
+    { type: "message", message: { role: "user", content: prompt } },
+    ...tail,
+  ] } });
+  const call = { type: "toolCall", id: "call-1", name: "write", arguments: { path: "/tmp/pi-warden-fixture.json", content: "{}" } };
+
+  // Text and tool call in one message: that text is the plan; the question is asked; no mismatch, no steer.
+  const same = branch({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Now a live verification step: I will write a small fixture under /tmp. TOKEN=sk-synthetic-0123456789abcdef" }, call] } });
+  assert.equal(await toolCall("write", { path: "/tmp/pi-warden-fixture.json", content: "{}" }, same), undefined);
+  assert.match(String(requests.at(-1)!.state.plan), /^Now a live verification step: I will write a small fixture under \/tmp\. TOKEN=\[redacted\]$/);
+  assert.ok("intent_mismatch" in requests.at(-1)!.questions);
+  assert.ok(!sentMessages.some(sent => /what you said you were about to do/.test(sent.message.content)));
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /plan: Now a live verification step/);
+  assert.ok(!sentMessages.at(-1)!.message.content.includes("sk-synthetic"));
+
+  // A tool-calls-only message after a tool result: the latest assistant text since the prompt is the plan.
+  const earlier = branch(
+    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Let me first list what is in build/ before removing anything." }, { type: "toolCall", id: "c0", name: "bash", arguments: { command: "ls build" } }] } },
+    { type: "message", message: { role: "toolResult", toolCallId: "c0", toolName: "bash", content: [{ type: "text", text: "a.js" }] } },
+    { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm run clean" } }] } },
+  );
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, intent_mismatch: 0.91 };
+  sentMessages.length = 0;
+  assert.equal(await toolCall("bash", { command: "npm run clean" }, earlier), undefined, "a mismatch warns; it never holds");
+  assert.equal(requests.at(-1)!.state.plan, "Let me first list what is in build/ before removing anything.");
+  const steerSent = sentMessages.find(sent => sent.message.customType === "pi-warden-steer");
+  assert.match(steerSent?.message.content ?? "", /^pi-warden: this bash call does something different from what you said you were about to do \(intent mismatch 0\.91\)\. It ran\./);
+  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan\)$/);
+  assert.match(widgets.at(-1)![0]!, /off plan · warn$/);
+
+  // No assistant text since the prompt: no plan, no question.
+  const silent = branch({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm run clean" } }] } });
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
+  assert.equal(await toolCall("bash", { command: "npm run clean" }, silent), undefined);
+  assert.ok(!("plan" in requests.at(-1)!.state));
+  assert.ok(!("intent_mismatch" in requests.at(-1)!.questions));
+
+  await runCommand("status");
+  const status = notices.at(-1)!.text;
+  assert.match(status, /1 off plan/);
+  assert.match(status, /intent mismatch 0\.8;/);
+  const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
+  const lines = (await readFile(logPath, "utf8")).trimEnd().split("\n").map(text => JSON.parse(text) as Record<string, unknown>);
+  assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined]], "planChars says how often the agent called without a word");
+});
+
 test("hold feedback offline: approval, re-plan, and a stop reply label the calls, the trace, the status line, and the session log", async () => {
   prompt = "push my branch";
   assert.equal((await toolCall("bash", { command: "git push --force origin main" }))?.block, true);

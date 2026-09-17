@@ -66,7 +66,9 @@ Runs on `tool_call`, before the tool executes.
 2. **Patterns**, offline: force pushes, `git reset --hard`, `git clean`, recursive `rm` on absolute, home, variable, or parent paths, SQL `DROP`/`TRUNCATE`/`DELETE FROM`, block-device writes, `chmod -R 777`, fork bombs, `curl | sh`, `kill -1`, shutdown, package publishing, infrastructure destroys hold the call. `rm -rf` on a project path, `git checkout -- .`, `git branch -D`, `git stash drop`, `find -delete`, `sudo` warn. Reads or writes of `.env`, SSH, AWS, npm, kube, and other credential files warn. A `write` that overwrites a file outside the project holds; creating or editing outside the project warns.
 
    Text that is data is not a command. A heredoc body written to a file, a quoted `echo`/`printf` argument, a `grep` pattern, or a `git commit -m` message can mention `git push --force` without a hold. The same text fed to `sh`, `bash -c`, `eval`, `xargs`, or a `python3 - <<EOF` script that calls `os.system` keeps every hit.
-3. **Jev**, with consent: one request with `{ task, context, action }` and four questions. `irreversible` (yes/no), `off_task` (yes/no), `mutates` (does it change anything), `scope` (expected step, plausible side step, unrelated, unclear). Defaults: irreversible at 0.5 warns and at 0.7 holds; off-task at 0.6 warns and at 0.85 with `unrelated` holds, but only when the action can change something. An unrelated `grep` is warned about, never held. Patterns set the floor; Jev can only raise it.
+3. **Jev**, with consent: one request with `{ task, context, plan, action }` and four questions. `irreversible` (yes/no), `off_task` (yes/no), `mutates` (does it change anything), `scope` (expected step, plausible side step, unrelated, unclear). Defaults: irreversible at 0.5 warns and at 0.7 holds; off-task at 0.6 warns and at 0.85 with `unrelated` holds, but only when the action can change something. An unrelated `grep` is warned about, never held. Patterns set the floor; Jev can only raise it.
+
+   `plan` is the agent's own words in the message that makes the call (or its latest text since your prompt, 500 redacted characters). It tells Jev which step this is, so a verification fixture the agent just announced is not judged unrelated; it never authorizes anything. When there is a plan, a fifth question `intent_mismatch` asks whether the call does something materially different from it: a delete where the plan said list, a force push where it said push. At `action.intentMismatch` (0.8) on a call that can change something, the call is warned about and the agent is told to keep its words and its calls in step. Never held on that alone; the hold feedback below will say whether it should be. The trace shows the plan under each verdict.
 4. **Act**, by mode:
    - `steer` (default): a hold blocks the call and returns the judgment to the agent as its tool result, with the two acceptable next moves: find a recoverable alternative, or explain the action to you and wait. If your reply approves it, the retry goes through (Jev reads your reply; offline, a yes/go-ahead heuristic does).
    - `confirm`: a `ctx.ui.confirm` dialog. No blocks with a short reason. Falls back to `steer` without a UI.
@@ -184,7 +186,7 @@ Templates in `config.widget` control the text. Segments are separated by ` · `;
 }
 ```
 
-Tokens per guard: action `tool level source irreversible offTask scope approved slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time`; rules `tool path asked violations status source reasons model ms flags time`; prose `wordy cliches jargon status reasons model ms flags time`; stuck `failures sameStrategy approachChange progress status source reasons model ms flags time`; done `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`; security `tool injection exfiltration status`; context `tool retention bytesSaved`; runaway `kind count chars signal block status time`. `"enabled": false` hides the line; `"shortcut": ""` disables the keybinding.
+Tokens per guard: action `tool level source irreversible offTask scope approved intent plan slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time`; rules `tool path asked violations status source reasons model ms flags time`; prose `wordy cliches jargon status reasons model ms flags time`; stuck `failures sameStrategy approachChange progress status source reasons model ms flags time`; done `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`; security `tool injection exfiltration status`; context `tool retention bytesSaved`; runaway `kind count chars signal block status time`. `"enabled": false` hides the line; `"shortcut": ""` disables the keybinding.
 
 ## Configuration
 
@@ -203,6 +205,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
     "failOpen": true,
     "irreversible": { "warn": 0.5, "confirm": 0.7 },
     "offTask": { "warn": 0.6, "confirm": 0.85 },
+    "intentMismatch": 0.8,
     "feedbackLog": true
   },
   "rules": {
@@ -252,14 +255,14 @@ A wince-style setup for a backend repo (the full version is [`examples/pi-warden
 
 With consent, requests go to `https://api.typesafe.ai`. What is sent:
 
-- **Action guard**: your latest prompt (1500 characters), up to eight earlier user and assistant messages (750 redacted characters each), the tool name, the command (2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample of a `write`, the first three edit pairs (400 characters each) of an `edit`. On the first guarded call after your reply, the tool names and commands (300 characters) or paths of up to six calls allowed in the previous turn, for the regret question.
+- **Action guard**: your latest prompt (1500 characters), up to eight earlier user and assistant messages (750 redacted characters each), the agent's text from the message that makes the call (500 redacted characters), the tool name, the command (2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample of a `write`, the first three edit pairs (400 characters each) of an `edit`. On the first guarded call after your reply, the tool names and commands (300 characters) or paths of up to six calls allowed in the previous turn, for the regret question.
 - **Rules**: the project-relative path, a 6000-character sample of a `write` or each edit's new text (1500 characters) with about 40 lines of the current file around the replaced text, and the rule text from your rules file or the condensed fallback document (`rules.maxChars`). No task text. Files under `rules.exclude` are never sent.
 - **Stuck**: the last 12 tool calls (300 characters each) with 400-character output tails.
 - **Done-check and prose**: the agent's final message (2000 and 2500 characters), the run's check commands, the audience description.
 - **Output checks**: a redacted head/tail sample up to 6000 characters plus size, line counts, and tool name.
 - **Nothing** for duplicate detection, the runaway guard, sensitive-path notes, or pattern checks.
 
-The hold feedback log under `~/.pi/agent/pi-warden/holds/` stays on this machine, owner-only: one JSON line per judged call with tool, pattern ids, scores, level, mode, and outcome; never the command, path, or prompt.
+The hold feedback log under `~/.pi/agent/pi-warden/holds/` stays on this machine, owner-only: one JSON line per judged call with tool, pattern ids, scores, level, mode, outcome, and the length of the agent's stated plan; never the command, path, prompt, or plan text.
 
 Obvious credentials (`Authorization` headers, `TOKEN=` and `SECRET=` assignments, `sk-`, `ghp_`, `AKIA`, JWTs, URL passwords, PEM blocks) are replaced with `[redacted]` before sending. Best-effort; do not rely on it for prompts that contain secrets. Text steered to the agent names the tool, the reasons, and the scores, not the command. UI errors never include upstream response bodies or keys. Judgments are model output; thresholds are yours to tune.
 
@@ -295,7 +298,7 @@ What spans calls in a session lives in `ActionGuard` (hold, reply, retry approva
 ```bash
 npm install
 npm run check                    # typecheck, offline tests (mocked transport), build
-npm run test:live                # billable synthetic judgments across the guards; pass action|slop|approval|regret|stuck|done|security|context for one group
+npm run test:live                # billable synthetic judgments across the guards; pass action|intent|slop|approval|regret|stuck|done|security|context for one group
 node scripts/rules-cases.mjs     # 13 billable cases against an 8-rule fixture file
 node scripts/slop-cases.mjs      # 22 billable cases for the slop and prose questions
 node scripts/security-cases.mjs  # 9 output-security and task-continuity cases

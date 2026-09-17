@@ -29,6 +29,7 @@ export interface CallScores {
   scope: ScopeLabel;
   mutates?: number;
   approved?: number;
+  intentMismatch?: number;
   securityRisk?: number;
 }
 
@@ -44,6 +45,8 @@ export interface CallRecord {
   patterns: string[];
   /** Reason labels as shown to the user; they name patterns and scores, never the command. */
   reasons: string[];
+  /** Length of the agent's stated plan sent with the call; 0 means the agent said nothing before calling. Decides whether declared intent (layer 2) is worth building. */
+  planChars: number;
   scores?: CallScores;
   outcome: CallOutcome;
   outcomeAt?: number;
@@ -83,6 +86,7 @@ function scoresOf(verdict: Verdict): CallScores | undefined {
   const scores: CallScores = { irreversible: judgment.irreversible, offTask: judgment.offTask, scope: judgment.scope };
   if (judgment.mutates !== undefined) scores.mutates = judgment.mutates;
   if (judgment.approved !== undefined) scores.approved = judgment.approved;
+  if (judgment.intentMismatch !== undefined) scores.intentMismatch = judgment.intentMismatch;
   if (judgment.securityRisk !== undefined) scores.securityRisk = judgment.securityRisk;
   return scores;
 }
@@ -104,6 +108,7 @@ export class HoldLedger {
       held: options.held,
       patterns: verdict.patterns.map(hit => hit.id),
       reasons: [...verdict.reasons],
+      planChars: verdict.plan?.length ?? 0,
       outcome: options.outcome ?? "pending",
     };
     const scores = scoresOf(verdict);

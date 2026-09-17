@@ -17,6 +17,8 @@ export interface Conversation {
   context?: readonly TaskMessage[] | undefined;
   /** Tool calls in the same assistant message, this one included; they are judged together. */
   siblings?: readonly ToolCallRef[] | undefined;
+  /** The agent's own words in that message (or its latest text under this prompt); shared by the siblings. Explains, never authorizes. */
+  plan?: string | undefined;
 }
 
 export interface InspectOptions {
@@ -56,7 +58,7 @@ export class ActionGuard {
     // A hold happened under an earlier prompt and the user has since replied: ask whether the reply approves this action.
     const retryAfterHold = this.holdPending && this.lastHoldPrompt !== task;
     const judgeCall = (tool: string, input: Record<string, unknown>, previousActions?: readonly PreviousAction[]) => evaluateAction(
-      { tool, input, cwd: options.cwd, task, context: conversation.context },
+      { tool, input, cwd: options.cwd, task, context: conversation.context, plan: conversation.plan },
       { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, retryAfterHold, previousActions },
     );
     // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
