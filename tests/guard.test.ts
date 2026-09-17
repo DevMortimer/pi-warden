@@ -126,6 +126,10 @@ test("destructive text that is data is not a command: heredoc bodies written to 
     "rg 'kubectl delete' -g '*.md'",
     "gh pr create --title \"Stop running terraform destroy in CI\" --body \"The pipeline ran 'terraform destroy' on merge.\"",
     "jq '.scripts[\"db:reset\"] = \"DROP TABLE x\"' package.json",
+    // 0.9.0 gave up on any $( or backtick in the command; a substitution elsewhere, or Markdown backticks in a quoted heredoc, are not execution.
+    "cd repo && cat > .local/check.md <<'EOF'\n# check\nThis mentions `git push --force origin main` and `rm -rf /tmp/x` as data.\nEOF\necho \"written: $(wc -l < .local/check.md) lines\"",
+    "cat <<\"EOF\" > notes.md\nrun `git reset --hard` never\nEOF",
+    "cat <<\\EOF > notes.md\n$(git reset --hard) is literal here\nEOF",
   ];
   for (const command of data) {
     const hits = matchPatterns("bash", { command }, cwd);
@@ -143,6 +147,11 @@ test("destructive text that is data is not a command: heredoc bodies written to 
     "eval \"git reset --hard\"",
     "sudo sh -c 'rm -rf /var/lib/x'",
     "bash -c \"$(cat script)\"; echo 'rm -rf /'",
+    // The pipeline on the heredoc line, an expanded body, a substitution inside double quotes, and a sink later in the command all execute the text.
+    "cat <<'EOF' | bash\nrm -rf /\nEOF",
+    "cat <<EOF > x\n$(git push --force)\nEOF",
+    "echo \"$(rm -rf /)\"",
+    "cat <<'EOF' > run.sh\ngit push --force\nEOF\nbash run.sh",
   ];
   for (const command of executed) {
     const hits = matchPatterns("bash", { command }, cwd);

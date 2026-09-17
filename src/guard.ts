@@ -179,7 +179,8 @@ const GIT_MESSAGE_SUBCOMMANDS = new Set(["commit", "tag", "notes", "merge", "sta
 /** Interpreters whose stdin script can still run shell commands; their heredoc bodies stay in scope when they do. */
 const INTERPRETERS = /^(?:python[\d.]*|node|ruby|perl|php|deno|bun|tsx|Rscript|lua[\d.]*)$/;
 const EXEC_CALLS = /\b(?:os\.system|os\.popen|os\.exec\w*|subprocess|child_process|execSync|spawnSync|execFileSync|spawn\(|exec\(|system\(|popen\(|shell_exec|passthru|proc_open|Open3|IO\.popen|Deno\.run|Deno\.Command|Bun\.spawn|Bun\.\$|%x[\[{(]|`[^`\n]*\b(?:rm|git|dd|mkfs|kubectl|terraform)\b)/;
-const HEREDOC = /<<-?\s*(?:"(\w+)"|'(\w+)'|\\?(\w+))/;
+const HEREDOC = /<<-?\s*(?:"(\w+)"|'(\w+)'|(\\)?(\w+))/;
+const SUBSTITUTION = /\$\(|`/;
 
 function headOf(segment: string): string | undefined {
   const tokens = segment.trim().split(/\s+/);
@@ -189,7 +190,10 @@ function headOf(segment: string): string | undefined {
   return head ? head.replace(/^.*\//, "") : undefined;
 }
 
-/** Quoted strings replaced by a placeholder; escapes inside double quotes are honoured, single quotes take everything. */
+/**
+ * Quoted strings replaced by a placeholder; escapes inside double quotes are honoured, single quotes take everything.
+ * A double-quoted string that substitutes a command (`"$(...)"`, backticks) executes it, so that string stays visible.
+ */
 function blankQuotes(segment: string): string {
   let out = "";
   for (let index = 0; index < segment.length; index++) {
@@ -198,7 +202,8 @@ function blankQuotes(segment: string): string {
     let end = index + 1;
     while (end < segment.length && segment[end] !== char) end += char === "\"" && segment[end] === "\\" ? 2 : 1;
     if (end >= segment.length) { out += segment.slice(index); break; }
-    out += `${char}[text]${char}`;
+    const inner = segment.slice(index + 1, end);
+    out += char === "\"" && SUBSTITUTION.test(inner) ? `${char}${inner}${char}` : `${char}[text]${char}`;
     index = end;
   }
   return out;
@@ -227,7 +232,6 @@ export interface ScannedCommand {
  * (`python3 - <<EOF`) are kept when the script calls out to a shell or process API.
  */
 export function stripDataText(command: string): ScannedCommand {
-  if (/\$\(|`/.test(command)) return { text: command, stripped: false };
   const lines = command.split("\n");
   const out: string[] = [];
   let stripped = false;
@@ -235,13 +239,17 @@ export function stripDataText(command: string): ScannedCommand {
     const line = lines[index]!;
     const heredoc = HEREDOC.exec(line);
     if (!heredoc) { out.push(line); continue; }
-    const delimiter = heredoc[1] ?? heredoc[2] ?? heredoc[3]!;
-    const consumer = headOf(line.slice(0, heredoc.index)) ?? "";
+    const delimiter = heredoc[1] ?? heredoc[2] ?? heredoc[4]!;
+    // 'EOF', "EOF", and \EOF make the body literal; a bare EOF body is expanded, so a substitution inside it runs.
+    const literal = heredoc[4] === undefined || heredoc[3] !== undefined;
     const body: string[] = [];
     let close = index + 1;
     while (close < lines.length && lines[close]!.replace(/^\t+/, "") !== delimiter) body.push(lines[close]!), close++;
     const bodyText = body.join("\n");
-    const executed = SHELL_SINKS.has(consumer) || (INTERPRETERS.test(consumer) && EXEC_CALLS.test(bodyText));
+    // The whole pipeline on the heredoc line counts: `cat <<EOF | bash` executes the body as much as `bash <<EOF` does.
+    const heads = splitShell(line).map(segment => headOf(segment) ?? "");
+    const consumer = headOf(line.slice(0, heredoc.index)) ?? "";
+    const executed = heads.some(head => SHELL_SINKS.has(head)) || (INTERPRETERS.test(consumer) && EXEC_CALLS.test(bodyText)) || (!literal && SUBSTITUTION.test(bodyText));
     out.push(line);
     if (executed) out.push(...body);
     else if (body.length) { out.push(`[heredoc body: ${body.length} lines of data]`); stripped = true; }
@@ -250,8 +258,9 @@ export function stripDataText(command: string): ScannedCommand {
   }
   const joined = out.join("\n");
   const segments = splitShell(joined);
-  if (segments.some(segment => { const head = headOf(segment); return head !== undefined && SHELL_SINKS.has(head); })) return { text: joined, stripped };
-  if (/\b(?:ba|z|da|k)?sh\s+-[a-zA-Z]*c\b/.test(joined)) return { text: joined, stripped };
+  // A shell sink anywhere may run text written earlier in the same command (`cat <<EOF > run.sh` then `bash run.sh`), so nothing is treated as data.
+  if (segments.some(segment => { const head = headOf(segment); return head !== undefined && SHELL_SINKS.has(head); })) return { text: command, stripped: false };
+  if (/\b(?:ba|z|da|k)?sh\s+-[a-zA-Z]*c\b/.test(joined)) return { text: command, stripped: false };
   let text = joined;
   for (const segment of segments) {
     if (!isDataSegment(segment) || !/["']/.test(segment)) continue;
@@ -265,12 +274,12 @@ export function stripDataText(command: string): ScannedCommand {
 
 /**
  * rm with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
- * risky. A quote before `rm` is allowed so `bash -c "rm -rf /"` is read; data quotes were blanked before this runs.
+ * risky. A quote or parenthesis before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
  */
 function classifyRm(segment: string, cwd?: string): PatternHit | undefined {
-  const match = /(?:^|[\s"'])rm\s+(.*)$/.exec(segment);
+  const match = /(?:^|[\s"'(])rm\s+(.*)$/.exec(segment);
   if (!match) return undefined;
-  const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["']$/, ""));
+  const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["')]+$/, ""));
   const flags = tokens.filter(token => token.startsWith("-"));
   const targets = tokens.filter(token => !token.startsWith("-"));
   const recursive = flags.some(flag => flag === "--recursive" || (/^-[a-zA-Z]+$/.test(flag) && /[rR]/.test(flag)));

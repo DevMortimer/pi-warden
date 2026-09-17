@@ -26,11 +26,12 @@ import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
+import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName } from "./trace.js";
-import { proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
+import { DEFAULT_TEMPLATES, proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
 
 export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; and redacted tool-output samples for security and context saving (retention and output format). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
@@ -125,6 +126,26 @@ export function slopSteer(where: string, symptoms: readonly SlopSymptom[], count
   return `pi-warden: the content just written to ${where} has ${named}. Fix it in your next edit: ${fixes}.${standing}`;
 }
 
+/**
+ * `completeConfig` in shape.ts fills sections an older config module lacks, but shape.ts can be the stale module too: the
+ * 0.8 version knew nothing of `rules`, so a 0.9 extension read `config.rules.enabled` on undefined and every tool call
+ * failed until Pi was restarted. The sections this build reads are therefore checked here as well, in the module that reads them.
+ */
+export function guardCurrentSections(result: ShapeResult): ShapeResult {
+  const { config } = result;
+  const missing = [...result.missing];
+  if (typeof config.rules !== "object" || config.rules === null || !Array.isArray(config.rules.exclude)) {
+    if (!missing.includes("rules")) missing.push("rules");
+    config.rules = { enabled: false, threshold: 1, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} };
+  }
+  if (typeof config.widget !== "object" || config.widget === null) {
+    if (!missing.includes("widget")) missing.push("widget");
+    config.widget = { ...defaultConfig().widget, enabled: false };
+  }
+  if (typeof config.widget.rules !== "string") config.widget = { ...config.widget, rules: DEFAULT_TEMPLATES.rules };
+  return { config, missing };
+}
+
 /** Native Pi registration; importing the root library does not load this module. */
 export default function wardenExtension(pi: ExtensionAPI): void {
   let client: TypeSafe | undefined;
@@ -155,7 +176,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
   let shapeReported = false;
   const configFor = (ctx: ExtensionContext | ExtensionCommandContext): WardenConfig => {
-    const { config, missing } = completeConfig(loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() }));
+    const { config, missing } = guardCurrentSections(completeConfig(loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() })));
     if (missing.length && !shapeReported) {
       shapeReported = true;
       // A namespace read stays undefined (not a link error) when an older config module lacks the export.

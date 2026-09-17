@@ -56,3 +56,23 @@ test("a 0.8 config module without the rules section disables the rules guard and
   assert.deepEqual(result.config.rules.sensitivePaths, {});
   assert.equal(result.config.widget.rules, defaultConfig().widget.rules);
 });
+
+test("regression: the 0.9.0 live crash. A stale shape module returns a config without rules; the extension guards the sections it reads itself", async () => {
+  const { guardCurrentSections } = await import("../src/extension.js");
+  const stale = defaultConfig() as unknown as Record<string, unknown>;
+  delete stale.rules;
+  const widget = { ...(stale.widget as Record<string, unknown>) };
+  delete widget.rules;
+  stale.widget = widget;
+  // What an 0.8 completeConfig hands back: every section it knows, nothing it does not.
+  const result = guardCurrentSections({ config: stale as never, missing: [] });
+  assert.deepEqual(result.missing, ["rules"]);
+  assert.equal(result.config.rules.enabled, false);
+  assert.deepEqual(result.config.rules.exclude, []);
+  assert.equal(result.config.widget.rules, defaultConfig().widget.rules);
+  // The expression that threw in the live session.
+  assert.doesNotThrow(() => result.config.rules.enabled && result.config.rules.sensitivePaths);
+  const complete = guardCurrentSections(completeConfig(defaultConfig()));
+  assert.deepEqual(complete.missing, []);
+  assert.equal(complete.config.rules.enabled, true);
+});

@@ -260,7 +260,7 @@ Obvious credentials (`Authorization` headers, `TOKEN=` and `SECRET=` assignments
 
 ## After updating the package
 
-Run `/reload` in each open Pi session after an update. If a session reports `Cannot read properties of undefined (reading 'enabled')` while a fresh session works, restart it: the loaded modules do not match the files on disk. Since 0.5.2 the extension checks the shape of the config it receives; a missing section (an extension module and a config module from different versions in one process) switches that guard off and prints one warning naming the sections and the schema numbers. If you see it, restart Pi.
+Restart Pi after an update; `/reload` re-imports the entry module but can leave older modules of the same package in memory. Since 0.5.2 the extension checks the shape of the config it receives; a section that an older module does not know (the symptom of two package versions in one process) switches that guard off and prints one warning naming the sections and the schema numbers. 0.9.0 crashed instead when the shape-check module itself was the stale one; since 0.9.1 the extension guards the sections it reads in its own module, so the warning appears and everything else keeps working. If you see the warning, restart Pi.
 
 ## For extension authors
 
