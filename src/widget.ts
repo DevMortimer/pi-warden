@@ -70,6 +70,7 @@ export function actionTokens(verdict: Verdict, at = Date.now()): Tokens {
   const flags = [
     verdict.approvedByUser ? "user approved" : undefined,
     verdict.intentMismatch ? "off plan" : undefined,
+    verdict.offTaskSteer ? "off task" : undefined,
     verdict.source === "error" ? "typesafe error" : undefined,
     verdict.source === "read-only" ? "read-only" : undefined,
   ].filter(Boolean).join(", ");

@@ -1,4 +1,4 @@
-export { evaluateAction, describeAction, describePlan, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, steerReason, intentSteer, questions, intentQuestion, slopQuestions, approvalQuestion, securityQuestion, regretQuestions } from "./guard.js";
+export { evaluateAction, describeAction, describePlan, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, steerReason, intentSteer, offTaskSteer, questions, intentQuestion, slopQuestions, approvalQuestion, securityQuestion, regretQuestions } from "./guard.js";
 export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, PreviousAction, ScannedCommand, ScopeLabel, Severity, Verdict } from "./guard.js";
 export { SLOP_SYMPTOMS, SLOP_LABELS } from "./guard.js";
 export { ActionGuard } from "./action-guard.js";
@@ -27,7 +27,7 @@ export type { CallOutcome, CallRecord, CallScores, HoldSnapshot, OutcomeVia } fr
 export type { ContextLedgerSnapshot, RecallKind } from "./saver.js";
 export type { ShapeResult } from "./shape.js";
 export { CONFIG_SCHEMA, defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, isRecallTool, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, PACKAGE_NAME } from "./config.js";
-export type { ActionGuardConfig, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, RunawayConfig, NotifyConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
+export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, RunawayConfig, NotifyConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
 export type { CommandView } from "./tools.js";
 export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, runawayTokens, rulesTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, TOKEN_NAMES } from "./widget.js";

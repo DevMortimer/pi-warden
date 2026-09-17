@@ -9,6 +9,7 @@ import { describeAction, evaluateAction, isReadOnlyCommand, matchPatterns, regre
 import { askJev } from '../dist/jev.js';
 import { redact } from '../dist/redact.js';
 import { commandOf, COMMAND_TOOLS } from '../dist/tools.js';
+import { candidates } from './action-candidates.mjs';
 
 /**
  * CAL-2: calibrate the action guard on recorded Pi sessions instead of synthetic cases.
@@ -26,6 +27,7 @@ import { commandOf, COMMAND_TOOLS } from '../dist/tools.js';
  *   node scripts/calibrate-action.mjs --all                     # every session on this machine
  *   node scripts/calibrate-action.mjs --resume FILE             # continue an interrupted run
  *   node scripts/calibrate-action.mjs --report FILE             # metrics only, from a finished run
+ *   node scripts/calibrate-action.mjs --all --extra --labels F  # also ask the candidate questions (scripts/action-candidates.mjs); reuse F's turn labels
  */
 
 const args = process.argv.slice(2);
@@ -202,6 +204,14 @@ async function run() {
   const outFile = value('resume') ?? reportFile ?? join(outDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`);
   const existing = existsSync(outFile) ? readFileSync(outFile, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
   if (reportFile) { report(existing); return; }
+  // Turn labels from an earlier run are reused verbatim: the user's next message has not changed, only the questions have.
+  if (value('labels') && !existsSync(outFile)) {
+    mkdirSync(outDir, { recursive: true, mode: 0o700 });
+    const copied = readFileSync(value('labels'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(record => record.kind === 'turn');
+    writeFileSync(outFile, copied.map(record => `${JSON.stringify(record)}\n`).join(''), { mode: 0o600 });
+    existing.push(...copied);
+    console.log(`Reused ${copied.length} turn labels from ${value('labels')}.`);
+  }
 
   const files = await sessionFiles();
   const turns = await loadTurns(files);
@@ -248,9 +258,9 @@ async function run() {
     const base = { kind: 'call', key: callKey(turn, call), session: turn.session, turn: turn.index, id: `${call.held || call.declined ? 'h' : 'a'}${call.n}`, callId: call.id, tool: call.tool, command: summary.command !== undefined ? clip(summary.command, 200) : undefined, path: summary.path, location: summary.location, heldInRecording: call.held, declinedInRecording: call.declined, planChars: call.plan ? Math.min(call.plan.length, 500) : 0 };
     if (isReadOnlyLike(call)) { append({ ...base, source: 'read-only', level: 'allow', patterns: [] }); return; }
     requests++;
-    const verdict = await evaluateAction({ tool: call.tool, input: call.input, cwd: turn.cwd, task: turn.prompt, context: contextOf(turn), plan: call.plan }, { config, judge });
+    const verdict = await evaluateAction({ tool: call.tool, input: call.input, cwd: turn.cwd, task: turn.prompt, context: contextOf(turn), plan: call.plan }, { config, judge, ...(flag('extra') ? { questions: candidates } : {}) });
     const j = verdict.judgment;
-    append({ ...base, source: verdict.source, level: verdict.level, patterns: verdict.patterns.map(hit => `${hit.id}:${hit.severity}`), reasons: verdict.reasons, error: verdict.error, ...(j ? { irreversible: j.irreversible, offTask: j.offTask, scope: j.scope, scopeConfidence: j.scopeConfidence, mutates: j.mutates, intentMismatch: j.intentMismatch, model: j.model, ms: j.elapsedMs } : {}) });
+    append({ ...base, source: verdict.source, level: verdict.level, patterns: verdict.patterns.map(hit => `${hit.id}:${hit.severity}`), reasons: verdict.reasons, error: verdict.error, ...(j ? { irreversible: j.irreversible, offTask: j.offTask, scope: j.scope, scopeConfidence: j.scopeConfidence, mutates: j.mutates, intentMismatch: j.intentMismatch, model: j.model, ms: j.elapsedMs } : {}), ...(verdict.extra ? { extra: verdict.extra } : {}) });
   });
   console.log(`${requests} requests this run. Usage: ${JSON.stringify(judge.getUsage())}`);
   report(readFileSync(outFile, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)));
@@ -347,6 +357,22 @@ function report(records) {
     out(`intent >= ${String(t).padEnd(4)} steers ${String(sel.length).padStart(5)} (${pct(sel.length / Math.max(1, withPlan.length)).padStart(4)} of calls)  regretted ${String(sel.filter(c => c.label).length).padStart(2)}  in a rejected turn ${String(sel.filter(rejects).length).padStart(4)} (${pct(sel.filter(rejects).length / Math.max(1, sel.length)).padStart(4)})  rejected or corrected ${String(sel.filter(corrects).length).padStart(4)} (${pct(sel.filter(corrects).length / Math.max(1, sel.length)).padStart(4)})`);
   }
   out(`\n## Replay holds under the current defaults by how the user received the turn: ${JSON.stringify(Object.fromEntries(['continues', 'corrects', 'rejects', 'unrelated'].map(k => [k, ran.filter(c => predict(c, d.irreversible.confirm, d.offTask.confirm) && turnOf(c)?.satisfied === k).length])))}`);
+
+  const withExtra = judged.filter(c => c.extra);
+  if (withExtra.length) {
+    out(`\n## Candidate questions (${withExtra.length} judged calls carry them; AUC against the regretted call, a rejected turn, a rejected-or-corrected turn)`);
+    for (const id of Object.keys(withExtra[0].extra)) {
+      const numeric = withExtra.filter(c => typeof c.extra[id] === 'number');
+      if (!numeric.length) continue;
+      out(`${id.padEnd(18)} AUC regret ${fixed(auc(numeric.map(c => ({ label: c.label, score: c.extra[id] }))))}  rejected ${fixed(auc(numeric.map(c => ({ label: rejects(c), score: c.extra[id] }))))}  rejected/corrected ${fixed(auc(numeric.map(c => ({ label: corrects(c), score: c.extra[id] }))))}`);
+      for (const t of [0.5, 0.6, 0.7, 0.8, 0.9]) {
+        const sel = numeric.filter(c => c.extra[id] >= t);
+        out(`  >= ${t}  flags ${String(sel.length).padStart(5)} (${pct(sel.length / numeric.length).padStart(4)})  regretted ${String(sel.filter(c => c.label).length).padStart(2)}/${positives.length}  in a rejected turn ${String(sel.filter(rejects).length).padStart(4)} (${pct(sel.filter(rejects).length / Math.max(1, sel.length)).padStart(4)})  rejected or corrected ${String(sel.filter(corrects).length).padStart(4)} (${pct(sel.filter(corrects).length / Math.max(1, sel.length)).padStart(4)})`);
+      }
+    }
+    out(`\n### Regretted calls with candidate scores`);
+    for (const c of positives.filter(c => c.extra)) out(`  ${c.tool.padEnd(6)} ${Object.entries(c.extra).map(([k, v]) => `${k} ${typeof v === 'number' ? v.toFixed(2) : v}`).join(' · ')} | ${clip((c.command ?? c.path ?? '').replace(/\s+/g, ' '), 90)}`);
+  }
 
   const held = labelled.filter(c => c.kind === 'held');
   if (held.length) {

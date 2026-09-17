@@ -609,10 +609,22 @@ test("with consent, Jev judgments drive warn and hold, and the widget shows scor
   assert.match(held?.reason ?? "", /retry the same call and pi-warden will let it through/);
   assert.equal(networkCalls, 2);
 
+  // Off-task never holds: the unrelated write runs, the user sees a warning, the agent is steered back to the request.
   nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated" };
-  const offTask = await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" });
-  assert.equal(offTask?.block, true);
-  assert.match(offTask?.reason ?? "", /off-task 0\.95 \(unrelated to the request\)/);
+  sentMessages.length = 0;
+  assert.equal(await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" }), undefined);
+  assert.match(notices.at(-1)!.text, /^warden · write: off-task 0\.95 \(unrelated to the request; agent steered\)$/);
+  assert.match(sentMessages.at(-1)?.message.content ?? "", /^pi-warden: this write call looks unrelated to the user's request \(off-task 0\.95\)\. It ran\./);
+  assert.match(widgets.at(-1)![0]!, /off task · warn$/);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /1 off task,/);
+  assert.match(notices.at(-1)!.text, /off-task warn 0\.6 \/ steer 0\.85 \(never holds\)/);
+  // A read-only command Jev finds unrelated is warned about without a steer.
+  nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated", mutates: 0.05 };
+  sentMessages.length = 0;
+  assert.equal(await toolCall("bash", { command: "npm run report" }), undefined);
+  assert.equal(sentMessages.length, 0);
+  assert.match(notices.at(-1)!.text, /unrelated, but read-only/);
 });
 
 test("slop symptoms steer the agent after the write without holding it; steers are hidden from the transcript by default and escalate on repeats", async () => {

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { choice, noul, score } from "pi-typesafe";
-import type { IntegrationErrorCode } from "pi-typesafe";
+import type { IntegrationErrorCode, Questions } from "pi-typesafe";
 import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { askJev } from "./jev.js";
 import type { Judge } from "./jev.js";
@@ -111,6 +111,10 @@ export interface Verdict {
   plan?: string;
   /** True when Jev finds the call at odds with the agent's stated plan and the call can change something; the agent is told. */
   intentMismatch?: boolean;
+  /** True when Jev finds the call unrelated to the request on a call that can change something; the agent is steered back to the task. */
+  offTaskSteer?: boolean;
+  /** Answers to the caller's own `questions`: P(yes) for a noul, the picked option for a choice, the level for a score. */
+  extra?: Record<string, number | string>;
   /** Safe TypeSafe error message when the judge could not answer. */
   error?: string;
   errorCode?: IntegrationErrorCode;
@@ -130,6 +134,11 @@ export interface EvaluateOptions {
   retryAfterHold?: boolean | undefined;
   /** Calls allowed in the previous turn: ask whether the user's latest message regrets one of them (rides this request). */
   previousActions?: readonly PreviousAction[] | undefined;
+  /**
+   * Extra questions over the same state (`task`, `context`, `plan`, `action`), answered in `verdict.extra` and never acted on.
+   * How a candidate question is measured on recorded sessions before it earns an acting rule (scripts/calibrate-action.mjs).
+   */
+  questions?: Questions | undefined;
 }
 
 const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2 };
@@ -535,7 +544,7 @@ export function describePlan(plan: string | undefined): string | undefined {
   return text ? truncate(redact(text), PLAN_LIMIT) : undefined;
 }
 
-export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined } = {}) {
+export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined } = {}) {
   const wantSlop = extras.slop && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary);
   const previous = (extras.previousActions ?? []).slice(-PREVIOUS_ACTIONS_LIMIT).map(action => ({ ...action, ...(action.command !== undefined ? { command: truncate(action.command, PREVIOUS_COMMAND_LIMIT) } : {}) }));
   const plan = describePlan(extras.plan);
@@ -547,7 +556,7 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
       ...(plan ? { plan } : {}),
       ...(previous.length ? { previous_actions: previous } : {}),
     },
-    questions: { ...questions, ...(plan ? intentQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary) ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}) },
+    questions: { ...questions, ...(plan ? intentQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary) ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}), ...(extras.questions ?? {}) },
   };
 }
 
@@ -592,7 +601,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   if (!judge) return withPlan({ level, source: "pattern", summary, patterns, reasons });
 
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan });
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions });
   const result = await askJev(judge, request, { timeoutMs: config.timeoutMs, signal: options.signal });
   if (!result.ok) {
     if (!config.failOpen) {
@@ -635,12 +644,15 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     level = higher(level, "warn");
     reasons.push(`possibly irreversible ${percent(judgment.irreversible)}`);
   }
-  if (judgment.offTask >= config.offTask.confirm && judgment.scope === "unrelated" && canChange) {
-    level = higher(level, "confirm");
-    reasons.push(`off-task ${percent(judgment.offTask)} (unrelated to the request)`);
-  } else if (judgment.offTask >= config.offTask.confirm && judgment.scope === "unrelated") {
+  // Off-task never holds: on 17k recorded calls the off-task hold caught none of the calls users regretted (AUC 0.51) and
+  // made 40% of the holds. Unrelated changes are warned about and the agent is steered back to the task instead.
+  const offTaskSteer = judgment.offTask >= config.offTask.steer && judgment.scope === "unrelated" && canChange;
+  if (offTaskSteer) {
     level = higher(level, "warn");
-    reasons.push(`off-task ${percent(judgment.offTask)} (unrelated, but read-only: not held)`);
+    reasons.push(`off-task ${percent(judgment.offTask)} (unrelated to the request; agent steered)`);
+  } else if (judgment.offTask >= config.offTask.steer && judgment.scope === "unrelated") {
+    level = higher(level, "warn");
+    reasons.push(`off-task ${percent(judgment.offTask)} (unrelated, but read-only)`);
   } else if (judgment.offTask >= config.offTask.warn && judgment.scope !== "unclear") {
     level = higher(level, "warn");
     reasons.push(`off-task ${percent(judgment.offTask)} (${judgment.scope.replace(/_/g, " ")})`);
@@ -660,6 +672,17 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   const verdict: Verdict = withPlan({ level, source: "typesafe", summary, patterns, reasons, judgment });
   if (mismatch) verdict.intentMismatch = true;
+  if (offTaskSteer) verdict.offTaskSteer = true;
+  if (options.questions) {
+    const extra: Record<string, number | string> = {};
+    for (const id of Object.keys(options.questions)) {
+      const answer = (answers as Record<string, { noul?: number; choice?: string; score?: number } | undefined>)[id];
+      if (typeof answer?.noul === "number") extra[id] = answer.noul;
+      else if (typeof answer?.choice === "string") extra[id] = answer.choice;
+      else if (typeof answer?.score === "number") extra[id] = answer.score;
+    }
+    verdict.extra = extra;
+  }
   if (options.slop?.enabled && SLOP_SYMPTOMS.every(symptom => typeof answers[`slop_${symptom}`]?.noul === "number")) {
     verdict.slop = { stub: answers.slop_stub!.noul!, comments: answers.slop_comments!.noul!, dead: answers.slop_dead!.noul!, hedging: answers.slop_hedging!.noul! };
     const flagged = SLOP_SYMPTOMS.filter(symptom => verdict.slop![symptom] >= options.slop!.threshold).sort((a, b) => verdict.slop![b] - verdict.slop![a]);
@@ -680,6 +703,12 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
 export function intentSteer(verdict: Verdict): string {
   const score = verdict.judgment?.intentMismatch;
   return `pi-warden: this ${verdict.summary.tool} call does something different from what you said you were about to do${score === undefined ? "" : ` (intent mismatch ${percent(score)})`}. It ran. Before the next call, say what changed and why, and keep your stated plan and your calls in step; if the described step is still needed, do it.`;
+}
+
+/** What the agent reads after an unrelated change ran: the request it drifted from, and the two acceptable moves. */
+export function offTaskSteer(verdict: Verdict): string {
+  const score = verdict.judgment?.offTask;
+  return `pi-warden: this ${verdict.summary.tool} call looks unrelated to the user's request${score === undefined ? "" : ` (off-task ${percent(score)})`}. It ran. If it serves the request, say how in your next message; otherwise return to what the user asked for, or ask before widening the work.`;
 }
 
 /** Offline stand-in for the approval question when TypeSafe is not available. */

@@ -12,6 +12,13 @@ export interface Threshold {
   confirm: number;
 }
 
+export interface OffTaskThreshold {
+  /** P(off-task) at or above this, with a scope other than unclear, shows a warning. */
+  warn: number;
+  /** P(off-task) at or above this, with scope unrelated on a call that can change something, also steers the agent back to the task. Never holds: on 17k recorded calls off-task holds caught nothing the user regretted. */
+  steer: number;
+}
+
 export interface ActionGuardConfig {
   enabled: boolean;
   /** Tool names inspected before execution. Read-only tools are skipped to keep latency low. */
@@ -21,7 +28,7 @@ export interface ActionGuardConfig {
   /** Per-request TypeSafe timeout. The call is judged as an error after this. */
   timeoutMs: number;
   irreversible: Threshold;
-  offTask: Threshold;
+  offTask: OffTaskThreshold;
   /** P(the call differs from the agent's own stated plan) at or above this warns and tells the agent; never holds on its own. */
   intentMismatch: number;
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
@@ -189,7 +196,7 @@ export function defaultConfig(): WardenConfig {
       failOpen: true,
       timeoutMs: 5000,
       irreversible: { warn: 0.5, confirm: 0.7 },
-      offTask: { warn: 0.6, confirm: 0.85 },
+      offTask: { warn: 0.6, steer: 0.85 },
       intentMismatch: 0.9,
       feedbackLog: true,
     },
@@ -245,6 +252,14 @@ function threshold(value: unknown, fallback: Threshold): Threshold {
   return { warn: Math.min(warn, confirm), confirm };
 }
 
+/** `confirm` is the pre-0.12 name of the upper off-task threshold; files that still set it keep working. */
+function offTaskThreshold(value: unknown, fallback: OffTaskThreshold): OffTaskThreshold {
+  if (!isObject(value)) return fallback;
+  const warn = probability(value.warn, fallback.warn);
+  const steer = probability(value.steer ?? value.confirm, fallback.steer);
+  return { warn: Math.min(warn, steer), steer };
+}
+
 function boolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -267,7 +282,7 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number): 
     failOpen: boolean(raw.failOpen, base.failOpen),
     timeoutMs,
     irreversible: threshold(raw.irreversible, base.irreversible),
-    offTask: threshold(raw.offTask, base.offTask),
+    offTask: offTaskThreshold(raw.offTask, base.offTask),
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
     feedbackLog: boolean(raw.feedbackLog, base.feedbackLog),
   };

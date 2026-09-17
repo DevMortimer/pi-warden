@@ -12,7 +12,7 @@ Default configs and a starter rules file are in [`examples/`](examples/).
 
 | Guard | Watches | Does |
 | --- | --- | --- |
-| **Action** | every `bash`, `write`, `edit` (and context-mode's `ctx_execute*`) before it runs | holds irreversible or off-task calls and tells the agent why, so it re-plans or asks you |
+| **Action** | every `bash`, `write`, `edit` (and context-mode's `ctx_execute*`) before it runs | holds irreversible calls and tells the agent why, so it re-plans or asks you; steers it back when a change is unrelated to your request |
 | **Rules** | every `write` and `edit` | judges the written code against your project's Markdown rules (`pi-warden.md`) and names the violated rule to the agent |
 | **Slop** | written code and final replies | names stubs, restating comments, dead code, hedging, padded replies; the agent fixes them in the next edit |
 | **Security** | written code and tool output | flags hardcoded secrets, disabled TLS, unsafe interpolation; marks injected instructions in tool output |
@@ -66,7 +66,7 @@ Runs on `tool_call`, before the tool executes.
 2. **Patterns**, offline: force pushes, `git reset --hard`, `git clean`, recursive `rm` on absolute, home, variable, or parent paths, SQL `DROP`/`TRUNCATE`/`DELETE FROM`, block-device writes, `chmod -R 777`, fork bombs, `curl | sh`, `kill -1`, shutdown, package publishing, infrastructure destroys hold the call. `rm -rf` on a project path, `git checkout -- .`, `git branch -D`, `git stash drop`, `find -delete`, `sudo` warn. Reads or writes of `.env`, SSH, AWS, npm, kube, and other credential files warn. A `write` that overwrites a file outside the project holds; creating or editing outside the project warns.
 
    Text that is data is not a command. A heredoc body written to a file, a quoted `echo`/`printf` argument, a `grep` pattern, or a `git commit -m` message can mention `git push --force` without a hold. The same text fed to `sh`, `bash -c`, `eval`, `xargs`, or a `python3 - <<EOF` script that calls `os.system` keeps every hit.
-3. **Jev**, with consent: one request with `{ task, context, plan, action }` and four questions. `irreversible` (yes/no), `off_task` (yes/no), `mutates` (does it change anything), `scope` (expected step, plausible side step, unrelated, unclear). Defaults: irreversible at 0.5 warns and at 0.7 holds; off-task at 0.6 warns and at 0.85 with `unrelated` holds, but only when the action can change something. An unrelated `grep` is warned about, never held. Patterns set the floor; Jev can only raise it.
+3. **Jev**, with consent: one request with `{ task, context, plan, action }` and four questions. `irreversible` (yes/no), `off_task` (yes/no), `mutates` (does it change anything), `scope` (expected step, plausible side step, unrelated, unclear). Defaults: irreversible at 0.5 warns and at 0.7 holds. Off-task never holds: at 0.6 it warns, and at 0.85 with `unrelated` on a call that can change something the agent is also steered back to your request (an unrelated `grep` is warned about only). Patterns set the floor; Jev can only raise it.
 
    `plan` is the agent's own words in the message that makes the call (or its latest text since your prompt, 500 redacted characters). It tells Jev which step this is, so a verification fixture the agent just announced is not judged unrelated; it never authorizes anything. When there is a plan, a fifth question `intent_mismatch` asks whether the call does something materially different from it: a delete where the plan said list, a force push where it said push. At `action.intentMismatch` (0.9) on a call that can change something, the call is warned about and the agent is told to keep its words and its calls in step. Never held on that alone. The trace shows the plan under each verdict.
 4. **Act**, by mode:
@@ -83,7 +83,7 @@ The action guard receives your latest message plus up to eight earlier user and 
 `node scripts/calibrate-action.mjs --all` replays every guarded call in your recorded Pi sessions through the guard (one request per call) and asks Jev, once per turn, whether your next message regrets one of the calls that ran, approves each held call, and how it receives the turn (continues, corrects, rejects, unrelated). Run on 321 sessions from this machine (1,085 labelled turns, 17,160 guarded calls, 14,903 judged):
 
 - Regret is rare: 20 calls (2% of turns). None of them was about data loss: their `irreversible` scores were 0.04 to 0.57, median 0.07. They were scope and permission complaints: a commit the user did not want, an edit to a personal `CLAUDE.md`, a merge, a test run when conflicts were the job, a program launched at night. The hold rule catches none of them at any threshold that holds fewer than 3% of calls, so the hold defaults stay where they are; they are a checkpoint for destructive actions, and regret is the wrong yardstick for those.
-- Signal ranking against regret (AUC): `mutates` 0.74, `irreversible` 0.71, `intent_mismatch` 0.57, `off_task` 0.51. Off-task alone caused 56 of the 139 replay holds and none of them drew a complaint.
+- Signal ranking against regret (AUC): `mutates` 0.74, `irreversible` 0.71, `intent_mismatch` 0.57, `off_task` 0.51. Off-task alone caused 56 of the 139 replay holds and none of them drew a complaint, so since 0.12 off-task warns and steers but never holds (`offTask.steer`; a `confirm` key in an older config file still sets it).
 - The intent steer earned its threshold here. At 0.8 it fires on 11% of calls that can change something and 14% of those sit in a turn the user rejects (base rate 5%); at 0.9 it fires on 4% and 33% of those are in a rejected turn, 54% in one the user rejects or corrects (base rate 24%). The default is 0.9.
 - Of 42 holds pi-warden made in those sessions, the user's next message approved 5.
 
@@ -215,7 +215,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
     "tools": ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file", "write", "edit"],
     "failOpen": true,
     "irreversible": { "warn": 0.5, "confirm": 0.7 },
-    "offTask": { "warn": 0.6, "confirm": 0.85 },
+    "offTask": { "warn": 0.6, "steer": 0.85 },
     "intentMismatch": 0.9,
     "feedbackLog": true
   },

@@ -55,7 +55,7 @@ test("user overrides accept valid values and ignore junk", () => {
   assert.equal(config.enabled, true, "non-boolean falls back");
   assert.deepEqual(config.action.tools, ["bash"]);
   assert.deepEqual(config.action.irreversible, { warn: 0.6, confirm: 0.6 }, "warn is clamped to confirm");
-  assert.equal(config.action.offTask.confirm, 0.85);
+  assert.equal(config.action.offTask.steer, 0.85);
   assert.equal(config.action.timeoutMs, 5000);
   assert.equal(config.action.failOpen, false);
   assert.equal(config.stuck.window, 5);
@@ -104,7 +104,8 @@ test("loadConfig merges user then trusted project file, and survives malformed f
   await writeFile(join(project, ".pi", "pi-warden.json"), JSON.stringify({ typesafe: false, action: { offTask: { warn: 0.3, confirm: 0.4 } } }));
   const trusted = loadConfig({ cwd: project, projectTrusted: true });
   assert.equal(trusted.typesafe, true, "project file cannot flip consent");
-  assert.deepEqual(trusted.action.offTask, { warn: 0.3, confirm: 0.4 });
+  assert.deepEqual(trusted.action.offTask, { warn: 0.3, steer: 0.4 }, "the pre-0.12 name `confirm` still sets the upper off-task threshold");
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { action: { offTask: { warn: 0.5, steer: 0.4 } } }).action.offTask, { warn: 0.4, steer: 0.4 }, "warn is clamped to steer");
   const untrusted = loadConfig({ cwd: project, projectTrusted: false });
   assert.equal(untrusted.action.offTask.warn, 0.6, "untrusted projects are ignored");
 

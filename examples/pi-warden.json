@@ -13,7 +13,7 @@
   "action": {
     "tools": ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file", "write", "edit"],
     "irreversible": { "warn": 0.5, "confirm": 0.7 },
-    "offTask": { "warn": 0.6, "confirm": 0.85 }
+    "offTask": { "warn": 0.6, "steer": 0.85 }
   },
   "slop": {
     "prose": { "audience": "technical" }

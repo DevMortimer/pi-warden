@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, steerReason, stripDataText, textApproves } from "../src/guard.js";
+import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerReason, stripDataText, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { redact } from "../src/redact.js";
 
@@ -33,29 +33,40 @@ const failingJudge = (code: "timeout" | "http" = "timeout"): Judge => ({
   async evaluate() { throw new TypeSafeIntegrationError(code, `synthetic ${code}`); },
 });
 
-test("off-task alone holds only actions that can change something; read-only commands are warned, not held", async () => {
+test("off-task never holds: an unrelated change warns and steers the agent; a read-only command only warns", async () => {
   const config = defaultConfig().action;
   const inspect = { tool: "bash", input: { command: "cat package.json; node -e \"console.log(require('./package.json').version)\"" }, cwd, task: "Update the README image" };
   const readOnly = await evaluateAction(inspect, { config, judge: judge(0.05, 0.91, "unrelated", 0.05) });
   assert.equal(readOnly.level, "warn");
-  assert.match(readOnly.reasons.join("; "), /read-only: not held/);
+  assert.match(readOnly.reasons.join("; "), /unrelated, but read-only/);
+  assert.equal(readOnly.offTaskSteer, undefined, "nothing changed, nothing to steer back from");
   const changes = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config, judge: judge(0.2, 0.91, "unrelated", 0.95) });
-  assert.equal(changes.level, "confirm");
+  assert.equal(changes.level, "warn");
+  assert.equal(changes.offTaskSteer, true);
+  assert.match(changes.reasons.join("; "), /off-task 0\.91 \(unrelated to the request; agent steered\)/);
+  assert.match(offTaskSteer(changes), /^pi-warden: this bash call looks unrelated to the user's request \(off-task 0\.91\)\. It ran\./);
+  assert.match(formatVerdict(changes), /off task · warn$/);
   const unknown = await evaluateAction(inspect, { config, judge: judge(0.05, 0.91, "unrelated") });
-  assert.equal(unknown.level, "confirm", "without a mutates answer the old rule applies");
+  assert.equal(unknown.offTaskSteer, true, "without a mutates answer the call is taken to change something");
   const write = await evaluateAction({ tool: "write", input: { path: "poem.txt", content: "roses" }, cwd, task: "Fix the login bug" }, { config, judge: judge(0.05, 0.95, "unrelated", 0.05) });
-  assert.equal(write.level, "confirm", "write and edit always change something");
+  assert.equal(write.level, "warn", "write and edit always change something, and still never hold for scope alone");
+  assert.equal(write.offTaskSteer, true);
+  const below = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config: { ...config, offTask: { warn: 0.6, steer: 0.95 } }, judge: judge(0.2, 0.91, "unrelated", 0.95) });
+  assert.equal(below.offTaskSteer, undefined, "the steer threshold is configurable; the warn stays");
+  assert.equal(below.level, "warn");
   const probe = judge(0.05, 0.05, "expected_step", 0.05);
   await evaluateAction(inspect, { config, judge: probe });
   assert.ok("mutates" in (probe.calls[0] as { questions: Record<string, unknown> }).questions, "the question is part of the single action request");
 });
 
-test("missing scope context is not itself off-task evidence, while unrelated work still holds", async () => {
+test("missing scope context is not itself off-task evidence, while unrelated work is still warned about and steered", async () => {
   const action = { tool: "write", input: { path: "src/output.ts", content: "export const output = 1;" }, cwd, task: "Nice, the guard works :)" };
   const unclear = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.1, 0.95, "unclear") });
   assert.equal(unclear.level, "allow");
+  assert.equal(unclear.offTaskSteer, undefined);
   const unrelated = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.1, 0.95, "unrelated") });
-  assert.equal(unrelated.level, "confirm");
+  assert.equal(unrelated.level, "warn");
+  assert.equal(unrelated.offTaskSteer, true);
   const destructive = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.95, 0.95, "unclear") });
   assert.equal(destructive.level, "confirm", "missing context does not disable irreversible-action protection");
 });
@@ -250,12 +261,14 @@ test("evaluateAction applies thresholds from config", async () => {
   assert.equal(allow.source, "typesafe");
 });
 
-test("evaluateAction treats off-task work as warn, and unrelated high-probability work as confirm", async () => {
+test("evaluateAction treats off-task work as warn at both thresholds; only the unrelated change steers", async () => {
   const config = defaultConfig().action;
   const side = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, judge: judge(0.1, 0.7, "plausible_side_step") });
   assert.equal(side.level, "warn");
+  assert.equal(side.offTaskSteer, undefined);
   const unrelated = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, judge: judge(0.1, 0.9, "unrelated") });
-  assert.equal(unrelated.level, "confirm");
+  assert.equal(unrelated.level, "warn");
+  assert.equal(unrelated.offTaskSteer, true);
   assert.ok(unrelated.reasons.some(reason => /off-task/i.test(reason)));
 });
 
