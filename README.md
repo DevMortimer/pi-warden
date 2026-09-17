@@ -36,9 +36,71 @@ Requires Pi 0.85 or newer and Node.js 22.19 or newer. No key yet? Install anyway
 
 Three jobs, one channel: keep the agent on your rules, keep slop out of the code and the replies, keep the context small. The action guard is the seatbelt underneath: on 17,000 recorded calls it held 42 times. Everything arrives through the agent's own context, so the agent gets smarter and you are not the approval button. Full detail per guard, with thresholds and tuning numbers, is in [docs/guards.md](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md).
 
-## Two moments from real sessions
+## Four moments from real sessions
 
-Both are from my own work sessions, taken from the session logs. Project names are redacted. The first is the everyday kind; the second is the rare one.
+All four are from my own work sessions, taken from the session logs. Project names are redacted, paths shortened, secrets replaced. The first three are the everyday kind; the last is the rare one.
+
+### It quoted a project rule back, and the agent fixed it in the next turn
+
+The project's `pi-warden.md` has a rule "No hardcoded secrets": connection URLs come from settings or the environment. The agent wrote a demo script with the local database DSN as a fallback default.
+
+```text
+assistant
+  [write] scripts/demo_rail_decisions.py   (186 lines)
+    DSN = os.getenv(
+        "SUPABASE_DB_URL", "postgresql://[local default]"
+    )
+
+pi-warden (steer message to the agent)
+  pi-warden: the content just written to scripts/demo_rail_decisions.py violates
+  project rule from pi-warden.md: "No hardcoded secrets" (0.88): Source and config
+  code must not contain passwords, API keys, tokens, or connection URLs (including
+  Supabase DSNs and `FLY_API_TOKEN` values). They come from settings
+  (`utils/config.py`) or the environ… [77 more chars]. Fix it in your next edit.
+
+assistant
+  The warden flags the hardcoded local DSN. Right call. Making the script require
+  `SUPABASE_DB_URL` from the environment instead:
+    DSN = os.getenv("SUPABASE_DB_URL")
+    if not DSN:
+        sys.exit("Set SUPABASE_DB_URL to the local stack's DB_URL (supabase status)")
+```
+
+The rule is three lines of Markdown in the repo. No linter knows what a Supabase DSN looks like in a default argument; Jev does, and the agent got the rule text, not a red X.
+
+### It caught a placeholder the agent had already told itself to remove
+
+The agent's own reasoning said "clean that up (NO DEAD CODE)". Two edits later the placeholder test was still in the file.
+
+```text
+assistant (thinking)
+  I left a junk placeholder test in there. Clean that up (NO DEAD CODE). Remove the
+  placeholder test entirely and keep only the corrected one.
+assistant
+  [edit] tests/services/supabase/test_resolve_rung_multi_manager.py  (2 blocks)
+tool result
+  Successfully replaced 2 block(s) in tests/services/supabase/test_resolve_rung_multi_manager.py.
+
+pi-warden (steer message to the agent)
+  pi-warden: the content just written to tests/services/supabase/test_resolve_rung_multi_manager.py
+  has dead or duplicated code; hedging or vague notes; stub or placeholder code where a
+  working implementation is needed. Fix it in your next edit: remove commented-out code,
+  unused imports and variables, duplicated logic, and unreachable branches; ...
+
+  pi-warden: the content just written to ... in edit 2 (starting "await apply_decision(...")
+  violates project rule from pi-warden.md: "No partial implementations" (0.73): A comment
+  or docstring that says "simplified for now", "temporary", "for now just", ... Fix it in
+  your next edit.
+
+assistant
+  You're right. I kept the placeholder instead of deleting it. Removing it outright and
+  factoring the duplicated sit/task/cfg into one helper:
+  [edit] tests/services/supabase/test_resolve_rung_multi_manager.py  (1 block)
+tool result
+  Successfully replaced 1 block(s) in tests/services/supabase/test_resolve_rung_multi_manager.py.
+```
+
+The model knew the rule. Knowing is not the same as checking. The slop questions ride on the same request as the action guard, so this cost no extra round trip.
 
 ### It broke a retry loop
 
