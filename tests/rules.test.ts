@@ -278,3 +278,24 @@ test("RulesGuard prejudges sibling writes so their requests overlap, uses a prej
   assert.equal(judge.requests.length, 3, "a changed input is judged afresh");
   assert.equal(changed.source, "typesafe");
 });
+
+test("the shipped examples parse: the starter rules file yields scoped rules under the cap, and both config examples are accepted as written", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { applyProjectOverrides, applyUserOverrides } = await import("../src/config.js");
+  const starter = parseRules(await readFile("examples/pi-warden.md", "utf8"));
+  assert.ok(starter.length >= 10 && starter.length <= MAX_RULES, `${starter.length} rules`);
+  assert.ok(starter.every(rule => rule.body.length > 0), "every rule has text");
+  assert.deepEqual(starter.find(rule => rule.id === "no-explicit-any")?.paths, ["**/*.ts", "**/*.tsx"]);
+  assert.ok(!starter.some(rule => /copy this file/i.test(rule.body)), "the intro stays above the first heading and is not a rule");
+
+  const project = applyProjectOverrides(defaultConfig(), JSON.parse(await readFile("examples/pi-warden.json", "utf8")));
+  assert.ok(project.rules.skip.includes("**/*.test.*"));
+  assert.ok(project.rules.exclude.includes("secrets/**"));
+  assert.equal(Object.keys(project.rules.sensitivePaths).length, 4);
+  assert.equal(project.typesafe, false, "a project file cannot grant consent");
+
+  const user = applyUserOverrides(defaultConfig(), JSON.parse(await readFile("examples/config.json", "utf8")));
+  assert.equal(user.typesafe, true);
+  assert.equal(user.rules.maxChars, 8000);
+  assert.match(user.slop.prose.audience, /founder/);
+});

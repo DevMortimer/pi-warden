@@ -6,6 +6,8 @@ A second pair of eyes for [Pi](https://pi.dev). It watches what the agent does, 
 
 The verdicts above are real output from `npm run test:live`. Independent project; not affiliated with TypeSafe AI or the Pi authors. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
 
+Default configs and a starter rules file are in [`examples/`](examples/).
+
 ## What it does
 
 | Guard | Watches | Does |
@@ -42,6 +44,8 @@ Requires Pi 0.85 or newer and Node.js 22.19 or newer. Pattern checks work with n
 
 `TYPESAFE_API_KEY` in the environment takes precedence over the stored key. Headless runs give consent with `PI_WARDEN_ENABLED=1`.
 
+The [examples README](examples/README.md) walks through the starter `pi-warden.md`, the project `.pi/pi-warden.json`, and the user `config.json`.
+
 ## Philosophy
 
 pi-warden is a harness for the agent, not a gate for you. Three jobs:
@@ -72,7 +76,7 @@ The action guard receives your latest message plus up to eight earlier user and 
 
 ### Rules
 
-Write your project's rules as Markdown headings in `pi-warden.md` at the project root:
+Write your project's rules as Markdown headings in `pi-warden.md` at the project root (a starter file with a dozen rules is in [`examples/pi-warden.md`](examples/pi-warden.md)):
 
 ```markdown
 # No console statements
@@ -226,7 +230,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
 
 A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides: stricter thresholds, extra guarded tools, `rules.files`, `rules.skip`, `rules.sensitivePaths`, or `"done": { "enabled": false }`. Project files are read only when Pi trusts the project. They can never grant `typesafe` consent, change `mode`, raise `timeoutMs` or `maxRequests`, or set `notify.command`. Environment: `PI_WARDEN_ENABLED=1` (consent), `PI_WARDEN_MODE=steer|confirm|advise`.
 
-A wince-style setup for a backend repo:
+A wince-style setup for a backend repo (the full version is [`examples/pi-warden.json`](examples/pi-warden.json)):
 
 ```json
 {

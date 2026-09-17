@@ -1,0 +1,22 @@
+{
+  "rules": {
+    "threshold": 0.7,
+    "skip": ["tests/**", "test/**", "**/*.test.*", "**/*.spec.*", "docs/**", "**/*.md"],
+    "exclude": ["secrets/**", "**/*.pem", "**/*.key", "fixtures/**"],
+    "sensitivePaths": {
+      "**/migrations/**": "This touches a database migration: tell the user in your reply and make sure there is a rollback path",
+      "**/permissions*": "Access control changed: tell the user and ask for a security review before this is merged",
+      "**/auth/**": "Authentication code changed: tell the user; do not weaken any check without saying so",
+      ".github/workflows/**": "CI configuration changed: tell the user what the pipeline will now do differently"
+    }
+  },
+  "action": {
+    "tools": ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file", "write", "edit"],
+    "irreversible": { "warn": 0.5, "confirm": 0.7 },
+    "offTask": { "warn": 0.6, "confirm": 0.85 }
+  },
+  "slop": {
+    "prose": { "audience": "technical" }
+  },
+  "done": { "enabled": true }
+}

@@ -1,0 +1,26 @@
+{
+  "typesafe": true,
+  "mode": "steer",
+  "steerVisible": false,
+  "rules": {
+    "fallback": true,
+    "maxChars": 8000
+  },
+  "slop": {
+    "prose": { "audience": "a founder without a programming background" }
+  },
+  "context": {
+    "confidence": 0.8,
+    "recallTool": "auto"
+  },
+  "notify": {
+    "enabled": true,
+    "cooldownMs": 10000,
+    "command": []
+  },
+  "widget": {
+    "placement": "aboveEditor",
+    "shortcut": "ctrl+shift+w",
+    "panelWidth": "40%"
+  }
+}
