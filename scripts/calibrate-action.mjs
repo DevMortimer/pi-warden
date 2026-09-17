@@ -20,7 +20,10 @@ import { candidates } from './action-candidates.mjs';
  * approves each call pi-warden held in the recording. The report then gives precision, recall, hold rate, and AUC per
  * threshold so the defaults can be chosen from data.
  *
- * Billable and explicit: run it on purpose. Output is owner-only under .local/calibration/ and never committed.
+ * Billable and explicit: run it on purpose. A full run over a machine's sessions is large: the 2026-09-17 run over 321
+ * sessions made about 16k requests and 40M input tokens (each replay carries task, context, plan, action, and the
+ * questions). --dry-run prints the estimate; a run above --max-requests (default 2000) needs --yes.
+ * Output is owner-only under .local/calibration/ and never committed.
  *
  *   node scripts/calibrate-action.mjs --dry-run                 # counts and request estimate, no requests
  *   node scripts/calibrate-action.mjs --project .               # sessions of one project directory
@@ -43,7 +46,10 @@ const MAX_CANDIDATES = 40;
 const MAX_HELD = 8;
 const sessionsRoot = join(homedir(), '.pi', 'agent', 'sessions');
 const concurrency = Number(value('concurrency', 6));
-const maxRequests = Number(value('max-requests', Infinity));
+const maxRequests = Number(value('max-requests', 2000));
+/** Input tokens per request, measured on the 2026-09-17 runs (about 88M tokens over 33k requests). */
+const TOKENS_PER_REQUEST = 2700;
+const USD_PER_MTOK = 0.042;
 const timeoutMs = Number(value('timeout', 20000));
 const outDir = resolve('.local', 'calibration');
 
@@ -218,8 +224,13 @@ async function run() {
   const calls = turns.flatMap(turn => turn.calls.map(call => ({ turn, call })));
   const judgeable = calls.filter(({ call }) => !isReadOnlyLike(call));
   console.log(`${files.length} session files, ${turns.length} labelled turns, ${calls.length} guarded calls (${judgeable.length} not read-only), ${calls.filter(c => c.call.held).length} held in the recording, ${calls.filter(c => c.call.declined).length} declined.`);
-  console.log(`Requests: about ${turns.length} labels + ${judgeable.length} replays. Output: ${outFile}`);
+  const planned = turns.filter(turn => !existing.some(record => record.key === turnKey(turn))).length + judgeable.filter(({ turn, call }) => !existing.some(record => record.key === callKey(turn, call))).length;
+  console.log(`Requests: about ${turns.length} labels + ${judgeable.length} replays (${planned} still to make); roughly ${(planned * TOKENS_PER_REQUEST / 1e6).toFixed(1)}M input tokens, about $${(planned * TOKENS_PER_REQUEST / 1e6 * USD_PER_MTOK).toFixed(2)} at $${USD_PER_MTOK}/MTok. Output: ${outFile}`);
   if (flag('dry-run')) return;
+  if (planned > maxRequests && !flag('yes')) {
+    console.log(`That is more than --max-requests ${maxRequests}. Add --yes to spend it, or --max-requests N to stop after N, or --project DIR to narrow the corpus.`);
+    return;
+  }
 
   mkdirSync(outDir, { recursive: true, mode: 0o700 });
   if (!existsSync(outFile)) writeFileSync(outFile, '', { mode: 0o600 });
