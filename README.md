@@ -1,6 +1,6 @@
 # pi-warden
 
-A second pair of eyes for [Pi](https://pi.dev). Before the agent runs a command or writes a file, pi-warden asks [Jev](https://typesafe.ai) a few yes/no questions about it (about 250 ms, a fraction of a cent) and puts the answer back into the agent's own context. A destructive command is held and the agent is told why. Code that breaks one of your rules gets the rule quoted back. A retry loop is asked for a new hypothesis. You keep working; the agent gets a nudge instead of you getting a dialog.
+Makes the [Pi](https://pi.dev) agent follow your project's rules. An `AGENTS.md` asks the model to remember; pi-warden checks. On every write and edit, [Jev](https://typesafe.ai) judges the change against the rules in your `pi-warden.md` (about 250 ms, a fraction of a cent) and the violated rule is quoted back into the agent's own context. The same channel names slop, breaks retry loops, calls out "done" when no test ran, keeps large tool output small, and holds the rare destructive command. You keep working; the agent gets a nudge instead of you getting a dialog.
 
 ![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
@@ -24,52 +24,21 @@ Requires Pi 0.85 or newer and Node.js 22.19 or newer. No key yet? Install anyway
 
 | Guard | Watches | Does |
 | --- | --- | --- |
-| **Action** | every `bash`, `write`, `edit` (and context-mode's `ctx_execute*`) before it runs | holds irreversible calls and tells the agent why, so it re-plans or asks you; steers it back when a change is unrelated to your request |
 | **Rules** | every `write` and `edit` | judges the written code against your project's Markdown rules (`pi-warden.md`) and names the violated rule to the agent |
 | **Slop** | written code and final replies | names stubs, restating comments, dead code, hedging, padded replies; the agent fixes them in the next edit |
-| **Security** | written code and tool output | flags hardcoded secrets, disabled TLS, unsafe interpolation; marks injected instructions in tool output |
 | **Stuck** | tool results | notices three failures with the same strategy and asks for a new hypothesis |
-| **Runaway** | the reply stream | stops a reply that repeats the same block over and over (code only, no request) |
 | **Done-check** | the final message | catches "done" claims after code changes when no test, build, or lint passed |
 | **Context saver** | large or repeated tool output | keeps the exact lines that matter, stores the rest in a file, points recalls at a search |
+| **Action** | every `bash`, `write`, `edit` (and context-mode's `ctx_execute*`) before it runs | holds irreversible calls and tells the agent why, so it re-plans or asks you; steers it back when a change is unrelated to your request |
+| **Security** | written code and tool output | flags hardcoded secrets, disabled TLS, unsafe interpolation; marks injected instructions in tool output |
+| **Runaway** | the reply stream | stops a reply that repeats the same block over and over (code only, no request) |
 | **Notifications** (opt-in) | moments that need you | desktop notification for a held call, a confirm dialog, a runaway stop |
 
-Three jobs, one channel: keep risky operations in check, keep slop out of the code and the replies, keep the context small. Everything arrives through the agent's own context, so the agent gets smarter and you are not the approval button. Full detail per guard, with thresholds and tuning numbers, is in [docs/guards.md](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md).
+Three jobs, one channel: keep the agent on your rules, keep slop out of the code and the replies, keep the context small. The action guard is the seatbelt underneath: on 17,000 recorded calls it held 42 times. Everything arrives through the agent's own context, so the agent gets smarter and you are not the approval button. Full detail per guard, with thresholds and tuning numbers, is in [docs/guards.md](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md).
 
 ## Two moments from real sessions
 
-Both are from my own work sessions, taken from the session logs. Project names are redacted.
-
-### It held a database reset, and the agent finished everything else first
-
-A feature branch with a migration. The agent decided to replay the local database. `supabase db reset` is a legitimate local command in that repo, but it wipes local state, and nobody had asked for it.
-
-```text
-assistant
-  [bash] cd .claude/worktrees/con-142 && supabase db reset 2>&1 | tail -6
-
-tool result (written by pi-warden; the command did not run)
-  pi-warden held this bash call before it ran: irreversible 0.85. Do not retry it
-  unchanged. Either (1) reach the goal with a recoverable alternative that stays
-  inside the project (a targeted path, a dry run, a move instead of a delete, a
-  normal push), or (2) if this exact action is genuinely required, stop and tell
-  the user in one or two sentences what it does, what cannot be undone, and why
-  it is needed, then wait for their reply. If the user's reply approves it, retry
-  the same call and pi-warden will let it through.
-
-assistant
-  The warden held `supabase db reset`. It's the sanctioned local-stack replay
-  (loopback docker only, no dev/prod reach), but I'll pause that step and ask at
-  the end of this update. Continuing with lanes that don't need it:
-  [bash] uv run pytest tests/canon tests/services/messaging ...   92 passed in 24.80s
-  ... ruff, commit, push, draft PR ...
-
-assistant (final message, about 16 tool calls later)
-  Draft PR is up and the work is committed and pushed. One decision is pending
-  for you. PR: redacted#2640 (draft) ...
-```
-
-No dialog, no interruption. The agent moved the risky step to the end and asked in one sentence.
+Both are from my own work sessions, taken from the session logs. Project names are redacted. The first is the everyday kind; the second is the rare one.
 
 ### It broke a retry loop
 
@@ -112,6 +81,37 @@ tool results
 
 The steer names the pattern (same strategy, no progress) and what to do instead. The agent read its own error properly on the next turn.
 
+### It held a database reset, and the agent finished everything else first
+
+A feature branch with a migration. The agent decided to replay the local database. `supabase db reset` is a legitimate local command in that repo, but it wipes local state, and nobody had asked for it.
+
+```text
+assistant
+  [bash] cd .claude/worktrees/con-142 && supabase db reset 2>&1 | tail -6
+
+tool result (written by pi-warden; the command did not run)
+  pi-warden held this bash call before it ran: irreversible 0.85. Do not retry it
+  unchanged. Either (1) reach the goal with a recoverable alternative that stays
+  inside the project (a targeted path, a dry run, a move instead of a delete, a
+  normal push), or (2) if this exact action is genuinely required, stop and tell
+  the user in one or two sentences what it does, what cannot be undone, and why
+  it is needed, then wait for their reply. If the user's reply approves it, retry
+  the same call and pi-warden will let it through.
+
+assistant
+  The warden held `supabase db reset`. It's the sanctioned local-stack replay
+  (loopback docker only, no dev/prod reach), but I'll pause that step and ask at
+  the end of this update. Continuing with lanes that don't need it:
+  [bash] uv run pytest tests/canon tests/services/messaging ...   92 passed in 24.80s
+  ... ruff, commit, push, draft PR ...
+
+assistant (final message, about 16 tool calls later)
+  Draft PR is up and the work is committed and pushed. One decision is pending
+  for you. PR: redacted#2640 (draft) ...
+```
+
+No dialog, no interruption. The agent moved the risky step to the end and asked in one sentence.
+
 ## How it decides
 
 Every guarded call (`bash`, `write`, `edit`, and shell-like tools such as context-mode's `ctx_execute`) goes through four steps:
@@ -143,11 +143,17 @@ The labelling never stops: what you do after each hold (approve, decline, redire
 
 ## Questions people asked
 
+**How is this different from putting the rules in AGENTS.md?**
+An `AGENTS.md` is read once and asks the model to remember. Long sessions, compaction, and cheap models forget. pi-warden re-reads your rules file when it changes and judges every write against it at the moment it happens, then quotes the rule the agent broke. The rules can be things a linter cannot check: "exported functions declare return types", "a TODO must name a ticket", "comments must not restate the code". Keep the AGENTS.md; the rules guard is the check behind it.
+
+**How much of this could a good regex filter do?**
+A good chunk of the destructive-command part, and pi-warden ships that regex layer too: force push, `rm -rf` outside the project, `DROP`/`TRUNCATE`, `curl | sh`, and it looks inside `bash -c`, `eval`, and `python3 - <<EOF`. It runs offline with no key. What regex cannot do is context: `db reset` after "reset the database" is fine and after "add a column" it is not, same string. Jev sees your request and the last few messages. And none of the rest is regex-able: a rule violation in written code, a restating comment, the same failing strategy three times, a "done" with no test run.
+
 **Is this like Claude Code's auto mode?**
-Same idea: judge each tool call against what you actually asked and stop the ones that overreach. Three differences. It runs as a Pi extension. The judge is Jev, not a second LLM, so it costs 250 ms and a fraction of a cent per call, cheap enough for every guarded call. And the verdict goes to the agent, not to you: the agent re-plans or asks in a sentence, so you are not the approval button. It also covers things auto mode does not: rules on every write, slop, secrets, stuck loops, done claims, output compression.
+The action guard is the same idea: judge each tool call against what you actually asked and stop the ones that overreach. Three differences. It runs as a Pi extension. The judge is Jev, not a second LLM, so it costs 250 ms and a fraction of a cent per call, cheap enough for every guarded call. And the verdict goes to the agent, not to you: the agent re-plans or asks in a sentence, so you are not the approval button. The rest of pi-warden is outside auto mode's scope: rules on every write, slop, stuck loops, done claims, output compression.
 
 **Do I need a TypeSafe key?**
-Only for Jev judgments. Without one you still get the pattern list, the runaway stop, duplicate-output notes, sensitive-path notes, and credential-shape warnings. Jev is new and access may be limited; if [console.typesafe.ai](https://console.typesafe.ai) puts you on a list, install now and run `/warden enable` when the key arrives.
+Only for Jev judgments. Without one you still get the pattern list, the runaway stop, duplicate-output notes, sensitive-path notes, and credential-shape warnings. Jev is new and keys come through a waitlist at [console.typesafe.ai](https://console.typesafe.ai); people who filled in the survey and joined the TypeSafe Discord reported access the same day. Install now and run `/warden enable` when the key arrives.
 
 **What does it cost?**
 Usage is billed to your TypeSafe account. A judgment is about 600 input tokens; a rules request with 8 rules about 2,000; output is free. At TypeSafe's listed rate ($42 per billion input tokens at the time of writing) a thousand guarded calls cost two or three cents. `maxRequests` (500 per session) caps it and `/warden status` shows the count.
@@ -162,7 +168,7 @@ To trust cheaper, faster models more. Flash-class models make more out-of-propor
 It can, so pi-warden never lets it approve anything. Holds come from two places, the offline patterns and the irreversible score, and the irreversible question does not mention the plan. The agent's words reach only the questions that nudge: off task, scope, and "does the call contradict what it just said". Those steer, never hold. So a wrong plan can earn the agent an extra nudge; it cannot remove a hold. Why keep it at all: on recorded sessions a visible effect (commit, push, publish) paired with a plan mismatch flagged 1.1% of calls, and 18% of those sat in a turn the user then rejected, four times the base rate. It is the best signal measured so far for "the agent did something the user did not want", and the calibration script measures it on your own sessions.
 
 **My model never runs unwanted migrations or loops. Do I need this?**
-Then the action guard will mostly stay quiet; it is a seatbelt. The daily value for a well-behaved model is the rest: rules judged on every write, slop and hedging named, done claims without a test run called out, large outputs cut to the lines that matter with the full copy kept on disk.
+Then the action guard will mostly stay quiet; it is a seatbelt, and on 17k of my own calls it held 42 times. The daily value for a well-behaved model is the rest: rules judged on every write, slop and hedging named, done claims without a test run called out, large outputs cut to the lines that matter with the full copy kept on disk.
 
 **How is this different from pi-ward, pi-sensitive-guard, or a permission system?**
 Those draw deterministic lines: which paths, which patterns, allow or deny. pi-warden has a pattern list too, but its main job is the judgment a list cannot make: `db:reset` after "reset the database" is fine, `db:reset` after "add a column" is not. It is advisory, not a sandbox, and it runs alongside those extensions.
@@ -197,7 +203,7 @@ A `TODO` or `FIXME` must name a ticket, for example `TODO(APP-123): ...`.
 
 On every write and edit, Jev judges the change against each rule: compliant, violation, not applicable, or insufficient context. A violation at 0.7 or above is quoted back to the agent (heading, rule text, and which edit). The write goes through; a held write would leave a half-written file. The third hit of one rule in a session is called out as a standing rule. Files are re-read when they change.
 
-This is the difference from an `AGENTS.md` alone: a context file asks the model to remember; the rules guard checks each write at the moment it happens. Without a `pi-warden.md`, the first of `README.md`, `CLAUDE.md`, `AGENTS.md` is judged as one document instead. Starter file with a dozen rules: [`examples/pi-warden.md`](examples/pi-warden.md). Path globs, sensitive-path notes, and the tuning set: [docs/guards.md](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md#rules).
+Without a `pi-warden.md`, the first of `README.md`, `CLAUDE.md`, `AGENTS.md` is judged as one document instead, so existing context files work from day one. Starter file with a dozen rules: [`examples/pi-warden.md`](examples/pi-warden.md). Path globs, sensitive-path notes, and the tuning set: [docs/guards.md](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md#rules).
 
 ## Commands
 
