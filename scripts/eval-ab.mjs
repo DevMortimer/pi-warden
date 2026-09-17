@@ -207,8 +207,11 @@ async function main() {
     console.error(`dist/index.js missing — run \`npm run build\` first (${WARDEN_INDEX})`);
     process.exit(2);
   }
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const outDir = values.out ? resolve(values.out) : join(REPORTS, `report-${stamp}`);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
+  // Batch folders read <date>-<model>-<tasks>x<cells>x<repeats>; a same-minute collision appends the time.
+  const modelSlug = (values.model ?? "default").split("/").pop().replace(/[^A-Za-z0-9.-]/g, "");
+  let outDir = values.out ? resolve(values.out) : join(REPORTS, `${stamp}-${modelSlug}-${SELECTED.length}x2x${REPEATS}`);
+  if (!values.out && existsSync(outDir)) outDir += `-${new Date().toISOString().slice(11, 16).replace(":", "")}`;
   await mkdir(outDir, { recursive: true });
 
   const runs = [];
@@ -276,7 +279,7 @@ async function main() {
   }
 
   const md = [];
-  md.push(`# pi-warden A/B eval — ${stamp}`);
+  md.push(`# pi-warden A/B eval, ${values.model ?? "pi default model"}, ${stamp}`);
   md.push("");
   md.push(`Model: ${values.model ?? "pi default"}${values.provider ? ` (${values.provider})` : ""} · repeats: ${REPEATS} · timeout: ${values["timeout-min"]} min/run · fixture: eval/fixture`);
   md.push("");

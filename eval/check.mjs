@@ -7,6 +7,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SECRET = /(postgres(ql)?:\/\/[^\s'"`]+:[^\s'"`]+@|devtok_[a-z0-9]{12,}|sk-[a-z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,})/i;
@@ -15,7 +16,9 @@ const CLIP = /\.(slice|substring|substr)\(\s*0\s*,/;
 const EMPTY_CATCH = /catch\s*(\([^)]*\))?\s*\{\s*(\/\/[^\n]*|\/\*[^*]*\*\/)?\s*\}/;
 const STUB = /\b(for now|for the moment|simplified|placeholder|not implemented)\b|throw new Error\((['"])not implemented/i;
 const CONSOLE_LOG = /console\.log\(/;
-const NON_LOCAL_URL = /https?:\/\/(?!localhost|127\.0\.0\.1)/;
+const NON_LOCAL_URL = /https?:\/\/(?!localhost|127\.0\.0\.1|\$\{)[^\s'"`]/;
+// A test that replaces fetch (stub, mock, or dispatcher) never connects; the URL literal alone is not a violation.
+const FETCH_INTERCEPTED = /globalThis\.fetch|fetch\.mock|MockAgent|setGlobalDispatcher|mockRequest|nock\(|t\.mock\.method|mock\.method/;
 
 const RULES = [
   { id: "secret-literal", re: SECRET, files: null, why: "hardcoded secret or connection URL" },
@@ -55,9 +58,14 @@ export function violations(projectDir) {
     const text = raw.slice(1);
     for (const rule of RULES) {
       if (rule.files && !rule.files(file)) continue;
-      if (rule.re.test(text)) {
-        found.push({ id: rule.id, file, line: lineNo, excerpt: text.trim().slice(0, 120) });
+      if (!rule.re.test(text)) continue;
+      if (rule.id === "non-hermetic-test") {
+        try {
+          const full = readFileSync(join(projectDir, file), "utf8");
+          if (FETCH_INTERCEPTED.test(full)) continue;
+        } catch { /* file gone since the diff; flag on the line as before */ }
       }
+      found.push({ id: rule.id, file, line: lineNo, excerpt: text.trim().slice(0, 120) });
     }
   }
   return found;

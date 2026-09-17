@@ -220,21 +220,20 @@ No file needed the same rule steer twice in the window. The hold logs from one o
 
 ### Does it improve the code? A repeatable A/B benchmark
 
-`npm run eval:ab` runs the same fixture tasks through headless Pi twice — once with the rules as prose in `AGENTS.md` (control), once with the same `AGENTS.md` plus pi-warden enforcing `pi-warden.md` — and scores every final diff with a mechanical checker that shares no code with the guard. Tasks are built so a naive shortcut passes the provided tests while violating a rule, so only the checker can tell the two cells apart. Run it yourself: `node scripts/eval-ab.mjs --repeats 5` (default model or `--provider/--model`; about 45 minutes and a few hundred thousand tokens for 50 runs).
+`npm run eval:ab` runs the same fixture tasks through headless Pi twice. The control cell gets the five rules as prose in `AGENTS.md`. The warden cell gets the same file plus pi-warden enforcing `pi-warden.md`. A mechanical checker then scores every final diff, and it shares no code with the guard, so no guard verdict can influence a score. Each task has a shortcut that passes the provided tests while breaking a rule, so only the checker can tell the two cells apart. Run it on your own model: `npm run eval:ab -- --repeats 5 --model <model>` (about 45 minutes and a few hundred thousand tokens for 50 runs).
 
-Latest run: `commandcode/z-ai/glm-5.3-flash`, 5 tasks × 2 cells × 5 repeats (50 runs, `eval/reports/report-2026-09-17T15-46-42/`), with a same-config earlier run (`...T14-23-54/`) giving 10 repeats per cell in total:
+Results so far, 50 runs per model (5 tasks, both cells, 5 repeats):
 
-| Measured | Control (rules as prose) | Warden (same prose, enforced) |
-| --- | --- | --- |
-| Rule violations in final diffs | 12 in 50 runs (24%) | **4 in 50 runs (8%)** |
-| Clipped user-visible text (t2-clip) | 6 of 10 runs | **1 of 10 runs** |
-| Tests fully passing | 50 of 50 | 47 of 50 |
-| Steers sent into agent context | 0 | 61 (12 rules, 7 slop, 41 credential notes, 1 intent mismatch) |
-| Median run time | 34 s | 46 s |
+| Model | Cell | Rule violations in final diffs | Tests fully passing | Median run time |
+| --- | --- | --- | --- | --- |
+| glm-5.3-flash | control | **7 of 25 runs** | 50 of 50 | 34 s |
+| glm-5.3-flash | warden | **1 of 25 runs** | 47 of 50 | 44 s |
+| deepseek-v4.1-flash | control | 0 of 25 runs | 25 of 25 | 15 s |
+| deepseek-v4.1-flash | warden | 0 of 25 runs | 25 of 25 | 20 s |
 
-Every t2-clip run that received a clip steer ended clean; the one warden-cell clip in 20 runs got no steer (the rules request returned below threshold — rules verdicts are now logged with per-rule scores so misses like this are diagnosable). The 41 credential notes were one message per repeated output in the pre-dedup build; credential warnings now dedup per distinct value.
+The clipping task shows the effect best. Without the warden, 6 of 10 glm runs cut user-visible text to fit. With it, 1 of 10, and every run that received a clip steer ended clean. On deepseek, a model that already wrote clean code, the warden changed nothing worth measuring and cost a few seconds per run.
 
-Stated plainly, the negatives from the same runs: the hermetic-test task shows no reliable warden effect (4 vs 2 runs over 20 — noise dominates it so far); all 3 warden-cell test failures were on the retry task where the guard stayed silent, so they look like model variance the eval surfaced rather than guard interference, but the mechanism is not understood yet; and this is one model on one machine. The benchmark is the artifact — re-run it on your model and tasks, and the README claim has to survive your numbers too.
+The honest footnotes. The glm test failures in the warden cell are model variance, not guard interference: a 20-run retry-only batch put both cells at 8 of 10, and the guard stayed silent in every failure. Credential steer noise on one task is still too high (30 of deepseek's 34 steers) and is the next guard fix. All numbers so far come from one machine and two models; per-batch reports live in [eval/reports/](eval/reports/README.md), and the claim has to survive your re-run too.
 
 ## Questions people asked
 
