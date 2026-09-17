@@ -68,7 +68,7 @@ Runs on `tool_call`, before the tool executes.
    Text that is data is not a command. A heredoc body written to a file, a quoted `echo`/`printf` argument, a `grep` pattern, or a `git commit -m` message can mention `git push --force` without a hold. The same text fed to `sh`, `bash -c`, `eval`, `xargs`, or a `python3 - <<EOF` script that calls `os.system` keeps every hit.
 3. **Jev**, with consent: one request with `{ task, context, plan, action }` and four questions. `irreversible` (yes/no), `off_task` (yes/no), `mutates` (does it change anything), `scope` (expected step, plausible side step, unrelated, unclear). Defaults: irreversible at 0.5 warns and at 0.7 holds; off-task at 0.6 warns and at 0.85 with `unrelated` holds, but only when the action can change something. An unrelated `grep` is warned about, never held. Patterns set the floor; Jev can only raise it.
 
-   `plan` is the agent's own words in the message that makes the call (or its latest text since your prompt, 500 redacted characters). It tells Jev which step this is, so a verification fixture the agent just announced is not judged unrelated; it never authorizes anything. When there is a plan, a fifth question `intent_mismatch` asks whether the call does something materially different from it: a delete where the plan said list, a force push where it said push. At `action.intentMismatch` (0.8) on a call that can change something, the call is warned about and the agent is told to keep its words and its calls in step. Never held on that alone; the hold feedback below will say whether it should be. The trace shows the plan under each verdict.
+   `plan` is the agent's own words in the message that makes the call (or its latest text since your prompt, 500 redacted characters). It tells Jev which step this is, so a verification fixture the agent just announced is not judged unrelated; it never authorizes anything. When there is a plan, a fifth question `intent_mismatch` asks whether the call does something materially different from it: a delete where the plan said list, a force push where it said push. At `action.intentMismatch` (0.9) on a call that can change something, the call is warned about and the agent is told to keep its words and its calls in step. Never held on that alone. The trace shows the plan under each verdict.
 4. **Act**, by mode:
    - `steer` (default): a hold blocks the call and returns the judgment to the agent as its tool result, with the two acceptable next moves: find a recoverable alternative, or explain the action to you and wait. If your reply approves it, the retry goes through (Jev reads your reply; offline, a yes/go-ahead heuristic does).
    - `confirm`: a `ctx.ui.confirm` dialog. No blocks with a short reason. Falls back to `steer` without a UI.
@@ -77,6 +77,17 @@ Runs on `tool_call`, before the tool executes.
 The action guard receives your latest message plus up to eight earlier user and assistant messages (750 redacted characters each) so follow-ups and side comments do not replace the task. Sibling tool calls in one assistant message are judged together in one round trip. If TypeSafe cannot answer, the call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead).
 
 **Hold feedback.** What you do next labels each judgment, so hold precision is measured on your sessions rather than assumed. A hold your reply releases (or the confirm dialog allows) was a false positive; a hold you decline, or that nobody approves after you replied and the next turn ended, stood. An allowed call your next message tells the agent to stop, undo, or revert was a miss: one `regretted` question rides the first action request after your reply, with the redacted summaries of last turn's allowed calls (a locator names the one when there are several); offline, a stop-word heuristic stands in. `/warden status` shows the counts and the precision, the trace entry of each call gets its outcome, and every judged call is written with its scores and outcome to an owner-only per-session file under `~/.pi/agent/pi-warden/holds/` (tool, pattern ids, scores, level, mode, outcome; never the command). `"action": { "feedbackLog": false }` keeps the counts and skips the file.
+
+#### Calibration
+
+`node scripts/calibrate-action.mjs --all` replays every guarded call in your recorded Pi sessions through the guard (one request per call) and asks Jev, once per turn, whether your next message regrets one of the calls that ran, approves each held call, and how it receives the turn (continues, corrects, rejects, unrelated). Run on 321 sessions from this machine (1,085 labelled turns, 17,160 guarded calls, 14,903 judged):
+
+- Regret is rare: 20 calls (2% of turns). None of them was about data loss: their `irreversible` scores were 0.04 to 0.57, median 0.07. They were scope and permission complaints: a commit the user did not want, an edit to a personal `CLAUDE.md`, a merge, a test run when conflicts were the job, a program launched at night. The hold rule catches none of them at any threshold that holds fewer than 3% of calls, so the hold defaults stay where they are; they are a checkpoint for destructive actions, and regret is the wrong yardstick for those.
+- Signal ranking against regret (AUC): `mutates` 0.74, `irreversible` 0.71, `intent_mismatch` 0.57, `off_task` 0.51. Off-task alone caused 56 of the 139 replay holds and none of them drew a complaint.
+- The intent steer earned its threshold here. At 0.8 it fires on 11% of calls that can change something and 14% of those sit in a turn the user rejects (base rate 5%); at 0.9 it fires on 4% and 33% of those are in a rejected turn, 54% in one the user rejects or corrects (base rate 24%). The default is 0.9.
+- Of 42 holds pi-warden made in those sessions, the user's next message approved 5.
+
+The output stays under `.local/calibration/` (owner-only, never committed); `--report FILE` recomputes the tables without requests, `--project DIR` limits the run to one project's sessions, `--dry-run` prints the request count.
 
 ### Rules
 
@@ -205,7 +216,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
     "failOpen": true,
     "irreversible": { "warn": 0.5, "confirm": 0.7 },
     "offTask": { "warn": 0.6, "confirm": 0.85 },
-    "intentMismatch": 0.8,
+    "intentMismatch": 0.9,
     "feedbackLog": true
   },
   "rules": {
@@ -303,6 +314,7 @@ node scripts/rules-cases.mjs     # 13 billable cases against an 8-rule fixture f
 node scripts/slop-cases.mjs      # 22 billable cases for the slop and prose questions
 node scripts/security-cases.mjs  # 9 output-security and task-continuity cases
 node scripts/context-cases.mjs   # 15 labelled outputs for retention and format
+node scripts/calibrate-action.mjs --dry-run   # action-guard calibration on your recorded sessions; drop --dry-run to spend the requests
 npm run dev:pi                   # start Pi with this working tree plus an installed pi-typesafe
 npm run preview                  # re-render docs/preview.png (needs a Chrome binary)
 ```

@@ -436,7 +436,7 @@ test("the agent's plan comes from the message that makes the call, falls back to
   await runCommand("status");
   const status = notices.at(-1)!.text;
   assert.match(status, /1 off plan/);
-  assert.match(status, /intent mismatch 0\.8;/);
+  assert.match(status, /intent mismatch 0\.9;/);
   const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
   const lines = (await readFile(logPath, "utf8")).trimEnd().split("\n").map(text => JSON.parse(text) as Record<string, unknown>);
   assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined]], "planChars says how often the agent called without a word");

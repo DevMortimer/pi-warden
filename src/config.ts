@@ -190,7 +190,7 @@ export function defaultConfig(): WardenConfig {
       timeoutMs: 5000,
       irreversible: { warn: 0.5, confirm: 0.7 },
       offTask: { warn: 0.6, confirm: 0.85 },
-      intentMismatch: 0.8,
+      intentMismatch: 0.9,
       feedbackLog: true,
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, nudge: true },
