@@ -1,3 +1,4 @@
+import { freshChecks } from "./done.js";
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
 import type { ProseVerdict } from "./prose.js";
@@ -136,12 +137,13 @@ export function runawayTokens(verdict: RunawayVerdict, recovering: boolean, at =
 }
 
 export function doneTokens(verdict: DoneVerdict, at = Date.now()): Tokens {
+  const checks = freshChecks(verdict.evidence);
   return {
     guard: "done",
     time: time(at),
     changes: String(verdict.evidence.mutations),
-    checks: String(verdict.evidence.checks.length),
-    checksPassed: String(verdict.evidence.checks.filter(check => check.passed).length),
+    checks: String(checks.length),
+    checksPassed: String(checks.filter(check => check.passed).length),
     claimsDone: fixed(verdict.judgment?.claimsDone),
     claimsVerified: fixed(verdict.judgment?.claimsVerified),
     checksApply: fixed(verdict.judgment?.verificationApplies),

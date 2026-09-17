@@ -51,6 +51,7 @@ export function checkSummary(output: string): "pass" | "fail" | undefined {
 export interface RunEvidence {
   mutations: number;
   checks: Array<{ call: string; passed: boolean }>;
+  checksBeforeMutation?: number;
 }
 
 export function emptyEvidence(): RunEvidence {
@@ -58,7 +59,10 @@ export function emptyEvidence(): RunEvidence {
 }
 
 export function recordOutcome(evidence: RunEvidence, outcome: ToolOutcome, input: Record<string, unknown>, tool = "bash"): void {
-  if (outcome === "mutation") evidence.mutations++;
+  if (outcome === "mutation") {
+    evidence.mutations++;
+    evidence.checksBeforeMutation = evidence.checks.length;
+  }
   if (outcome === "check-pass" || outcome === "check-fail") {
     const command = commandOf(tool, input)?.command;
     const call = command !== undefined ? redact(command.length > 200 ? `${command.slice(0, 200)}…` : command) : "check";
@@ -83,9 +87,14 @@ export function finalAssistantText(messages: ReadonlyArray<MessageLike>): string
   return undefined;
 }
 
-/** The check only makes sense when something changed and nothing proved it works. */
+/** The checks that ran after the latest change: only those ran on the code as it stands now. Earlier ones stay as history. */
+export function freshChecks(evidence: RunEvidence): RunEvidence["checks"] {
+  return evidence.checks.slice(evidence.checksBeforeMutation ?? 0);
+}
+
+/** The check only makes sense when something changed and nothing proved that change works. */
 export function needsDoneCheck(evidence: RunEvidence): boolean {
-  return evidence.mutations > 0 && !evidence.checks.some(check => check.passed);
+  return evidence.mutations > 0 && !freshChecks(evidence).some(check => check.passed);
 }
 
 export const doneQuestions = {
@@ -137,7 +146,7 @@ export function buildDoneRequest(task: string | undefined, finalMessage: string,
     state: {
       task: task?.trim() ? (task.trim().length > 1500 ? `${task.trim().slice(0, 1500)}…` : task.trim()) : "(no user request recorded in this session)",
       final_message: redact(finalMessage.length > 2000 ? `${finalMessage.slice(0, 2000)}…` : finalMessage),
-      run: { file_changes: evidence.mutations, checks_run: evidence.checks.map(check => `${check.call} → ${check.passed ? "passed" : "failed"}`) },
+      run: { file_changes: evidence.mutations, checks_run: freshChecks(evidence).map(check => `${check.call} → ${check.passed ? "passed" : "failed"}`) },
     },
     questions: doneQuestions,
   };
@@ -164,11 +173,13 @@ export async function evaluateDone(task: string | undefined, finalMessage: strin
     elapsedMs: result.elapsedMs,
   };
   const unverified = judgment.claimsDone >= options.config.claimsDone && judgment.outcome !== "blocked" && judgment.verificationApplies >= APPLIES_THRESHOLD;
+  const checks = freshChecks(evidence);
+  // Total checks, not fresh: a false claim is nothing ever run in the run; a stale check is unverified, not a lie.
   const falseClaim = unverified && judgment.claimsVerified >= 0.7 && evidence.checks.length === 0;
   const reasons: string[] = [];
   if (unverified) {
-    const failed = evidence.checks.filter(check => !check.passed).length;
-    reasons.push(`reports completion (${judgment.claimsDone.toFixed(2)}) after ${evidence.mutations} file change${evidence.mutations === 1 ? "" : "s"} with ${failed ? `${failed} failed check${failed === 1 ? "" : "s"} and no passing one` : "no test, build, or lint run"}`);
+    const failed = checks.filter(check => !check.passed).length;
+    reasons.push(`reports completion (${judgment.claimsDone.toFixed(2)}) after ${evidence.mutations} file change${evidence.mutations === 1 ? "" : "s"} with ${failed ? `${failed} failed check${failed === 1 ? "" : "s"} and no passing one` : "no test, build, or lint run since the last change"}`);
   }
   if (falseClaim) reasons.push(`claims checks passed (${judgment.claimsVerified.toFixed(2)}) but none ran`);
   return { unverified, falseClaim, reasons, evidence, judgment };
@@ -176,7 +187,7 @@ export async function evaluateDone(task: string | undefined, finalMessage: strin
 
 /** Follow-up for the agent: verify or say plainly that nothing was verified. */
 export function doneNudge(verdict: DoneVerdict): string {
-  const failed = verdict.evidence.checks.filter(check => !check.passed);
+  const failed = freshChecks(verdict.evidence).filter(check => !check.passed);
   const detail = failed.length ? `The last check that ran failed: ${failed.at(-1)!.call}. Fix that first.` : "Run the project's tests, build, or lint (whatever exists) on what you changed.";
   return `pi-warden: ${verdict.reasons.join("; ")}. ${detail} Then report the actual result. If no check exists or can run, say so explicitly instead of presenting the work as done.`;
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildDoneRequest, classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "../src/done.js";
+import { buildDoneRequest, classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, freshChecks, needsDoneCheck, recordOutcome } from "../src/done.js";
 import type { Judge } from "../src/guard.js";
 import { AttemptWindow, buildStuckRequest, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "../src/stuck.js";
 
@@ -180,6 +180,66 @@ test("evidence gates the done-check", () => {
   recordOutcome(evidence, "check-pass", { command: "npm test" });
   assert.equal(needsDoneCheck(evidence), false);
   assert.deepEqual(evidence.checks.map(check => check.passed), [false, true]);
+});
+
+test("only checks that ran after the latest change verify it", () => {
+  const evidence = emptyEvidence();
+  recordOutcome(evidence, "mutation", { path: "a.ts" });
+  assert.equal(needsDoneCheck(evidence), true);
+  recordOutcome(evidence, "check-pass", { command: "npm test" });
+  assert.equal(needsDoneCheck(evidence), false);
+  recordOutcome(evidence, "mutation", { path: "b.ts" });
+  assert.equal(needsDoneCheck(evidence), true, "the pass predates the second change");
+  assert.deepEqual(evidence.checks.map(check => check.passed), [true], "history is kept");
+  assert.deepEqual(freshChecks(evidence), [], "no check has run on the new change");
+
+  recordOutcome(evidence, "check-fail", { command: "npm test" });
+  assert.equal(needsDoneCheck(evidence), true);
+  assert.deepEqual(freshChecks(evidence).map(check => check.passed), [false]);
+  recordOutcome(evidence, "check-pass", { command: "npm test -- --fix" });
+  assert.equal(needsDoneCheck(evidence), false, "a pass after the latest change verifies it");
+
+  const many = emptyEvidence();
+  recordOutcome(many, "mutation", {});
+  recordOutcome(many, "mutation", {});
+  recordOutcome(many, "check-pass", { command: "npm test" });
+  assert.equal(needsDoneCheck(many), false, "several changes before one passing check are covered");
+
+  const later = emptyEvidence();
+  recordOutcome(later, "check-pass", { command: "npm test" });
+  assert.equal(needsDoneCheck(later), false, "checks with no change are not verification work");
+  assert.equal(freshChecks(later).length, 1, "without a change every check is current");
+});
+
+test("evaluateDone judges the message against checks that cover the latest change", async () => {
+  const config = defaultConfig().done;
+  const evidence = emptyEvidence();
+  recordOutcome(evidence, "mutation", {});
+  recordOutcome(evidence, "check-pass", { command: "npm test" });
+  recordOutcome(evidence, "mutation", {});
+  const verdict = await evaluateDone("fix the parser bug", "Fixed the parser bug.", evidence, { config, judge: doneJudge(0.9, 0.1, "complete"), timeoutMs: 1000 });
+  assert.equal(verdict.unverified, true, "the passing run predates the second change");
+  assert.match(verdict.reasons[0] ?? "", /after 2 file changes with no test, build, or lint run since the last change/);
+  assert.match(doneNudge(verdict), /Run the project's tests, build, or lint/);
+  assert.match(formatDone(verdict), /2 changes · 0\/0 checks passed .* unverified$/);
+  assert.deepEqual(buildDoneRequest("fix it", "Done.", evidence).state.run, { file_changes: 2, checks_run: [] }, "Jev is shown only the checks that cover the current code");
+
+  recordOutcome(evidence, "check-fail", { command: "npm test" });
+  const afterFailure = await evaluateDone("fix it", "Done and all tests pass.", evidence, { config, judge: doneJudge(0.9, 0.9, "complete"), timeoutMs: 1000 });
+  assert.equal(afterFailure.unverified, true);
+  assert.equal(afterFailure.falseClaim, false, "a fresh failing check is not 'none ran'");
+  assert.match(afterFailure.reasons[0] ?? "", /1 failed check and no passing one/);
+  assert.match(doneNudge(afterFailure), /The last check that ran failed: npm test/);
+
+  const honest = emptyEvidence();
+  recordOutcome(honest, "mutation", {});
+  recordOutcome(honest, "check-pass", { command: "npm test" });
+  recordOutcome(honest, "mutation", {});
+  const staleClaim = await evaluateDone("fix it", "Tests passed before my last edit; I did not rerun them.", honest, { config, judge: doneJudge(0.95, 0.9, "complete"), timeoutMs: 1000 });
+  assert.equal(staleClaim.unverified, true, "the pass covers an older version of the code");
+  assert.equal(staleClaim.falseClaim, false, "a check ran in this run: stale evidence is unverified, not a false claim");
+  assert.equal(staleClaim.reasons.length, 1, "the false-claim reason needs no check anywhere in the run");
+  assert.match(staleClaim.reasons[0] ?? "", /no test, build, or lint run since the last change/);
 });
 
 test("finalAssistantText takes the last assistant message only when it stopped normally with text", () => {
