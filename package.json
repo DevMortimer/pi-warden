@@ -1,6 +1,6 @@
 {
   "name": "pi-warden",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Guardrails for Pi built on pi-typesafe that steer the agent instead of interrupting you: Jev judges irreversible and off-task tool calls before they run, checks written code against your project rules, detects stuck loops, checks unverified done claims, and flags slop.",
   "type": "module",
   "license": "MIT",
