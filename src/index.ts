@@ -7,7 +7,7 @@ export { evaluateProse, buildProseRequest, proseQuestions, proseNudge, describeA
 export type { ProseSymptom, ProseVerdict, ProseOptions } from "./prose.js";
 export { AttemptWindow, makeAttempt, resultFailed, resultText, evaluateStuck, buildStuckRequest, stuckQuestions, stuckNudge, formatStuck } from "./stuck.js";
 export type { Attempt, StuckJudgment, StuckVerdict, StuckOptions } from "./stuck.js";
-export { classifyToolResult, recordOutcome, emptyEvidence, needsDoneCheck, finalAssistantText, evaluateDone, buildDoneRequest, doneQuestions, doneNudge, formatDone } from "./done.js";
+export { classifyToolResult, recordOutcome, emptyEvidence, freshChecks, needsDoneCheck, finalAssistantText, evaluateDone, buildDoneRequest, doneQuestions, doneNudge, formatDone } from "./done.js";
 export type { ToolOutcome, RunEvidence, DoneJudgment, DoneVerdict, DoneOptions } from "./done.js";
 export { evaluateOutput, buildOutputRequest, outputQuestions, compressOutput, saveOutput, securityNotice, outputKey, duplicateNote } from "./output.js";
 export type { Retention, OutputVerdict, OutputOptions } from "./output.js";

@@ -1029,6 +1029,34 @@ test("done-check: an unverified completion claim after file changes gets one fol
   assert.equal(networkCalls, 3, "shell side effects alone are not code changes");
 });
 
+test("done-check: an edit after a passing run makes the run unverified again", async () => {
+  await grantConsent();
+  await newPrompt("fix the parser bug");
+
+  // Recovery in one evidence lifecycle, before any nudge can set doneNudged: a pass after the latest edit covers it.
+  await toolResult("edit", { path: "src/parser.ts", edits: [] }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  await toolResult("edit", { path: "src/parser.ts", edits: [{ oldText: "a", newText: "b" }] }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  await agentEnd("Tests pass; the parser bug is fixed.");
+  assert.equal(networkCalls, 0, "the pass after the second edit verifies it: no done-check");
+
+  // A fresh prompt, so the one-nudge budget is open again; the stale passing run no longer covers the latest edit.
+  await newPrompt("fix the parser bug again");
+  await toolResult("edit", { path: "src/parser.ts", edits: [] }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  await toolResult("edit", { path: "src/parser.ts", edits: [{ oldText: "a", newText: "b" }] }, "ok", false);
+  nextAnswers = { claims_done: 0.9, claims_verified: 0.1, verification_applies: 0.9, outcome: "complete" };
+  await agentEnd("Fixed the parser bug.");
+  assert.equal(networkCalls, 1, "the edit landed after the passing run: nothing has run on the new code");
+  assert.deepEqual(requests.at(-1)!.state.run, { file_changes: 2, checks_run: [] }, "the stale pass is not verification");
+  assert.equal(sentMessages.length, 1, "the agent is nudged to run the checks again");
+  assert.match(sentMessages[0]!.message.content, /after 2 file changes with no test, build, or lint run since the last change/);
+  assert.match(sentMessages[0]!.message.content, /Run the project's tests, build, or lint/);
+  assert.deepEqual(sentMessages[0]!.options, { deliverAs: "followUp", triggerTurn: true });
+  assert.match(widgets.at(-1)!.at(-1)!, /warden · done-check · 2 changes · 0\/0 checks passed · claims done 0\.90 .* unverified/);
+});
+
 test("the request carries the latest user prompt and a redacted action summary", async () => {
   await grantConsent();
   prompt = "Deploy the thing with TOKEN=sk-live-abcdefghijklmnop please";
