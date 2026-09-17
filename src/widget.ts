@@ -1,3 +1,4 @@
+import { freshChecks } from "./done.js";
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
 import type { ProseVerdict } from "./prose.js";
@@ -136,8 +137,7 @@ export function runawayTokens(verdict: RunawayVerdict, recovering: boolean, at =
 }
 
 export function doneTokens(verdict: DoneVerdict, at = Date.now()): Tokens {
-  // Counts describe the code as it stands: a check that ran before the latest change does not verify it.
-  const checks = verdict.evidence.checks.slice(verdict.evidence.checksBeforeMutation ?? 0);
+  const checks = freshChecks(verdict.evidence);
   return {
     guard: "done",
     time: time(at),
