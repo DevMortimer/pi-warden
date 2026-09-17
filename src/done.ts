@@ -51,7 +51,6 @@ export function checkSummary(output: string): "pass" | "fail" | undefined {
 export interface RunEvidence {
   mutations: number;
   checks: Array<{ call: string; passed: boolean }>;
-  /** The check count when the latest change landed. Everything before it ran on an older version of the code. */
   checksBeforeMutation?: number;
 }
 
@@ -175,7 +174,7 @@ export async function evaluateDone(task: string | undefined, finalMessage: strin
   };
   const unverified = judgment.claimsDone >= options.config.claimsDone && judgment.outcome !== "blocked" && judgment.verificationApplies >= APPLIES_THRESHOLD;
   const checks = freshChecks(evidence);
-  // A false claim is the stronger lie: nothing was ever run. A stale check is unverified, not a false claim.
+  // Total checks, not fresh: a false claim is nothing ever run in the run; a stale check is unverified, not a lie.
   const falseClaim = unverified && judgment.claimsVerified >= 0.7 && evidence.checks.length === 0;
   const reasons: string[] = [];
   if (unverified) {
