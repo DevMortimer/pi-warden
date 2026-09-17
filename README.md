@@ -1,34 +1,30 @@
 # pi-warden
 
-A second pair of eyes for [Pi](https://pi.dev) that makes the agent smarter instead of interrupting you. Before the agent runs a `bash`, `write`, or `edit` call (or a shell command through [context-mode](https://www.npmjs.com/package/context-mode)'s `ctx_execute`), pi-warden asks [Jev](https://typesafe.ai) two questions about it in ~250 ms: *would this destroy something that cannot be recovered?* and *is this what the user actually asked for?* The answers are probabilities, so `rm -rf dist` after "rebuild from scratch" sails through while `npm run db:reset` after "add a column" is held, and the agent is told why so it re-plans or asks you in chat. More guards watch the run: a **stuck-loop** detector, a **runaway** guard that stops a reply repeating the same block over and over, **desktop notifications** when the agent needs you back, a **done-check** for completion claims that no test backed up, **slop** notes for stubs, filler, and padded replies, a check for **injected instructions** in tool output, and a **context saver** that replaces repeated tool results with a note, keeps exact failing tests and errors from large runner output, and points recalls at a search instead of a whole-file read. Every verdict lands on a status line above the editor; **click it** (fullscreen mode), press `ctrl+shift+w`, or run `/warden trace` to open a live trace sidebar with the scores, the reasons, and exactly what the agent was told. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
+A second pair of eyes for [Pi](https://pi.dev). It watches what the agent does, asks [Jev](https://typesafe.ai) small typed questions about it (about 250 ms each), and acts through the agent's own context: a held call, a short steer message, a compressed output. You keep working; the agent gets smarter.
 
 ![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
-The verdicts above are real output from `npm run test:live`. Independent project; not affiliated with TypeSafe AI or the Pi authors.
+The verdicts above are real output from `npm run test:live`. Independent project; not affiliated with TypeSafe AI or the Pi authors. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
 
-## Philosophy
+## What it does
 
-pi-warden is a harness for the agent, not a gate for the user. It watches every tool call, tool result, and reply, asks Jev small typed questions about them, and acts through the agent's own context — a held call, a steer message, a compressed output — rather than through dialogs. Jev decides; code applies the decision; the LLM is never asked to judge itself. Guard decisions are visible in the trace panel. Existing session entries are never rewritten; output warnings and excerpts are applied before a new tool result enters the session.
-
-Three jobs, in order of maturity:
-
-| Pillar | What it means | Status |
+| Guard | Watches | Does |
 | --- | --- | --- |
-| **Security** | Action holds and offline patterns protect risky operations. Tool-output checks flag possible injected instructions and credential shapes; insecure written code gets a targeted steer. Output notices are advisory, not a sandbox or a guarantee that an attack is contained. | built |
-| **Deslopify** | Written code is scored per symptom — stubs, restating comments, dead code, hedging — and the agent gets a nudge naming the symptom and its fix; repeats become a standing rule. Replies are scored for wordiness, assistant clichés, and jargon against an `audience` setting, and a trend across replies shapes the next one. | built |
-| **Context saving** | Only the newest tool result is ever touched, so the prompt cache prefix stays byte-identical. An identical repeat of an earlier result becomes a short note (code only). For large new results Jev selects a retention policy and names the output format; code keeps exact lines through a format parser (failing tests, errors with file:line, changed files, package notices) or a deterministic head/diagnostic/tail excerpt, stores an exact copy, and tells the agent how to search it instead of re-reading it. Task-aware segment selection and compaction support remain planned. | built |
+| **Action** | every `bash`, `write`, `edit` (and context-mode's `ctx_execute*`) before it runs | holds irreversible or off-task calls and tells the agent why, so it re-plans or asks you |
+| **Rules** | every `write` and `edit` | judges the written code against your project's Markdown rules (`pi-warden.md`) and names the violated rule to the agent |
+| **Slop** | written code and final replies | names stubs, restating comments, dead code, hedging, padded replies; the agent fixes them in the next edit |
+| **Security** | written code and tool output | flags hardcoded secrets, disabled TLS, unsafe interpolation; marks injected instructions in tool output |
+| **Stuck** | tool results | notices three failures with the same strategy and asks for a new hypothesis |
+| **Runaway** | the reply stream | stops a reply that repeats the same block over and over (code only, no request) |
+| **Done-check** | the final message | catches "done" claims after code changes when no test, build, or lint passed |
+| **Context saver** | large or repeated tool output | keeps the exact lines that matter, stores the rest in a file, points recalls at a search |
+| **Notifications** | moments that need you | desktop notification for a held call, a confirm dialog, a runaway stop |
 
-## Why a coding agent needs this
+Every verdict lands on a status line above the editor. Click it (fullscreen mode), press `ctrl+shift+w`, or run `/warden trace` for a live sidebar with the scores, the reasons, and exactly what the agent was told.
 
-Agents are good at picking the next command and bad at noticing when that command is out of proportion to the request. Pattern lists catch `rm -rf /` and force pushes; they cannot tell `db:reset` when you asked for a reset from `db:reset` when you asked for a column. A generative model can, but a second LLM call per tool call is slow and expensive. Jev is a System One model: it returns calibrated probabilities instead of text, in a quarter of a second, for a fraction of a cent. That makes it cheap enough to sit in front of **every** guarded call:
+## Why Jev
 
-- **Irreversible actions are held, not run**: history rewrites, deleted untracked work, dropped tables, overwritten files outside the project, publishes and deploys. The agent receives the judgment as its tool result — what was flagged, the scores, and two acceptable next moves: find a recoverable alternative, or explain the action to you and wait. If you approve in chat, the retry goes through; Jev reads your reply as the approval. No modal dialog unless you ask for one (`/warden mode confirm`).
-- **Scope drift gets flagged.** Poems in a bugfix, refactors nobody asked for, dependency installs unrelated to the task: warned to you at 0.6, held at 0.85 when Jev also calls the action `unrelated`.
-- **Loops get broken.** Three failures with the same strategy (same command with cosmetic changes, same error after each edit) earn the agent a steer: re-read the error, form a new hypothesis, or report the blocker. Exact repeats are caught offline; Jev tells "investigating between failures" from "flailing" — 0.32 vs 0.93 in the smoke run.
-- **"Done" gets checked.** When the final message reports completion after file changes and no test, build, or lint passed in that run, the agent is asked to verify before you read a false "all green". A claim that tests passed when none ran is called out as such. Once per prompt, so it cannot loop.
-- **Slop gets a name.** Written code is scored per symptom on the same request as the action guard (zero extra latency): stubs and fake-data mocks, comments that restate the code, dead or duplicated code, hedging notes. The agent is told which symptom and how to fix it, never held; the third repeat in a session becomes a standing rule. Replies are scored too — wordy, clichéd, or too technical for the configured audience — and a trend across replies earns a nudge that shapes the next one without spending a turn.
-- **Nothing slows down the boring calls.** Read-only shell lines are skipped without a request; anything else costs one request of ~600 input tokens.
-- **It degrades gracefully.** Offline pattern checks and exact-repeat detection run with no account at all. On an API timeout or outage the call is allowed with a warning (configurable), and reasons never include your command text or upstream error bodies.
+Agents pick the next command well and notice badly when that command is out of proportion to the request. Pattern lists catch `rm -rf /` and force pushes; they cannot tell `db:reset` after "reset the database" from `db:reset` after "add a column". A generative model can, but a second LLM call per tool call is slow and expensive. Jev is a System One model: it returns calibrated probabilities instead of text, in a quarter of a second, for a fraction of a cent. That is cheap enough to sit in front of every guarded call. Jev decides, code applies the decision, and the LLM is never asked to judge itself.
 
 ## Install
 
@@ -36,115 +32,143 @@ Agents are good at picking the next command and bad at noticing when that comman
 pi install npm:pi-warden
 ```
 
-Requires Pi 0.85 or newer and Node.js 22.19 or newer. Pattern checks work with no account. Jev judgments need a TypeSafe API key and are billed to your TypeSafe account (a judgment is roughly 600 input tokens; output is free).
+Requires Pi 0.85 or newer and Node.js 22.19 or newer. Pattern checks work with no account. Jev judgments need a TypeSafe API key and are billed to your TypeSafe account (a judgment is roughly 600 input tokens; a rules request with 8 rules is about 2000; output is free).
 
 ## Setup
 
 1. Get a key at [console.typesafe.ai](https://console.typesafe.ai) (API Keys).
-2. Run `/warden enable`. Read the data notice and confirm; if no key is configured yet, paste it at the hidden prompt. The key is verified against the API and saved to `~/.pi/agent/pi-typesafe/auth.json` with owner-only permissions, shared with [pi-typesafe](https://github.com/DevMortimer/pi-typesafe) and anything else built on it. Consent is saved to `~/.pi/agent/pi-warden/config.json`, so judgments stay on in every new session until you run `/warden disable`.
-3. Optionally run `/warden test` to see one synthetic verdict.
+2. Run `/warden enable`. Read the data notice and confirm. If no key is stored yet, paste it at the hidden prompt. The key is verified and saved to `~/.pi/agent/pi-typesafe/auth.json` (owner-only, shared with pi-typesafe). Consent is saved to `~/.pi/agent/pi-warden/config.json` and stays on until `/warden disable`.
+3. Optional: `/warden test` shows one synthetic verdict.
 
-A `TYPESAFE_API_KEY` environment variable takes precedence over the stored key. Without step 2, pi-warden still guards with offline pattern checks only.
+`TYPESAFE_API_KEY` in the environment takes precedence over the stored key. Headless runs give consent with `PI_WARDEN_ENABLED=1`.
 
-## How the guards work
+## Philosophy
 
-### Action guard (`tool_call`)
+pi-warden is a harness for the agent, not a gate for you. Three jobs:
 
-1. **Skip** read-only tools, and read-only shell lines such as `git status && ls` (no network, no widget). Guarded by default: `bash`, `powershell`, `write`, `edit`, and context-mode's `ctx_execute`, `ctx_execute_file`, `ctx_batch_execute` (their `code`/`commands` fields are read as the command; non-shell code such as JavaScript is judged but never skipped as read-only). Add other tools with `action.tools`; unknown tools are judged from their JSON input.
-2. **Pattern pass** (offline): force pushes, `git reset --hard`, `git clean -f`, recursive `rm` on absolute/home/variable/parent paths, SQL `DROP`/`TRUNCATE`/`DELETE FROM`, block-device writes, `chmod -R 777`, fork bombs, `curl | sh`, `kill -1`, shutdown, package publishing, infrastructure destroys → **hold**. `rm -rf` on a project path, `git checkout -- .`, `git branch -D`, `git stash drop`, `find -delete`, `sudo` → **warn**. Reads or writes of `.env`, SSH, AWS, npm, kube, and other credential files → **warn**. A `write` that overwrites an existing file outside the project → **hold**; creating or editing outside the project → **warn**.
-3. **Jev judgment** (with consent): one request with the state `{ task, context, action }` and four questions — `irreversible` (Noul), `off_task` (Noul), `mutates` (Noul: does it change anything), `scope` (Choice: expected step, plausible side step, unrelated, unclear). Defaults: irreversible ≥ 0.5 warns, ≥ 0.7 holds; off-task ≥ 0.6 warns, ≥ 0.85 with `unrelated` holds **only when the action can change something** (`write`/`edit`, or `mutates` ≥ 0.5). An unrelated `cat`/`grep`/`node -e` inspection or a read-only `ctx_execute` script is warned about, never held: scope alone is not worth blocking a command that cannot do damage. Pattern results set the floor; Jev can only raise it. For `write`/`edit`, the slop and `security_risk` questions ride on the same request.
+| Pillar | What it means |
+| --- | --- |
+| **Security** | Holds and offline patterns protect risky operations. Output checks flag injected instructions and credential shapes. Insecure written code gets a targeted steer. Advisory, not a sandbox. |
+| **Deslopify** | Written code is scored per symptom and judged against your project rules. Replies are scored for wordiness, clichés, and jargon. Repeats become a standing rule. |
+| **Context saving** | Only the newest tool result is ever touched, so the prompt cache prefix stays byte-identical. Large output is cut to exact lines and stored; recalls go to a search, not a whole-file read. |
+
+## The guards
+
+### Action guard
+
+Runs on `tool_call`, before the tool executes.
+
+1. **Skip** read-only tools and read-only shell lines (`git status && ls`): no request, no widget line.
+2. **Patterns**, offline: force pushes, `git reset --hard`, `git clean`, recursive `rm` on absolute, home, variable, or parent paths, SQL `DROP`/`TRUNCATE`/`DELETE FROM`, block-device writes, `chmod -R 777`, fork bombs, `curl | sh`, `kill -1`, shutdown, package publishing, infrastructure destroys hold the call. `rm -rf` on a project path, `git checkout -- .`, `git branch -D`, `git stash drop`, `find -delete`, `sudo` warn. Reads or writes of `.env`, SSH, AWS, npm, kube, and other credential files warn. A `write` that overwrites a file outside the project holds; creating or editing outside the project warns.
+
+   Text that is data is not a command. A heredoc body written to a file, a quoted `echo`/`printf` argument, a `grep` pattern, or a `git commit -m` message can mention `git push --force` without a hold. The same text fed to `sh`, `bash -c`, `eval`, `xargs`, or a `python3 - <<EOF` script that calls `os.system` keeps every hit.
+3. **Jev**, with consent: one request with `{ task, context, action }` and four questions. `irreversible` (yes/no), `off_task` (yes/no), `mutates` (does it change anything), `scope` (expected step, plausible side step, unrelated, unclear). Defaults: irreversible at 0.5 warns and at 0.7 holds; off-task at 0.6 warns and at 0.85 with `unrelated` holds, but only when the action can change something. An unrelated `grep` is warned about, never held. Patterns set the floor; Jev can only raise it.
 4. **Act**, by mode:
-   - `steer` (default): a hold blocks the call and returns the judgment to the agent as the tool result, with the two acceptable next moves. You see a notification and the widget line; the agent keeps working. When the agent asks you and your reply approves the action (Jev: `approved` ≥ 0.7, or an offline yes/go-ahead heuristic without consent), the identical retry is allowed once.
-   - `confirm`: a hold opens a `ctx.ui.confirm` dialog; No blocks with a short reason. Without a UI this falls back to `steer`.
-   - `advise`: never holds; every judgment is reported to you only.
+   - `steer` (default): a hold blocks the call and returns the judgment to the agent as its tool result, with the two acceptable next moves: find a recoverable alternative, or explain the action to you and wait. If your reply approves it, the retry goes through (Jev reads your reply; offline, a yes/go-ahead heuristic does).
+   - `confirm`: a `ctx.ui.confirm` dialog. No blocks with a short reason. Falls back to `steer` without a UI.
+   - `advise`: never holds, reports only.
 
-   Warn-level verdicts notify you and continue in every mode. The widget above the editor shows the last verdict of each guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`.
+The action guard receives your latest message plus up to eight earlier user and assistant messages (750 redacted characters each) so follow-ups and side comments do not replace the task. Sibling tool calls in one assistant message are judged together in one round trip. If TypeSafe cannot answer, the call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead).
 
-### Stuck detector (`tool_result`)
+### Rules
 
-Keeps the last 12 tool results for the current prompt. When the latest result failed and at least 3 failures have accumulated, it first checks for exact repeats offline (same call, same output with timings and addresses normalised). Otherwise one Jev request judges the sequence: `same_strategy` (Noul), `approach_change` (Score: identical / cosmetic / meaningfully different), `progress` (Noul). Same-strategy ≥ 0.7 counts as stuck: you get a notification, and with `nudge: true` (default) the agent gets a steer message asking for a new hypothesis or a blocker report. At most one Jev check per 3 results.
+Write your project's rules as Markdown headings in `pi-warden.md` at the project root:
 
-### Runaway guard (`message_update`)
+```markdown
+# No console statements
+Code must not contain `console.log` or `console.debug`. Use the logger.
 
-A model that degenerates mid-reply repeats the same lines over and over — *"PR green. Merge. Executing:"* followed by the same command block, thirty times, and no tool call — until the token limit or you press Esc. Nothing else stops it, because no tool runs and no turn ends. pi-warden reads the stream as it arrives: per token it only appends to a buffer; every 256 characters it counts identical paragraphs (normalised, at least 24 characters) and checks whether the text ends with one unit repeated back to back. When a block repeats `repeats` times (4) in the reply, or `thinkingRepeats` times (10) in thinking, the run is aborted and you get an error-level notification. Code only: nothing is sent anywhere, so this works without TypeSafe consent. With `recover: true` (default) the agent then gets one follow-up turn, shown in the transcript, that names the repeat and asks for the one next step — call the tool, or answer in three sentences, or ask you; a second runaway for the same prompt is stopped and left for you. Calibrated on 43,000 local assistant messages: ordinary replies repeat a paragraph twice at most, thinking up to seven times while drafting code, and the one runaway repeated its block 28 times; the guard stopped only that one, at half its length.
+# Exported functions must have explicit return types
+paths: src/**/*.ts
+Every exported function declares its return type.
 
-### Done-check (`agent_end`)
+# TODO comments need a reference
+A `TODO` or `FIXME` must name a ticket, for example `TODO(APP-123): ...`.
+```
 
-Tracks each run's evidence: code changes (`write`, `edit`) and check commands (`npm test`, `pytest`, `cargo test`, `tsc`, `eslint`, `go test`, `make test`, and similar, whether run through `bash` or `ctx_execute`) with pass/fail; context-mode's inline `Command exited with code N` counts as a failure. When a run ends with a normal assistant message after code changes and no passing check, one Jev request judges the message: `claims_done`, `claims_verified`, `verification_applies` (Noul), `outcome` (Choice: complete / partial / blocked / other). A completion claim ≥ 0.7 that is not a blocker or question, for a task where checks would mean something (≥ 0.5; prose and file housekeeping score ~0.05), is reported as unverified; a verification claim with no check run is reported as a false claim. With `nudge: true` (default) the agent receives one follow-up turn asking it to run the checks or say plainly that nothing was verified — once per user prompt.
+Each heading is one rule; the text under it is the specification. A `paths:` line right under the heading limits the rule to matching files (`**` matches any depth, `*` stays within one segment). Content inside code fences is never read as a heading. The highest heading level present in the file delimits rules, so `##` rules under a `#` title work too.
 
-### Slop in code (`write`/`edit`, same request as the action guard)
+On every `write` and `edit`, pi-warden sends its own request, in parallel with the action guard's, carrying the written content and one question per rule: `compliant`, `violation`, `not_applicable`, or `insufficient_context`. A `write` is sampled at 6000 characters (head, middle, tail); an `edit` sends each new text plus about 40 lines of the current file around the replaced text. With two or more edits, one more question asks which edit contains the violation.
 
-pi-warden cannot rewrite code — Jev only judges — so slop is handled as a feedback loop through the agent:
+Any rule with P(violation) at or above `rules.threshold` (0.7) is named to the agent: the heading, up to 200 characters of the rule text, and the edit when located. The write goes through; a held write would leave a half-written file. The third hit of one rule in a session says so and asks the agent to treat it as a standing rule. When slop also fires on the same write, both arrive as one message.
 
-1. When the agent calls `write` or `edit`, four Noul questions ride on the action guard's request (no extra latency), one per symptom, each with concrete yes/no criteria: `slop_stub` (placeholder, mock, or "implement later" code where `task` needs a working implementation), `slop_comments` (explanatory comments that restate what the adjacent code shows), `slop_dead` (commented-out code, unused imports or variables, duplicated logic, unreachable branches), `slop_hedging` ("should work", "for now", TODOs without a plan). Jev sees a head/middle/tail sample of a `write` (1500 characters) or the first three replacement texts of an `edit`, plus your request.
-2. Any symptom ≥ `slop.threshold` (0.7) trips the note. The write **goes through** — holding it would leave a half-written file.
-3. The agent receives a steer message naming the symptoms and their fixes, e.g. *"pi-warden: the content just written to `src/x.ts` has stub or placeholder code where a working implementation is needed; hedging or vague notes. Fix it in your next edit: replace stubs, placeholders, and hard-coded fake data with the working implementation, or state in your reply exactly what is left unimplemented and why; replace \"should work\", \"for now\", and TODOs without a plan with a definite statement or a concrete follow-up."* The third time a symptom appears in a session, the note says so and asks the agent to treat it as a standing rule.
+Sources, in order: `pi-warden.md` at the root; else the files listed in `rules.files` (all sent in one request); else, with `rules.fallback` (default true), the first of `README.md`, `CLAUDE.md`, `AGENTS.md`, judged as one document with one question. A fallback document is cut to `rules.maxChars` (8000) with every heading and the head of each section kept, so a very long AGENTS.md still fits. Files are re-read when they change; no restart needed. At most 31 rules are asked per request (TypeSafe's cap is 32); the rest are ignored and `/warden status` says how many.
 
-Per-symptom scoring is what makes this precise. From the tuning set (`scripts/slop-cases.mjs`, 16 code cases): a `// TODO: implement later` stub scores stub 0.99; restating comments score comments 0.97 while an explanatory why-comment scores 0.08; commented-out code scores dead 0.96 and comments 0.43; a mock inside a *test file* scores stub 0.51 (below threshold, correctly); a stub explicitly outside the task scores 0.24. Not covered: code written through shell heredocs and content past the sample limits.
+Path scoping in config: `rules.exclude` globs are never sent to Jev (secrets, generated, vendored files); `rules.skip` globs are files the rules do not apply to (tests, docs); a per-rule `paths:` line narrows one rule. `rules.sensitivePaths` maps a glob to a note, for example `"migrations/**": "Tell the user this touches a migration and add a rollback"`; a write or edit under a matching path gives the agent that note once per path, offline, with no request.
 
-### Slop in replies (`agent_end`)
+From the tuning set (`scripts/rules-cases.mjs`, 8 rules, 13 cases, all as expected): `console.log` in code scores 1.00, a bare TODO 1.00 and a `TODO(QUEUE-41)` 0.00, an empty catch 0.99, a `switch` without `default` 0.96, a hardcoded token 0.88, a missing return type 0.99 with a bad boolean name 0.96 on the same write. A compliant module, a test that mentions `console.log` in a string, and a Markdown doc about `console.log` score nothing. The locator points at the right one of two edits. Not covered: code written through shell heredocs and content past the sample limits.
 
-The run's final reply (≥ 200 characters) is judged against `slop.prose.audience`: `wordy` (preamble, restating the request, closing summary, filler), `cliches` ("Great question", "I hope this helps", "it's worth noting", unrequested caveat lists, emoji headings), `jargon` (unexplained terms for the audience). `audience` is `technical` (default), `plain`, or any free-text description such as *"a founder without programming background"*. One long answer to a long question is not punished: a symptom must appear in `trend` (2) of the last 3 replies before the agent is nudged, the nudge is queued for the next user prompt so it shapes the next reply without spending a turn, and two replies pass before the same nudge can fire again. From the tuning set: a padded reply scores wordy 0.97 / clichés 0.99; a dense three-point summary 0.25 / 0.05; the same status update scores jargon 0.94 for a plain audience and 0.24 for a developer.
+Ideas borrowed with thanks from [jevrealtimecodecheck](https://github.com/MrDesjardins/jevrealtimecodecheck) (rules as headings, the four outcomes) and [wince](https://github.com/TinyFrontier/wince) (path globs, sensitive paths, judge the change and not its story, the locator question).
 
-### Steer messages
+### Slop
 
-Nudges from the stuck, done, slop, and prose guards are custom messages in the agent's context. By default they are **hidden from the transcript** (`steerVisible: false`) so the conversation stays yours; the notification tells you a nudge happened and the trace panel shows the exact text. Set `steerVisible: true` to see them inline.
+**In code.** When the agent calls `write` or `edit`, four yes/no questions ride on the action guard's request (no extra latency), one per symptom: `slop_stub` (placeholder or fake-data code where a working implementation is needed), `slop_comments` (comments that restate the code), `slop_dead` (commented-out code, unused imports, duplicated logic, unreachable branches), `slop_hedging` ("should work", "for now", TODOs without a plan). Jev sees a 1500-character head/middle/tail sample of a `write` or the first three replacement texts of an `edit`. Any symptom at or above `slop.threshold` (0.7) sends the agent a steer naming the symptom and its fix. The write is never held. The third repeat of a symptom becomes a standing rule.
 
-If TypeSafe cannot answer (timeout after 5 s, outage, budget), an action-guard call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead), and the other guards simply skip. When the per-session request budget is spent, pi-warden says so once and continues with offline checks. Consent in headless runs comes from `PI_WARDEN_ENABLED=1`; `PI_WARDEN_MODE` overrides the mode.
+From the tuning set (`scripts/slop-cases.mjs`): a `// TODO: implement later` stub scores stub 0.99; restating comments 0.97 while an explanatory why-comment scores 0.08; commented-out code scores dead 0.96; a mock inside a test file scores stub 0.51 (below threshold, correctly).
+
+**In replies.** The final reply (200 characters or more) is judged against `slop.prose.audience`: `wordy`, `cliches`, `jargon`. `audience` is `technical` (default), `plain`, or free text such as "a founder without programming background". A symptom must appear in `trend` (2) of the last 3 replies before the agent is nudged; the nudge is queued for your next prompt so it shapes the next reply without spending a turn. A padded reply scores wordy 0.97 / clichés 0.99; a dense three-point summary 0.25 / 0.05.
+
+### Security
+
+Written code gets a `security_risk` question on the action request: hardcoded credentials, disabled TLS checks, unsafe shell or SQL interpolation, broad permissions, bypassed verification. A threshold crossing (0.7) warns you and steers the agent; it does not block.
+
+Tool output from content-bearing tools (`read`, fetch and search tools, named MCP equivalents) is checked for instructions that redirect the assistant or ask for private data; other tools from 2048 characters. Jev receives a redacted 6000-character head/tail sample. A score at or above `security.threshold` wraps the text in an untrusted-data notice and steers the agent. Credential-shape checks work offline and warn not to echo or commit possible secrets. This is advisory, not a sandbox.
+
+### Stuck
+
+Keeps the last 12 tool results for the current prompt. When the latest result failed and at least 3 failures have accumulated, exact repeats are caught offline (same call, same output with timings and addresses normalised). Otherwise one request judges the sequence: `same_strategy`, `approach_change` (identical / cosmetic / meaningfully different), `progress`. Same strategy at 0.7 counts as stuck: you get a notification and the agent gets a steer asking for a new hypothesis or a blocker report. At most one check per 3 results. In the smoke run, "investigating between failures" scored 0.32 and "flailing" 0.93.
+
+### Runaway
+
+A model that degenerates mid-reply repeats the same lines until the token limit or you press Esc; no tool runs and no turn ends, so nothing else stops it. pi-warden reads the stream as it arrives: per token it appends to a buffer; every 256 characters it counts identical paragraphs (24 characters or more) and checks for one unit repeated back to back at the end. A block repeated `repeats` (4) times in the reply, or `thinkingRepeats` (10) times in thinking, aborts the run. Code only: nothing is sent anywhere. With `recover: true` (default) the agent gets one follow-up turn that names the repeat and asks for the one next step; a second runaway for the same prompt is stopped and left for you. Calibrated on 43,000 local assistant messages: ordinary replies repeat a paragraph twice at most, thinking up to seven times, and the one real runaway repeated its block 28 times. The guard stopped only that one, at half its length.
+
+### Done-check
+
+Tracks each run's evidence: code changes (`write`, `edit`) and check commands (`npm test`, `pytest`, `cargo test`, `tsc`, `eslint`, `go test`, `make test`, and similar) with pass or fail; context-mode's inline `Command exited with code N` counts as a failure. When a run ends with a normal message after code changes and no passing check, one request judges the message: `claims_done`, `claims_verified`, `verification_applies`, `outcome`. A completion claim at 0.7 or above for a task where checks mean something is reported as unverified; a claim that tests passed when none ran is called a false claim. With `nudge: true` the agent gets one follow-up turn asking it to run the checks or say plainly that nothing was verified. Once per prompt.
+
+### Context saver
+
+Only the newest tool result is ever changed, before it enters the session, so the prompt cache prefix and all earlier entries stay as they were.
+
+- **Duplicates** (code only). A text result of at least `context.duplicateMinChars` (2000) that is identical to an earlier result of this session becomes a short note naming the earlier tool and the size, plus a recall footer. Re-running the same failing test is the typical case.
+- **Retention and format** (Jev decides, code applies). For a single text block of at least `context.tailMinChars` (12000), Jev picks `all`, `errors_and_summary`, or `summary_only`, and names the format (`vitest_jest`, `node_test`, `tsc`, `eslint`, `pytest`, `git_diff`, `git_log`, `npm_install`, `other`). When a format is confident (0.7) and its markers are present, a parser keeps the exact lines that matter: failing tests with their assertions, compiler and linter errors with file and line, changed files with counts, package notices, the summary line. Otherwise bounded head, diagnostic, and tail excerpts. Nothing is paraphrased. The full output is written to an owner-only temporary file first; the excerpt links to it. If storage fails, the original stays. Multiple text blocks are not compressed.
+- **Recall through search.** The footer names the file and a search command that exists on this machine (probed once: `rg`, `ag`, `ugrep`, `git grep --no-index`, `grep`, `Select-String`, `findstr`). `context.recallTool` pins one or `none`.
+- **Measuring it.** `/warden status` shows how many outputs were candidates, how many were compressed or dropped as duplicates, the bytes removed, the token-turns spared, and the recalls, split into whole-file reads (which give the saving back) and scoped accesses. A recall rate above about 10% means `context.confidence` is too low for your work.
+
+Set `context.enabled: false` to turn it off. Full-output files can contain secrets and stay in the OS temporary directory until removed.
 
 ### Desktop notifications
 
-You are rarely watching the terminal while the agent works, so the moments that need you reach the desktop: a held call the agent is about to ask you about, a confirm dialog waiting for an answer, and a runaway stop. macOS uses `osascript` (Notification Center, with a sound); Linux tries `notify-send`, `dunstify`, `gdbus`, `kdialog`, `zenity`, then `powershell.exe` for WSL; Windows shows a toast through PowerShell. The notifier is probed once per session; the text is the reason, never the command. Interactive sessions only — a headless run or a subagent has nobody to call — and one notification per `cooldownMs` (10 s), so sibling holds in one turn do not stack. `"notify": { "enabled": false }` turns it off; `"command": ["curl", "-d", "{body}", "https://ntfy.sh/your-topic"]` in the user file replaces the desktop tool with your own relay (no shell; `{title}`/`{body}` are replaced and also set as `PI_WARDEN_TITLE`/`PI_WARDEN_BODY`). A project file may switch notifications off but never names a command.
+A held call the agent will ask you about, a confirm dialog waiting for an answer, and a runaway stop reach the desktop. macOS uses `osascript`; Linux tries `notify-send`, `dunstify`, `gdbus`, `kdialog`, `zenity`, then `powershell.exe` for WSL; Windows shows a toast through PowerShell. Interactive sessions only, one notification per `cooldownMs` (10 s), the reason but never the command. `"notify": { "enabled": false }` turns it off; `"command": ["curl", "-d", "{body}", "https://ntfy.sh/your-topic"]` in the user file replaces the desktop tool with your own relay (no shell; `{title}` and `{body}` are replaced and set as `PI_WARDEN_TITLE` / `PI_WARDEN_BODY`). A project file may switch notifications off but never names a command.
 
-### Tool-output security and context saving
+### Steer messages
 
-With consent, content-bearing tools (`read`, fetch/search tools and named MCP equivalents) are checked for instructions that redirect the assistant or request private data. Other tools, including shell/context-mode tools, are checked from 2048 characters. Jev receives a redacted 6000-character head/tail sample, so attacks in an unsampled middle can be missed. A score at or above `security.threshold` adds an untrusted-data notice around the text and a hidden steer. Local credential-shape checks work without network access and warn not to echo or commit possible secrets. Images, result details, error flags, and usage are preserved.
-
-Written code gets a `security_risk` question in the existing action request: hardcoded credentials, disabled TLS checks, unsafe shell/SQL interpolation, broad permissions, or bypassed verification. A threshold crossing warns and steers; it does not authorize an action or automatically block otherwise safe edits.
-
-**Duplicates (code only).** A single-text-block result of at least `context.duplicateMinChars` (2000) whose content, ignoring colour codes and trailing whitespace, is identical to an earlier result of this session is replaced by a note naming the earlier tool and the size, plus a recall footer. The exact text is stored once; later copies reuse the file. No Jev request is made. Re-running the same failing test command is the typical case: nothing changed, and the note says so.
-
-**Retention and format (Jev decides, code applies).** For a single text block of at least `context.tailMinChars`, the same output request asks Jev to choose `all`, `errors_and_summary`, or `summary_only`, and which tool format produced the output: `vitest_jest`, `node_test`, `tsc`, `eslint`, `pytest`, `git_diff`, `git_log`, `npm_install`, or `other`. The full result stays when P(keep all) exceeds `1 - context.confidence` (default: keep when Jev gives `all` more than 0.2), when the probability is missing, or on any request error. When a format has at least `context.formatConfidence` (0.7) and its markers are present, a deterministic parser keeps the exact lines that matter for that format: failing tests with their assertion lines, compiler and linter errors with file and line, changed files with +/- counts, package manager notices, and the final summary line. Otherwise code keeps bounded head/diagnostic/tail excerpts. Nothing is paraphrased. An exact copy is written to an owner-only temporary directory before replacement; the excerpt links to it. If storage fails, the original stays. Multiple text blocks keep their layout and are not compressed. Trace and widget show the actual bytes saved. No extra steer is persisted for compression alone.
-
-**Recall through search.** The footer under every excerpt or duplicate note names the file and a search command that exists on this machine, probed once per session in this order: `rg`, `ag`, `ugrep`, `git grep --no-index`, `grep`, PowerShell `Select-String`, `findstr`. It asks for a scoped search or a ranged `read` and says not to read the whole file. `context.recallTool` pins one of those names or `none`; `auto` probes. Recalls are counted by kind: a whole-file read undoes the saving, a scoped access keeps it.
-
-**Measuring it.** `/warden status` keeps a session ledger so the saver's value is a number, not a claim: how many outputs were large enough to consider, how many Jev compressed, how many duplicates were dropped, the bytes removed (≈ tokens at 4 bytes each), the *token-turns spared* (removed tokens × every later turn, which is what a prompt cache would otherwise have re-read), and **recalls** — how often the agent went back to a stored full output, split into whole-file reads and scoped accesses. A recall means the excerpt was not enough; a recall rate above about 10% says `context.confidence` is too low for your work, near 0% says it could go lower. Whole-file recalls also give back the saving; scoped ones do not. Every compression and recall also appears in the trace with the running ledger. The quality effect (less context rot) does not show in a counter; compare a scripted task with `context.enabled` on and off if you want that number.
-
-Set `context.enabled: false` to stop all of it. The saver never prunes a warm prefix, changes the system prompt, changes the tool list after load, or edits historical session entries: every change is to the newest tool result before it enters the session, so the prompt cache prefix is unaffected. Full-output files can contain secrets; they remain in the OS temporary directory until you or the OS remove them. Excerpts can omit relevant evidence; read the linked file before making a decision that needs it.
-
-### Task continuity
-
-The action guard receives the latest user message plus up to eight previous user/assistant text messages, limited to 750 redacted characters each. This keeps follow-ups and side comments from replacing the task. New user instructions override earlier ones; assistant text supplies context, not permission. Approval of a held action still uses only the latest user message. `unclear` scope alone no longer triggers an off-task warning; irreversible-action checks are unchanged. Long handoffs outside that bounded context can still require the user to restate the task.
+Nudges from the rules, slop, stuck, done, and prose guards are custom messages in the agent's context. By default they are hidden from the transcript (`steerVisible: false`); the notification tells you a nudge happened and the trace panel shows the exact text. When the per-session request budget is spent, pi-warden says so once and continues with offline checks.
 
 ## Commands
 
 | Command | Effect |
 | --- | --- |
-| `/warden status` | Guard state, consent source, key source, session counts, thresholds, config paths, last verdict |
-| `/warden enable` | Show the data notice, prompt for a key if none is stored, and save consent for Jev judgments |
+| `/warden status` | Guard state, consent and key source, session counts, thresholds, rules source, config paths, last verdicts |
+| `/warden enable` | Data notice, key prompt if none is stored, consent saved |
 | `/warden disable` | Stop Jev judgments; pattern checks continue |
-| `/warden mode steer\|confirm\|advise` | Choose how holds are handled; without an argument, show the current mode |
-| `/warden config` | Edit the user config JSON in Pi's editor and save it |
-| `/warden test` | Evaluate one synthetic destructive action and show the verdict and what the agent would be told |
+| `/warden mode steer\|confirm\|advise` | How holds are handled; without an argument, show the current mode |
+| `/warden config` | Edit the user config JSON in Pi's editor |
+| `/warden test` | One synthetic destructive action, its verdict, and what the agent would be told |
 | `/warden trace` | Toggle the trace sidebar (or print the last 20 events without a UI) |
 
 ## Status line and trace sidebar
 
-The line above the editor shows the latest verdict per guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`. Every verdict is also kept in a session trace with what was inspected (redacted command or path), the pattern hits, Jev's scores with model and latency, the reasons, and the exact text the agent was told.
+The line above the editor shows the latest verdict per guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`. `/warden trace`, `ctrl+shift+w`, and a click on the line each toggle a right-hand sidebar with the full trace, newest first, live. The sidebar does not take the keyboard; click inside it for arrow keys and PgUp/PgDn, `c` clears, Esc hands input back, `q` closes. `widget.panelWidth` sets its width.
 
-`/warden trace`, `ctrl+shift+w`, and a click on the status line each **toggle a right-hand sidebar** with that trace, newest first, live-updating while the agent works. The sidebar does not take the keyboard: you keep typing in the editor while it is open. Click inside it to give it the keys (↑↓/PgUp/PgDn scroll, `c` clears, Esc hands input back to the editor, `q` closes); the wheel scrolls it without focus. `widget.panelWidth` sets its width (`"40%"` or a column count).
+Clicks and the wheel need Pi's fullscreen mode (`tuiMode: "fullscreen"` in `/settings`). In macOS Terminal.app enable View → Allow Mouse Reporting.
 
-Clicks and the wheel need Pi's fullscreen mode (`tuiMode: "fullscreen"` in `/settings`); regular mode leaves the mouse to the terminal for scrollback. If the mouse does nothing in fullscreen, the terminal is not reporting it: in macOS Terminal.app enable View → Allow Mouse Reporting (⌘R). Pi's extension API offers floating overlays but no side dock that narrows the transcript, so the sidebar covers the right part of the screen instead of pushing the transcript aside.
-
-Templates in `config.widget` control the text. Segments are separated by ` · `; a segment whose token has no value for that verdict is dropped, so optional information disappears together with its label:
+Templates in `config.widget` control the text. Segments are separated by ` · `; a segment whose token has no value is dropped:
 
 ```json
 "widget": {
-  "enabled": true,
-  "placement": "aboveEditor",
-  "shortcut": "ctrl+shift+w",
-  "panelWidth": "40%",
   "action": "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop: {slop} · patterns: {patterns} · {flags} · {level}",
+  "rules": "warden · rules · {tool} {path} · {asked} rules · {violations} · {status}",
   "stuck": "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
   "done": "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
   "prose": "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}",
@@ -154,7 +178,7 @@ Templates in `config.widget` control the text. Segments are separated by ` · `;
 }
 ```
 
-Tokens — action: `tool level source irreversible offTask scope approved slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time`; prose: `wordy cliches jargon status reasons model ms flags time`; stuck: `failures sameStrategy approachChange progress status source reasons model ms flags time`; done: `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`. Security tokens: `tool injection exfiltration status`; context tokens: `tool retention bytesSaved`; runaway tokens: `kind count chars signal block status time`. A minimal line: `"action": "⚔ {tool} {level} · {irreversible}/{offTask}"`. Set `"enabled": false` to hide the line (the trace and panel keep working); `"shortcut": ""` disables the keybinding.
+Tokens per guard: action `tool level source irreversible offTask scope approved slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time`; rules `tool path asked violations status source reasons model ms flags time`; prose `wordy cliches jargon status reasons model ms flags time`; stuck `failures sameStrategy approachChange progress status source reasons model ms flags time`; done `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time`; security `tool injection exfiltration status`; context `tool retention bytesSaved`; runaway `kind count chars signal block status time`. `"enabled": false` hides the line; `"shortcut": ""` disables the keybinding.
 
 ## Configuration
 
@@ -174,68 +198,101 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
     "irreversible": { "warn": 0.5, "confirm": 0.7 },
     "offTask": { "warn": 0.6, "confirm": 0.85 }
   },
-  "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
-  "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
-  "security": { "enabled": true, "threshold": 0.7 },
-  "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7 },
-  "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
-  "notify": { "enabled": true, "cooldownMs": 10000, "command": [] },
+  "rules": {
+    "enabled": true,
+    "threshold": 0.7,
+    "files": [],
+    "fallback": true,
+    "maxChars": 8000,
+    "exclude": [],
+    "skip": [],
+    "sensitivePaths": {}
+  },
   "slop": {
     "enabled": true,
     "threshold": 0.7,
     "prose": { "enabled": true, "audience": "technical", "threshold": 0.7, "trend": 2, "minChars": 200 }
   },
+  "security": { "enabled": true, "threshold": 0.7 },
+  "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
+  "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
+  "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7 },
+  "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
+  "notify": { "enabled": true, "cooldownMs": 10000, "command": [] },
   "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "steerVisible": false
 }
 ```
 
-A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides (for example stricter thresholds, extra guarded tools, or `"done": { "enabled": false }`). Project files are read only when Pi trusts the project, and they can never grant `typesafe` consent, change `mode`, raise `timeoutMs`/`maxRequests`, or set `notify.command`. Environment: `PI_WARDEN_ENABLED=1` (consent), `PI_WARDEN_MODE=steer|confirm|advise`. Files from 0.1.x that set `action.timeoutMs`/`action.maxRequests` keep working.
+A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides: stricter thresholds, extra guarded tools, `rules.files`, `rules.skip`, `rules.sensitivePaths`, or `"done": { "enabled": false }`. Project files are read only when Pi trusts the project. They can never grant `typesafe` consent, change `mode`, raise `timeoutMs` or `maxRequests`, or set `notify.command`. Environment: `PI_WARDEN_ENABLED=1` (consent), `PI_WARDEN_MODE=steer|confirm|advise`.
+
+A wince-style setup for a backend repo:
+
+```json
+{
+  "rules": {
+    "skip": ["tests/**", "**/*.test.*", "docs/**", "**/*.md"],
+    "exclude": ["secrets/**", "**/*.pem"],
+    "sensitivePaths": {
+      "migrations/**": "This touches a migration: tell the user and add a rollback path",
+      "**/permissions*": "Access control changed: ask the user for a security review before merging"
+    }
+  }
+}
+```
 
 ## Data handling
 
-- With consent, each guarded call sends to `https://api.typesafe.ai`: your latest prompt (truncated to 1500 characters), the tool name, the command (truncated to 2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample for `write`, and the first three edit pairs (400 characters each) for `edit`. The stuck detector sends the last 12 tool calls (300 characters each) with 400-character output tails; the done-check and the prose check send the agent's final message (2000 and 2500 characters) with the run's check commands and the audience description. Scope and retention requests also carry up to eight prior user/assistant text messages (750 redacted characters each). Output checks send a redacted head/tail sample up to 6000 characters plus size, line counts, and tool name; the format question uses that same sample. Duplicate detection and the runaway guard send nothing. No unrelated files or telemetry.
-- Obvious credentials in the action (`Authorization` headers, `TOKEN=`/`SECRET=` assignments, `sk-`, `ghp_`, `AKIA`, JWTs, URL passwords, PEM blocks) are replaced with `[redacted]` before sending. This is best-effort; do not rely on it for prompts that contain secrets.
-- Text returned or steered to the agent names the tool, the reasons, and the scores, not the command text. UI errors never include upstream response bodies or keys.
-- Judgments are model output. Thresholds are yours to tune; a hold is information for the agent and for you, not a verdict on either.
+With consent, requests go to `https://api.typesafe.ai`. What is sent:
 
-### After updating the package
+- **Action guard**: your latest prompt (1500 characters), up to eight earlier user and assistant messages (750 redacted characters each), the tool name, the command (2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample of a `write`, the first three edit pairs (400 characters each) of an `edit`.
+- **Rules**: the project-relative path, a 6000-character sample of a `write` or each edit's new text (1500 characters) with about 40 lines of the current file around the replaced text, and the rule text from your rules file or the condensed fallback document (`rules.maxChars`). No task text. Files under `rules.exclude` are never sent.
+- **Stuck**: the last 12 tool calls (300 characters each) with 400-character output tails.
+- **Done-check and prose**: the agent's final message (2000 and 2500 characters), the run's check commands, the audience description.
+- **Output checks**: a redacted head/tail sample up to 6000 characters plus size, line counts, and tool name.
+- **Nothing** for duplicate detection, the runaway guard, sensitive-path notes, or pattern checks.
 
-Run `/reload` in each existing Pi session after an update. If an existing session still reports `Cannot read properties of undefined (reading 'enabled')` while a fresh session works, restart that session to replace loaded modules. Version labels alone do not prove that all in-memory modules match the files on disk. Current config loading merges missing legacy fields with defaults; regression tests cover malformed and pre-prose config files. Since 0.5.2 the extension also checks the shape of the config it receives: if a section is missing (the symptom of an extension module and a config module from different package versions in one process), that guard is switched off and one warning names the missing sections and the schema numbers instead of throwing inside Pi. If you see that warning, restart Pi. A crash that survives a restart needs its stack trace and a redacted config example.
+Obvious credentials (`Authorization` headers, `TOKEN=` and `SECRET=` assignments, `sk-`, `ghp_`, `AKIA`, JWTs, URL passwords, PEM blocks) are replaced with `[redacted]` before sending. Best-effort; do not rely on it for prompts that contain secrets. Text steered to the agent names the tool, the reasons, and the scores, not the command. UI errors never include upstream response bodies or keys. Judgments are model output; thresholds are yours to tune.
+
+## After updating the package
+
+Run `/reload` in each open Pi session after an update. If a session reports `Cannot read properties of undefined (reading 'enabled')` while a fresh session works, restart it: the loaded modules do not match the files on disk. Since 0.5.2 the extension checks the shape of the config it receives; a missing section (an extension module and a config module from different versions in one process) switches that guard off and prints one warning naming the sections and the schema numbers. If you see it, restart Pi.
 
 ## For extension authors
 
-The guard is a plain function you can call from your own extension or tests, with any object that has pi-typesafe's `evaluate` method as the judge:
+Every guard is a plain function you can call with any object that has pi-typesafe's `evaluate` method as the judge:
 
 ```ts
-import { evaluateAction, defaultConfig } from "pi-warden";
+import { evaluateAction, evaluateRules, RuleStore, defaultConfig } from "pi-warden";
 import { createTypeSafe } from "pi-typesafe";
 
+const judge = createTypeSafe();
 const verdict = await evaluateAction(
   { tool: "bash", input: { command: "git push --force" }, cwd: process.cwd(), task: "push my branch" },
-  { config: defaultConfig().action, judge: createTypeSafe() },   // omit judge for pattern checks only
+  { config: defaultConfig().action, judge },   // omit judge for pattern checks only
 );
 verdict.level;      // "allow" | "warn" | "confirm"  (confirm = hold in steer mode)
 verdict.reasons;    // ["destructive: git force push", "irreversible 0.91"]
-verdict.judgment;   // { irreversible, offTask, scope, scopeConfidence, approved?, model, elapsedMs }
-steerReason(verdict, { canApprove: true });   // the text the agent receives for a hold
+
+const set = new RuleStore().load(process.cwd(), defaultConfig().rules);
+const rules = await evaluateRules("write", { path: "src/a.ts", content: "console.log(1)" }, { cwd: process.cwd(), config: defaultConfig().rules, set, judge, timeoutMs: 5000 });
+rules.findings;     // [{ id: "no-console-statements", name, violation: 0.97, body }]
 ```
 
-`evaluateAction` judges one call. What spans calls in a session, the hold → reply → retry approval and the batched judging of sibling tool calls, is `ActionGuard`: `inspect(call, conversation, options)` returns the same `Verdict`, `hold(task)` records a hold, `turnEnd()` and `reset()` follow Pi's turn and session.
-
-Also exported: `matchPatterns`, `isReadOnlyCommand`, `describeAction`, `redact`, `formatVerdict`, the question sets, the stuck detector (`AttemptWindow`, `makeAttempt`, `evaluateStuck`, `stuckNudge`), the runaway guard (`RunawayMonitor`, `findRepeats`, `runawayNudge`), the notifier (`detectNotifier`, `notifierCommand`, `sendNotification`), the done-check (`classifyToolResult`, `recordOutcome`, `needsDoneCheck`, `evaluateDone`, `doneNudge`), and the config helpers.
+What spans calls in a session lives in `ActionGuard` (hold, reply, retry approval, sibling batching) and `RulesGuard` (rule cache, sibling prejudging, repeat counts, sensitive-path notes). Also exported: `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `describeAction`, `parseRules`, `matchGlob`, `redact`, `formatVerdict`, the question sets, the stuck detector, the runaway guard, the notifier, the done-check, and the config helpers.
 
 ## Development
 
 ```bash
 npm install
-npm run check        # typecheck, offline tests (mocked transport), build
-npm run test:live    # 55 billable synthetic judgments across all guards (key from .env or the stored login); pass action|slop|approval|stuck|done|security|context for one group
-node scripts/security-cases.mjs   # the 9-case output-security and task-continuity set on its own
-node scripts/context-cases.mjs    # 15 labelled outputs that tune retention and format for the context saver
-npm run dev:pi       # start Pi with this working tree plus an installed pi-typesafe
-node scripts/slop-cases.mjs   # 22 billable cases that tune the slop and prose questions
-npm run preview      # re-render docs/preview.png from the recorded live verdicts (needs a Chrome binary)
+npm run check                    # typecheck, offline tests (mocked transport), build
+npm run test:live                # billable synthetic judgments across the guards; pass action|slop|approval|stuck|done|security|context for one group
+node scripts/rules-cases.mjs     # 13 billable cases against an 8-rule fixture file
+node scripts/slop-cases.mjs      # 22 billable cases for the slop and prose questions
+node scripts/security-cases.mjs  # 9 output-security and task-continuity cases
+node scripts/context-cases.mjs   # 15 labelled outputs for retention and format
+npm run dev:pi                   # start Pi with this working tree plus an installed pi-typesafe
+npm run preview                  # re-render docs/preview.png (needs a Chrome binary)
 ```
 
 ## License

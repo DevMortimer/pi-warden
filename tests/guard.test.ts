@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { describeAction, evaluateAction, formatVerdict, isReadOnlyCommand, matchPatterns, steerReason, textApproves } from "../src/guard.js";
+import { describeAction, evaluateAction, formatVerdict, isReadOnlyCommand, matchPatterns, steerReason, stripDataText, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { redact } from "../src/redact.js";
 
@@ -109,6 +109,58 @@ test("matchPatterns stays quiet for ordinary commands", () => {
     const hits = matchPatterns("bash", { command });
     assert.equal(hits.length, 0, `unexpected hit for: ${command} -> ${JSON.stringify(hits)}`);
   }
+});
+
+test("destructive text that is data is not a command: heredoc bodies written to files, quoted messages, search patterns", () => {
+  // The fixtures from the live session that was held three times while writing tests and notes.
+  const data = [
+    "python3 - <<'EOF'\nimport pathlib\npathlib.Path('tests/x.test.ts').write_text('''\nconst destructive = [\"git push --force origin main\", \"rm -rf /\"];\n''')\nEOF",
+    "cat <<'EOF' > .local/notes.md\n- Held: heredoc containing git push --force and rm -rf /tmp/x\nEOF",
+    "cat > setup.sh <<EOF\ngit push --force\nrm -rf /\nEOF",
+    "tee -a notes.txt <<EOF\nDROP TABLE users;\nEOF",
+    "echo \"rm -rf /\" > notes.txt",
+    "printf '%s\\n' 'git push --force origin main' >> commands.md",
+    "git commit -m \"remove the rm -rf /tmp step from the deploy script\"",
+    "git tag -a v1 -m 'drop table migration removed'",
+    "grep -rn \"git reset --hard\" docs/",
+    "rg 'kubectl delete' -g '*.md'",
+    "gh pr create --title \"Stop running terraform destroy in CI\" --body \"The pipeline ran 'terraform destroy' on merge.\"",
+    "jq '.scripts[\"db:reset\"] = \"DROP TABLE x\"' package.json",
+  ];
+  for (const command of data) {
+    const hits = matchPatterns("bash", { command }, cwd);
+    assert.equal(hits.length, 0, `unexpected hit for data text: ${command} -> ${JSON.stringify(hits)}`);
+  }
+  // The same strings fed to something that executes them keep every hit.
+  const executed = [
+    "sh <<'EOF'\nrm -rf /\nEOF",
+    "bash <<EOF\ngit push --force\nEOF",
+    "python3 - <<EOF\nimport os\nos.system(\"git push --force\")\nEOF",
+    "node - <<'EOF'\nrequire('child_process').execSync('git push --force')\nEOF",
+    "echo \"rm -rf /\" | sh",
+    "echo 'git push --force' | xargs -I{} bash -c {}",
+    "bash -c \"rm -rf /\"",
+    "eval \"git reset --hard\"",
+    "sudo sh -c 'rm -rf /var/lib/x'",
+    "bash -c \"$(cat script)\"; echo 'rm -rf /'",
+  ];
+  for (const command of executed) {
+    const hits = matchPatterns("bash", { command }, cwd);
+    assert.ok(hits.some(hit => hit.severity === "destructive"), `expected destructive hit for executed text: ${command}`);
+  }
+  // Outside the payload the command itself is still read.
+  assert.ok(matchPatterns("bash", { command: "echo \"notes\" > x.txt && rm -rf /" }).some(hit => hit.severity === "destructive"));
+  assert.ok(matchPatterns("bash", { command: "cat <<EOF > x\nhello\nEOF\ngit push --force" }).some(hit => hit.id === "git-force-push"));
+  assert.ok(matchPatterns("bash", { command: "echo 'x' > ~/.ssh/authorized_keys" }).some(hit => hit.severity === "sensitive"), "the target path is outside the quotes");
+  const scanned = stripDataText("cat <<EOF > x\nrm -rf /\nEOF");
+  assert.equal(scanned.stripped, true);
+  assert.match(scanned.text, /\[heredoc body: 1 lines of data\]/);
+  assert.equal(stripDataText("ls -la").stripped, false);
+  // describeAction tells Jev which part of the command is data; the full text still goes with it.
+  const summary = describeAction("bash", { command: "echo \"rm -rf /\" > notes.txt" }, cwd);
+  assert.match(summary.dataText ?? "", /not executed/);
+  assert.match(summary.command ?? "", /rm -rf/);
+  assert.equal(describeAction("bash", { command: "npm test" }, cwd).dataText, undefined);
 });
 
 test("matchPatterns flags secret files and paths as sensitive", () => {

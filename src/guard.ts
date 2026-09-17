@@ -47,6 +47,8 @@ export interface ActionSummary {
   editCount?: number;
   edits?: Array<{ oldText: string; newText: string }>;
   input?: string;
+  /** Present when part of the command is data (a heredoc body, a quoted message), so a destructive string inside it is payload. */
+  dataText?: string;
 }
 
 export type ScopeLabel = "expected_step" | "plausible_side_step" | "unrelated" | "unclear";
@@ -164,11 +166,111 @@ function splitShell(command: string): string[] {
   return command.split(/\n|;|&&|\|\||\||&/).map(part => part.trim()).filter(Boolean);
 }
 
-/** rm with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are risky. */
+// ---------------------------------------------------------------------------
+// Data text: a heredoc body written to a file, a quoted message, or a search pattern is not a command. Pattern rules skip
+// it so a test fixture or a commit message that mentions `git push --force` is not held. A shell sink anywhere in the
+// command (sh, eval, bash -c, command substitution) keeps every byte in scope, because the payload is executed.
+
+const WRAPPERS = new Set(["sudo", "nohup", "time", "env", "command", "builtin", "exec", "nice", "timeout", "doas"]);
+const SHELL_SINKS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "xargs", "su"]);
+/** Commands whose quoted arguments are text they print, search, or record. */
+const DATA_HEADS = new Set(["echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ugrep", "jq", "cat", "tee", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "less", "more", "test", "["]);
+const GIT_MESSAGE_SUBCOMMANDS = new Set(["commit", "tag", "notes", "merge", "stash"]);
+/** Interpreters whose stdin script can still run shell commands; their heredoc bodies stay in scope when they do. */
+const INTERPRETERS = /^(?:python[\d.]*|node|ruby|perl|php|deno|bun|tsx|Rscript|lua[\d.]*)$/;
+const EXEC_CALLS = /\b(?:os\.system|os\.popen|os\.exec\w*|subprocess|child_process|execSync|spawnSync|execFileSync|spawn\(|exec\(|system\(|popen\(|shell_exec|passthru|proc_open|Open3|IO\.popen|Deno\.run|Deno\.Command|Bun\.spawn|Bun\.\$|%x[\[{(]|`[^`\n]*\b(?:rm|git|dd|mkfs|kubectl|terraform)\b)/;
+const HEREDOC = /<<-?\s*(?:"(\w+)"|'(\w+)'|\\?(\w+))/;
+
+function headOf(segment: string): string | undefined {
+  const tokens = segment.trim().split(/\s+/);
+  let index = 0;
+  while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || WRAPPERS.has(tokens[index]!))) index++;
+  const head = tokens[index];
+  return head ? head.replace(/^.*\//, "") : undefined;
+}
+
+/** Quoted strings replaced by a placeholder; escapes inside double quotes are honoured, single quotes take everything. */
+function blankQuotes(segment: string): string {
+  let out = "";
+  for (let index = 0; index < segment.length; index++) {
+    const char = segment[index]!;
+    if (char !== "'" && char !== "\"") { out += char; continue; }
+    let end = index + 1;
+    while (end < segment.length && segment[end] !== char) end += char === "\"" && segment[end] === "\\" ? 2 : 1;
+    if (end >= segment.length) { out += segment.slice(index); break; }
+    out += `${char}[text]${char}`;
+    index = end;
+  }
+  return out;
+}
+
+function isDataSegment(segment: string): boolean {
+  const head = headOf(segment);
+  if (!head) return false;
+  if (head === "git") {
+    const sub = segment.trim().split(/\s+/).find(token => !token.startsWith("-") && token !== "git" && !WRAPPERS.has(token));
+    return sub !== undefined && GIT_MESSAGE_SUBCOMMANDS.has(sub) && !/\s-c\s|--config/.test(segment);
+  }
+  if (head === "gh") return /\s--(?:body|title|notes)\b/.test(segment) || /\s-[bt]\s/.test(segment);
+  return DATA_HEADS.has(head);
+}
+
+export interface ScannedCommand {
+  /** The command with data text blanked; what the pattern rules read. */
+  text: string;
+  /** True when a heredoc body or quoted data was removed. */
+  stripped: boolean;
+}
+
+/**
+ * Removes heredoc bodies that are not fed to a shell and quoted arguments of data commands. Interpreter heredocs
+ * (`python3 - <<EOF`) are kept when the script calls out to a shell or process API.
+ */
+export function stripDataText(command: string): ScannedCommand {
+  if (/\$\(|`/.test(command)) return { text: command, stripped: false };
+  const lines = command.split("\n");
+  const out: string[] = [];
+  let stripped = false;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const heredoc = HEREDOC.exec(line);
+    if (!heredoc) { out.push(line); continue; }
+    const delimiter = heredoc[1] ?? heredoc[2] ?? heredoc[3]!;
+    const consumer = headOf(line.slice(0, heredoc.index)) ?? "";
+    const body: string[] = [];
+    let close = index + 1;
+    while (close < lines.length && lines[close]!.replace(/^\t+/, "") !== delimiter) body.push(lines[close]!), close++;
+    const bodyText = body.join("\n");
+    const executed = SHELL_SINKS.has(consumer) || (INTERPRETERS.test(consumer) && EXEC_CALLS.test(bodyText));
+    out.push(line);
+    if (executed) out.push(...body);
+    else if (body.length) { out.push(`[heredoc body: ${body.length} lines of data]`); stripped = true; }
+    if (close < lines.length) out.push(lines[close]!);
+    index = close;
+  }
+  const joined = out.join("\n");
+  const segments = splitShell(joined);
+  if (segments.some(segment => { const head = headOf(segment); return head !== undefined && SHELL_SINKS.has(head); })) return { text: joined, stripped };
+  if (/\b(?:ba|z|da|k)?sh\s+-[a-zA-Z]*c\b/.test(joined)) return { text: joined, stripped };
+  let text = joined;
+  for (const segment of segments) {
+    if (!isDataSegment(segment) || !/["']/.test(segment)) continue;
+    const blanked = blankQuotes(segment);
+    if (blanked === segment) continue;
+    text = text.replace(segment, blanked);
+    stripped = true;
+  }
+  return { text, stripped };
+}
+
+/**
+ * rm with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
+ * risky. A quote before `rm` is allowed so `bash -c "rm -rf /"` is read; data quotes were blanked before this runs.
+ */
 function classifyRm(segment: string, cwd?: string): PatternHit | undefined {
-  const match = /(?:^|\s)rm\s+(.*)$/.exec(segment);
+  const match = /(?:^|[\s"'])rm\s+(.*)$/.exec(segment);
   if (!match) return undefined;
-  const tokens = match[1]!.split(/\s+/).filter(Boolean);
+  const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["']$/, ""));
   const flags = tokens.filter(token => token.startsWith("-"));
   const targets = tokens.filter(token => !token.startsWith("-"));
   const recursive = flags.some(flag => flag === "--recursive" || (/^-[a-zA-Z]+$/.test(flag) && /[rR]/.test(flag)));
@@ -193,8 +295,9 @@ function isInside(target: string, cwd: string): boolean {
 export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?: string): PatternHit[] {
   const hits = new Map<string, PatternHit>();
   const add = (hit: PatternHit | undefined) => { if (hit && !hits.has(hit.id)) hits.set(hit.id, hit); };
-  const command = commandOf(tool, input)?.command;
-  if (command) {
+  const raw = commandOf(tool, input)?.command;
+  if (raw) {
+    const command = stripDataText(raw).text;
     for (const rule of SHELL_RULES) if (rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
     for (const segment of splitShell(command)) add(classifyRm(segment, cwd));
     if (SENSITIVE_PATH.test(command)) add({ id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
@@ -258,7 +361,11 @@ function displayPath(target: string, cwd: string): { path: string; location: "in
 export function describeAction(tool: string, input: Record<string, unknown>, cwd: string): ActionSummary {
   const summary: ActionSummary = { tool };
   const view = commandOf(tool, input);
-  if (view) summary.command = redact(truncate(view.command, COMMAND_LIMIT));
+  if (view) {
+    summary.command = redact(truncate(view.command, COMMAND_LIMIT));
+    // Jev sees the full text; this names the part of it that is written or printed rather than executed.
+    if (stripDataText(view.command).stripped) summary.dataText = "heredoc bodies and quoted arguments of echo/printf/grep/git commit in this command are text that is written, printed, searched, or recorded, not executed";
+  }
   if (typeof input.path === "string" && input.path.trim() && tool !== "ctx_execute_file") {
     const shown = displayPath(input.path, cwd);
     summary.path = shown.path;

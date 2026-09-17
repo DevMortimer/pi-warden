@@ -1,6 +1,7 @@
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
 import type { ProseVerdict } from "./prose.js";
+import type { RulesVerdict } from "./rules.js";
 import type { RunawayVerdict } from "./runaway.js";
 import type { StuckVerdict } from "./stuck.js";
 
@@ -21,6 +22,7 @@ export interface WidgetConfig {
   security: string;
   context: string;
   runaway: string;
+  rules: string;
 }
 
 export const DEFAULT_TEMPLATES = {
@@ -31,6 +33,7 @@ export const DEFAULT_TEMPLATES = {
   security: "warden · security · {tool} · injection {injection} · exfiltration {exfiltration} · {status}",
   context: "warden · context · {tool} · {retention} · saved {bytesSaved} bytes",
   runaway: "warden · runaway · {kind} · {count}× repeated · {chars} chars · {signal} · {status}",
+  rules: "warden · rules · {tool} {path} · {asked} rules · {violations} · {status}",
 } as const;
 
 export function defaultWidgetConfig(): WidgetConfig {
@@ -161,11 +164,29 @@ export function proseTokens(verdict: ProseVerdict, at = Date.now()): Tokens {
   };
 }
 
+export function rulesTokens(verdict: RulesVerdict, at = Date.now()): Tokens {
+  return {
+    guard: "rules",
+    time: time(at),
+    tool: verdict.tool,
+    path: verdict.path,
+    asked: verdict.source === "skipped" ? undefined : String(verdict.asked),
+    violations: verdict.findings.length ? verdict.findings.map(finding => `${finding.name} ${finding.violation.toFixed(2)}`).join(", ") : verdict.scores ? "none" : undefined,
+    status: verdict.source === "error" ? "typesafe error" : verdict.source === "skipped" ? "skipped" : verdict.findings.length ? "violation" : "ok",
+    source: verdict.source,
+    reasons: verdict.skippedReason ?? (verdict.findings.length ? verdict.findings.map(finding => finding.name).join("; ") : undefined),
+    model: verdict.model,
+    ms: verdict.elapsedMs === undefined ? undefined : String(verdict.elapsedMs),
+    flags: verdict.error ? "typesafe error" : undefined,
+  };
+}
+
 /** Token names users can put in templates, for /warden status and the README. */
 export const TOKEN_NAMES = {
   security: ["tool", "injection", "exfiltration", "status"],
   context: ["tool", "retention", "bytesSaved"],
   runaway: ["kind", "count", "chars", "signal", "block", "status", "time", "guard"],
+  rules: ["tool", "path", "asked", "violations", "status", "source", "reasons", "model", "ms", "flags", "time", "guard"],
   action: ["tool", "level", "source", "irreversible", "offTask", "scope", "approved", "slop", "slopStub", "slopComments", "slopDead", "slopHedging", "patterns", "reasons", "path", "model", "ms", "flags", "time", "guard"],
   prose: ["wordy", "cliches", "jargon", "status", "reasons", "model", "ms", "flags", "time", "guard"],
   stuck: ["failures", "sameStrategy", "approachChange", "progress", "status", "source", "reasons", "model", "ms", "flags", "time", "guard"],

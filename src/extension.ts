@@ -19,6 +19,7 @@ import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
 import { redact } from "./redact.js";
+import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
@@ -27,17 +28,17 @@ import { openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
 import type { PanelController, PanelUi } from "./panel.js";
-import { actionDetails, doneDetails, proseDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
+import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName } from "./trace.js";
 import { proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; and redacted tool-output samples for security and context saving (retention and output format). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; and redacted tool-output samples for security and context saving (retention and output format). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
 
-interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; slop: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number }
-const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, slop: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0 });
+interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number }
+const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0 });
 
 function latestUserPrompt(ctx: ExtensionContext): string | undefined {
   const entries = ctx.sessionManager.getBranch();
@@ -134,6 +135,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let panel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
   const actionGuard = new ActionGuard();
+  const rulesGuard = new RulesGuard();
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
@@ -222,6 +224,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     trace.clear();
     panel?.close();
     actionGuard.reset();
+    rulesGuard.reset();
     attempts.reset();
     evidence = emptyEvidence();
     doneNudged = false;
@@ -245,6 +248,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     runawayStops = 0;
     pendingRunaway = undefined;
     actionGuard.turnEnd();
+    rulesGuard.turnEnd();
   });
 
   // Each assistant message is judged on its own; Pi does not forward the stream's own "start" event, so this is the reset.
@@ -281,6 +285,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("turn_end", async () => {
     ledger.turnEnd();
     actionGuard.turnEnd();
+    rulesGuard.turnEnd();
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -299,12 +304,21 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     stats.inspected++;
     const task = latestUserPrompt(ctx);
     const judge = judgeFor(config);
+    const siblings = siblingToolCalls(ctx);
+    const call = { id: event.toolCallId, tool: event.toolName, input: event.input };
+    // The rules request carries the written content and the rule text, so it goes out beside the action request, not inside it.
+    const rulesCheck = config.rules.enabled && (event.toolName === "write" || event.toolName === "edit")
+      ? rulesGuard.inspect(call, siblings, { cwd: ctx.cwd, config: config.rules, judge, timeoutMs: config.timeoutMs, signal: ctx.signal })
+      : undefined;
+    rulesCheck?.catch(() => undefined);
     const verdict = await actionGuard.inspect(
-      { id: event.toolCallId, tool: event.toolName, input: event.input },
-      { task, context: recentTaskContext(ctx), siblings: siblingToolCalls(ctx) },
+      call,
+      { task, context: recentTaskContext(ctx), siblings },
       { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security },
     );
     if (verdict.source === "skipped") return;
+    // Notes for the agent about the content it just wrote: slop, rule violations, and sensitive paths arrive as one message.
+    const notes: string[] = [];
     if (verdict.judgment?.securityRisk !== undefined && verdict.judgment.securityRisk >= config.security.threshold) {
       steer(config, "pi-warden: the proposed write may introduce a security weakness. Check for embedded credentials, disabled TLS, unsafe command/SQL interpolation, broad permissions, or bypassed verification; use a safe implementation instead.");
     }
@@ -319,8 +333,31 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       for (const symptom of verdict.slopSymptoms) slopCounts[symptom]++;
       const where = verdict.summary.path ?? event.toolName;
       if (ctx.hasUI) ctx.ui.notify(`warden · slop · ${where}: ${verdict.slopReasons.join("; ")}`, "warning");
-      steer(config, slopSteer(where, verdict.slopSymptoms, slopCounts));
+      notes.push(slopSteer(where, verdict.slopSymptoms, slopCounts));
     }
+    if (rulesCheck) {
+      const rules = await rulesCheck;
+      if (rules.source !== "skipped") {
+        stats.ruleChecks++;
+        if (rules.error) noteError(ctx, rules.error, rules.errorCode);
+        const told = rules.findings.length ? rulesSteer(rules, rulesGuard.count(rules)) : undefined;
+        record(ctx, config, "rules", formatRules(rules, config.widget.rules), rulesDetails(rules, told));
+        if (told) {
+          stats.ruleViolations++;
+          if (ctx.hasUI) ctx.ui.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
+          notes.push(told);
+        }
+      }
+      const hits = rulesGuard.notesFor(verdict.summary.location === "inside_project" ? verdict.summary.path : undefined, config.rules.sensitivePaths);
+      if (hits.length && verdict.summary.path) {
+        stats.pathNotes++;
+        const told = pathNoteSteer(verdict.summary.path, hits);
+        record(ctx, config, "rules", renderTemplate(config.widget.rules, { tool: event.toolName, path: verdict.summary.path, violations: `sensitive path ${hits.map(hit => hit.glob).join(", ")}`, status: "note" }), [`${event.toolName} ${verdict.summary.path} matches ${hits.map(hit => hit.glob).join(", ")} in rules.sensitivePaths`, `agent told: ${told}`]);
+        if (ctx.hasUI) ctx.ui.notify(`warden · sensitive path · ${verdict.summary.path} (${hits.map(hit => hit.glob).join(", ")}); the agent was given the note`, "warning");
+        notes.push(told);
+      }
+    }
+    if (notes.length) steer(config, notes.join("\n\n"));
     if (verdict.level === "warn") {
       stats.warned++;
       if (ctx.hasUI) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
@@ -528,12 +565,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const key = resolveApiKey();
           const source = consentSource(config);
           const usage = client?.getUsage();
-          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.context.enabled && "context", config.runaway.enabled && "runaway", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
+          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.rules.enabled && "rules", config.context.enabled && "context", config.runaway.enabled && "runaway", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `enabled via ${source}` : "disabled (run /warden enable)"}; key ${key ? key.source === "stored" ? "stored (shared with pi-typesafe)" : "from TYPESAFE_API_KEY" : "missing (run /warden enable)"}.`,
-            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,
-            `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
+            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,
+            `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),
+            `Rules: ${config.rules.enabled ? `${rulesGuard.describe(ctx.cwd, config.rules)}${Object.keys(config.rules.sensitivePaths).length ? `; ${Object.keys(config.rules.sensitivePaths).length} sensitive path${Object.keys(config.rules.sensitivePaths).length === 1 ? "" : "s"}` : ""}` : "off"}.`,
             `Desktop notifications: ${config.notify.enabled ? `on (${config.notify.command.length ? `command ${config.notify.command[0]}` : (await (notifier ??= detectNotifier())) ?? "no notifier found on this machine"}; cooldown ${config.notify.cooldownMs} ms)` : "off"}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",

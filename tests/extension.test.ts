@@ -485,6 +485,86 @@ test("slop symptoms steer the agent after the write without holding it; steers a
   assert.equal((sentMessages[3]!.message as { display?: boolean }).display, true);
 });
 
+test("rules: a write in a project with pi-warden.md gets its own request beside the action request; violations steer in one message with slop; fallbacks and sensitive paths", async () => {
+  await grantConsent();
+  const rulesFile = join(temporary, "pi-warden.md");
+  const readme = join(temporary, "README.md");
+  try {
+    await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n\n# Tests for exports\npaths: src/**\nEvery exported function needs a test.\n");
+    nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_stub: 0.92, slop_hedging: 0.1, slop_comments: 0.1, slop_dead: 0.1, "rule_no-console-statements": "violation" };
+    assert.equal(await toolCall("write", { path: join(temporary, "src", "r.ts"), content: "export const r = () => { console.log(1); return null; };" }), undefined);
+    assert.equal(requests.length, 2, "action request plus rules request");
+    const rules = requests.find(request => "rule_no-console-statements" in request.questions);
+    assert.ok(rules, "the rules request carries one Choice per rule");
+    assert.deepEqual(Object.keys(rules.questions).sort(), ["rule_no-console-statements", "rule_tests-for-exports"]);
+    assert.equal(rules.state.path, "src/r.ts");
+    assert.match(String(rules.state.content), /console\.log/);
+    assert.ok(!("task" in rules.state), "rules are a property of the code, not of the task");
+    const action = requests.find(request => "irreversible" in request.questions)!;
+    assert.ok(!Object.keys(action.questions).some(key => key.startsWith("rule_")), "rule questions do not ride the action request");
+    assert.equal(sentMessages.length, 1, "slop and rules arrive as one steer");
+    assert.match(sentMessages[0]!.message.content, /^pi-warden: the content just written to src\/r\.ts has stub or placeholder code[\s\S]*\n\npi-warden: the content just written to src\/r\.ts violates project rule from pi-warden\.md: "No console statements" \(0\.80\): Code must not contain `console\.log`\. Fix it in your next edit\.$/);
+    assert.ok(notices.some(notice => /warden · rules · src\/r\.ts: No console statements \(0\.80\)/.test(notice.text)));
+    assert.ok(widgets.at(-1)!.some(line => /warden · rules · write src\/r\.ts · 2 rules · No console statements 0\.80 · violation/.test(line)), JSON.stringify(widgets.at(-1)));
+
+    // A clean write: judged, no steer; the widget line says so.
+    nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step" };
+    await toolCall("write", { path: join(temporary, "src", "clean.ts"), content: "export const clean = 1;" });
+    assert.equal(sentMessages.length, 1);
+    assert.ok(widgets.at(-1)!.some(line => /warden · rules · write src\/clean\.ts · 2 rules · none · ok/.test(line)), JSON.stringify(widgets.at(-1)));
+
+    // Path scoping: docs get only the unscoped rule; an excluded file is never sent.
+    requests.length = 0;
+    await toolCall("write", { path: join(temporary, "docs", "guide.md"), content: "console.log in prose" });
+    assert.deepEqual(Object.keys(requests.find(request => "rule_no-console-statements" in request.questions)!.questions), ["rule_no-console-statements"]);
+    await mkdir(join(temporary, ".pi"), { recursive: true });
+    await writeFile(join(temporary, ".pi", "pi-warden.json"), JSON.stringify({ rules: { exclude: ["secrets/**"], sensitivePaths: { "migrations/**": "Tell the user this touches a migration" } } }));
+    requests.length = 0;
+    await toolCall("write", { path: join(temporary, "secrets", "keys.ts"), content: "export const k = 1;" });
+    assert.equal(requests.filter(request => Object.keys(request.questions).some(key => key.startsWith("rule_"))).length, 0, "excluded path: no rules request");
+
+    // Sensitive path: a note for the agent, once per path, with or without Jev.
+    await toolCall("write", { path: join(temporary, "db", "migrations", "001.sql"), content: "ALTER TABLE users ADD COLUMN created_at timestamp;" });
+    assert.match(sentMessages.at(-1)!.message.content, /^pi-warden: db\/migrations\/001\.sql is a sensitive path in this project \(migrations\/\*\*\)\. Tell the user this touches a migration\.$/);
+    const before = sentMessages.length;
+    await toolCall("edit", { path: join(temporary, "db", "migrations", "001.sql"), edits: [{ oldText: "timestamp", newText: "timestamptz" }] });
+    assert.equal(sentMessages.length, before, "the same path is not noted twice in a session");
+
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /Rules: pi-warden\.md \(2 rules\); 1 sensitive path\./);
+    assert.match(notices.at(-1)!.text, /1\/5 rule violations, 1 sensitive-path notes/);
+
+    // Fallback: with no rules file, README.md is judged as one document; rules.fallback false turns that off.
+    await rm(rulesFile);
+    await writeFile(readme, "# My project\n\nNever commit console.log calls.\n");
+    requests.length = 0;
+    nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", rules: "violation" };
+    await toolCall("write", { path: join(temporary, "src", "f.ts"), content: "console.log(2)" });
+    const aggregate = requests.find(request => "rules" in request.questions)!;
+    assert.ok(aggregate, "one aggregate question");
+    assert.match(String(aggregate.state.rules), /Never commit console\.log/);
+    assert.match(sentMessages.at(-1)!.message.content, /breaks a rule stated in README\.md: "the project's README\.md" \(0\.80\)/);
+    await writeFile(join(temporary, ".pi", "pi-warden.json"), JSON.stringify({ rules: { fallback: false } }));
+    requests.length = 0;
+    await toolCall("write", { path: join(temporary, "src", "g.ts"), content: "console.log(3)" });
+    assert.equal(requests.filter(request => "rules" in request.questions).length, 0);
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /Rules: none found\./);
+
+    // Without consent nothing is sent, and the sensitive-path note still works.
+    await rm(configPath(), { force: true });
+    await writeFile(join(temporary, ".pi", "pi-warden.json"), JSON.stringify({ rules: { sensitivePaths: { "**/permissions*": "Ask for a security review" } } }));
+    requests.length = 0; networkCalls = 0;
+    await toolCall("write", { path: join(temporary, "src", "auth", "permissions.ts"), content: "export const can = () => true;" });
+    assert.equal(networkCalls, 0);
+    assert.match(sentMessages.at(-1)!.message.content, /permissions\.ts is a sensitive path[\s\S]*Ask for a security review\./);
+  } finally {
+    await rm(rulesFile, { force: true });
+    await rm(readme, { force: true });
+    await rm(join(temporary, ".pi", "pi-warden.json"), { force: true });
+  }
+});
+
 test("prose: the final reply is scored against the audience and the agent is nudged for the next turn on a trend", async () => {
   await grantConsent();
   await newPrompt("explain the bug");

@@ -3,7 +3,7 @@ import type { WardenConfig } from "./config.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 4;
+export const EXPECTED_SCHEMA = 5;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -40,10 +40,11 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     done: section("done", { ...off, claimsDone: 1, nudge: false }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1 }),
+    rules: section("rules", { ...off, threshold: 1, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1 }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
-    widget: section("widget", { ...off, placement: "aboveEditor", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "" }),
+    widget: section("widget", { ...off, placement: "aboveEditor", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "" }),
   };
   if (typeof config.slop.prose !== "object" || config.slop.prose === null) {
     missing.push("slop.prose");
@@ -57,6 +58,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.widget.panelWidth !== "string" && typeof config.widget.panelWidth !== "number") config.widget = { ...config.widget, panelWidth: "40%" };
   // The runaway guard added its template later than the other sections; an older widget section renders the default line.
   if (typeof config.widget.runaway !== "string") config.widget = { ...config.widget, runaway: DEFAULT_TEMPLATES.runaway };
+  if (typeof config.widget.rules !== "string") config.widget = { ...config.widget, rules: DEFAULT_TEMPLATES.rules };
   return { config, missing };
 }
 

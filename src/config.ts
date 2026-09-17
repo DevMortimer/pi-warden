@@ -71,6 +71,25 @@ export interface SecurityConfig {
   threshold: number;
 }
 
+export interface RulesConfig {
+  /** Judge each write and edit against the project's Markdown rules on its own Jev request; steer, never hold. */
+  enabled: boolean;
+  /** P(violation) at or above this names the rule to the agent. */
+  threshold: number;
+  /** Project-relative Markdown rule files, used when the root pi-warden.md is absent. All are sent in one request. */
+  files: string[];
+  /** With no rules file, README.md, CLAUDE.md, or AGENTS.md (first found) is judged as one document. */
+  fallback: boolean;
+  /** Characters of a fallback document sent per request; every heading and the head of each section are kept within it. */
+  maxChars: number;
+  /** Globs of files whose content is never sent to Jev for rules (secrets, generated, vendored). */
+  exclude: string[];
+  /** Globs of files the rules do not apply to, for example tests or docs. */
+  skip: string[];
+  /** Glob → note. A write or edit under a matching path steers the agent with the note once per path; code only. */
+  sensitivePaths: Record<string, string>;
+}
+
 export interface ContextConfig {
   enabled: boolean;
   /** Only new tool output is compressed; warm history and system prompts are never changed. */
@@ -138,6 +157,7 @@ export interface WardenConfig {
   done: DoneGuardConfig;
   slop: SlopGuardConfig;
   security: SecurityConfig;
+  rules: RulesConfig;
   context: ContextConfig;
   runaway: RunawayConfig;
   notify: NotifyConfig;
@@ -149,7 +169,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 4;
+export const CONFIG_SCHEMA = 5;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -171,6 +191,7 @@ export function defaultConfig(): WardenConfig {
     done: { enabled: true, claimsDone: 0.7, nudge: true },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7 },
+    rules: { enabled: true, threshold: 0.7, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7 },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: true, cooldownMs: 10000, command: [] },
@@ -299,6 +320,27 @@ function applySlop(base: SlopGuardConfig, raw: unknown): SlopGuardConfig {
   return { enabled: boolean(raw.enabled, base.enabled), threshold: probability(raw.threshold ?? raw.placeholder, base.threshold), prose: applyProse(base.prose, raw.prose) };
 }
 
+function globList(value: unknown, fallback: string[]): string[] {
+  return Array.isArray(value) ? value.filter((glob): glob is string => typeof glob === "string" && glob.trim().length > 0).map(glob => glob.trim()) : fallback;
+}
+
+function applyRules(base: RulesConfig, raw: unknown): RulesConfig {
+  if (!isObject(raw)) return base;
+  const notes = isObject(raw.sensitivePaths)
+    ? Object.fromEntries(Object.entries(raw.sensitivePaths).filter((entry): entry is [string, string] => entry[0].trim().length > 0 && typeof entry[1] === "string" && entry[1].trim().length > 0))
+    : base.sensitivePaths;
+  return {
+    enabled: boolean(raw.enabled, base.enabled),
+    threshold: probability(raw.threshold, base.threshold),
+    files: globList(raw.files, base.files),
+    fallback: boolean(raw.fallback, base.fallback),
+    maxChars: Math.max(500, positiveInteger(raw.maxChars, base.maxChars)),
+    exclude: globList(raw.exclude, base.exclude),
+    skip: globList(raw.skip, base.skip),
+    sensitivePaths: notes,
+  };
+}
+
 function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
   if (!isObject(raw)) return base;
   const template = (value: unknown, fallback: string) => (typeof value === "string" && value.trim() ? value : fallback);
@@ -315,6 +357,7 @@ function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
     security: template(raw.security, base.security),
     context: template(raw.context, base.context),
     runaway: template(raw.runaway, base.runaway),
+    rules: template(raw.rules, base.rules),
   };
 }
 
@@ -327,8 +370,9 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "context" | "runaway" | "notify"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify"> {
   return {
+    rules: applyRules(base.rules, raw.rules),
     runaway: applyRunaway(base.runaway, raw.runaway),
     // A project file may switch notifications off or on, but never names a command to run.
     notify: applyNotify(base.notify, raw.notify, source === "user"),

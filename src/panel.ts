@@ -4,7 +4,7 @@ import type { Trace } from "./trace.js";
 
 interface ThemeLike { fg(color: string, text: string): string; bold(text: string): string }
 
-const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", confirm: "error", stuck: "error", "false claim": "error", stopped: "error", "stopped, recovering": "error" };
+const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", confirm: "error", stuck: "error", "false claim": "error", stopped: "error", "stopped, recovering": "error", violation: "warning", skipped: "muted" };
 
 export interface PanelActions {
   /** Remove the sidebar. */
