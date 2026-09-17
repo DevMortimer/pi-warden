@@ -1,0 +1,62 @@
+name: A steer or hold was wrong
+description: pi-warden held a call it should have let through, steered when nothing was off, or missed a call you did not want. This is calibration data.
+title: "[steer] "
+labels: ["calibration"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Every one of these tunes a threshold or a question. Paste text, not screenshots, where you can; never paste a secret.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What happened
+      options:
+        - Held a call I wanted (false hold)
+        - Steered about a call that matched my request or the agent's plan (false steer)
+        - Let through a call I then had to undo or stop (miss)
+        - Banner or notice on output that was not a secret or an injection
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steer
+    attributes:
+      label: The steer or hold text
+      description: The `pi-warden:` message the agent received, or the notice above the editor. It contains scores and reasons, never the command.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: What you had asked for, and what the agent was doing
+      description: Your prompt (or a paraphrase) and the agent's last sentence before the call, if it said anything.
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace lines
+      description: "`/warden trace` (or the sidebar) for that call: the `warden · ...` line and the `jev:` details. Redact anything private."
+      render: text
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: What you did next
+      options:
+        - Said yes and it ran
+        - Let the agent re-plan
+        - Ignored the steer
+        - Undid or stopped the call
+        - Turned a guard off
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: "`/warden status` first line (mode, guards) plus pi-warden and Pi versions"
+      placeholder: "pi-warden 0.12.0, pi 0.85.1, mode steer, model ..."
+    validations:
+      required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or idea
+    url: https://github.com/DevMortimer/pi-warden/discussions
+    about: How to write a rule, whether a guard fits your workflow, a question you would like Jev asked. Discussions, not issues.
+  - name: Security report
+    url: https://github.com/DevMortimer/pi-warden/security/advisories/new
+    about: A way to make pi-warden leak a secret or run a held command. Private, please.
