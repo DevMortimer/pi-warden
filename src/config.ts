@@ -31,6 +31,8 @@ export interface ActionGuardConfig {
   offTask: OffTaskThreshold;
   /** P(the call differs from the agent's own stated plan) at or above this warns and tells the agent; never holds on its own. */
   intentMismatch: number;
+  /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
+  visibleMismatch: number;
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
   feedbackLog: boolean;
 }
@@ -198,6 +200,7 @@ export function defaultConfig(): WardenConfig {
       irreversible: { warn: 0.5, confirm: 0.7 },
       offTask: { warn: 0.6, steer: 0.85 },
       intentMismatch: 0.9,
+      visibleMismatch: 0.8,
       feedbackLog: true,
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, nudge: true },
@@ -284,6 +287,7 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number): 
     irreversible: threshold(raw.irreversible, base.irreversible),
     offTask: offTaskThreshold(raw.offTask, base.offTask),
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
+    visibleMismatch: Math.min(probability(raw.visibleMismatch, base.visibleMismatch), probability(raw.intentMismatch, base.intentMismatch)),
     feedbackLog: boolean(raw.feedbackLog, base.feedbackLog),
   };
 }

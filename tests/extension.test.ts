@@ -448,7 +448,7 @@ test("the agent's plan comes from the message that makes the call, falls back to
   await runCommand("status");
   const status = notices.at(-1)!.text;
   assert.match(status, /1 off plan/);
-  assert.match(status, /intent mismatch 0\.9;/);
+  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action\);/);
   const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
   const lines = await readLog(logPath, 3, false);
   assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined]], "planChars says how often the agent called without a word");
@@ -1036,7 +1036,7 @@ test("the request carries the latest user prompt and a redacted action summary",
   const body = requests.at(-1) as { state: { task: string; action: Record<string, unknown> }; questions: Record<string, unknown> } | undefined;
   assert.ok(body);
   assert.equal(body.state.task, "Deploy the thing with TOKEN=[redacted] please", "redaction covers both the task and action");
-  assert.deepEqual(Object.keys(body.questions).sort(), ["irreversible", "mutates", "off_task", "scope"]);
+  assert.deepEqual(Object.keys(body.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "visible"]);
   assert.equal(body.state.action.tool, "bash");
   assert.ok(!String(body.state.action.command).includes("abc.def.ghi"));
   assert.ok(String(body.state.action.command).includes("[redacted]"));

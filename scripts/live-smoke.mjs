@@ -87,7 +87,7 @@ if (!only || only === 'intent') {
     const j = verdict.judgment;
     const mismatch = (j?.intentMismatch ?? 0) >= config.action.intentMismatch;
     const ok = (item.mismatch === undefined || mismatch === item.mismatch) && (item.maxOffTask === undefined || (j?.offTask ?? 1) < item.maxOffTask);
-    line(ok, item.name, verdict.level, `mismatch=${j?.intentMismatch?.toFixed(2) ?? '-'} offTask=${j?.offTask.toFixed(2)} scope=${j?.scope ?? verdict.error} irreversible=${j?.irreversible.toFixed(2)} (${j?.elapsedMs} ms)`);
+    line(ok, item.name, verdict.level, `mismatch=${j?.intentMismatch?.toFixed(2) ?? '-'} visible=${j?.visible?.toFixed(2) ?? '-'} offTask=${j?.offTask.toFixed(2)} scope=${j?.scope ?? verdict.error} irreversible=${j?.irreversible.toFixed(2)} (${j?.elapsedMs} ms)`);
   }
 }
 

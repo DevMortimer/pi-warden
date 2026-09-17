@@ -120,6 +120,7 @@ test("matchPatterns flags destructive shell commands", () => {
   const risky = [
     "rm -rf ./build", "rm -r --force dir", "rm -rf node_modules/.cache/tmp", "git checkout -- .", "git checkout -- src/a.ts", "git restore .", "git branch -D feature",
     "git stash drop", "find . -name '*.log' -delete", "git push --force-with-lease", "sudo apt install jq",
+    "git commit --no-verify -m x", "git -c commit.gpgSign=false commit -m x", "git commit --no-gpg-sign -m x", "git -c core.hooksPath=/dev/null commit -m x", "gh pr merge 123 --squash",
   ];
   for (const command of risky) {
     const hits = matchPatterns("bash", { command });
@@ -132,7 +133,7 @@ test("matchPatterns flags destructive shell commands", () => {
 
 test("matchPatterns stays quiet for ordinary commands", () => {
   const benign = [
-    "ls -la", "git status", "npm test", "grep -rn TODO src", "git push origin feature", "git restore --staged .",
+    "ls -la", "git status", "npm test", "grep -rn TODO src", "git push origin feature", "git restore --staged .", "git commit -m 'verify the hooks'", "gh pr view 123",
     "git commit -m 'remove force flag'", "cat README.md", "rm build/output.txt", "grep -rn shutdown src/",
     "git branch -d merged-feature", "delete_user() { echo; }", "npm run format", "git checkout main", "git checkout .gitignore", "kill 1234", "npm run publish:docs",
   ];
@@ -259,11 +260,13 @@ test("evaluateAction escalates destructive patterns to confirm even before the j
   assert.ok(verdict.judgment);
 });
 
-test("evaluateAction sends named state fields and three questions", async () => {
+test("evaluateAction sends named state fields and the base questions; `visible` joins for commands only", async () => {
   const j = judge(0.2, 0.1);
   await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests and fix failures" }, { config: defaultConfig().action, judge: j });
   const request = j.calls[0] as { state: Record<string, unknown>; questions: Record<string, { type: string }> };
-  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "mutates", "off_task", "scope"]);
+  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "visible"]);
+  await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "x" }, cwd, task: "t" }, { config: defaultConfig().action, judge: j });
+  assert.ok(!("visible" in (j.calls[1] as { questions: object }).questions), "a write is never visible outside the working tree");
   assert.equal(request.questions.irreversible?.type, "noul");
   assert.equal(request.questions.scope?.type, "choice");
   assert.equal(request.state.task, "Run the tests and fix failures");
@@ -365,7 +368,7 @@ test("slop questions join the write/edit request only, score per symptom, and ne
   assert.match(formatVerdict(write), /slop: stub 0\.95, hedging 0\.80/);
 
   const bash = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope"], "no slop questions for bash");
+  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "visible"], "no slop questions for bash");
   assert.equal(bash.slop, undefined);
 
   const clean = await evaluateAction({ tool: "edit", input: { path: join(cwd, "a.ts"), edits: [{ oldText: "a", newText: "b" }] }, cwd, task: "rename" }, { config: config.action, judge: withSlop(0.1, 0.1, {}), slop: config.slop });
@@ -437,7 +440,7 @@ test("the regret question rides the request with last turn's allowed calls; a lo
   assert.equal(verdict.level, "allow", "regret labels earlier calls; it never changes this verdict");
   assert.equal(verdict.judgment?.regretted, 0.9);
   assert.equal(verdict.judgment?.regretTarget, "a2");
-  assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "regret_target", "regretted", "scope"]);
+  assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "regret_target", "regretted", "scope", "visible"]);
 });
 
 test("the agent's plan travels with the request and is judged for intent mismatch; an empty plan asks nothing", async () => {
@@ -488,6 +491,36 @@ test("the agent's plan travels with the request and is judged for intent mismatc
   const offline = await evaluateAction({ tool: "bash", input: { command: "rm -rf build" }, cwd, task: "clean the build", plan: "Removing build/." }, { config: config.action });
   assert.equal(offline.plan, "Removing build/.", "pattern-only verdicts keep the plan for the trace");
   assert.equal(offline.judgment, undefined);
+});
+
+test("a visible action (commit, push, merge, launch) needs less plan mismatch to be steered than a file edit", async () => {
+  const config = defaultConfig().action;
+  const withVisible = (mismatch: number, visible: number): Judge => ({
+    async evaluate(request) {
+      const base = answers(0.1, 0.1, "expected_step", 0.9, 0.9) as { answers: Record<string, unknown> };
+      const ids = Object.keys((request as { questions: object }).questions);
+      if (ids.includes("intent_mismatch")) base.answers.intent_mismatch = { type: "noul", noul: mismatch };
+      if (ids.includes("visible")) base.answers.visible = { type: "noul", noul: visible };
+      return base as never;
+    },
+  });
+  const call = { tool: "bash", input: { command: "gh pr ready 12 && git push origin feature" }, cwd, task: "get the PR ready", plan: "I will run the tests once more before touching the PR." };
+  const drift = await evaluateAction(call, { config, judge: withVisible(0.83, 0.96) });
+  assert.equal(drift.intentMismatch, true, "0.83 is under the 0.9 default, but the action is visible");
+  assert.equal(drift.judgment?.visible, 0.96);
+  assert.match(drift.reasons.join("; "), /intent mismatch 0\.83 on a visible action \(0\.96; a commit, push, merge, publish, or launch the plan did not describe\)/);
+  assert.match(intentSteer(drift), /and its effect is visible outside the working tree/);
+  assert.match(formatVerdict(drift), /off plan · warn$/);
+  const quiet = await evaluateAction(call, { config, judge: withVisible(0.83, 0.2) });
+  assert.equal(quiet.intentMismatch, undefined, "the same mismatch on an action nobody else sees is below the bar");
+  assert.equal(quiet.level, "allow");
+  const low = await evaluateAction(call, { config, judge: withVisible(0.7, 0.96) });
+  assert.equal(low.intentMismatch, undefined, "visible alone is not a reason: 0.7 is under visibleMismatch");
+  const tuned = await evaluateAction(call, { config: { ...config, visibleMismatch: 0.6 }, judge: withVisible(0.7, 0.96) });
+  assert.equal(tuned.intentMismatch, true);
+  const write = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "x" }, cwd, task: "t", plan: "reading first" }, { config, judge: withVisible(0.83, 0.99) });
+  assert.equal(write.judgment?.visible, undefined, "writes are never asked");
+  assert.equal(write.intentMismatch, undefined);
 });
 
 test("textApproves is a conservative offline stand-in", () => {

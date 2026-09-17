@@ -30,6 +30,7 @@ export interface CallScores {
   mutates?: number;
   approved?: number;
   intentMismatch?: number;
+  visible?: number;
   securityRisk?: number;
 }
 
@@ -87,6 +88,7 @@ function scoresOf(verdict: Verdict): CallScores | undefined {
   if (judgment.mutates !== undefined) scores.mutates = judgment.mutates;
   if (judgment.approved !== undefined) scores.approved = judgment.approved;
   if (judgment.intentMismatch !== undefined) scores.intentMismatch = judgment.intentMismatch;
+  if (judgment.visible !== undefined) scores.visible = judgment.visible;
   if (judgment.securityRisk !== undefined) scores.securityRisk = judgment.securityRisk;
   return scores;
 }
