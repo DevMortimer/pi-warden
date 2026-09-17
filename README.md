@@ -20,7 +20,7 @@ Default configs and a starter rules file are in [`examples/`](examples/).
 | **Runaway** | the reply stream | stops a reply that repeats the same block over and over (code only, no request) |
 | **Done-check** | the final message | catches "done" claims after code changes when no test, build, or lint passed |
 | **Context saver** | large or repeated tool output | keeps the exact lines that matter, stores the rest in a file, points recalls at a search |
-| **Notifications** | moments that need you | desktop notification for a held call, a confirm dialog, a runaway stop |
+| **Notifications** (opt-in) | moments that need you | desktop notification for a held call, a confirm dialog, a runaway stop |
 
 Every verdict lands on a status line above the editor. Click it (fullscreen mode), press `ctrl+shift+w`, or run `/warden trace` for a live sidebar with the scores, the reasons, and exactly what the agent was told.
 
@@ -158,7 +158,7 @@ Set `context.enabled: false` to turn it off. Full-output files can contain secre
 
 ### Desktop notifications
 
-A held call the agent will ask you about, a confirm dialog waiting for an answer, and a runaway stop reach the desktop. macOS uses `osascript`; Linux tries `notify-send`, `dunstify`, `gdbus`, `kdialog`, `zenity`, then `powershell.exe` for WSL; Windows shows a toast through PowerShell. Interactive sessions only, one notification per `cooldownMs` (10 s), the reason but never the command. `"notify": { "enabled": false }` turns it off; `"command": ["curl", "-d", "{body}", "https://ntfy.sh/your-topic"]` in the user file replaces the desktop tool with your own relay (no shell; `{title}` and `{body}` are replaced and set as `PI_WARDEN_TITLE` / `PI_WARDEN_BODY`). A project file may switch notifications off but never names a command.
+Off by default. With `"notify": { "enabled": true }` in your config, a held call the agent will ask you about, a confirm dialog waiting for an answer, and a runaway stop reach the desktop. macOS uses `osascript`; Linux tries `notify-send`, `dunstify`, `gdbus`, `kdialog`, `zenity`, then `powershell.exe` for WSL; Windows shows a toast through PowerShell. Interactive sessions only, one notification per `cooldownMs` (10 s), the reason but never the command. `"command": ["curl", "-d", "{body}", "https://ntfy.sh/your-topic"]` in the user file replaces the desktop tool with your own relay (no shell; `{title}` and `{body}` are replaced and set as `PI_WARDEN_TITLE` / `PI_WARDEN_BODY`). A project file may switch notifications off but never names a command.
 
 ### Steer messages
 
@@ -239,7 +239,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
   "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7 },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
-  "notify": { "enabled": true, "cooldownMs": 10000, "command": [] },
+  "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
   "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "steerVisible": false
 }

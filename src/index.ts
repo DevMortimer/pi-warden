@@ -15,7 +15,7 @@ export { formatExcerpt, formatQuestion } from "./excerpt.js";
 export type { OutputFormat } from "./excerpt.js";
 export { detectSearchTool, recallInstruction, classifyRecall } from "./recall.js";
 export type { SearchTool } from "./recall.js";
-export { redact } from "./redact.js";
+export { redact, findSecrets, looksLikeSecretValue, secretFingerprint } from "./redact.js";
 export { detectNotifier, notifierCommand, sendNotification, candidates as notifierCandidates, clipBody } from "./notify.js";
 export type { NotifierName, NotifierTarget, Notification, NotifierCommand, Runner } from "./notify.js";
 export { RunawayMonitor, repeatedBlock, repeatedTail, findRepeats, runawayNudge, formatRunaway, BLOCK_MIN_CHARS, PHRASE_CHARS, CHECK_EVERY } from "./runaway.js";

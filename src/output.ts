@@ -10,7 +10,7 @@ import type { OutputFormat } from "./excerpt.js";
 import type { TaskMessage } from "./guard.js";
 import { askJev } from "./jev.js";
 import type { Judge } from "./jev.js";
-import { redact } from "./redact.js";
+import { findSecrets, redact, secretFingerprint } from "./redact.js";
 
 export type Retention = "all" | "errors_and_summary" | "summary_only";
 
@@ -54,7 +54,10 @@ export function buildOutputRequest(tool: string, text: string, task: string | un
 }
 
 export interface OutputVerdict {
+  /** True when the output carries credential-shaped values (not names of credentials); see findSecrets. */
   secret: boolean;
+  /** Stable id of the set of secrets found, so the same secret seen again in a session is noted once. */
+  secretId?: string;
   suspicious: boolean;
   retention: Retention;
   /** Set when Jev named a known output format with at least `context.formatConfidence`; drives the parser choice. */
@@ -81,7 +84,9 @@ export interface OutputOptions {
 }
 
 export async function evaluateOutput(tool: string, text: string, task: string | undefined, options: OutputOptions): Promise<OutputVerdict> {
-  const verdict: OutputVerdict = { secret: options.security.enabled && redact(text) !== text, suspicious: false, retention: "all" };
+  const secrets = options.security.enabled ? findSecrets(text) : [];
+  const verdict: OutputVerdict = { secret: secrets.length > 0, suspicious: false, retention: "all" };
+  if (secrets.length) verdict.secretId = secretFingerprint(secrets);
   const contentTool = tool.startsWith("mcp") || /(?:^|_)(?:read|fetch_content|fetch_and_index|web_search|search|search_code|source_check|search_graph|query_graph|trace_path|get_architecture|get_code_snippet|get_search_content)$/.test(tool);
   const security = options.security.enabled && (contentTool || text.length >= 2048);
   const compress = options.context.enabled && options.compressible !== false && text.length >= options.context.tailMinChars;

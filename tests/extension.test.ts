@@ -89,11 +89,11 @@ const newPrompt = (text: string, ctx = context()) => { prompt = text; return fir
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
 /** The hold log is written without blocking the hook; a test that reads it waits for the expected number of lines. */
-const readLog = async (path: string, lines: number): Promise<Record<string, unknown>[]> => {
+const readLog = async (path: string, lines: number, settled = true): Promise<Record<string, unknown>[]> => {
   for (let attempt = 0; attempt < 200; attempt++) {
     const text = await readFile(path, "utf8").catch(() => "");
     const parsed = text.trimEnd().split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
-    if (parsed.length === lines && parsed.every(record => record.outcome !== "pending")) return parsed;
+    if (parsed.length === lines && (!settled || parsed.every(record => record.outcome !== "pending"))) return parsed;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error(`log at ${path} did not reach ${lines} labelled lines`);
@@ -281,8 +281,20 @@ test("secret warnings work offline; disabled output guards and failed requests p
   const result = await toolResult("read", {}, "TOKEN=sk-synthetic-0123456789abcdef", false) as { content: Array<{ text: string }> };
   assert.match(result.content[0]!.text, /do not echo or commit/);
   assert.equal(networkCalls, 0);
+  assert.equal(sentMessages.filter(sent => /credentials/.test(sent.message.content)).length, 1, "one steer");
   await runCommand("trace", context({ hasUI: false }));
   assert.ok(!sentMessages.at(-1)!.message.content.includes("sk-synthetic"), "trace is redacted");
+  // The same secret again, through another tool: no banner and no steer, one trace line.
+  sentMessages.length = 0;
+  assert.equal(await toolResult("bash", { command: "cat .env" }, "export TOKEN=sk-synthetic-0123456789abcdef", false), undefined, "content untouched");
+  assert.equal(sentMessages.length, 0);
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /possible credentials \(seen before\)/);
+  // A different secret is announced.
+  const other = await toolResult("read", {}, "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP", false) as { content: Array<{ text: string }> };
+  assert.match(other.content[0]!.text, /do not echo or commit/);
+  // Talk about credentials is not a credential.
+  assert.equal(await toolResult("read", { path: "src/output.ts" }, "export interface OutputVerdict {\n  secret: boolean;\n  token: string;\n}\nconst savedKey = process.env.TYPESAFE_API_KEY;", false), undefined);
   await writeFile(configPath(), JSON.stringify({ typesafe: true, security: { enabled: false }, context: { enabled: false } }));
   assert.equal(await toolResult("read", {}, "TOKEN=sk-synthetic-0123456789abcdef", false), undefined);
   await grantConsent();
@@ -438,7 +450,7 @@ test("the agent's plan comes from the message that makes the call, falls back to
   assert.match(status, /1 off plan/);
   assert.match(status, /intent mismatch 0\.9;/);
   const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
-  const lines = (await readFile(logPath, "utf8")).trimEnd().split("\n").map(text => JSON.parse(text) as Record<string, unknown>);
+  const lines = await readLog(logPath, 3, false);
   assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined]], "planChars says how often the agent called without a word");
 });
 
@@ -897,7 +909,14 @@ test("desktop notifications: a hold, a confirm dialog, and a runaway stop each c
     }
     return (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean);
   };
+  // Off by default: a hold with a command configured but no `enabled: true` reaches nobody.
   await writeFile(configPath(), JSON.stringify({ notify: { command, cooldownMs: 0 } }));
+  await sessionStart();
+  await newPrompt("clean up");
+  assert.equal((await toolCall("bash", forcePush))?.block, true);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal((await lines(1)).length, 0, "notifications are opt-in");
+  await writeFile(configPath(), JSON.stringify({ notify: { enabled: true, command, cooldownMs: 0 } }));
   await sessionStart();
   await newPrompt("clean up");
   const held = await toolCall("bash", forcePush);
@@ -928,7 +947,7 @@ test("desktop notifications: a hold, a confirm dialog, and a runaway stop each c
   assert.match(rows[2]!, /Runaway stopped: the same text block repeated \d+ times\. The agent gets one recovery turn\./);
 
   // Cooldown: sibling holds in one turn produce one notification.
-  await writeFile(configPath(), JSON.stringify({ notify: { command, cooldownMs: 60_000 } }));
+  await writeFile(configPath(), JSON.stringify({ notify: { enabled: true, command, cooldownMs: 60_000 } }));
   await sessionStart();
   await newPrompt("clean up again");
   await toolCall("bash", forcePush);

@@ -7,7 +7,7 @@ import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
 import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerReason, stripDataText, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
-import { redact } from "../src/redact.js";
+import { findSecrets, looksLikeSecretValue, redact, secretFingerprint } from "../src/redact.js";
 
 let cwd: string;
 before(async () => {
@@ -83,6 +83,26 @@ test("redact removes common credential shapes and keeps the rest", () => {
   assert.ok(out.includes("https://"));
   assert.ok(out.includes("[redacted]"));
   assert.equal(redact("ls -la"), "ls -la");
+});
+
+test("findSecrets needs a value shape: names, types, placeholders, and references to where a secret lives are not credentials", () => {
+  const talk = [
+    "secret: boolean;", "const savedKey = process.env.TYPESAFE_API_KEY;", "TOKEN=${GITHUB_TOKEN}", "password: <your password>", "api_key: string", "token=$TOKEN",
+    "export TYPESAFE_API_KEY", "resolveApiKey(): key from TYPESAFE_API_KEY", "password = 'changeme'", "Authorization: Bearer <token>", "credentials: undefined",
+    "secret_key=[redacted]", "client_secret: os.environ['CLIENT_SECRET']", "token: synthetic-secret", "grep -n 'secret\\|SECRET\\|credential' src/output.ts", "passwordField = true",
+  ];
+  for (const text of talk) assert.deepEqual(findSecrets(text), [], text);
+  const real = [
+    "TOKEN=sk-synthetic-0123456789abcdef", "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGVzdHNpZ25hdHVyZTEyMw", "https://user:Pa55w0rd-x@example.com/db",
+    "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP", "password: hunter2hunter2X9", "api_key = 'a1b2c3d4e5f6g7h8'", "ghp_0123456789abcdefghijklmnopqrstuvwxyz", "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----",
+  ];
+  for (const text of real) assert.ok(findSecrets(text).length >= 1, text);
+  assert.deepEqual(findSecrets("TOKEN=sk-synthetic-0123456789abcdef and again TOKEN=sk-synthetic-0123456789abcdef"), ["sk-synthetic-0123456789abcdef"], "deduplicated");
+  assert.equal(secretFingerprint(["b", "a"]), secretFingerprint(["a", "b"]), "order does not matter");
+  assert.equal(secretFingerprint(["a"]).length, 12);
+  assert.ok(looksLikeSecretValue("a1b2c3d4e5") && !looksLikeSecretValue("abcdefgh") && !looksLikeSecretValue("12345678") && !looksLikeSecretValue("SOME_ENV_NAME") && !looksLikeSecretValue("someCamelCase"));
+  // Redaction stays broad: text that only talks about a secret is still scrubbed before it leaves the machine.
+  assert.equal(redact("secret: boolean;"), "secret: [redacted];");
 });
 
 test("matchPatterns flags destructive shell commands", () => {

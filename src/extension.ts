@@ -189,6 +189,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
+  // Secrets already announced this session, by fingerprint: the same key read twice earns one banner and one steer.
+  const secretsSeen = new Set<string>();
   const runaway = new RunawayMonitor();
   // Runs stopped by the runaway guard for the current user prompt; the first one gets a recovery turn, later ones wait for the user.
   let runawayStops = 0;
@@ -295,6 +297,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     doneNudged = false;
     prose.reset();
     ledger.reset();
+    secretsSeen.clear();
     runaway.reset();
     runawayStops = 0;
     pendingRunaway = undefined;
@@ -508,7 +511,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.signal?.aborted) return;
     if (output.error) noteError(ctx, output.error, output.errorCode);
     let content = event.content;
-    const notice = securityNotice(output);
+    // A secret the agent has already been warned about this session is traced, not announced again.
+    const secretRepeat = output.secret && output.secretId !== undefined && secretsSeen.has(output.secretId);
+    if (output.secret && output.secretId !== undefined) secretsSeen.add(output.secretId);
+    const notice = securityNotice(secretRepeat ? { ...output, secret: false } : output);
+    if (secretRepeat && !output.suspicious) {
+      record(ctx, config, "security", renderTemplate(config.widget.security, { tool: event.toolName, injection: output.injection?.toFixed(2), exfiltration: output.exfiltration?.toFixed(2), status: "possible credentials (seen before)" }), [
+        `the same credential-shaped value${output.secretId ? ` (${output.secretId})` : ""} was already announced this session; no banner or steer this time`,
+      ]);
+    }
     const recallTool = await (searchTool ??= detectSearchTool(config.context.recallTool));
     let storedPath: string | undefined;
     if (earlier && key) {
@@ -672,7 +683,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             formatLedger(ledger.snapshot()),
             `${formatHolds(holds.snapshot(), config.action.feedbackLog ? holdLog?.path : undefined)}${holdLog?.lastFailure ? ` Log write failed: ${holdLog.lastFailure}.` : ""}`,
             `Rules: ${config.rules.enabled ? `${rulesGuard.describe(ctx.cwd, config.rules)}${Object.keys(config.rules.sensitivePaths).length ? `; ${Object.keys(config.rules.sensitivePaths).length} sensitive path${Object.keys(config.rules.sensitivePaths).length === 1 ? "" : "s"}` : ""}` : "off"}.`,
-            `Desktop notifications: ${config.notify.enabled ? `on (${config.notify.command.length ? `command ${config.notify.command[0]}` : (await (notifier ??= detectNotifier())) ?? "no notifier found on this machine"}; cooldown ${config.notify.cooldownMs} ms)` : "off"}.`,
+            `Desktop notifications: ${config.notify.enabled ? `on (${config.notify.command.length ? `command ${config.notify.command[0]}` : (await (notifier ??= detectNotifier())) ?? "no notifier found on this machine"}; cooldown ${config.notify.cooldownMs} ms)` : "off (\"notify\": { \"enabled\": true } in the config turns them on)"}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
             `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode; each toggles the sidebar). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,

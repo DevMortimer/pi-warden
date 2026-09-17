@@ -128,7 +128,7 @@ export interface RunawayConfig {
 }
 
 export interface NotifyConfig {
-  /** Desktop notification when the agent needs you: a held call it will ask about, a confirm dialog, a stopped runaway. */
+  /** Desktop notification when the agent needs you: a held call it will ask about, a confirm dialog, a stopped runaway. Off by default; opt in per user or project. */
   enabled: boolean;
   /** Sibling holds in one turn produce one notification; a second within this many milliseconds is skipped. */
   cooldownMs: number;
@@ -207,7 +207,7 @@ export function defaultConfig(): WardenConfig {
     rules: { enabled: true, threshold: 0.7, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7 },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
-    notify: { enabled: true, cooldownMs: 10000, command: [] },
+    notify: { enabled: false, cooldownMs: 10000, command: [] },
     widget: defaultWidgetConfig(),
     steerVisible: false,
   };
