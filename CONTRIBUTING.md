@@ -17,17 +17,17 @@ Thank you. Complaints are as useful as code: a steer that annoyed you is calibra
 
 ## Rules the code keeps
 
-- **A new Jev question ships with a measurement.** Add it to `scripts/action-candidates.mjs` (or the guard's `*-cases.mjs` set), run it, and put the numbers in the PR and the README's Calibration section. An unmeasured question can be merged as `extra` (recorded, never acted on), not as a rule. See `README.md` → Calibration for the method.
+- **A new Jev question ships with a measurement.** Add it to `scripts/action-candidates.mjs` (or the guard's `*-cases.mjs` set), run it, and put the numbers in the PR and the Calibration section of `docs/guards.md`. An unmeasured question can be merged as `extra` (recorded, never acted on), not as a rule. See `docs/guards.md` → Calibration for the method.
 - **Steers never hold.** Only irreversible actions and destructive patterns block a call. Off-task, plan mismatch, slop, rules, and security notices tell the agent and let the call run.
 - **Approval comes from the user's message only.** Assistant text explains a call; it cannot approve one.
-- **Nothing that leaves the machine or lands in the trace carries a command, a path the user did not show, or a secret.** `redact()` before sending; reasons name patterns and scores. The README's Data handling section must stay true after your change.
+- **Nothing that leaves the machine or lands in the trace carries a command, a path the user did not show, or a secret.** `redact()` before sending; reasons name patterns and scores. `docs/data-handling.md` must stay true after your change.
 - **Fail open, say so.** A TypeSafe error allows the call with a warning (`failOpen`); it never crashes a hook.
-- **Config is additive.** New keys get a default in `defaultConfig()`, a fallback in `shape.ts`, and one line in the README.
+- **Config is additive.** New keys get a default in `defaultConfig()`, a fallback in `shape.ts`, and one line in `docs/configuration.md`.
 
 ## Commits and pull requests
 
 - One change per commit, with a message that says what changed and why. No tool or AI attribution lines.
-- Keep a PR to one topic. Update the README in the same PR when behaviour or config changes.
+- Keep a PR to one topic. Update the README or the matching `docs/` file in the same PR when behaviour or config changes.
 - Releases are cut by the maintainer, about weekly; do not bump `package.json` in a PR.
 
 ## Where to ask
