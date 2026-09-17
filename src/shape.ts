@@ -3,7 +3,7 @@ import type { WardenConfig } from "./config.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 5;
+export const EXPECTED_SCHEMA = 6;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -44,7 +44,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1 }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
-    widget: section("widget", { ...off, placement: "aboveEditor", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "" }),
+    subagent: section("subagent", { ...off, wake: false, threshold: 1, cooldownMs: 0 }),
+    widget: section("widget", { ...off, placement: "aboveEditor", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
   };
   if (typeof config.slop.prose !== "object" || config.slop.prose === null) {
     missing.push("slop.prose");
@@ -65,6 +66,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   // The runaway guard added its template later than the other sections; an older widget section renders the default line.
   if (typeof config.widget.runaway !== "string") config.widget = { ...config.widget, runaway: DEFAULT_TEMPLATES.runaway };
   if (typeof config.widget.rules !== "string") config.widget = { ...config.widget, rules: DEFAULT_TEMPLATES.rules };
+  if (typeof config.widget.subagent !== "string") config.widget = { ...config.widget, subagent: DEFAULT_TEMPLATES.subagent };
   return { config, missing };
 }
 

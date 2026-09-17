@@ -2,7 +2,7 @@
 
 Every guard, what it looks at, the questions it asks Jev, the thresholds, and the numbers behind them. The [README](../README.md) has the short version. Defaults live in [configuration.md](configuration.md); what leaves the machine is in [data-handling.md](data-handling.md).
 
-Contents: [Action guard](#action-guard) · [Calibration](#calibration) · [Rules](#rules) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Context saver](#context-saver) · [Desktop notifications](#desktop-notifications) · [Steer messages](#steer-messages)
+Contents: [Action guard](#action-guard) · [Why Jev](#why-jev-and-not-a-second-llm-call) · [Calibration](#calibration) · [Rules](#rules) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Context saver](#context-saver) · [Subagent triage](#subagent-triage) · [Desktop notifications](#desktop-notifications) · [Steer messages](#steer-messages)
 
 ## Action guard
 
@@ -24,7 +24,13 @@ The action guard receives your latest message plus up to eight earlier user and 
 
 **Hold feedback.** What you do next labels each judgment, so hold precision is measured on your sessions rather than assumed. A hold your reply releases (or the confirm dialog allows) was a false positive; a hold you decline, or that nobody approves after you replied and the next turn ended, stood. An allowed call your next message tells the agent to stop, undo, or revert was a miss: one `regretted` question rides the first action request after your reply, with the redacted summaries of last turn's allowed calls (a locator names the one when there are several); offline, a stop-word heuristic stands in. `/warden status` shows the counts and the precision, the trace entry of each call gets its outcome, and every judged call is written with its scores and outcome to an owner-only per-session file under `~/.pi/agent/pi-warden/holds/` (tool, pattern ids, scores, level, mode, outcome; never the command). `"action": { "feedbackLog": false }` keeps the counts and skips the file.
 
-### Calibration
+### Why Jev and not a second LLM call
+
+Agents pick the next command well and notice badly when that command is out of proportion to the request. A pattern list catches `rm -rf /`; it cannot tell `db:reset` after "reset the database" from `db:reset` after "add a column". A generative model can, but a second LLM call per tool call is slow and expensive. Jev is a System One model: it returns calibrated probabilities to fixed questions in about a quarter of a second, for a fraction of a cent, which is cheap enough to sit in front of every guarded call. Three rules follow from that: patterns set the floor and Jev can only raise it, the agent's plan can add a nudge but never remove a hold, and the LLM is never asked to judge itself.
+
+One request stays well inside Jev's context window. The caps do the work: rule text is condensed to `rules.maxChars` (8,000 characters), task context is at most 8 messages of 750 redacted characters, an output sample is capped at 6,000 characters, and a written-content sample at `rules.maxChars`. The largest request, a rules check on a big edit with 8 rules, lands around 4 to 5 thousand tokens against a 32k window.
+
+## Calibration
 
 `node scripts/calibrate-action.mjs --all` replays every guarded call in your recorded Pi sessions through the guard (one request per call) and asks Jev, once per turn, whether your next message regrets one of the calls that ran, approves each held call, and how it receives the turn (continues, corrects, rejects, unrelated). Run on 321 sessions from this machine (1,085 labelled turns, 17,160 guarded calls, 14,903 judged):
 
@@ -33,6 +39,21 @@ The action guard receives your latest message plus up to eight earlier user and 
 - The intent steer earned its threshold here. At 0.8 it fires on 11% of calls that can change something and 14% of those sit in a turn the user rejects (base rate 5%); at 0.9 it fires on 4% and 33% of those are in a rejected turn, 54% in one the user rejects or corrects (base rate 24%). The default is 0.9.
 - A second pass asked four candidate questions on the same calls (`scripts/action-candidates.mjs`, `--extra`). None separates rejected turns on its own: "would a careful engineer ask first", "is this unrequested", "did the user ask to pause", and "is the effect visible outside the working tree" all sit at the 4 to 5% base rate. `visible` has the best recall on regret (AUC 0.82, 10 of 19 regretted calls) but a commit or push is usually what was asked. Paired with the plan it works: `visible >= 0.8` and `intent_mismatch >= 0.8` flags 1.1% of calls with 18% in a rejected turn, so that pair steers at `visibleMismatch` 0.8. Two deterministic patterns came from the regretted list: a git command with hooks or signing switched off, and `gh pr merge`.
 - Of 42 holds pi-warden made in those sessions, the user's next message approved 5.
+
+### Live: what fired, and what the agent did next
+
+The replay measures the action guard's decisions against your reactions. It cannot measure the other half: what the agent does with a steer. For that, 67 steer messages from two days of live work on one production repo (19 sessions, 2026-09-16 to 09-17), read back from the recorded session logs:
+
+| Guard | Steers | What the session shows next |
+| --- | --- | --- |
+| Rules | 2 | Both fixed by a follow-up edit in the same session: **18 s** and **29 s** after the steer |
+| Slop | 3 | 1 fixed in **18 s**; 2 were `/tmp` throwaway scripts the agent never touched again |
+| Security notes | 52 | 51 credential warnings and 1 prompt-injection note; no secret reached a reply or a commit |
+| Action drift | 5 | 4 intent mismatches, 1 off-task call; the agent re-stated or corrected its plan mid-run |
+| Reply slop | 2 | Filler dropped in the next reply |
+| Context saver | 3 | Agent worked from the stored excerpt; an identical duplicate output was skipped |
+
+No file needed the same rule steer twice in the window. The hold logs from one of those days hold 1,042 guarded action decisions: 948 allow, 87 warn, 7 held. Of the 7 holds the agent re-planned on its own after 4, the owner approved 2, and 1 stayed pending. The 51 credential warnings were almost all fixture-shaped values read from a test file; since 0.14 those are traced in the widget instead of steered, which replays the 50-run deepseek batch at 2 credential steers instead of 30 (`node scripts/credential-replay.mjs --report <batch>`).
 
 It is not cheap: the two full runs above made about 32,000 requests and 80M input tokens together (about $3.40 at the listed rate), because every replay carries the prompt, eight context messages, the plan, the action, and the questions. `--dry-run` prints the request count, token estimate, and cost first; a run over 2,000 requests stops there unless you add `--yes`. The output stays under `.local/calibration/` (owner-only, never committed); `--report FILE` recomputes the tables without requests, `--project DIR` limits the run to one project's sessions.
 
@@ -80,6 +101,10 @@ Written code gets a `security_risk` question on the action request: hardcoded cr
 
 Tool output from content-bearing tools (`read`, fetch and search tools, named MCP equivalents) is checked for instructions that redirect the assistant or ask for private data; other tools from 2048 characters. Jev receives a redacted 6000-character head/tail sample. A score at or above `security.threshold` wraps the text in an untrusted-data notice and steers the agent. Credential-shape checks work offline and warn not to echo or commit possible secrets. This is advisory, not a sandbox.
 
+**Stand-ins are traced, not announced.** A credential-shaped value that is a stand-in rather than a credential (a name that says so, such as `devtok_` or `sk-synthetic-`; a documented dummy such as `AKIAIOSFODNN7EXAMPLE`; an example body such as `sk-live-abcdefghij123456` or `0123456789abcdef`) earns one trace line per session under `widget.security` and nothing else: no banner in the tool result, no steer, no context growth. Real-shaped values keep the full treatment, announced once per value per session (`secretIds` in `src/redact.ts`, and `syntheticish` decides which is which). The measurement that forced this: 30 of the 34 steers in the deepseek benchmark batch were two fixture tokens read from the test file the agent was editing.
+
+The classifier is a value judgement, so the stand-in rule is deliberately narrow: named dummies (`devtok_`, `sk-synthetic-`, `EXAMPLE`), a six-character ascending or descending run, a repeated unit, or a descriptive segment such as `test`, `demo`, `fake`, `placeholder`. A credential-shaped value whose segments only happen to name credentials (`api_key_9f8e7d6c5b4a3210`, `..._token` bodies) is not demoted, because that would silence announcements for real keys whose names describe them.
+
 ## Stuck
 
 Keeps the last 12 tool results for the current prompt. When the latest result failed and at least 3 failures have accumulated, exact repeats are caught offline (same call, same output with timings and addresses normalised). Otherwise one request judges the sequence: `same_strategy`, `approach_change` (identical / cosmetic / meaningfully different), `progress`. Same strategy at 0.7 counts as stuck: you get a notification and the agent gets a steer asking for a new hypothesis or a blocker report. At most one check per 3 results. In the smoke run, "investigating between failures" scored 0.32 and "flailing" 0.93.
@@ -103,10 +128,36 @@ Only the newest tool result is ever changed, before it enters the session, so th
 
 Set `context.enabled: false` to turn it off. Full-output files can contain secrets and stay in the OS temporary directory until removed.
 
+## Subagent triage
+
+Async subagents report as custom messages (`subagent-notify`, `subagent-incremental-child-notify`, and the control and supervisor variants), and Pi appends each one to the main agent's context itself. warden cannot hold those messages back, so the decision is narrower: does this report need the agent awake? The scan runs on `agent_settled`, when Pi will not continue on its own, which is the one moment a wake costs nothing.
+
+1. **Offline, in code.** An incremental progress notify is silent. A report that names no failure, blocker, or question is silent. Both cost no request.
+2. **Jev, on trouble only.** A report that names a failure, a stop, a timeout, or something only the agent or the user can decide goes to one `wake` question with a bounded, redacted sample (1500 characters of head, 500 of tail; status lines live at the end). At `subagent.threshold` (0.8) the agent is woken.
+3. **One batched wake per window.** `subagent.cooldownMs` (120 s) allows one wake; reports that arrive inside the window wait and ride along with the next one. The wake names which reports need attention and says the full reports are already in context. It is a pointer, never a summary, so it does not double the context it was meant to protect.
+4. **Failures stay quiet.** If TypeSafe cannot answer, nothing is sent: the report is in the agent's context anyway, and a wake is the interruption. `subagent.enabled: false` ignores reports entirely; `subagent.wake: false` keeps the offline layer, which never wakes.
+
+`/warden status` shows `woken/total` for the session, and each report gets one trace line (`silent` or `wake`) with the reason. Reports are triaged once per session entry id.
+
+**Measurement** (`npm run test:live subagent`, 8 labelled reports, one request each). After the question was sharpened to name a child asking for a decision, all 8 matched their label:
+
+| Report | P(wake) | Decision at 0.8 |
+| --- | --- | --- |
+| Incremental progress line | 0.07 | silent |
+| Clean completion | 0.09 | silent |
+| Failure with exit code 1, nothing migrated | 0.81 | wake |
+| Blocked, needs a decision | 0.96 | wake |
+| 3 tests failed on the first run, fixed in the same report | 0.09 | silent |
+| Stopped by the watchdog, no result | 0.87 | wake |
+| Child asks whether to merge or open a PR | 0.87 | wake |
+| Completed, e2e suite skipped (needs Docker) | 0.15 | silent |
+
+The separation is wide except at the point where it matters: a hard failure sits at 0.81, one hundredth above the threshold, so the threshold is doing real work and a failure report is the boundary case to watch. The two discrimination cases (a failure already fixed, a completion with one check skipped) land with the silent group, which is the behaviour that keeps the guard quiet.
+
 ## Desktop notifications
 
 Off by default. With `"notify": { "enabled": true }` in your config, a held call the agent will ask you about, a confirm dialog waiting for an answer, and a runaway stop reach the desktop. macOS uses `osascript`; Linux tries `notify-send`, `dunstify`, `gdbus`, `kdialog`, `zenity`, then `powershell.exe` for WSL; Windows shows a toast through PowerShell. Interactive sessions only, one notification per `cooldownMs` (10 s), the reason but never the command. `"command": ["curl", "-d", "{body}", "https://ntfy.sh/your-topic"]` in the user file replaces the desktop tool with your own relay (no shell; `{title}` and `{body}` are replaced and set as `PI_WARDEN_TITLE` / `PI_WARDEN_BODY`). A project file may switch notifications off but never names a command.
 
 ## Steer messages
 
-Nudges from the rules, slop, stuck, done, and prose guards are custom messages in the agent's context. By default they are hidden from the transcript (`steerVisible: false`); the notification tells you a nudge happened and the trace panel shows the exact text. When the per-session request budget is spent, pi-warden says so once and continues with offline checks.
+Nudges from the rules, slop, stuck, done, prose, security, runaway, and subagent guards are custom messages in the agent's context. By default they are hidden from the transcript (`steerVisible: false`); the notification tells you a nudge happened and the trace panel shows the exact text. `/warden status` counts them per guard (`Steers sent: ...`, see [commands.md](commands.md#steers-sent-per-guard)). When the per-session request budget is spent, pi-warden says so once and continues with offline checks.

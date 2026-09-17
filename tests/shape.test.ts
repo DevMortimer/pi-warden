@@ -24,7 +24,7 @@ test("regression: the live crash shape (slop without prose) and older module sha
   assert.equal(result.config.action.enabled, true, "present sections keep working");
   // The exact expression that threw in Ryan's sessions.
   assert.doesNotThrow(() => result.config.slop.enabled && result.config.slop.prose.enabled && 300 >= result.config.slop.prose.minChars);
-  assert.match(shapeWarning(result.missing, undefined), /security, context, slop\.prose .* schema pre-3, extension expects 5.*restart Pi/);
+  assert.match(shapeWarning(result.missing, undefined), new RegExp(`security, context, slop\\.prose .* schema pre-3, extension expects ${EXPECTED_SCHEMA}.*restart Pi`));
   const empty = completeConfig(undefined);
   assert.ok(empty.missing.length >= 9);
   assert.equal(empty.config.enabled, true);
@@ -55,6 +55,25 @@ test("a 0.8 config module without the rules section disables the rules guard and
   assert.equal(result.config.rules.enabled, false);
   assert.deepEqual(result.config.rules.sensitivePaths, {});
   assert.equal(result.config.widget.rules, defaultConfig().widget.rules);
+});
+
+test("a pre-0.14 config module without the subagent section defers the section and keeps its widget line", async () => {
+  const { guardCurrentSections } = await import("../src/extension.js");
+  const older = defaultConfig() as unknown as Record<string, unknown>;
+  delete older.subagent;
+  const widget = { ...(older.widget as Record<string, unknown>) };
+  delete widget.subagent;
+  older.widget = widget;
+  const complete = completeConfig(older as never);
+  assert.deepEqual(complete.missing, ["subagent"]);
+  assert.equal(complete.config.subagent.enabled, false, "triage is off, not a crash");
+  assert.equal(complete.config.widget.subagent, defaultConfig().widget.subagent);
+  // A stale shape module does not defer the section: the extension guards what it reads itself.
+  const stale = guardCurrentSections({ config: older as never, missing: [] });
+  assert.deepEqual(stale.missing, ["subagent"]);
+  assert.equal(stale.config.subagent.wake, false);
+  assert.doesNotThrow(() => stale.config.subagent.enabled && stale.config.subagent.cooldownMs >= 0);
+  assert.equal(stale.config.widget.subagent, defaultConfig().widget.subagent);
 });
 
 test("regression: the 0.9.0 live crash. A stale shape module returns a config without rules; the extension guards the sections it reads itself", async () => {

@@ -7,7 +7,7 @@ import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
 import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerReason, stripDataText, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
-import { findSecrets, looksLikeSecretValue, redact, secretFingerprint, secretIds } from "../src/redact.js";
+import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
 let cwd: string;
 before(async () => {
@@ -109,6 +109,27 @@ test("findSecrets needs a value shape: names, types, placeholders, and reference
   assert.ok(looksLikeSecretValue("a1b2c3d4e5") && !looksLikeSecretValue("abcdefgh") && !looksLikeSecretValue("12345678") && !looksLikeSecretValue("SOME_ENV_NAME") && !looksLikeSecretValue("someCamelCase"));
   // Redaction stays broad: text that only talks about a secret is still scrubbed before it leaves the machine.
   assert.equal(redact("secret: boolean;"), "secret: [redacted];");
+});
+
+test("syntheticish separates fixture stand-ins from keys, and never hides a real-shaped value", () => {
+  // Fixture and documentation shapes: named stand-ins, example bodies, sequences, and repeats.
+  const standIns = [
+    "devtok_9f8e7d6c5b4a3210", "sk-synthetic-0123456789abcdef", "sk-live-abcdefghij123456", "0123456789abcdef",
+    "AKIAIOSFODNN7EXAMPLE", "example-api-key-1234", "test-token-abcdef123456", "placeholder-value-42", "changeme123",
+    "hunter2hunter2X9", "deadbeefdeadbeef", "sampleSample1234", "abcabcabcabc", "aaaaaaaaaaaa", "fake_client_secret_1",
+  ];
+  for (const value of standIns) assert.ok(syntheticish(value), value);
+  // Real shapes: random-looking bodies keep the full notice, including the token that appeared in an env dump.
+  // A credential-shaped value that merely *talks* about credentials in a segment (`api_key_...`, an `..._token` body)
+  // is not a stand-in either, so the classifier does not demote it.
+  const real = ["9f8e7d6c5b4a3210e1f2a3b4c5d6e7f8", "ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", "AKIA3M7QZ2PRT9LVXW8Y", "Pa55w0rdX9", "a1b2c3d4e5f6g7h8", "api_key_9f8e7d6c5b4a3210", "7f3c9d2b8e1a4c6f2b9d", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGVzdHNpZ25hdHVyZTEyMw"];
+  for (const value of real) assert.ok(!syntheticish(value), value);
+  // Detection stays a value judgment: the pair `findSecrets` returns is split, never filtered away.
+  const found = findSecrets("DEV_TOKEN=devtok_9f8e7d6c5b4a3210\nSUPABASE_ACCESS_TOKEN=9f8e7d6c5b4a3210e1f2a3b4c5d6e7f8");
+  assert.equal(found.length, 2);
+  const { real: keys, synthetic } = partitionSecrets(found);
+  assert.deepEqual(keys, ["9f8e7d6c5b4a3210e1f2a3b4c5d6e7f8"]);
+  assert.deepEqual(synthetic, ["devtok_9f8e7d6c5b4a3210"]);
 });
 
 test("matchPatterns flags destructive shell commands", () => {

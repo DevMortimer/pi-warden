@@ -13,7 +13,8 @@ With consent, requests go to `https://api.typesafe.ai` only.
 | **Stuck** | The last 12 tool calls (300 characters each) with 400-character output tails. |
 | **Done-check and prose** | The agent's final message (2000 and 2500 characters), the run's check commands, the audience description. |
 | **Output checks** | A redacted head/tail sample up to 6000 characters plus size, line counts, and tool name. |
-| **Nothing** | Duplicate detection, the runaway guard, sensitive-path notes, and pattern checks run entirely in code. |
+| **Subagent triage** | Only for a child report that names a failure, a stop, a timeout, or a question (an incremental progress line or a clean completion is answered in code and sends nothing): a redacted 1500-character head plus 500-character tail of the report, the notification type, whether it is an incremental notify, its length, and your latest prompt (1000 characters). |
+| **Nothing** | Duplicate detection, the runaway guard, sensitive-path notes, the offline part of subagent triage, and pattern checks run entirely in code. |
 
 ## What stays on this machine
 

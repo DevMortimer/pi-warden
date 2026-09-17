@@ -6,6 +6,7 @@ import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig, applyUserOverrides, applyProjectOverrides } from "../src/config.js";
 import type { Judge } from "../src/guard.js";
 import { buildOutputRequest, compressOutput, duplicateNote, evaluateOutput, outputKey, saveOutput, securityNotice } from "../src/output.js";
+import { secretIds } from "../src/redact.js";
 
 const options = () => ({ security: defaultConfig().security, context: defaultConfig().context, timeoutMs: 1000 });
 const judge = (injection = 0.1, exfiltration = 0.1, retention = "all", confidence = 0.95): Judge => ({
@@ -29,11 +30,22 @@ test("output config defaults and malformed overrides preserve complete guard sec
 });
 
 test("offline secret hints need no consent; disabled guards neither judge nor warn", async () => {
-  const text = "TOKEN=sk-synthetic-0123456789abcdef";
+  const text = "TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM";
   const result = await evaluateOutput("read", text, undefined, options());
   assert.equal(result.secret, true);
   assert.equal(result.retention, "all");
   assert.match(securityNotice(result)!, /do not echo or commit/i);
+  // A fixture or documentation stand-in is traced, never announced: no banner, no steer.
+  const fixture = await evaluateOutput("read", "TOKEN=sk-synthetic-0123456789abcdef\nDEV_TOKEN=devtok_9f8e7d6c5b4a3210\nSAMPLE=sk-live-abcdefghij123456", undefined, options());
+  assert.equal(fixture.secret, false);
+  assert.equal(securityNotice(fixture), undefined);
+  assert.equal(fixture.syntheticIds?.length, 3);
+  assert.equal(fixture.secretIds, undefined);
+  // A real-shaped value beside a stand-in keeps the notice, and the stand-in does not dilute the per-value ids.
+  const mixed = await evaluateOutput("read", `${text}\nDEV_TOKEN=devtok_9f8e7d6c5b4a3210`, undefined, options());
+  assert.equal(mixed.secret, true);
+  assert.deepEqual(mixed.secretIds, secretIds(["ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM"]));
+  assert.equal(mixed.syntheticIds?.length, 1);
   const disabled = await evaluateOutput("read", text, undefined, { ...options(), security: { enabled: false, threshold: 0.7 }, context: { ...options().context, enabled: false }, judge: { evaluate() { throw new Error("must not call"); } } });
   assert.equal(securityNotice(disabled), undefined);
 });

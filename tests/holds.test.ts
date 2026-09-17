@@ -186,3 +186,16 @@ test("rules verdicts land in records() and the log as tool \"rules\", never as r
   const parsed = lines.map(line => JSON.parse(line) as { tool: string; reasons: string[] });
   assert.ok(parsed.some(r => r.tool === "rules" && r.reasons.includes("No hardcoded secrets 0.88")));
 });
+
+test("reset clears every record, including the rules verdicts, so a new session does not inherit the last one's counts", () => {
+  const ledger = new HoldLedger();
+  ledger.record(verdict({ command: "git push --force origin main" }), { held: true, mode: "steer" });
+  ledger.recordRules({ source: "typesafe", path: "src/x.ts", findings: [{ name: "No hardcoded secrets", violation: 0.88 }] });
+  assert.equal(ledger.snapshot().allowed, 1);
+  assert.equal(ledger.snapshot().holds, 1);
+  ledger.reset();
+  assert.deepEqual(ledger.records(), [], "records from the previous session are gone, not just the tracked ones");
+  assert.deepEqual(ledger.snapshot(), { holds: 0, approved: 0, declined: 0, replanned: 0, awaiting: 0, allowed: 0, regretted: 0, accepted: 0, labels: 0, precision: undefined });
+  // The id counter restarts, so the new session's first record is a1 again and matches the regret target ids.
+  assert.equal(ledger.recordRules({ source: "typesafe", findings: [] }).id, 1);
+});

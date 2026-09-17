@@ -226,6 +226,8 @@ export class HoldLedger {
 
   reset(): void {
     this.tracked.length = 0;
+    // Rules verdicts ride the same log; without this, one session's diagnostics inflate the next session's counts.
+    this.untracked.length = 0;
     this.nextId = 1;
   }
 

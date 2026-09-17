@@ -21,6 +21,6 @@ rules.findings;     // [{ id: "no-console-statements", name, violation: 0.97, bo
 
 What spans calls in a session lives in `ActionGuard` (hold, reply, retry approval, sibling batching) and `RulesGuard` (rule cache, sibling prejudging, repeat counts, sensitive-path notes).
 
-Also exported: `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `describeAction`, `parseRules`, `matchGlob`, `redact`, `formatVerdict`, the question sets, the stuck detector, the runaway guard, the notifier, the done-check, and the config helpers.
+Also exported: `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `describeAction`, `parseRules`, `matchGlob`, `redact`, `syntheticish`, `partitionSecrets`, `formatVerdict`, the question sets, the stuck detector, the runaway guard, the notifier, the done-check, the subagent triage (`newReports`, `triageReport`, `WakePolicy`), and the config helpers.
 
 For the Jev client itself (`createTypeSafe`, `choice`, `score`, `noul`, the key store, the login prompt) see [pi-typesafe](https://github.com/DevMortimer/pi-typesafe#for-extension-authors).

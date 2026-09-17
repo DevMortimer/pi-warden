@@ -181,7 +181,7 @@ async function extractHolds(agentDir) {
       try { out.push(JSON.parse(line)); } catch { /* partial */ }
     }
   }
-  return out.map((r) => ({ tool: r.tool, level: r.level, source: r.source, held: r.held, reasons: r.reasons, outcome: r.outcome, scores: r.scores }));
+  return out.map((r) => ({ tool: r.tool, level: r.level, source: r.source, held: r.held, path: r.path, reasons: r.reasons, planChars: r.planChars, outcome: r.outcome, scores: r.scores }));
 }
 
 /** Steer messages from a saved session jsonl (pi-warden custom messages). */
@@ -297,7 +297,7 @@ async function main() {
   md.push("| Task | Cell | Tests pass/fail | Violations | Steers | Exit | Seconds |");
   md.push("| --- | --- | --- | --- | --- | --- | --- |");
   for (const r of runs) {
-    md.push(`| ${r.task} | ${r.cell} | ${r.testsPass}/${r.testsFail} | ${r.violations.map((v) => v.id).join(", ") || "—"} | ${r.steerCount} | ${r.timedOut ? "timeout" : r.piExit} | ${r.seconds} |`);
+    md.push(`| ${r.task} | ${r.cell} | ${r.testsPass}/${r.testsFail} | ${r.violations.map((v) => v.id).join(", ") || "none"} | ${r.steerCount} | ${r.timedOut ? "timeout" : r.piExit} | ${r.seconds} |`);
   }
   md.push("");
   md.push("## Violation detail");
@@ -305,7 +305,7 @@ async function main() {
   for (const r of runs.filter((r) => r.violations.length)) {
     md.push(`### ${r.task} · ${r.cell} r${r.repeat}`);
     md.push("");
-    for (const v of r.violations) md.push(`- \`${v.id}\` ${v.file}:${v.line} — ${v.excerpt}`);
+    for (const v of r.violations) md.push(`- \`${v.id}\` ${v.file}:${v.line}: ${v.excerpt}`);
     md.push("");
   }
   md.push("Control cell = rules as prose in AGENTS.md. Warden cell = same AGENTS.md plus pi-warden enforcing pi-warden.md. Scoring is mechanical (eval/check.mjs), independent of Jev.");

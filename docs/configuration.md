@@ -46,6 +46,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7 },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
   "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
+  "subagent": { "enabled": true, "wake": true, "threshold": 0.8, "cooldownMs": 120000 },
   "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "steerVisible": false
 }
@@ -72,6 +73,10 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `context.*` | Compression thresholds, retention confidence, duplicate size, recall tool. |
 | `runaway.*` | Repeat counts that abort a reply, minimum size, whether the agent gets one recovery turn. |
 | `notify.*` | Desktop notifications, cooldown, optional relay command (user file only). |
+| `subagent.enabled` | Read async subagent reports at all. `false` ignores them, as before 0.14. |
+| `subagent.wake` | Ask Jev whether a report that names trouble deserves a wake. `false` keeps the offline layer, which never wakes. |
+| `subagent.threshold` | P(report needs the agent awake) that wakes it. Conservative on purpose. |
+| `subagent.cooldownMs` | At most one batched wake per window, so several children finishing together cost one interruption. |
 | `widget.*` | Status line placement, sidebar shortcut and width, per-guard text templates (below). |
 | `steerVisible` | Show steer messages in the transcript instead of only in the trace panel. |
 
@@ -119,7 +124,8 @@ Templates in `config.widget` control the text. Segments are separated by ` · `;
   "prose": "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}",
   "security": "warden · security · {tool} · injection {injection} · exfiltration {exfiltration} · {status}",
   "context": "warden · context · {tool} · {retention} · saved {bytesSaved} bytes",
-  "runaway": "warden · runaway · {kind} · {count}× repeated · {chars} chars · {signal} · {status}"
+  "runaway": "warden · runaway · {kind} · {count}× repeated · {chars} chars · {signal} · {status}",
+  "subagent": "warden · subagent · {agent} · {kind} · {wake} · {status}"
 }
 ```
 
@@ -135,6 +141,7 @@ Tokens per guard:
 | security | `tool injection exfiltration status` |
 | context | `tool retention bytesSaved` |
 | runaway | `kind count chars signal block status time` |
+| subagent | `agent kind wake status time` |
 
 `"enabled": false` hides the line; `"shortcut": ""` disables the keybinding.
 
