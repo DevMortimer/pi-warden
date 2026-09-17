@@ -82,3 +82,8 @@ export function findSecrets(text: string): string[] {
 export function secretFingerprint(secrets: readonly string[]): string {
   return createHash("sha256").update([...secrets].sort().join("\n")).digest("hex").slice(0, 12);
 }
+
+/** One fingerprint per distinct value, so repeats are detectable even when the surrounding set changes. */
+export function secretIds(secrets: readonly string[]): string[] {
+  return [...new Set(secrets)].map((s) => createHash("sha256").update(s).digest("hex").slice(0, 12)).sort();
+}

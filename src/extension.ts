@@ -438,6 +438,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         if (rules.error) noteError(ctx, rules.error, rules.errorCode);
         const told = rules.findings.length ? rulesSteer(rules, rulesGuard.count(rules)) : undefined;
         record(ctx, config, "rules", formatRules(rules, config.widget.rules), rulesDetails(rules, told));
+        holds.recordRules({ source: rules.source, path: rules.path, findings: rules.findings.map(f => ({ name: f.name, violation: f.violation })), ...(rules.error ? { error: rules.error } : {}) });
         if (told) {
           stats.ruleViolations++;
           if (ctx.hasUI) ctx.ui.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
@@ -511,9 +512,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.signal?.aborted) return;
     if (output.error) noteError(ctx, output.error, output.errorCode);
     let content = event.content;
-    // A secret the agent has already been warned about this session is traced, not announced again.
-    const secretRepeat = output.secret && output.secretId !== undefined && secretsSeen.has(output.secretId);
-    if (output.secret && output.secretId !== undefined) secretsSeen.add(output.secretId);
+    // A credential-shaped value the agent has already been warned about this session is traced, not announced again.
+    // Per value, not per set: masking one value or a changed subset must not re-announce the rest.
+    const secretValues = output.secretIds ?? (output.secret && output.secretId !== undefined ? [output.secretId] : []);
+    const unseenSecrets = secretValues.filter((id) => !secretsSeen.has(id));
+    const secretRepeat = output.secret && secretValues.length > 0 && unseenSecrets.length === 0;
+    if (unseenSecrets.length) for (const id of unseenSecrets) secretsSeen.add(id);
     const notice = securityNotice(secretRepeat ? { ...output, secret: false } : output);
     if (secretRepeat && !output.suspicious) {
       record(ctx, config, "security", renderTemplate(config.widget.security, { tool: event.toolName, injection: output.injection?.toFixed(2), exfiltration: output.exfiltration?.toFixed(2), status: "possible credentials (seen before)" }), [

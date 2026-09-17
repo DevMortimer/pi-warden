@@ -7,7 +7,7 @@ import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
 import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerReason, stripDataText, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
-import { findSecrets, looksLikeSecretValue, redact, secretFingerprint } from "../src/redact.js";
+import { findSecrets, looksLikeSecretValue, redact, secretFingerprint, secretIds } from "../src/redact.js";
 
 let cwd: string;
 before(async () => {
@@ -100,6 +100,12 @@ test("findSecrets needs a value shape: names, types, placeholders, and reference
   assert.deepEqual(findSecrets("TOKEN=sk-synthetic-0123456789abcdef and again TOKEN=sk-synthetic-0123456789abcdef"), ["sk-synthetic-0123456789abcdef"], "deduplicated");
   assert.equal(secretFingerprint(["b", "a"]), secretFingerprint(["a", "b"]), "order does not matter");
   assert.equal(secretFingerprint(["a"]).length, 12);
+  // Per-value ids: masking one value or a changed subset must not re-announce the rest.
+  const idsA = secretIds(["sk-synthetic-0123456789abcdef"]);
+  const idsBoth = secretIds(["sk-synthetic-0123456789abcdef", "ghp_0123456789abcdefghijklmnopqrstuvwxyz"]);
+  assert.equal(idsBoth.length, 2);
+  assert.ok(idsA[0] !== undefined && idsBoth.includes(idsA[0]), "the shared value keeps its id when another value appears");
+  assert.notEqual(secretFingerprint(["sk-synthetic-0123456789abcdef"]), secretFingerprint(["sk-synthetic-0123456789abcdef", "ghp_0123456789abcdefghijklmnopqrstuvwxyz"]), "the set fingerprint changes, which is why dedup uses per-value ids");
   assert.ok(looksLikeSecretValue("a1b2c3d4e5") && !looksLikeSecretValue("abcdefgh") && !looksLikeSecretValue("12345678") && !looksLikeSecretValue("SOME_ENV_NAME") && !looksLikeSecretValue("someCamelCase"));
   // Redaction stays broad: text that only talks about a secret is still scrubbed before it leaves the machine.
   assert.equal(redact("secret: boolean;"), "secret: [redacted];");

@@ -1,0 +1,10 @@
+{
+  "name": "eval-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Fixture repo for the pi-warden A/B eval. Zero dependencies; node --test only.",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}

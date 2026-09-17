@@ -79,6 +79,12 @@ interface Tracked {
   prompts: number;
 }
 
+/** Observability-only records (rules verdicts) that never join regret labelling. */
+interface Untracked {
+  record: CallRecord;
+  path?: string;
+}
+
 const REGRET_THRESHOLD = 0.7;
 
 function scoresOf(verdict: Verdict): CallScores | undefined {
@@ -95,6 +101,7 @@ function scoresOf(verdict: Verdict): CallScores | undefined {
 
 export class HoldLedger {
   private readonly tracked: Tracked[] = [];
+  private readonly untracked: Untracked[] = [];
   private nextId = 1;
 
   /** One inspected call. `outcome` is set at once when the confirm dialog decided; a steer-mode hold starts pending. */
@@ -173,7 +180,32 @@ export class HoldLedger {
   }
 
   records(): readonly CallRecord[] {
-    return this.tracked.map(item => item.record);
+    return [...this.tracked.map(item => item.record), ...this.untracked.map(item => item.record)];
+  }
+
+  /**
+   * Observability for the rules guard: its verdicts never act, so they do not join the regret labelling, but they
+   * land in the hold log (tool "rules") with the per-rule violation probabilities so eval runs can diagnose misses.
+   */
+  recordRules(input: { source: Verdict["source"]; path?: string; findings: readonly { name: string; violation: number }[]; error?: string }): CallRecord {
+    const at = Date.now();
+    const record: CallRecord = {
+      id: this.nextId++,
+      at,
+      tool: "rules",
+      level: input.findings.length ? "warn" : "allow",
+      source: input.source,
+      mode: "steer",
+      held: false,
+      patterns: input.findings.map(f => f.name),
+      reasons: input.findings.map(f => `${f.name} ${f.violation.toFixed(2)}`),
+      planChars: 0,
+      outcome: "accepted",
+      outcomeAt: at,
+    };
+    if (input.error) record.reasons.push(`error: ${input.error}`);
+    this.untracked.push({ record, ...(input.path ? { path: input.path } : {}) });
+    return record;
   }
 
   snapshot(): HoldSnapshot {

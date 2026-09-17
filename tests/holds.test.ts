@@ -166,3 +166,23 @@ test("the log is one JSON line per call, owner-only, under the agent directory, 
   await broken.save(ledger.records());
   assert.ok(broken.lastFailure, "a write into a file path fails and is remembered instead of thrown");
 });
+
+test("rules verdicts land in records() and the log as tool \"rules\", never as regret candidates", async () => {
+  const ledger = new HoldLedger();
+  ledger.recordRules({ source: "typesafe", path: "src/x.ts", findings: [{ name: "No hardcoded secrets", violation: 0.88 }] });
+  ledger.recordRules({ source: "typesafe", path: "src/y.ts", findings: [] });
+  const records = ledger.records().slice(-2);
+  assert.ok(records[0] && records[1]);
+  assert.equal(records[0].tool, "rules");
+  assert.equal(records[0].level, "warn");
+  assert.equal(records[0].held, false);
+  assert.deepEqual(records[0].reasons, ["No hardcoded secrets 0.88"]);
+  assert.equal(records[1].level, "allow");
+  // they never join the regret labelling: no pending action candidates from rules records
+  assert.deepEqual(ledger.candidates(), []);
+  const path = join(temporary, "rules-log.jsonl");
+  await new HoldLog(path).save(ledger.records());
+  const lines = (await readFile(path, "utf8")).trim().split("\n");
+  const parsed = lines.map(line => JSON.parse(line) as { tool: string; reasons: string[] });
+  assert.ok(parsed.some(r => r.tool === "rules" && r.reasons.includes("No hardcoded secrets 0.88")));
+});
