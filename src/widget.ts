@@ -24,6 +24,7 @@ export interface WidgetConfig {
   context: string;
   runaway: string;
   rules: string;
+  subagent: string;
 }
 
 export const DEFAULT_TEMPLATES = {
@@ -35,6 +36,7 @@ export const DEFAULT_TEMPLATES = {
   context: "warden · context · {tool} · {retention} · saved {bytesSaved} bytes",
   runaway: "warden · runaway · {kind} · {count}× repeated · {chars} chars · {signal} · {status}",
   rules: "warden · rules · {tool} {path} · {asked} rules · {violations} · {status}",
+  subagent: "warden · subagent · {agent} · {kind} · {wake} · {status}",
 } as const;
 
 export function defaultWidgetConfig(): WidgetConfig {
@@ -198,4 +200,5 @@ export const TOKEN_NAMES = {
   prose: ["wordy", "cliches", "jargon", "status", "reasons", "model", "ms", "flags", "time", "guard"],
   stuck: ["failures", "sameStrategy", "approachChange", "progress", "status", "source", "reasons", "model", "ms", "flags", "time", "guard"],
   done: ["changes", "checks", "checksPassed", "claimsDone", "claimsVerified", "checksApply", "outcome", "status", "reasons", "model", "ms", "flags", "time", "guard"],
+  subagent: ["agent", "kind", "wake", "status", "time", "guard"],
 } as const;

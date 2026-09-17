@@ -141,6 +141,17 @@ export interface NotifyConfig {
   command: string[];
 }
 
+export interface SubagentConfig {
+  /** Read async subagent reports at all. Off: warden ignores them, as before 0.14. */
+  enabled: boolean;
+  /** Ask Jev whether a report that names trouble deserves a wake. Off keeps the offline layer, which never wakes. */
+  wake: boolean;
+  /** P(this report needs the agent awake) at or above this value wakes it. Conservative on purpose. */
+  threshold: number;
+  /** At most one wake per this window, so several children finishing together cost one interruption. */
+  cooldownMs: number;
+}
+
 export type RecallTool = "auto" | "rg" | "ag" | "ugrep" | "git-grep" | "grep" | "select-string" | "findstr" | "none";
 const RECALL_TOOLS: readonly RecallTool[] = ["auto", "rg", "ag", "ugrep", "git-grep", "grep", "select-string", "findstr", "none"];
 
@@ -174,6 +185,8 @@ export interface WardenConfig {
   context: ContextConfig;
   runaway: RunawayConfig;
   notify: NotifyConfig;
+  /** Triage of async subagent reports: Jev separates what needs the agent awake from what is only context. */
+  subagent: SubagentConfig;
   /** The status line above the editor and the trace panel. */
   widget: WidgetConfig;
   /** Show steer messages in the transcript. They are always visible in the trace panel. */
@@ -182,7 +195,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 5;
+export const CONFIG_SCHEMA = 6;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -211,6 +224,7 @@ export function defaultConfig(): WardenConfig {
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7 },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
+    subagent: { enabled: true, wake: true, threshold: 0.8, cooldownMs: 120000 },
     widget: defaultWidgetConfig(),
     steerVisible: false,
   };
@@ -325,6 +339,12 @@ function applyNotify(base: NotifyConfig, raw: unknown, allowCommand: boolean): N
   return { enabled: boolean(raw.enabled, base.enabled), cooldownMs: cooldown, command };
 }
 
+function applySubagent(base: SubagentConfig, raw: unknown): SubagentConfig {
+  if (!isObject(raw)) return base;
+  const cooldown = typeof raw.cooldownMs === "number" && Number.isSafeInteger(raw.cooldownMs) && raw.cooldownMs >= 0 ? raw.cooldownMs : base.cooldownMs;
+  return { enabled: boolean(raw.enabled, base.enabled), wake: boolean(raw.wake, base.wake), threshold: probability(raw.threshold, base.threshold), cooldownMs: cooldown };
+}
+
 function applyDone(base: DoneGuardConfig, raw: unknown): DoneGuardConfig {
   if (!isObject(raw)) return base;
   return { enabled: boolean(raw.enabled, base.enabled), claimsDone: probability(raw.claimsDone, base.claimsDone), nudge: boolean(raw.nudge, base.nudge) };
@@ -385,6 +405,7 @@ function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
     context: template(raw.context, base.context),
     runaway: template(raw.runaway, base.runaway),
     rules: template(raw.rules, base.rules),
+    subagent: template(raw.subagent, base.subagent),
   };
 }
 
@@ -397,10 +418,11 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "subagent"> {
   return {
     rules: applyRules(base.rules, raw.rules),
     runaway: applyRunaway(base.runaway, raw.runaway),
+    subagent: applySubagent(base.subagent, raw.subagent),
     // A project file may switch notifications off or on, but never names a command to run.
     notify: applyNotify(base.notify, raw.notify, source === "user"),
     action: applyAction(base.action, raw.action, timeoutMs),

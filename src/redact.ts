@@ -70,6 +70,57 @@ export function looksLikeSecretValue(value: string): boolean {
   return classes >= 2 && (digits || (lowerCase && upperCase));
 }
 
+/**
+ * Words that name the value as a stand-in. They are rare in a real key and common in fixtures, docs, and tests.
+ * `distinctive` markers are unambiguous enough to match inside a value; the rest must sit between separators.
+ */
+const SYNTHETIC_MARKERS = ["synthetic", "devtok", "example", "sample", "dummy", "fake", "placeholder", "changeme", "hunter2", "deadbeef", "cafebabe", "notreal", "foobar", "lorem", "acme"];
+const SYNTHETIC_SEGMENTS = new Set(["test", "tests", "demo", "sample", "fake", "dummy", "staging", "sandbox", "localdev", "example", "examples", "placeholder", "notreal", "redacted", "masked", "changeme", "hunter2"]);
+/** Values a doc or a fixture pastes as an example body: a run of the alphabet, a digit ladder, or one repeated unit. */
+const SEQUENCE_RUN = 6;
+
+/** An ascending or descending run of consecutive code points, such as `0123456789` or `abcdefghij`. */
+function hasSequenceRun(text: string, min = SEQUENCE_RUN): boolean {
+  let ascending = 1;
+  let descending = 1;
+  for (let index = 1; index < text.length; index++) {
+    const step = text.charCodeAt(index) - text.charCodeAt(index - 1);
+    ascending = step === 1 ? ascending + 1 : 1;
+    descending = step === -1 ? descending + 1 : 1;
+    if (ascending >= min || descending >= min) return true;
+  }
+  return false;
+}
+
+/** One unit repeated to fill the value (`abcabcabc`) or three or fewer distinct characters (`aaaa1111`). */
+function isRepetitive(text: string): boolean {
+  return new Set(text.toLowerCase()).size <= 3 || /^(.{1,4})\1+$/.test(text.toLowerCase());
+}
+
+/**
+ * True for a credential-shaped value that is a stand-in rather than a credential: a name that says so
+ * (`sk-synthetic-`, `devtok_`), a sequence or repeat used as an example body (`sk-live-abcdefghij123456`,
+ * `0123456789abcdef`), or a documented dummy (`AKIAIOSFODNN7EXAMPLE`). Test fixtures and docs are full of these,
+ * and announcing them costs the user a steer per read. Judged from the value alone, in the offline pattern layer.
+ */
+export function syntheticish(value: string): boolean {
+  const text = value.trim().replace(/^[`"'([{<]+|[`"')]}>.,;]+$/g, "");
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  if (SYNTHETIC_MARKERS.some(marker => lower.includes(marker))) return true;
+  for (const segment of lower.split(/[^a-z0-9]+/)) if (SYNTHETIC_SEGMENTS.has(segment)) return true;
+  const body = lower.replace(/^[a-z0-9]{2,6}[^a-z0-9]+/, "").replace(/[^a-z0-9]/g, "");
+  return hasSequenceRun(text) || hasSequenceRun(body) || isRepetitive(body);
+}
+
+/** Split credentials into the ones worth announcing and the stand-ins that are only traced. */
+export function partitionSecrets(secrets: readonly string[]): { real: string[]; synthetic: string[] } {
+  const real: string[] = [];
+  const synthetic: string[] = [];
+  for (const value of secrets) (syntheticish(value) ? synthetic : real).push(value);
+  return { real, synthetic };
+}
+
 /** The credential-shaped values in `text`, deduplicated. Empty when the text only talks about credentials. */
 export function findSecrets(text: string): string[] {
   const found = new Set<string>();

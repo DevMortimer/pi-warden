@@ -6,11 +6,12 @@ import { evaluateAction } from '../dist/guard.js';
 import { evaluateProse } from '../dist/prose.js';
 import { runSecurityCases } from './security-cases.mjs';
 import { runContextCases } from './context-cases.mjs';
+import { runSubagentCases } from './subagent-cases.mjs';
 
 // Explicitly requested, billable calls with synthetic data only. One request per case.
 const cwd = process.cwd();
 const config = defaultConfig();
-const only = process.argv[2]; // action | intent | slop | approval | regret | stuck | done | prose | security | context
+const only = process.argv[2]; // action | intent | slop | approval | regret | stuck | done | prose | security | context | subagent
 const text = value => [{ type: 'text', text: value }];
 let total = 0, mismatches = 0;
 const line = (ok, name, level, detail) => {
@@ -193,6 +194,11 @@ if (!only || only === 'security') {
 if (!only || only === 'context') {
   console.log('\n# context saver: retention and format');
   await runContextCases(judge, (ok, name, detail) => line(ok, name, ok ? 'matched' : 'mismatch', detail));
+}
+
+if (!only || only === 'subagent') {
+  console.log('\n# subagent triage: does a report need the agent awake?');
+  await runSubagentCases(judge, (ok, name, detail) => line(ok, name, ok ? 'matched' : 'mismatch', detail));
 }
 
 const usage = judge.getUsage();

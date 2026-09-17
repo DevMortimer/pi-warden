@@ -10,7 +10,7 @@ import type { OutputFormat } from "./excerpt.js";
 import type { TaskMessage } from "./guard.js";
 import { askJev } from "./jev.js";
 import type { Judge } from "./jev.js";
-import { findSecrets, redact, secretFingerprint, secretIds } from "./redact.js";
+import { findSecrets, partitionSecrets, redact, secretFingerprint, secretIds } from "./redact.js";
 
 export type Retention = "all" | "errors_and_summary" | "summary_only";
 
@@ -60,6 +60,8 @@ export interface OutputVerdict {
   secretId?: string;
   /** One fingerprint per distinct credential-shaped value; repeats are per value, not per set. */
   secretIds?: string[];
+  /** One fingerprint per stand-in value (fixture or documentation shape); traced once, never announced. */
+  syntheticIds?: string[];
   suspicious: boolean;
   retention: Retention;
   /** Set when Jev named a known output format with at least `context.formatConfidence`; drives the parser choice. */
@@ -87,11 +89,13 @@ export interface OutputOptions {
 
 export async function evaluateOutput(tool: string, text: string, task: string | undefined, options: OutputOptions): Promise<OutputVerdict> {
   const secrets = options.security.enabled ? findSecrets(text) : [];
-  const verdict: OutputVerdict = { secret: secrets.length > 0, suspicious: false, retention: "all" };
-  if (secrets.length) {
-    verdict.secretId = secretFingerprint(secrets);
-    verdict.secretIds = secretIds(secrets);
+  const { real, synthetic } = partitionSecrets(secrets);
+  const verdict: OutputVerdict = { secret: real.length > 0, suspicious: false, retention: "all" };
+  if (real.length) {
+    verdict.secretId = secretFingerprint(real);
+    verdict.secretIds = secretIds(real);
   }
+  if (synthetic.length) verdict.syntheticIds = secretIds(synthetic);
   const contentTool = tool.startsWith("mcp") || /(?:^|_)(?:read|fetch_content|fetch_and_index|web_search|search|search_code|source_check|search_graph|query_graph|trace_path|get_architecture|get_code_snippet|get_search_content)$/.test(tool);
   const security = options.security.enabled && (contentTool || text.length >= 2048);
   const compress = options.context.enabled && options.compressible !== false && text.length >= options.context.tailMinChars;
