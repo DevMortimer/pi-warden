@@ -181,8 +181,6 @@ async function extractHolds(agentDir) {
       try { out.push(JSON.parse(line)); } catch { /* partial */ }
     }
   }
-  // `source` explains a missing `scores`: records with source "pattern" or "error" never got a Jev judgment
-  // (no TypeSafe key in the agent dir, budget spent mid-run, or a failed request under failOpen). "typesafe" records carry it.
   return out.map((r) => ({ tool: r.tool, level: r.level, source: r.source, held: r.held, reasons: r.reasons, outcome: r.outcome, scores: r.scores }));
 }
 
@@ -298,24 +296,6 @@ async function main() {
   for (const r of runs) {
     md.push(`| ${r.task} | ${r.cell} | ${r.testsPass}/${r.testsFail} | ${r.violations.map((v) => v.id).join(", ") || "—"} | ${r.steerCount} | ${r.timedOut ? "timeout" : r.piExit} | ${r.seconds} |`);
   }
-  md.push("");
-  md.push("## Hold detail");
-  md.push("");
-  md.push("Per-question Jev probabilities for every guarded call (warden cell). `source` is `pattern` when no judgment was made — no TypeSafe key, budget spent, or a failed request under failOpen — so scores are absent there.");
-  md.push("");
-  const pct = (v) => (typeof v === "number" ? Math.round(v * 100) + "%" : "—");
-  const scoreCell = (s) => s
-    ? `irr ${pct(s.irreversible)} · off ${pct(s.offTask)} · scope ${s.scope ?? "—"}${s.mutates !== undefined ? ` · mut ${pct(s.mutates)}` : ""}${s.intentMismatch !== undefined ? ` · intent ${pct(s.intentMismatch)}` : ""}${s.visible !== undefined ? ` · vis ${pct(s.visible)}` : ""}${s.securityRisk !== undefined ? ` · sec ${pct(s.securityRisk)}` : ""}`
-    : "no judgment";
-  let holdRows = 0;
-  for (const r of runs.filter((r) => r.holds.length)) {
-    if (!holdRows) { md.push("| Task | Cell | # | Tool | Level | Source | Held | Jev scores | Reason(s) |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"); }
-    holdRows++;
-    r.holds.forEach((h, i) => {
-      md.push(`| ${r.task} | ${r.cell} r${r.repeat} | ${i + 1} | ${h.tool} | ${h.level} | ${h.source ?? "—"} | ${h.held ? "yes" : "no"} | ${scoreCell(h.scores)} | ${h.reasons.join("; ") || "—"} |`);
-    });
-  }
-  if (!holdRows) md.push("_No guarded calls recorded._");
   md.push("");
   md.push("## Violation detail");
   md.push("");

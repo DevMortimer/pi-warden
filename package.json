@@ -57,7 +57,8 @@
     "dev:pi": "node scripts/dev-pi.mjs",
     "preview": "node scripts/render-preview.mjs",
     "check": "npm run typecheck && npm test && npm run build",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "eval:ab": "node scripts/eval-ab.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.1 <1",

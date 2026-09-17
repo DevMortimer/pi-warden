@@ -203,6 +203,39 @@ Nothing here is assumed. `node scripts/calibrate-action.mjs --all` replays every
 
 The labelling never stops: what you do after each hold (approve, decline, redirect, complain) becomes a label, and `/warden status` shows hold precision for your own sessions. The other guards have their own tuning sets (rules: 13 cases, slop: 22, runaway: calibrated on 43,000 local messages, one real runaway stopped at half its length). Method, thresholds, and the candidate questions that lost are in [docs/guards.md](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md#calibration).
 
+### Live: what fired and what the agent did next
+
+The replay measures the action guard's decisions against your reactions. It cannot measure the other half: what the agent does with a steer. For that, 67 steer messages from two days of live work on one production repo (19 sessions, 2026-09-16 to 09-17), read back from the recorded session logs:
+
+| Guard | Steers | What the session shows next |
+| --- | --- | --- |
+| Rules | 2 | Both fixed by a follow-up edit in the same session: **18 s** and **29 s** after the steer |
+| Slop | 3 | 1 fixed in **18 s**; 2 were `/tmp` throwaway scripts the agent never touched again |
+| Security notes | 52 | 51 credential warnings and 1 prompt-injection note; no secret reached a reply or a commit |
+| Action drift | 5 | 4 intent mismatches, 1 off-task call; the agent re-stated or corrected its plan mid-run |
+| Reply slop | 2 | Filler dropped in the next reply |
+| Context saver | 3 | Agent worked from the stored excerpt; an identical duplicate output was skipped |
+
+No file needed the same rule steer twice in the window. The hold logs from one of those days hold 1,042 guarded action decisions: 948 allow, 87 warn, 7 held. Of the 7 holds the agent re-planned on its own after 4, the owner approved 2, and 1 stayed pending.
+
+### Does it improve the code? A repeatable A/B benchmark
+
+`npm run eval:ab` runs the same fixture tasks through headless Pi twice — once with the rules as prose in `AGENTS.md` (control), once with the same `AGENTS.md` plus pi-warden enforcing `pi-warden.md` — and scores every final diff with a mechanical checker that shares no code with the guard. Tasks are built so a naive shortcut passes the provided tests while violating a rule, so only the checker can tell the two cells apart. Run it yourself: `node scripts/eval-ab.mjs --repeats 5` (default model or `--provider/--model`; about 45 minutes and a few hundred thousand tokens for 50 runs).
+
+Latest run: `commandcode/z-ai/glm-5.3-flash`, 5 tasks × 2 cells × 5 repeats (50 runs, `eval/reports/report-2026-09-17T15-46-42/`), with a same-config earlier run (`...T14-23-54/`) giving 10 repeats per cell in total:
+
+| Measured | Control (rules as prose) | Warden (same prose, enforced) |
+| --- | --- | --- |
+| Rule violations in final diffs | 12 in 50 runs (24%) | **4 in 50 runs (8%)** |
+| Clipped user-visible text (t2-clip) | 6 of 10 runs | **1 of 10 runs** |
+| Tests fully passing | 50 of 50 | 47 of 50 |
+| Steers sent into agent context | 0 | 61 (12 rules, 7 slop, 41 credential notes, 1 intent mismatch) |
+| Median run time | 34 s | 46 s |
+
+Every t2-clip run that received a clip steer ended clean; the one warden-cell clip in 20 runs got no steer (the rules request returned below threshold — rules verdicts are now logged with per-rule scores so misses like this are diagnosable). The 41 credential notes were one message per repeated output in the pre-dedup build; credential warnings now dedup per distinct value.
+
+Stated plainly, the negatives from the same runs: the hermetic-test task shows no reliable warden effect (4 vs 2 runs over 20 — noise dominates it so far); all 3 warden-cell test failures were on the retry task where the guard stayed silent, so they look like model variance the eval surfaced rather than guard interference, but the mechanism is not understood yet; and this is one model on one machine. The benchmark is the artifact — re-run it on your model and tasks, and the README claim has to survive your numbers too.
+
 ## Questions people asked
 
 **How is this different from putting the rules in AGENTS.md?**

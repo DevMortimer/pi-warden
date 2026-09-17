@@ -1,0 +1,2 @@
+# Run evidence stays local: session logs and tool output, too heavy and not needed to reproduce.
+*/runs/
