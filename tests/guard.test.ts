@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { describeAction, evaluateAction, formatVerdict, isReadOnlyCommand, matchPatterns, steerReason, stripDataText, textApproves } from "../src/guard.js";
+import { buildRequest, describeAction, evaluateAction, formatVerdict, isReadOnlyCommand, matchPatterns, steerReason, stripDataText, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { redact } from "../src/redact.js";
 
@@ -371,6 +371,40 @@ test("a retry after a hold asks Jev about approval; an approving reply lets the 
   assert.equal(approved.approvedByUser, true);
   assert.match(approved.reasons[0] ?? "", /user approved in the latest message \(0\.95\)/);
   assert.equal(approved.judgment?.approved, 0.95);
+});
+
+test("the regret question rides the request with last turn's allowed calls; a locator joins from two candidates", async () => {
+  const config = defaultConfig();
+  const one = [{ id: "a1", tool: "bash", command: "git push origin main" }];
+  const single = buildRequest(describeAction("bash", { command: "npm test" }, cwd), "wait, don't push yet", { previousActions: one });
+  assert.deepEqual(single.state.previous_actions, one);
+  assert.ok("regretted" in single.questions);
+  assert.ok(!("regret_target" in single.questions), "one candidate needs no locator");
+  assert.ok(!("previous_actions" in buildRequest(describeAction("bash", { command: "npm test" }, cwd), "t").state), "no candidates, no field");
+
+  const many = Array.from({ length: 8 }, (_, index) => ({ id: `a${index + 1}`, tool: "bash", command: `step ${index + 1} ${"x".repeat(400)}` }));
+  const request = buildRequest(describeAction("bash", { command: "npm test" }, cwd), "t", { previousActions: many });
+  const sent = request.state.previous_actions as Array<{ id: string; command: string }>;
+  assert.deepEqual(sent.map(action => action.id), ["a3", "a4", "a5", "a6", "a7", "a8"], "the six most recent");
+  assert.ok(sent.every(action => action.command.length < 340), "commands are truncated");
+  const locator = (request.questions as { regret_target?: { criteria: Record<string, string> } }).regret_target;
+  assert.deepEqual(Object.keys(locator?.criteria ?? {}), sent.map(action => action.id));
+
+  const calls: unknown[] = [];
+  const j: Judge = {
+    async evaluate(request) {
+      calls.push(request);
+      const base = answers(0.1, 0.1) as { answers: Record<string, unknown> };
+      base.answers.regretted = { type: "noul", noul: 0.9 };
+      base.answers.regret_target = { type: "choice", choice: "a2", confidence: 0.7, probabilities: { a1: 0.3, a2: 0.7 } };
+      return base as never;
+    },
+  };
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "wait, undo that" }, { config: config.action, judge: j, previousActions: [one[0]!, { id: "a2", tool: "write", path: "a.ts" }] });
+  assert.equal(verdict.level, "allow", "regret labels earlier calls; it never changes this verdict");
+  assert.equal(verdict.judgment?.regretted, 0.9);
+  assert.equal(verdict.judgment?.regretTarget, "a2");
+  assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "regret_target", "regretted", "scope"]);
 });
 
 test("textApproves is a conservative offline stand-in", () => {

@@ -1,6 +1,6 @@
 import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { evaluateAction, textApproves } from "./guard.js";
-import type { TaskMessage, Verdict } from "./guard.js";
+import type { PreviousAction, TaskMessage, Verdict } from "./guard.js";
 import type { Judge } from "./jev.js";
 
 /** One tool call as the agent proposed it. `id` is Pi's tool call id, stable across hooks and retries. */
@@ -27,6 +27,8 @@ export interface InspectOptions {
   signal?: AbortSignal | undefined;
   slop?: SlopGuardConfig | undefined;
   security?: SecurityConfig | undefined;
+  /** Calls allowed in the previous turn; the regret question about them rides this call's request, never a sibling's. */
+  previousActions?: readonly PreviousAction[] | undefined;
 }
 
 interface Prejudged { key: string; verdict: Promise<Verdict>; used: boolean }
@@ -53,9 +55,9 @@ export class ActionGuard {
     const { task } = conversation;
     // A hold happened under an earlier prompt and the user has since replied: ask whether the reply approves this action.
     const retryAfterHold = this.holdPending && this.lastHoldPrompt !== task;
-    const judgeCall = (tool: string, input: Record<string, unknown>) => evaluateAction(
+    const judgeCall = (tool: string, input: Record<string, unknown>, previousActions?: readonly PreviousAction[]) => evaluateAction(
       { tool, input, cwd: options.cwd, task, context: conversation.context },
-      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, retryAfterHold },
+      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, retryAfterHold, previousActions },
     );
     // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
     if (options.judge && !retryAfterHold) {
@@ -68,7 +70,7 @@ export class ActionGuard {
     }
     const key = JSON.stringify(call.input);
     const ready = this.prejudged.get(call.id);
-    const pending = ready && !ready.used && ready.key === key && !retryAfterHold ? ready.verdict : judgeCall(call.tool, call.input);
+    const pending = ready && !ready.used && ready.key === key && !retryAfterHold ? ready.verdict : judgeCall(call.tool, call.input, options.previousActions);
     this.prejudged.set(call.id, { key, verdict: pending, used: true });
     const verdict = await pending;
     if (retryAfterHold && !options.judge && verdict.level === "confirm" && textApproves(task)) {

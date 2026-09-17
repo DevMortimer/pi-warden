@@ -12,7 +12,9 @@ import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
 import { evaluateAction, formatVerdict, SLOP_LABELS, steerReason } from "./guard.js";
-import type { SlopSymptom, TaskMessage, Verdict } from "./guard.js";
+import type { PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
+import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
+import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend } from "./prose.js";
 import { compressOutput, duplicateNote, evaluateOutput, outputKey, saveOutput, securityNotice } from "./output.js";
 import type { OutputVerdict } from "./output.js";
@@ -30,10 +32,10 @@ import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
-import type { GuardName } from "./trace.js";
+import type { GuardName, TraceEntry } from "./trace.js";
 import { DEFAULT_TEMPLATES, proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; and redacted tool-output samples for security and context saving (retention and output format). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -157,6 +159,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let lastUi: PanelUi | undefined;
   const actionGuard = new ActionGuard();
   const rulesGuard = new RulesGuard();
+  // Hold feedback: what the user did after each judged call, the trace entry each label lands on, and the per-session log.
+  const holds = new HoldLedger();
+  const traceOf = new WeakMap<CallRecord, TraceEntry>();
+  let holdLog: HoldLog | undefined;
+  // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
+  let regretCandidates: PreviousAction[] = [];
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
@@ -216,10 +224,25 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       return { handled: true };
     }), { placement: config.widget.placement });
   };
-  const record = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig, guard: GuardName, line: string, details: string[]) => {
+  const record = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig, guard: GuardName, line: string, details: string[]): TraceEntry => {
     widget.set(guard, line);
-    trace.push({ at: Date.now(), guard, line, details });
+    const entry: TraceEntry = { at: Date.now(), guard, line, details };
+    trace.push(entry);
     paint(ctx, config);
+    return entry;
+  };
+  /** Labels landed on earlier calls: their trace entries say so and the session log is rewritten. */
+  const noteOutcomes = (config: WardenConfig, records: readonly CallRecord[]) => {
+    for (const item of records) {
+      const entry = traceOf.get(item);
+      if (entry) trace.amend(entry, outcomeNote(item));
+    }
+    if (config.action.feedbackLog && holds.records().length) void holdLog?.save(holds.records());
+  };
+  /** The user's reply was read for regret, by Jev or by the offline heuristic; the candidates are labelled once. */
+  const settleRegret = (config: WardenConfig, result: { regretted: boolean; target?: string | undefined; probability?: number | undefined; via: OutcomeVia }) => {
+    regretCandidates = [];
+    noteOutcomes(config, holds.regret(result));
   };
   const steer = (config: WardenConfig, content: string, options: { deliverAs: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean } = { deliverAs: "steer" }) =>
     pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: config.steerVisible }, options);
@@ -246,6 +269,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     panel?.close();
     actionGuard.reset();
     rulesGuard.reset();
+    holds.reset();
+    regretCandidates = [];
+    holdLog = new HoldLog(holdLogPath(typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid)));
     attempts.reset();
     evidence = emptyEvidence();
     doneNudged = false;
@@ -262,14 +288,19 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   });
 
   // A new user prompt starts a new attempt history and a new done-check budget.
-  pi.on("before_agent_start", async (_event, ctx) => {
-    attempts = new AttemptWindow(configFor(ctx).stuck.window);
+  pi.on("before_agent_start", async (event, ctx) => {
+    const config = configFor(ctx);
+    attempts = new AttemptWindow(config.stuck.window);
     doneNudged = false;
     runaway.reset();
     runawayStops = 0;
     pendingRunaway = undefined;
     actionGuard.turnEnd();
     rulesGuard.turnEnd();
+    // Holds the user never approved are re-plans now; last turn's allowed calls wait for the regret question.
+    noteOutcomes(config, holds.promptArrived());
+    regretCandidates = holds.candidates();
+    if (regretCandidates.length && !judgeFor(config)) settleRegret(config, { regretted: textRegrets(event.prompt), via: "text" });
   });
 
   // Each assistant message is judged on its own; Pi does not forward the stream's own "start" event, so this is the reset.
@@ -335,9 +366,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings },
-      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security },
+      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, previousActions: regretCandidates.length ? regretCandidates : undefined },
     );
     if (verdict.source === "skipped") return;
+    if (regretCandidates.length && verdict.judgment?.regretted !== undefined) {
+      settleRegret(config, { regretted: regretsAt(verdict.judgment.regretted), target: verdict.judgment.regretTarget, probability: verdict.judgment.regretted, via: "jev" });
+    }
     // Notes for the agent about the content it just wrote: slop, rule violations, and sensitive paths arrive as one message.
     const notes: string[] = [];
     if (verdict.judgment?.securityRisk !== undefined && verdict.judgment.securityRisk >= config.security.threshold) {
@@ -345,10 +379,21 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (verdict.judgment) stats.judged++;
     if (verdict.source === "error") noteError(ctx, verdict.error ?? "TypeSafe request failed.", verdict.errorCode);
-    if (verdict.approvedByUser) stats.approved++;
     const mode = activeMode(config, ctx.hasUI);
+    if (verdict.approvedByUser) {
+      stats.approved++;
+      const released = holds.approved(event.toolName);
+      if (released) noteOutcomes(config, [released]);
+    }
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
-    if (verdict.source !== "read-only") record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) }));
+    const entry = verdict.source !== "read-only" ? record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) })) : undefined;
+    // What happens to this call is the label for its scores; a decision made in the dialog lands at once, a steer-mode hold waits for the user.
+    const track = (held: boolean, outcome?: CallOutcome, via?: OutcomeVia) => {
+      if (!entry) return;
+      const item = holds.record(verdict, { held, mode, outcome, via });
+      traceOf.set(item, entry);
+      noteOutcomes(config, outcome ? [item] : []);
+    };
     if (verdict.slopSymptoms?.length && verdict.slopReasons) {
       stats.slop++;
       for (const symptom of verdict.slopSymptoms) slopCounts[symptom]++;
@@ -382,25 +427,29 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (verdict.level === "warn") {
       stats.warned++;
       if (ctx.hasUI) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
+      track(false);
       return undefined;
     }
-    if (verdict.level !== "confirm") return undefined;
+    if (verdict.level !== "confirm") { track(false); return undefined; }
 
     const reasons = verdict.reasons.join("; ");
     if (mode === "advise") {
       stats.warned++;
       if (ctx.hasUI) ctx.ui.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
+      track(false);
       return undefined;
     }
     if (mode === "confirm") {
       notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
       const allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {});
-      if (allowed) return undefined;
+      if (allowed) { track(true, "approved", "dialog"); return undefined; }
       stats.held++;
+      track(true, "declined", "dialog");
       return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${reasons}). Do not retry it unchanged; ask the user how to proceed.` };
     }
     stats.held++;
     actionGuard.hold(task);
+    track(true);
     if (ctx.hasUI) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
     notifyDesktop(ctx, config, `Held ${event.toolName}: ${reasons}. The agent will re-plan or ask you in chat.`);
     return { block: true, reason: told ?? steerReason(verdict, { canApprove: judge !== undefined }) };
@@ -510,6 +559,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    // No guarded call carried the regret question this run (the agent only replied): the offline heuristic reads the prompt.
+    if (regretCandidates.length) settleRegret(config, { regretted: textRegrets(latestUserPrompt(ctx)), via: "text" });
     if (pendingRunaway) {
       const { nudge, recover } = pendingRunaway;
       pendingRunaway = undefined;
@@ -592,6 +643,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / hold ${config.action.offTask.confirm}; stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),
+            `${formatHolds(holds.snapshot(), config.action.feedbackLog ? holdLog?.path : undefined)}${holdLog?.lastFailure ? ` Log write failed: ${holdLog.lastFailure}.` : ""}`,
             `Rules: ${config.rules.enabled ? `${rulesGuard.describe(ctx.cwd, config.rules)}${Object.keys(config.rules.sensitivePaths).length ? `; ${Object.keys(config.rules.sensitivePaths).length} sensitive path${Object.keys(config.rules.sensitivePaths).length === 1 ? "" : "s"}` : ""}` : "off"}.`,
             `Desktop notifications: ${config.notify.enabled ? `on (${config.notify.command.length ? `command ${config.notify.command[0]}` : (await (notifier ??= detectNotifier())) ?? "no notifier found on this machine"}; cooldown ${config.notify.cooldownMs} ms)` : "off"}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,

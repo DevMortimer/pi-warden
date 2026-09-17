@@ -29,6 +29,14 @@ export class Trace {
     for (const listener of this.listeners) listener();
   }
 
+  /** Appends a detail line to an entry that is still in the trace, for an outcome that lands after the event. */
+  amend(entry: TraceEntry, line: string): boolean {
+    if (!this.items.includes(entry)) return false;
+    entry.details.push(line);
+    for (const listener of this.listeners) listener();
+    return true;
+  }
+
   entries(): readonly TraceEntry[] {
     return this.items;
   }
@@ -55,7 +63,7 @@ export function actionDetails(verdict: Verdict, extra: { mode?: string; told?: s
   if (summary.input !== undefined) lines.push(`input: ${clip(summary.input, 300)}`);
   if (verdict.patterns.length) lines.push(`patterns: ${verdict.patterns.map(hit => `${hit.id} (${hit.severity})`).join(", ")}`);
   if (judgment) {
-    lines.push(`jev: irreversible ${percent(judgment.irreversible)} · off-task ${percent(judgment.offTask)} · ${judgment.scope.replace(/_/g, " ")} (${percent(judgment.scopeConfidence)})${judgment.approved !== undefined ? ` · approved ${percent(judgment.approved)}` : ""}${judgment.mutates !== undefined ? ` · mutates ${percent(judgment.mutates)}` : ""} · ${judgment.model} · ${judgment.elapsedMs} ms`);
+    lines.push(`jev: irreversible ${percent(judgment.irreversible)} · off-task ${percent(judgment.offTask)} · ${judgment.scope.replace(/_/g, " ")} (${percent(judgment.scopeConfidence)})${judgment.approved !== undefined ? ` · approved ${percent(judgment.approved)}` : ""}${judgment.mutates !== undefined ? ` · mutates ${percent(judgment.mutates)}` : ""}${judgment.regretted !== undefined ? ` · regret of last turn ${percent(judgment.regretted)}` : ""} · ${judgment.model} · ${judgment.elapsedMs} ms`);
   }
   if (judgment?.securityRisk !== undefined) lines.push(`security risk: ${percent(judgment.securityRisk)}`);
   if (verdict.slop) lines.push(`slop: stub ${percent(verdict.slop.stub)} · comments ${percent(verdict.slop.comments)} · dead ${percent(verdict.slop.dead)} · hedging ${percent(verdict.slop.hedging)}${verdict.slopReasons?.length ? ` → ${verdict.slopReasons.join("; ")}` : ""}`);

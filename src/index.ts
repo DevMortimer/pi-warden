@@ -1,5 +1,5 @@
-export { evaluateAction, describeAction, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, steerReason, questions, slopQuestions, approvalQuestion, securityQuestion } from "./guard.js";
-export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, ScannedCommand, ScopeLabel, Severity, Verdict } from "./guard.js";
+export { evaluateAction, describeAction, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, steerReason, questions, slopQuestions, approvalQuestion, securityQuestion, regretQuestions } from "./guard.js";
+export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, PreviousAction, ScannedCommand, ScopeLabel, Severity, Verdict } from "./guard.js";
 export { SLOP_SYMPTOMS, SLOP_LABELS } from "./guard.js";
 export { ActionGuard } from "./action-guard.js";
 export type { Conversation, InspectOptions, ToolCallRef } from "./action-guard.js";
@@ -22,6 +22,8 @@ export { RunawayMonitor, repeatedBlock, repeatedTail, findRepeats, runawayNudge,
 export type { RunawayVerdict, RepeatSignal, StreamKind } from "./runaway.js";
 export { completeConfig, shapeWarning, EXPECTED_SCHEMA } from "./shape.js";
 export { ContextLedger, formatLedger } from "./saver.js";
+export { HoldLedger, HoldLog, holdLogPath, formatHolds, outcomeNote, regretsAt, textRegrets } from "./holds.js";
+export type { CallOutcome, CallRecord, CallScores, HoldSnapshot, OutcomeVia } from "./holds.js";
 export type { ContextLedgerSnapshot, RecallKind } from "./saver.js";
 export type { ShapeResult } from "./shape.js";
 export { CONFIG_SCHEMA, defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, isRecallTool, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, PACKAGE_NAME } from "./config.js";

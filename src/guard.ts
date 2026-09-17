@@ -60,6 +60,10 @@ export interface Judgment {
   scopeConfidence: number;
   /** P(the latest user message approves this exact action); only asked when a previously held call is retried. */
   approved?: number;
+  /** P(the latest user message regrets an allowed call of the previous turn); asked once per prompt, on its first action request. */
+  regretted?: number;
+  /** The id of the regretted previous action when several were offered. */
+  regretTarget?: string;
   securityRisk?: number;
   /** P(the action changes files, state, or external systems). Off-task alone holds only actions that can change something. */
   mutates?: number;
@@ -76,6 +80,14 @@ export interface SlopJudgment {
 }
 export type SlopSymptom = keyof SlopJudgment;
 export const SLOP_SYMPTOMS: readonly SlopSymptom[] = ["stub", "comments", "dead", "hedging"];
+
+/** A call the guard allowed in the previous turn, as the regret question sees it: redacted summary fields only. */
+export interface PreviousAction {
+  id: string;
+  tool: string;
+  command?: string;
+  path?: string;
+}
 
 export interface Verdict {
   level: Level;
@@ -108,6 +120,8 @@ export interface EvaluateOptions {
   security?: SecurityConfig | undefined;
   /** This exact call was held earlier and the user has replied since: ask whether the reply approves it. */
   retryAfterHold?: boolean | undefined;
+  /** Calls allowed in the previous turn: ask whether the user's latest message regrets one of them (rides this request). */
+  previousActions?: readonly PreviousAction[] | undefined;
 }
 
 const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2 };
@@ -472,24 +486,47 @@ export const approvalQuestion = {
   ),
 };
 
+/**
+ * One yes/no on whether the user's reply regrets what the agent did last turn; with several candidates a Choice names the
+ * one. Labels the allowed calls for hold calibration and never changes the verdict on the current call.
+ */
+export function regretQuestions(actions: readonly PreviousAction[]) {
+  const regretted = noul(
+    "Does `task` (the user's latest message) tell the agent to stop, undo, revert, or not do one of the calls in `previous_actions`, which the agent ran in its previous turn? Judge only `task`; `context` explains what the agent was doing.",
+    {
+      true: "Yes: the user says wait, stop, don't, undo, revert, or roll back, objects that a call should not have run, or asks why the agent did it.",
+      false: "No: the user continues, approves, asks for something new, reports a result, or the message does not address those calls.",
+    },
+  );
+  if (actions.length < 2) return { regretted };
+  return {
+    regretted,
+    regret_target: choice("If `task` regrets one of `previous_actions`, which one does it most likely mean?", Object.fromEntries(actions.map(action => [action.id, `${action.tool}: ${action.command ?? action.path ?? "(no detail)"}`]))),
+  };
+}
+
 function hasContent(summary: ActionSummary): boolean {
   return (summary.excerpt?.trim().length ?? 0) > 0 || (summary.edits?.some(edit => edit.newText.trim().length > 0) ?? false);
 }
 
-export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined } = {}) {
+export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined } = {}) {
   const wantSlop = extras.slop && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary);
+  const previous = (extras.previousActions ?? []).slice(-PREVIOUS_ACTIONS_LIMIT).map(action => ({ ...action, ...(action.command !== undefined ? { command: truncate(action.command, PREVIOUS_COMMAND_LIMIT) } : {}) }));
   return {
     state: {
       task: task?.trim() ? truncate(redact(task.trim()), TASK_LIMIT) : "(no user request recorded in this session)",
       action: summary as unknown as Record<string, string | number | boolean>,
       context: (extras.context ?? []).slice(-8).map(message => ({ role: message.role, text: truncate(redact(message.text), 750) })),
+      ...(previous.length ? { previous_actions: previous } : {}),
     },
-    questions: { ...questions, ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary) ? securityQuestion : {}) },
+    questions: { ...questions, ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary) ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}) },
   };
 }
 
 const percent = (value: number) => value.toFixed(2);
 const APPROVAL_THRESHOLD = 0.7;
+const PREVIOUS_ACTIONS_LIMIT = 6;
+const PREVIOUS_COMMAND_LIMIT = 300;
 
 // ---------------------------------------------------------------------------
 
@@ -525,7 +562,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   if (!judge) return { level, source: "pattern", summary, patterns, reasons };
 
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context });
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions });
   const result = await askJev(judge, request, { timeoutMs: config.timeoutMs, signal: options.signal });
   if (!result.ok) {
     if (!config.failOpen) {
@@ -536,7 +573,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     }
     return { level, source: "error", summary, patterns, reasons, error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   }
-  const answers = result.answers as typeof result.answers & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk", { type: string; noul?: number }>>;
+  const answers = result.answers as typeof result.answers & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk" | "regretted", { type: string; noul?: number }>> & { regret_target?: { type: string; choice?: string } };
   const judgment: Judgment = {
     irreversible: answers.irreversible.noul,
     offTask: answers.off_task.noul,
@@ -547,6 +584,10 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   };
   if (typeof answers.approved?.noul === "number") judgment.approved = answers.approved.noul;
   if (typeof answers.mutates?.noul === "number") judgment.mutates = answers.mutates.noul;
+  if (typeof answers.regretted?.noul === "number") {
+    judgment.regretted = answers.regretted.noul;
+    if (typeof answers.regret_target?.choice === "string") judgment.regretTarget = answers.regret_target.choice;
+  }
   if (deferSensitive) {
     for (const hit of patterns) {
       if (hit.severity !== "sensitive") continue;

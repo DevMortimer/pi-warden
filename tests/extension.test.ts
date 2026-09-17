@@ -88,6 +88,16 @@ const agentEnd = (finalText: string, ctx = context()) => fire("agent_end", { mes
 const newPrompt = (text: string, ctx = context()) => { prompt = text; return fire("before_agent_start", { prompt: text }, ctx).then(() => fire("agent_start", {}, ctx)); };
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
+/** The hold log is written without blocking the hook; a test that reads it waits for the expected number of lines. */
+const readLog = async (path: string, lines: number): Promise<Record<string, unknown>[]> => {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const text = await readFile(path, "utf8").catch(() => "");
+    const parsed = text.trimEnd().split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
+    if (parsed.length === lines && parsed.every(record => record.outcome !== "pending")) return parsed;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`log at ${path} did not reach ${lines} labelled lines`);
+};
 const grantConsent = () => writeFile(configPath(), JSON.stringify({ typesafe: true }));
 
 before(async () => {
@@ -379,6 +389,104 @@ test("without consent, only pattern checks run: risky warns, destructive is held
   assert.ok(!held?.reason?.includes("origin main"), "the reason does not echo the command");
   assert.match(notices.at(-1)!.text, /held bash: destructive: git force push/);
   assert.equal(networkCalls, 0);
+});
+
+test("hold feedback offline: approval, re-plan, and a stop reply label the calls, the trace, the status line, and the session log", async () => {
+  prompt = "push my branch";
+  assert.equal((await toolCall("bash", { command: "git push --force origin main" }))?.block, true);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 awaiting your reply; precision not yet measurable; 0 allowed/);
+  await newPrompt("yes, go ahead and force push");
+  assert.equal(await toolCall("bash", { command: "git push --force origin main" }), undefined, "the reply releases the hold");
+  await runCommand("status");
+  const line = notices.at(-1)!.text.match(/Holds: (.*?)\. Log: (.+?\.jsonl)\./);
+  assert.ok(line, notices.at(-1)!.text);
+  assert.equal(line[1], "1 hold; 1 approved by you, 0 declined, 0 re-planned, 0 awaiting your reply; precision 0% over 1 label; 1 allowed (0 regretted by you, 0 accepted)");
+  const logPath = line[2]!;
+  assert.ok(logPath.startsWith(join(temporary, "agent", "pi-warden", "holds")), logPath);
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /outcome: approved by the user \(released on retry\); the hold was a false positive/, "the hold's trace entry carries its outcome");
+
+  // A hold nobody approves: the user redirects, the agent does something else, and the prompt after that lands the label.
+  await newPrompt("now reset the repo");
+  assert.equal((await toolCall("bash", { command: "git reset --hard HEAD~3" }))?.block, true);
+  await newPrompt("leave it, run the tests instead");
+  assert.equal(await toolCall("bash", { command: "npm test" }), undefined);
+  await newPrompt("thanks, now update the docs");
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /Holds: 2 holds; 1 approved by you, 0 declined, 1 re-planned, 0 awaiting your reply; precision 50% over 2 labels; 2 allowed \(0 regretted by you, 2 accepted\)/);
+
+  // An allowed call the next message regrets: offline, the stop-word heuristic labels it.
+  assert.equal(await toolCall("bash", { command: "rm -rf dist" }), undefined);
+  await newPrompt("wait, don't delete dist, I still need it");
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /3 allowed \(1 regretted by you, 2 accepted\)/);
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /outcome: the user's next message regrets this call; it should have been held/);
+
+  const lines = await readLog(logPath, 5);
+  assert.deepEqual(lines.map(record => [record.held, record.outcome, record.outcomeVia]), [
+    [true, "approved", "retry"], [false, "accepted", "text"], [true, "replanned", "next prompt"], [false, "accepted", "text"], [false, "regretted", "text"],
+  ]);
+  assert.deepEqual(lines[0]!.patterns, ["git-force-push"]);
+  assert.equal(lines[0]!.source, "pattern");
+  const text = JSON.stringify(lines);
+  assert.ok(!text.includes("origin main") && !text.includes("HEAD~3") && !text.includes("dist"), "the log never carries command text");
+  assert.equal(networkCalls, 0);
+
+  // The log can be turned off; the counts stay.
+  await writeFile(configPath(), JSON.stringify({ action: { feedbackLog: false } }));
+  await sessionStart();
+  await rm(logPath, { force: true });
+  prompt = "push";
+  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 awaiting your reply; precision not yet measurable; 0 allowed \(0 regretted by you, 0 accepted\)\. Rules:/);
+  assert.ok(!notices.at(-1)!.text.includes("Log:"));
+  await assert.rejects(readFile(logPath), "nothing is written with feedbackLog off");
+});
+
+test("hold feedback with Jev: the regret question rides the first action request after the reply and labels the located call", async () => {
+  await grantConsent();
+  prompt = "clean up the build";
+  assert.equal(await toolCall("bash", { command: "rm -rf build" }), undefined);
+  assert.equal(await toolCall("write", { path: "notes.txt", content: "cleaned" }), undefined);
+  assert.ok(!("previous_actions" in requests.at(-1)!.state), "same prompt: nothing to regret yet");
+  await newPrompt("wait, stop, I still needed build/");
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", regretted: 0.92, regret_target: "a1" };
+  assert.equal(await toolCall("bash", { command: "npm test" }), undefined);
+  const request = requests.at(-1)!;
+  assert.deepEqual(request.state.previous_actions, [{ id: "a1", tool: "bash", command: "rm -rf build" }, { id: "a2", tool: "write", path: "notes.txt" }]);
+  assert.ok("regretted" in request.questions && "regret_target" in request.questions);
+  assert.equal(await toolCall("bash", { command: "npm run lint" }), undefined);
+  assert.ok(!("previous_actions" in requests.at(-1)!.state), "asked once per prompt");
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /Holds: 0 holds; precision not yet measurable; 4 allowed \(1 regretted by you, 1 accepted\)/);
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /regret of last turn 0\.92/);
+  assert.match(sentMessages.at(-1)!.message.content, /outcome: the user's next message regrets this call \(0\.92\); it should have been held/);
+  assert.match(sentMessages.at(-1)!.message.content, /outcome: the user's next message does not regret this call \(0\.92\)/);
+
+  // The agent only replies to the next prompt: no request carries the question, so the heuristic reads the prompt at the end of the run.
+  const before = networkCalls;
+  await newPrompt("undo that");
+  await agentEnd("Done.");
+  assert.equal(networkCalls, before);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /4 allowed \(2 regretted by you, 2 accepted\)/);
+});
+
+test("hold feedback in confirm mode: the dialog's answer labels the hold at once", async () => {
+  await writeFile(configPath(), JSON.stringify({ mode: "confirm" }));
+  confirmResult = false;
+  assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
+  confirmResult = true;
+  assert.equal(await toolCall("bash", { command: "git push --force" }), undefined);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /Holds: 2 holds; 1 approved by you, 1 declined, 0 re-planned, 0 awaiting your reply; precision 50% over 2 labels/);
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /outcome: declined by the user in the confirm dialog; the hold stood/);
+  assert.match(sentMessages.at(-1)!.message.content, /outcome: approved by the user \(confirm dialog\); the hold was a false positive/);
 });
 
 test("the Action guard is wired to the session: the prompt is the task, siblings come from the branch, session_start resets", async () => {

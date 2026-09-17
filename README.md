@@ -74,6 +74,8 @@ Runs on `tool_call`, before the tool executes.
 
 The action guard receives your latest message plus up to eight earlier user and assistant messages (750 redacted characters each) so follow-ups and side comments do not replace the task. Sibling tool calls in one assistant message are judged together in one round trip. If TypeSafe cannot answer, the call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead).
 
+**Hold feedback.** What you do next labels each judgment, so hold precision is measured on your sessions rather than assumed. A hold your reply releases (or the confirm dialog allows) was a false positive; a hold you decline, or that nobody approves after you replied and the next turn ended, stood. An allowed call your next message tells the agent to stop, undo, or revert was a miss: one `regretted` question rides the first action request after your reply, with the redacted summaries of last turn's allowed calls (a locator names the one when there are several); offline, a stop-word heuristic stands in. `/warden status` shows the counts and the precision, the trace entry of each call gets its outcome, and every judged call is written with its scores and outcome to an owner-only per-session file under `~/.pi/agent/pi-warden/holds/` (tool, pattern ids, scores, level, mode, outcome; never the command). `"action": { "feedbackLog": false }` keeps the counts and skips the file.
+
 ### Rules
 
 Write your project's rules as Markdown headings in `pi-warden.md` at the project root (a starter file with a dozen rules is in [`examples/pi-warden.md`](examples/pi-warden.md)):
@@ -153,7 +155,7 @@ Nudges from the rules, slop, stuck, done, and prose guards are custom messages i
 
 | Command | Effect |
 | --- | --- |
-| `/warden status` | Guard state, consent and key source, session counts, thresholds, rules source, config paths, last verdicts |
+| `/warden status` | Guard state, consent and key source, session counts, thresholds, hold precision and feedback log, rules source, config paths, last verdicts |
 | `/warden enable` | Data notice, key prompt if none is stored, consent saved |
 | `/warden disable` | Stop Jev judgments; pattern checks continue |
 | `/warden mode steer\|confirm\|advise` | How holds are handled; without an argument, show the current mode |
@@ -200,7 +202,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). Missing keys use the
     "tools": ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file", "write", "edit"],
     "failOpen": true,
     "irreversible": { "warn": 0.5, "confirm": 0.7 },
-    "offTask": { "warn": 0.6, "confirm": 0.85 }
+    "offTask": { "warn": 0.6, "confirm": 0.85 },
+    "feedbackLog": true
   },
   "rules": {
     "enabled": true,
@@ -249,12 +252,14 @@ A wince-style setup for a backend repo (the full version is [`examples/pi-warden
 
 With consent, requests go to `https://api.typesafe.ai`. What is sent:
 
-- **Action guard**: your latest prompt (1500 characters), up to eight earlier user and assistant messages (750 redacted characters each), the tool name, the command (2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample of a `write`, the first three edit pairs (400 characters each) of an `edit`.
+- **Action guard**: your latest prompt (1500 characters), up to eight earlier user and assistant messages (750 redacted characters each), the tool name, the command (2000 characters) or the file path (relative inside the project, `~`-shortened outside), whether the file exists, a 1500-character head/middle/tail sample of a `write`, the first three edit pairs (400 characters each) of an `edit`. On the first guarded call after your reply, the tool names and commands (300 characters) or paths of up to six calls allowed in the previous turn, for the regret question.
 - **Rules**: the project-relative path, a 6000-character sample of a `write` or each edit's new text (1500 characters) with about 40 lines of the current file around the replaced text, and the rule text from your rules file or the condensed fallback document (`rules.maxChars`). No task text. Files under `rules.exclude` are never sent.
 - **Stuck**: the last 12 tool calls (300 characters each) with 400-character output tails.
 - **Done-check and prose**: the agent's final message (2000 and 2500 characters), the run's check commands, the audience description.
 - **Output checks**: a redacted head/tail sample up to 6000 characters plus size, line counts, and tool name.
 - **Nothing** for duplicate detection, the runaway guard, sensitive-path notes, or pattern checks.
+
+The hold feedback log under `~/.pi/agent/pi-warden/holds/` stays on this machine, owner-only: one JSON line per judged call with tool, pattern ids, scores, level, mode, and outcome; never the command, path, or prompt.
 
 Obvious credentials (`Authorization` headers, `TOKEN=` and `SECRET=` assignments, `sk-`, `ghp_`, `AKIA`, JWTs, URL passwords, PEM blocks) are replaced with `[redacted]` before sending. Best-effort; do not rely on it for prompts that contain secrets. Text steered to the agent names the tool, the reasons, and the scores, not the command. UI errors never include upstream response bodies or keys. Judgments are model output; thresholds are yours to tune.
 
@@ -290,7 +295,7 @@ What spans calls in a session lives in `ActionGuard` (hold, reply, retry approva
 ```bash
 npm install
 npm run check                    # typecheck, offline tests (mocked transport), build
-npm run test:live                # billable synthetic judgments across the guards; pass action|slop|approval|stuck|done|security|context for one group
+npm run test:live                # billable synthetic judgments across the guards; pass action|slop|approval|regret|stuck|done|security|context for one group
 node scripts/rules-cases.mjs     # 13 billable cases against an 8-rule fixture file
 node scripts/slop-cases.mjs      # 22 billable cases for the slop and prose questions
 node scripts/security-cases.mjs  # 9 output-security and task-continuity cases
