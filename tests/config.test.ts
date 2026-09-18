@@ -132,6 +132,43 @@ test("user config accepts command rules, deny rules, and exempt rules", () => {
   assert.equal(messy.action.commandRules[0]!.id, "x");
 });
 
+test("project overrides cannot set path rules", () => {
+  const config = applyProjectOverrides(defaultConfig(), { action: { pathRules: [{ id: "evil", paths: ["**/*"], access: "none", tools: ["*"], action: "block" }] } });
+  assert.deepEqual(config.action.pathRules, [], "a project file cannot declare path rules");
+});
+
+test("a trusted project action block cannot wipe the user's path rules", () => {
+  const userBase = applyUserOverrides(defaultConfig(), { action: {
+    pathRules: [{ id: "ssh-keys", paths: ["~/.ssh/id_*"], access: "write", tools: ["*"], action: "block" }],
+  } });
+  const config = applyProjectOverrides(userBase, { action: { tools: ["bash", "write"] } });
+  assert.equal(config.action.pathRules.length, 1, "user path rules survive the project override");
+  assert.equal(config.action.pathRules[0]!.id, "ssh-keys");
+});
+
+test("user config accepts path rules; invalid entries and duplicate ids are skipped", () => {
+  const config = applyUserOverrides(defaultConfig(), { action: { pathRules: [
+    { id: "env-files", paths: ["**/.env", "**/.env.*"], access: "none", tools: ["*"], action: "confirm", onlyIfExists: true },
+    { id: "env-files", paths: ["**/.env"], access: "none", tools: ["*"], action: "note" },
+    { id: "", paths: ["**/.env"] },
+    { id: "no-paths", paths: [] },
+    { id: "bad-tool", paths: ["**/.env"], tools: ["made-up-tool"], access: "none", action: "block" },
+    { id: "defaults", paths: ["~/.ssh/*"], },
+  ] } });
+  assert.equal(config.action.pathRules.length, 2, "duplicate ids, missing fields, and inert tools are skipped");
+  const env = config.action.pathRules[0]!;
+  assert.equal(env.id, "env-files");
+  assert.equal(env.access, "none");
+  assert.equal(env.action, "confirm");
+  assert.equal(env.onlyIfExists, undefined, "onlyIfExists defaults to true and is omitted at the default");
+  const defaults = config.action.pathRules[1]!;
+  assert.equal(defaults.id, "defaults");
+  assert.equal(defaults.access, "none", "access defaults to none");
+  assert.equal(defaults.action, "note", "action defaults to note");
+  assert.deepEqual(defaults.tools, ["*"], "tools default to the bash surface");
+  assert.equal(defaults.onlyIfExists, undefined, "onlyIfExists defaults to true and is omitted when not overridden");
+});
+
 test("loadConfig merges user then trusted project file, and survives malformed files", async () => {
   assert.equal(loadConfig({ cwd: project, projectTrusted: true }).typesafe, false, "no files yet");
   const path = setUserSetting("typesafe", true);

@@ -3,8 +3,9 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
-import type { ActionGuardConfig, CommandRule, SecurityConfig, SlopGuardConfig } from "./config.js";
+import type { ActionGuardConfig, CommandRule, PathRule, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
+import { globToRegExp } from "./rules.js";
 import { commandOf } from "./tools.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
@@ -347,6 +348,7 @@ export interface PatternOptions {
   commandRules?: readonly CommandRule[];
   commandDenyRules?: readonly CommandRule[];
   exemptRules?: readonly string[];
+  pathRules?: readonly PathRule[];
 }
 
 /** Every id exemptRules can legitimately name: the built-in shell rules, the rm-classifier's derived ids, and the
@@ -362,10 +364,11 @@ export const EXEMPTABLE_IDS: readonly string[] = [
 
 /** Exempt ids that name neither a built-in, a classifier id, nor one of the user's own rules: inert, but
  * almost certainly not what the user meant. */
-export function unknownExemptIds(exemptRules: readonly string[], commandRules: readonly CommandRule[] = [], commandDenyRules: readonly CommandRule[] = []): string[] {
+export function unknownExemptIds(exemptRules: readonly string[], commandRules: readonly CommandRule[] = [], commandDenyRules: readonly CommandRule[] = [], pathRules: readonly PathRule[] = []): string[] {
   const known = new Set(EXEMPTABLE_IDS);
   for (const rule of commandRules) known.add(rule.id);
   for (const rule of commandDenyRules) known.add(rule.id);
+  for (const rule of pathRules) known.add(rule.id);
   return exemptRules.filter(id => !known.has(id));
 }
 
@@ -406,7 +409,132 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
   }
   const path = typeof input.path === "string" ? input.path : undefined;
   if (path && SENSITIVE_PATH.test(path)) add({ id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
+  for (const hit of matchPathRules(tool, input, cwd, options?.pathRules, exempt)) add(hit);
   return [...hits.values()];
+}
+
+// ---------------------------------------------------------------------------
+// Path rules: user-declared paths, an access dimension, and two surfaces. The file surface checks the structured
+// `input.path` of file tools — cheap and exact. The command surface (tools: "*") matches the same way SENSITIVE_PATH
+// does, against the stripDataText-processed command, plus redirect and tee targets for write-side precision. Tokens
+// in arbitrary argv are deliberately never classified: that is the positive-space treadmill this design exists to
+// avoid (docs/deterministic-floor-spec.md §PR 2, "What this deliberately does not do").
+
+/** Write-sinks a shell grammar actually defines: the target of a redirection, or tee's last argument. */
+const REDIRECT_TARGET = /(?:^|[\s;&|)(])\d*>{1,2}\s*(\S+)/g;
+
+function writeSinkTargets(command: string): string[] {
+  const targets: string[] = [];
+  for (const segment of splitShell(command)) {
+    for (const match of segment.matchAll(REDIRECT_TARGET)) if (match[1]) targets.push(match[1]);
+    // tee writes its last argument; an -a flag only appends, which is still a write.
+    const tee = /\btee\b(?:\s+-\w+)*\s+(\S+)\s*$/.exec(segment);
+    if (tee?.[1]) targets.push(tee[1]);
+  }
+  return targets;
+}
+
+/** A rule's globs or regexes compiled once; `~` is expanded so `~/.ssh/id_*` works like the shell reads it. */
+function pathRuleMatches(rule: PathRule, candidate: string): boolean {
+  const home = homedir();
+  const target = candidate === "~" || candidate.startsWith("~/") ? home + candidate.slice(1) : candidate;
+  if (rule.regex) {
+    try {
+      return rule.paths.some(pattern => new RegExp(pattern).test(target));
+    } catch {
+      return false;
+    }
+  }
+  // globToRegExp anchors at segment start and leaves the head unanchored (project-relative matching); an absolute
+  // or ~-prefixed target is normalised so the same glob matches either spelling: `~/.ssh/id_*` and a pattern stated
+  // without the tilde (`.ssh/id_*`) both match `~/.ssh/id_ed25519` and its absolute expansion.
+  const relative = target.startsWith(home + "/") ? `~${target.slice(home.length)}` : target;
+  const raw = relative.startsWith("~/") ? relative.slice(2) : relative.replace(/^\/+/, "");
+  const forms = (pattern: string) => (pattern.startsWith("~/") ? [pattern, pattern.slice(2)] : [pattern]);
+  return rule.paths.some(pattern => forms(pattern).some(form => globToRegExp(form).test(raw) || globToRegExp(form).test(relative)));
+}
+
+/** Which side of a file tool's touch: write/edit change the file, every other tool only reads it. */
+function isWriteTool(tool: string): boolean {
+  return tool === "write" || tool === "edit";
+}
+
+function pathRuleHit(rule: PathRule, label: string): PatternHit {
+  // note rides the sensitive severity (Jev decides whether a command that merely mentions the path can write;
+  // offline it stays a warning like today's sensitive-path hit); warn/confirm/block map onto the same ladder
+  // PR 1's command rules use, so dialogs and blocks reuse that plumbing unchanged.
+  let severity: Severity;
+  if (rule.action === "block") severity = "deny";
+  else if (rule.action === "confirm") severity = "destructive";
+  else if (rule.action === "warn") severity = "risky";
+  else severity = "sensitive";
+  return { id: rule.id, severity, label, ...(rule.action === "confirm" ? { action: "dialog" } : {}), ...(rule.message ? { message: rule.message } : {}) };
+}
+
+function matchPathRules(tool: string, input: Record<string, unknown>, cwd: string | undefined, rules: readonly PathRule[] | undefined, exempt: Set<string>): PatternHit[] {
+  if (!rules?.length) return [];
+  const hits: PatternHit[] = [];
+  const fired = new Set<string>();
+  const applies = (rule: PathRule, surface: "file" | "command") =>
+    !exempt.has(rule.id) && (rule.tools.includes("*") || (surface === "file" ? rule.tools.includes(tool) : false));
+  const fire = (rule: PathRule, writeSide: boolean, label: string) => {
+    if (fired.has(rule.id)) return;
+    // The access dimension: "none" fires on any touch; "read" only on the write side (reads flow); "write" only on
+    // the read side (writes flow). The names read from the operator's goal: protect reads, or protect writes.
+    if (rule.access === "none" || (rule.access === "read" && writeSide) || (rule.access === "write" && !writeSide)) {
+      fired.add(rule.id);
+      hits.push(pathRuleHit(rule, label));
+    }
+  };
+  // File surface: the structured path field, exact and cheap.
+  const path = typeof input.path === "string" && input.path.trim() ? input.path : undefined;
+  if (path && tool !== "ctx_execute_file") {
+    for (const rule of rules) {
+      if (!applies(rule, "file")) continue;
+      if (rule.onlyIfExists !== false && cwd && !existsSync(resolve(cwd, path))) continue;
+      if (pathRuleMatches(rule, path) || (cwd && pathRuleMatches(rule, resolve(cwd, path)))) fire(rule, isWriteTool(tool), rule.message ?? `touches ${rule.id}`);
+    }
+  }
+  // Command surface: whole-text match for "none" rules (the operator declared the path always-matters, so a
+  // mention anywhere counts), write-sink targets only for the write side (a grep naming the path is a read).
+  // Glob patterns become unanchored regexes: the command surface asks "does this text mention the path", not
+  // "is this token the path", so `**/.env` must find `.env` inside `kubectl exec -- cat /x/.env`.
+  const mentionRegex = (rule: PathRule): RegExp[] => {
+    const out: RegExp[] = [];
+    for (const pattern of rule.paths) {
+      if (rule.regex) { try { out.push(new RegExp(pattern)); } catch { /* invalid pattern matches nothing */ } }
+      else {
+        // globToRegExp builds `^(?:.*/)?…$` (plus one more `(?:.*/)?` per `**/` in the pattern); the command surface
+        // asks "does this text mention the path", so the head anchor and the depth prefixes come off and the tail
+        // stays (the mention must end the path, so `.env.example` does not count as a `.env` mention).
+        // The prefix is a literal run of `(?:.*\/)?`, so it is trimmed by slicing rather than by a second regex
+        // whose own escaping would have to mirror globToRegExp's output character for character.
+        const anchored = globToRegExp(pattern.startsWith("~/") ? pattern.slice(2) : pattern).source;
+        let body = anchored;
+        // Each depth prefix is `(?:.*\/?` — group plus its optional marker — and the source may carry one or more.
+        while (body.startsWith("^") || body.startsWith("(?:.*\\/)?")) {
+          body = body.startsWith("^") ? body.slice(1) : body.slice("(?:.*\\/)?".length);
+        }
+        const unanchored = body.endsWith("$") ? body.slice(0, -1) : body;
+        out.push(new RegExp(unanchored));
+      }
+    }
+    return out;
+  };
+  const raw = commandOf(tool, input)?.command;
+  if (raw) {
+    const text = stripDataText(raw).text;
+    const sinks = writeSinkTargets(text);
+    const mentioned = (rule: PathRule) => mentionRegex(rule).some(re => re.test(text));
+    const sinkWrite = (rule: PathRule) => sinks.some(target => pathRuleMatches(rule, target));
+    for (const rule of rules) {
+      if (!applies(rule, "command")) continue;
+      if (rule.access === "none" && mentioned(rule)) fire(rule, false, rule.message ?? `touches ${rule.id}`);
+      if (sinkWrite(rule)) fire(rule, true, rule.message ?? `writes to ${rule.id}`);
+      else if (rule.access === "write" && mentioned(rule)) fire(rule, false, rule.message ?? `reads ${rule.id}`);
+    }
+  }
+  return hits;
 }
 
 // ---------------------------------------------------------------------------
@@ -680,7 +808,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   const plan = describePlan(action.plan);
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
-  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules });
+  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules });
   const reasons: string[] = [];
   let level: Level = "allow";
   // A shell command that merely mentions a secrets file (grep for key names, cat .env.example) is decided after Jev
