@@ -1639,3 +1639,32 @@ test("user command rules: severity deny on a commandRule blocks like a commandDe
   assert.match(blocked?.reason ?? "", /not allowed to run/);
   assert.equal(confirms.length, 0, "deny never prompts");
 });
+
+test("pathRules: a confirm rule prompts the user, a block rule blocks, and notes only steer the agent", async () => {
+  // "read" is not in the default action.tools (read tools are skipped for latency), so a read-scoped path rule
+  // requires opting the read tool into inspection.
+  await writeFile(configPath(), JSON.stringify({ notices: true, action: { tools: ["bash", "write", "edit", "read"], pathRules: [
+    { id: "repo-readonly", paths: ["deploy.yaml"], access: "read", tools: ["write", "edit"], action: "confirm", message: "deploys change cluster state" },
+    { id: "audit-log", paths: ["audit/app.log"], access: "write", tools: ["read"], action: "block" },
+  ] } }));
+  await writeFile(join(temporary, "deploy.yaml"), "image: app\n");
+  await mkdir(join(temporary, "audit"), { recursive: true });
+  await writeFile(join(temporary, "audit", "app.log"), "entry\n");
+
+  confirmResult = true;
+  const allowed = await toolCall("edit", { path: "deploy.yaml", edits: [{ oldText: "app", newText: "app2" }] });
+  assert.equal(allowed, undefined, "the dialog answer allowed the edit");
+  assert.equal(confirms.length, 1, "the confirm path rule prompted the user");
+  assert.match(`${confirms[0]!.title} ${confirms[0]!.message}`, /deploy\.yaml/, "the dialog names the path");
+  assert.equal(networkCalls, 0, "a path rule costs no request");
+
+  const blocked = await toolCall("read", { path: "audit/app.log" });
+  assert.equal(blocked?.block, true, "the block path rule denies without a dialog");
+  assert.match(blocked?.reason ?? "", /audit-log/, "the reason names the rule");
+  assert.equal(confirms.length, 1, "a block never opens a dialog");
+
+  const flows = await toolCall("read", { path: "deploy.yaml" });
+  assert.equal(flows, undefined, "a read of the read-flow path passes without a prompt");
+  await rm(join(temporary, "deploy.yaml"), { force: true });
+  await rm(join(temporary, "audit"), { recursive: true, force: true });
+});
