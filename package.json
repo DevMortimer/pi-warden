@@ -41,6 +41,7 @@
     "extensions",
     "examples",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "pi": {

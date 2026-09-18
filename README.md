@@ -210,7 +210,7 @@ The rules guard, the session-level `ActionGuard` and `RulesGuard`, and the other
 
 ## Development
 
-`npm install`, then `npm run check` (typecheck, 185 offline tests on a mocked transport, build). `npm run test:live` spends real judgments across the guards; `node scripts/calibrate-action.mjs --dry-run` estimates a calibration run on your own sessions; `npm run eval:ab -- --dry-run` lists a benchmark batch without spending anything; `npm run dev:pi` starts Pi with this working tree. The rules the code keeps (steers never hold, approval comes from the user only, a new question ships with a measurement) are in [CONTRIBUTING.md](CONTRIBUTING.md).
+`npm install`, then `npm run check` (typecheck, 185 offline tests on a mocked transport, build). `npm run test:live` spends real judgments across the guards; `node scripts/calibrate-action.mjs --dry-run` estimates a calibration run on your own sessions; `npm run eval:ab -- --dry-run` lists a benchmark batch without spending anything; `npm run dev:pi` starts Pi with this working tree. Release history, including the measured numbers behind each change: [CHANGELOG.md](CHANGELOG.md). The rules the code keeps (steers never hold, approval comes from the user only, a new question ships with a measurement) are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
 
