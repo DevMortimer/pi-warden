@@ -158,6 +158,41 @@ test("evaluateStuck decides exact repeats in code and asks Jev otherwise", async
   assert.match(errored.error ?? "", /synthetic timeout/);
 });
 
+test("churnCount detects repeated calls to the same target with changing output", () => {
+  const window = new AttemptWindow(12);
+  // Same command, different output each time — churn, not an exact repeat.
+  const poll = { command: "gh pr checks 2673" };
+  window.push(makeAttempt("bash", poll, text("1 of 4 checks passed"), false));
+  window.push(makeAttempt("bash", poll, text("2 of 4 checks passed"), false));
+  window.push(makeAttempt("bash", poll, text("3 of 4 checks passed"), false));
+  assert.equal(window.churnCount(), 3, "three calls to the same target count as churn");
+  assert.equal(window.exactRepeats(), 0, "different output each time is not an exact repeat");
+  assert.equal(window.successRepeats(), 1, "different output each time: only the latest matches itself");
+  const churnConfig = { ...stuckConfig, churnThreshold: 3 };
+  assert.equal(window.shouldJudge(churnConfig), true, "churn threshold met triggers judgment");
+  // Output stabilises — churn stops, success repeat takes over.
+  window.push(makeAttempt("bash", poll, text("3 of 4 checks passed"), false));
+  assert.equal(window.churnCount(), 4, "fourth call to the same target still counts");
+  assert.equal(window.successRepeats(), 2, "last two are identical: success repeat");
+  // Different target resets churn.
+  window.push(makeAttempt("bash", { command: "ls" }, text("ok"), false));
+  assert.equal(window.churnCount(), 1, "different target: only the latest call counts");
+});
+
+test("evaluateStuck returns a churn verdict when the same target is called enough times", async () => {
+  const window = new AttemptWindow(12);
+  const poll = { command: "gh pr checks 2673" };
+  for (let i = 0; i < 5; i++) window.push(makeAttempt("bash", poll, text(`${i + 1} of 4 checks passed`), false));
+  const churnConfig = { ...stuckConfig, churnThreshold: 5 };
+  const verdict = await evaluateStuck(window, "watch the PR", { config: churnConfig, timeoutMs: 1000 });
+  assert.equal(verdict.stuck, true, "churn should produce a stuck verdict");
+  assert.equal(verdict.source, "repeat", "churn is decided in code, not by Jev");
+  assert.equal(verdict.churn, true, "the churn flag is set");
+  assert.match(verdict.reasons[0] ?? "", /5 times with changing output/, "the reason names the call count");
+  assert.match(stuckNudge(verdict), /keeps changing but the target stays the same/, "the nudge tells the agent to act or switch");
+  assert.match(formatStuck(verdict), /churn \u00b7 stuck$/, "the widget renders the churn flag");
+});
+
 test("buildStuckRequest sends numbered attempts with outcomes and a task", () => {
   const window = new AttemptWindow(12);
   window.push(makeAttempt("bash", { command: "npm test" }, text("boom"), true));

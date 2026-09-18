@@ -47,6 +47,8 @@ export interface StuckGuardConfig {
   cooldown: number;
   /** P(same strategy) at or above this reports the agent as stuck. */
   sameStrategy: number;
+  /** Calls to the same target (same tool + input key) that trigger churn detection. */
+  churnThreshold: number;
   /** Also steer the agent with a short message, not only the user. */
   nudge: boolean;
 }
@@ -222,7 +224,7 @@ export function defaultConfig(): WardenConfig {
       visibleMismatch: 0.8,
       feedbackLog: true,
     },
-    stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, nudge: true },
+    stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7 },
@@ -323,6 +325,7 @@ function applyStuck(base: StuckGuardConfig, raw: unknown): StuckGuardConfig {
     minFailures: Math.min(window, positiveInteger(raw.minFailures, base.minFailures)),
     cooldown: positiveInteger(raw.cooldown, base.cooldown),
     sameStrategy: probability(raw.sameStrategy, base.sameStrategy),
+    churnThreshold: Math.min(window, positiveInteger(raw.churnThreshold, base.churnThreshold)),
     nudge: boolean(raw.nudge, base.nudge),
   };
 }

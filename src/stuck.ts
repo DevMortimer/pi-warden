@@ -34,6 +34,8 @@ export interface StuckVerdict {
   reasons: string[];
   /** True when the repeat that fired was a successful call printing the same output, not a failure loop. */
   successRepeat?: boolean;
+  /** True when the repeat that fired was repeated calls to the same target with changing output. */
+  churn?: boolean;
   judgment?: StuckJudgment;
   error?: string;
   errorCode?: IntegrationErrorCode;
@@ -128,12 +130,24 @@ export class AttemptWindow {
     return this.attempts.filter(attempt => !attempt.failed && attempt.key === latest.key && attempt.outputKey === latest.outputKey).length;
   }
 
-  /** Latest result failed with enough failures behind it, or succeeded but repeats itself, and the cool-down has passed. */
+  /** How many attempts (regardless of outcome) target the same call key. When this count is high the output changes
+   * each time (otherwise it would be an exact or success repeat), but the model is not making progress — it is
+   * polling or cycling through slight variations of the same command. */
+  churnCount(): number {
+    const latest = this.attempts.at(-1);
+    if (!latest) return 0;
+    return this.attempts.filter(attempt => attempt.key === latest.key).length;
+  }
+
+  /** Latest result failed with enough failures behind it, succeeded but repeats itself, or is churning on the same
+   * target, and the cool-down has passed. */
   shouldJudge(config: StuckGuardConfig): boolean {
     const latest = this.attempts.at(-1);
     if (!latest) return false;
     if (latest.failed) return this.failures() >= config.minFailures && this.sinceJudgment >= config.cooldown;
-    return this.successRepeats() >= config.minFailures && this.sinceJudgment >= config.cooldown;
+    if (this.successRepeats() >= config.minFailures) return this.sinceJudgment >= config.cooldown;
+    if (this.churnCount() >= config.churnThreshold) return this.sinceJudgment >= config.cooldown;
+    return false;
   }
 }
 
@@ -181,6 +195,10 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   if (successRepeats >= options.config.minFailures) {
     return { stuck: true, source: "repeat", failures, reasons: [`the same call succeeded ${successRepeats} times with the same output`], successRepeat: true };
   }
+  const churn = window.churnCount();
+  if (churn >= options.config.churnThreshold) {
+    return { stuck: true, source: "repeat", failures, reasons: [`the same target was called ${churn} times with changing output`], churn: true };
+  }
   if (!options.judge) return { stuck: false, source: "repeat", failures, reasons: [] };
   window.markJudged();
   const result = await ask(options.judge, buildStuckRequest(window.attempts, task), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
@@ -204,6 +222,9 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
 export function stuckNudge(verdict: StuckVerdict): string {
   if (verdict.successRepeat) {
     return `pi-warden: ${verdict.reasons.join("; ")}. Stop re-running it: the answer is already in the last output. Act on that result, move to the next step, or tell the user why the same call has to run again.`;
+  }
+  if (verdict.churn) {
+    return `pi-warden: ${verdict.reasons.join("; ")}. The output keeps changing but the target stays the same. Either act on the latest result and move on, or try a different command entirely.`;
   }
   return `pi-warden: ${verdict.reasons.join("; ")}. Stop retrying. Re-read the last error output carefully, state a new hypothesis about the cause, and either gather the missing information (read the relevant file, check versions or paths) or try a different method. If two different methods have failed, report the blocker to the user with the exact error instead of trying again.`;
 }

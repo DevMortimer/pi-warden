@@ -227,7 +227,7 @@ export function actionTokens(verdict: Verdict, at = Date.now()): Tokens {
 
 export function stuckTokens(verdict: StuckVerdict, at = Date.now()): Tokens {
   const flags = [
-    verdict.source === "repeat" && verdict.stuck ? (verdict.successRepeat ? "successful repeat" : "exact repeat") : undefined,
+    verdict.source === "repeat" && verdict.stuck ? (verdict.successRepeat ? "successful repeat" : verdict.churn ? "churn" : "exact repeat") : undefined,
     verdict.source === "error" ? "typesafe error" : undefined,
   ].filter(Boolean).join(", ");
   return {
