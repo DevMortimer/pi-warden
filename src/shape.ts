@@ -3,7 +3,7 @@ import type { WardenConfig } from "./config.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 7;
+export const EXPECTED_SCHEMA = 6;
 
 export interface ShapeResult {
   config: WardenConfig;

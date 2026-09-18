@@ -103,6 +103,22 @@ test("project overrides cannot set command rules, deny rules, or exempt rules", 
   assert.deepEqual(config.action.exemptRules, [], "project file cannot exempt built-ins");
 });
 
+test("a trusted project action block cannot wipe the user's command rules", () => {
+  // The user's rules survive a project file that sets other action keys — action.tools is the documented case.
+  const userBase = applyUserOverrides(defaultConfig(), { action: {
+    commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" }],
+    commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b" }],
+    exemptRules: ["sudo"],
+  } });
+  const config = applyProjectOverrides(userBase, { action: { tools: ["bash", "write"] } });
+  assert.deepEqual(config.action.tools, ["bash", "write"], "the project override applied where it may");
+  assert.equal(config.action.commandRules.length, 1, "user command rules survive the project override");
+  assert.equal(config.action.commandRules[0]!.id, "kubectl-delete");
+  assert.equal(config.action.commandDenyRules.length, 1, "user deny rules survive the project override");
+  assert.equal(config.action.commandDenyRules[0]!.id, "never-reset");
+  assert.deepEqual(config.action.exemptRules, ["sudo"], "user exemptions survive the project override");
+});
+
 test("user config accepts command rules, deny rules, and exempt rules", () => {
   const config = applyUserOverrides(defaultConfig(), { action: { commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" }], commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b" }], exemptRules: ["infra-destroy", "sudo"] } });
   assert.equal(config.action.commandRules.length, 1);

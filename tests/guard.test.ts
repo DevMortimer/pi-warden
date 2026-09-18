@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves } from "../src/guard.js";
+import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -653,6 +653,20 @@ test("commandRules: exemptRules silences a built-in; unknown id surfaces as no m
   assert.ok(exempted.length === 0, "no other rule fires for this command");
   const unknown = matchPatterns("bash", { command: "rm -rf /" }, undefined, { commandRules: [], commandDenyRules: [], exemptRules: ["nonexistent-rule-id"] });
   assert.ok(unknown.some(hit => hit.id === "rm-recursive-dangerous-target"), "unknown exempt id does not interfere with other rules");
+});
+
+test("commandRules: exemptRules silences the rm classifier's derived ids like any built-in", () => {
+  const quiet = matchPatterns("bash", { command: "rm -rf build/" }, undefined, { commandRules: [], commandDenyRules: [], exemptRules: ["rm-rf"] });
+  assert.equal(quiet.filter(hit => hit.id.startsWith("rm-")).length, 0, "rm-rf exempted silences the classifier hit");
+  const loud = matchPatterns("bash", { command: "rm -rf build/" }, undefined, { commandRules: [], commandDenyRules: [], exemptRules: [] });
+  assert.ok(loud.some(hit => hit.id === "rm-rf"), "without the exemption the classifier fires");
+});
+
+test("unknownExemptIds names only ids that match neither a built-in, a classifier id, nor a user rule", () => {
+  assert.deepEqual(unknownExemptIds(["infra-destroy", "sudo", "rm-rf", "sensitive-path"], [], []), [], "every real id is known");
+  assert.deepEqual(unknownExemptIds(["infra-destruct", "suddo"], [], []), ["infra-destruct", "suddo"], "typos are named");
+  const rules = [{ id: "kubectl-delete", pattern: ".", severity: "warn" as const }];
+  assert.deepEqual(unknownExemptIds(["kubectl-delete", "flux-suspend"], rules, []), ["flux-suspend"], "a user's own rule ids count as known");
 });
 
 test("commandRules: caseSensitive and message override work", () => {

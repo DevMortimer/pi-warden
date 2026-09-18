@@ -91,3 +91,11 @@ test("parseVerdictLine takes the verdict only where the template ends on a known
   assert.deepEqual(parseVerdictLine("warden · context · bash · saved 12 bytes", "context"), { body: ["bash", "saved 12 bytes"] }, "no level token, no verdict");
   assert.deepEqual(parseVerdictLine("22:44:54 bash → allow · irr 0.33", "action"), { body: ["22:44:54 bash → allow", "irr 0.33"] }, "a template that keeps the level mid-line has no chip to lead with");
 });
+
+test("a deny verdict renders a chip, so a blocked call is visible in the status line and the panel", () => {
+  assert.equal(LEVEL_COLOR.deny, "error", "deny has a color; without it parseVerdictLine drops the verdict");
+  const denyLine = { guard: "action", line: "warden · bash · never-reset · deny" };
+  assert.deepEqual(parseVerdictLine(denyLine.line, "action"), { status: "deny", body: ["bash", "never-reset"] }, "the deny chip is taken, not lost");
+  const lines = widgetLines([denyLine], theme);
+  assert.match(lines[0]!, /DENY/, "the deny verdict leads the status line as a chip");
+});
