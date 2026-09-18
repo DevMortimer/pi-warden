@@ -260,7 +260,9 @@ export function textRegrets(prompt: string | undefined): boolean {
 export function outcomeNote(record: CallRecord): string {
   switch (record.outcome) {
     case "approved": return `outcome: approved by the user (${record.outcomeVia === "dialog" ? "confirm dialog" : "released on retry"}); the hold was a false positive`;
-    case "declined": return "outcome: declined by the user in the confirm dialog; the hold stood";
+    case "declined": return record.outcomeVia === "deny"
+      ? "outcome: blocked by a deny rule; the call never ran"
+      : "outcome: declined by the user in the confirm dialog; the hold stood";
     case "replanned": return "outcome: never approved after the user replied; the agent re-planned, the hold stood";
     case "regretted": return `outcome: the user's next message regrets this call${record.regret !== undefined ? ` (${record.regret.toFixed(2)})` : ""}; it should have been held`;
     case "accepted": return `outcome: the user's next message does not regret this call${record.regret !== undefined ? ` (${record.regret.toFixed(2)})` : ""}`;

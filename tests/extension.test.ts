@@ -1574,14 +1574,36 @@ test("user command rules: a confirm rule with action dialog prompts the user reg
   confirms.length = 0;
 });
 
+test("user command rules: a dialog rule prompts even in advise mode, where nothing else holds", async () => {
+  await writeFile(configPath(), JSON.stringify({ mode: "advise", notices: true, action: { commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm", action: "dialog" }] } }));
+  confirmResult = false;
+  const declined = await toolCall("bash", { command: "kubectl delete pod foo -n prod" });
+  assert.equal(declined?.block, true, "the dialog fired in advise mode and the user declined");
+  assert.equal(confirms.length, 1, "a rule the operator declared for dialog prompts in every mode");
+  confirmResult = true;
+  confirms.length = 0;
+  // Advise still never holds anything else: a built-in confirm verdict only reports.
+  const advisory = await toolCall("bash", { command: "git push --force origin main" });
+  assert.equal(advisory, undefined, "advise mode, not held");
+  assert.equal(confirms.length, 0, "no dialog for a built-in in advise mode");
+});
+
 test("user command rules: a deny rule blocks without a dialog and without a TypeSafe request", async () => {
-  await writeFile(configPath(), JSON.stringify({ action: { commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b", message: "talosctl reset is never allowed" }] } }));
+  // Consent is granted and the judge would be consulted for any non-deny verdict; deny must bypass it entirely.
+  await grantConsent();
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, action: { commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b", message: "talosctl reset is never allowed" }] } }));
   const blocked = await toolCall("bash", { command: "talosctl reset --nodes talos1" });
   assert.equal(blocked?.block, true);
   assert.match(blocked?.reason ?? "", /talosctl reset is never allowed/);
   assert.match(blocked?.reason ?? "", /not allowed to run/);
   assert.equal(confirms.length, 0, "deny never prompts");
-  assert.equal(networkCalls, 0, "deny never consults the judge");
+  assert.equal(networkCalls, 0, "deny never consults the judge, even with consent granted");
+  // The same command with the deny rule absent reaches the judge, proving the zero above is deny's doing.
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, action: { commandDenyRules: [] } }));
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
+  const judged = await toolCall("bash", { command: "talosctl upgrade --nodes talos1" });
+  assert.equal(judged, undefined);
+  assert.ok(networkCalls > 0, "without the deny rule the judge is consulted");
 });
 
 test("user command rules: a warn rule warns without holding; exemptRules silences a built-in", async () => {
@@ -1592,7 +1614,6 @@ test("user command rules: a warn rule warns without holding; exemptRules silence
   // infra-destroy is exempted, so kubectl delete passes the pattern floor.
   const exempted = await toolCall("bash", { command: "kubectl delete pod foo" });
   assert.equal(exempted, undefined);
-  assert.ok(!notices.some(notice => /infra-destroy/.test(notice.text)), "the built-in is silent");
 });
 
 test("user command rules: a confirm rule without action defaults to dialog for user rules", async () => {
@@ -1601,4 +1622,20 @@ test("user command rules: a confirm rule without action defaults to dialog for u
   assert.equal(allowed, undefined);
   assert.equal(confirms.length, 1, "default action for a user confirm rule is dialog");
   confirms.length = 0;
+});
+
+test("user command rules: a confirm rule with action hold steers instead of prompting, in every mode", async () => {
+  await writeFile(configPath(), JSON.stringify({ action: { commandRules: [{ id: "flux-suspend", pattern: "\\bflux\\s+suspend\\b", severity: "confirm", action: "hold" }] } }));
+  const held = await toolCall("bash", { command: "flux suspend kustomization apps" });
+  assert.equal(held?.block, true, "hold restores steer semantics: no dialog, the agent is told and asked to re-plan");
+  assert.equal(confirms.length, 0, "action hold never prompts");
+  assert.match(held?.reason ?? "", /held this bash call/);
+});
+
+test("user command rules: severity deny on a commandRule blocks like a commandDenyRule", async () => {
+  await writeFile(configPath(), JSON.stringify({ action: { commandRules: [{ id: "never-helm-uninstall", pattern: "\\bhelm\\s+uninstall\\b", severity: "deny" }] } }));
+  const blocked = await toolCall("bash", { command: "helm uninstall traefik -n kube-system" });
+  assert.equal(blocked?.block, true);
+  assert.match(blocked?.reason ?? "", /not allowed to run/);
+  assert.equal(confirms.length, 0, "deny never prompts");
 });

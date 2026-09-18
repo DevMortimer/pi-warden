@@ -225,7 +225,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 7;
+export const CONFIG_SCHEMA = 6;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -331,7 +331,9 @@ function parseCommandRule(raw: unknown, defaultSeverity: CommandRule["severity"]
   if (!id || !pattern) return undefined;
   const severity = raw.severity === "warn" || raw.severity === "confirm" || raw.severity === "deny" ? raw.severity : defaultSeverity;
   // Dialog is the default for a confirm rule (the reason one writes such a rule); hold restores steer semantics.
-  const action = raw.action === "dialog" || raw.action === "hold" ? raw.action : severity === "confirm" ? "dialog" : undefined;
+  // A deny or warn rule cannot carry an action: there is nothing to prompt and nothing to steer differently, and a
+  // stray action on one would misreport in traces as a dialog rule.
+  const action = raw.action === "dialog" || raw.action === "hold" ? (severity === "confirm" ? raw.action : undefined) : severity === "confirm" ? "dialog" : undefined;
   const message = typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : undefined;
   const caseSensitive = typeof raw.caseSensitive === "boolean" ? raw.caseSensitive : false;
   return { id, pattern, severity, ...(action ? { action } : {}), ...(message ? { message } : {}), ...(caseSensitive ? { caseSensitive } : {}) };
@@ -373,9 +375,11 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
     visibleMismatch: Math.min(probability(raw.visibleMismatch, base.visibleMismatch), probability(raw.intentMismatch, base.intentMismatch)),
     feedbackLog: boolean(raw.feedbackLog, base.feedbackLog),
-    commandRules: source === "user" ? parseCommandRules(raw.commandRules, "warn") : [],
-    commandDenyRules: source === "user" ? parseCommandRules(raw.commandDenyRules, "deny") : [],
-    exemptRules: source === "user" ? parseExemptRules(raw.exemptRules) : [],
+    // Only the user file declares these; a project file cannot add, edit, or remove them. The base (already the
+    // user's rules when a project file layers on top) is carried through, so a project "action" block cannot wipe them.
+    commandRules: source === "user" ? parseCommandRules(raw.commandRules, "warn") : base.commandRules,
+    commandDenyRules: source === "user" ? parseCommandRules(raw.commandDenyRules, "deny") : base.commandDenyRules,
+    exemptRules: source === "user" ? parseExemptRules(raw.exemptRules) : base.exemptRules,
   };
 }
 

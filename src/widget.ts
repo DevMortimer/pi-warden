@@ -12,7 +12,7 @@ export type WidgetPlacement = "aboveEditor" | "belowEditor";
 /** Palette shared by the status line and the trace sidebar: one place decides what a verdict looks like. */
 export interface ThemeLike { fg(color: string, text: string): string; bold(text: string): string }
 
-export const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", confirm: "error", stuck: "error", "false claim": "error", stopped: "error", "stopped, recovering": "error", violation: "warning", skipped: "muted", wake: "warning", silent: "muted", "appended silently": "muted", "possible credentials": "warning", error: "error" };
+export const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", confirm: "error", deny: "error", stuck: "error", "false claim": "error", stopped: "error", "stopped, recovering": "error", violation: "warning", skipped: "muted", wake: "warning", silent: "muted", "appended silently": "muted", "possible credentials": "warning", error: "error" };
 
 /** Verdicts that need no eye: the guard ran and found nothing. The rest keep a line of their own. */
 const QUIET_COLORS = new Set(["success", "muted"]);

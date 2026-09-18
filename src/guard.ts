@@ -349,6 +349,26 @@ export interface PatternOptions {
   exemptRules?: readonly string[];
 }
 
+/** Every id exemptRules can legitimately name: the built-in shell rules, the rm-classifier's derived ids, and the
+ * sensitive-path id. Unknown ids (a typo, or a rule that never existed) are inert; this list lets the surface be
+ * reported once instead of discovered when the rule the user meant to silence keeps firing. */
+export const EXEMPTABLE_IDS: readonly string[] = [
+  ...SHELL_RULES.map(rule => rule.id),
+  "rm-recursive",
+  "rm-rf",
+  "rm-recursive-dangerous-target",
+  "sensitive-path",
+];
+
+/** Exempt ids that name neither a built-in, a classifier id, nor one of the user's own rules: inert, but
+ * almost certainly not what the user meant. */
+export function unknownExemptIds(exemptRules: readonly string[], commandRules: readonly CommandRule[] = [], commandDenyRules: readonly CommandRule[] = []): string[] {
+  const known = new Set(EXEMPTABLE_IDS);
+  for (const rule of commandRules) known.add(rule.id);
+  for (const rule of commandDenyRules) known.add(rule.id);
+  return exemptRules.filter(id => !known.has(id));
+}
+
 function compileUserRule(raw: CommandRule, defaultSeverity: Severity): CompiledUserRule | undefined {
   try {
     const flags = raw.caseSensitive ? "" : "i";
@@ -366,7 +386,11 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
   if (raw) {
     const command = stripDataText(raw).text;
     for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
-    for (const segment of splitShell(command)) add(classifyRm(segment, cwd));
+    for (const segment of splitShell(command)) {
+      const hit = classifyRm(segment, cwd);
+      // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
+      if (hit && !exempt.has(hit.id)) add(hit);
+    }
     if (!exempt.has("sensitive-path") && SENSITIVE_PATH.test(command)) add({ id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
     for (const raw of options?.commandDenyRules ?? []) {
       if (exempt.has(raw.id)) continue;
