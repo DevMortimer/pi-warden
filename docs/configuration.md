@@ -23,7 +23,10 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "offTask": { "warn": 0.6, "steer": 0.85 },
     "intentMismatch": 0.9,
     "visibleMismatch": 0.8,
-    "feedbackLog": true
+    "feedbackLog": true,
+    "commandRules": [],
+    "commandDenyRules": [],
+    "exemptRules": []
   },
   "rules": {
     "enabled": true,
@@ -67,6 +70,9 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `action.intentMismatch` | P(call differs from the agent's stated plan) that warns and tells the agent, on calls that can change something. |
 | `action.visibleMismatch` | Lower mismatch threshold for commands whose effect is visible outside the working tree (commit, push, publish, install, launch). |
 | `action.feedbackLog` | Write each judged call and its outcome to `~/.pi/agent/pi-warden/holds/`; never the command. |
+| `action.commandRules` | User-defined command rules: `{ id, pattern, severity: "warn" \| "confirm" \| "deny", action?, message?, caseSensitive? }`. Patterns match the data-text-stripped command, so heredoc bodies and commit messages do not fire them. `confirm` defaults to `action: "dialog"` (a prompt for you, regardless of mode); `action: "hold"` restores steer semantics. User file only. |
+| `action.commandDenyRules` | The same shape, shorthand for `severity: "deny"`: the call is blocked with no dialog and no TypeSafe request. User file only. |
+| `action.exemptRules` | Built-in or user rule ids to exempt, e.g. `["infra-destroy"]` for a workflow whose `kubectl delete` is routine. User file only. |
 | `rules.*` | Rules source, threshold, path globs, sensitive-path notes. See [guards.md → Rules](guards.md#rules). |
 | `slop.*` | Code slop threshold and reply (prose) checks. `prose.audience` is `technical`, `plain`, or free text. |
 | `security.threshold` | Written-code risk and tool-output injection threshold. |

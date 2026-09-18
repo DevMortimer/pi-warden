@@ -1558,3 +1558,47 @@ test("a final reply that restates this run's earlier reply is counted, not steer
   await runCommand("status", context({ hasUI: false }));
   assert.match(sentMessages.at(-1)!.message.content, /1 restatements/, "the same answer to a new prompt does not count again");
 });
+
+test("user command rules: a confirm rule with action dialog prompts the user regardless of mode", async () => {
+  await writeFile(configPath(), JSON.stringify({ mode: "steer", notices: true, action: { commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm", action: "dialog", message: "kubectl delete can remove cluster resources" }] } }));
+  const allowed = await toolCall("bash", { command: "kubectl delete pod foo -n prod" });
+  assert.equal(allowed, undefined, "the user approved the dialog");
+  assert.equal(confirms.length, 1, "the dialog fired despite steer mode");
+  assert.match(confirms[0]!.title, /allow this bash call/);
+  assert.match(confirms[0]!.message, /kubectl delete can remove cluster resources/, "the user message replaces the derived label");
+  confirmResult = false;
+  const declined = await toolCall("bash", { command: "kubectl delete pod foo -n prod" });
+  assert.equal(declined?.block, true);
+  assert.match(declined?.reason ?? "", /user declined/);
+  confirmResult = true;
+  confirms.length = 0;
+});
+
+test("user command rules: a deny rule blocks without a dialog and without a TypeSafe request", async () => {
+  await writeFile(configPath(), JSON.stringify({ action: { commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b", message: "talosctl reset is never allowed" }] } }));
+  const blocked = await toolCall("bash", { command: "talosctl reset --nodes talos1" });
+  assert.equal(blocked?.block, true);
+  assert.match(blocked?.reason ?? "", /talosctl reset is never allowed/);
+  assert.match(blocked?.reason ?? "", /not allowed to run/);
+  assert.equal(confirms.length, 0, "deny never prompts");
+  assert.equal(networkCalls, 0, "deny never consults the judge");
+});
+
+test("user command rules: a warn rule warns without holding; exemptRules silences a built-in", async () => {
+  await writeFile(configPath(), JSON.stringify({ notices: true, action: { commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" }], exemptRules: ["infra-destroy"] } }));
+  const warn = await toolCall("bash", { command: "git push origin feature" });
+  assert.equal(warn, undefined, "a warn never holds");
+  assert.match(notices.at(-1)!.text, /git-push-any/);
+  // infra-destroy is exempted, so kubectl delete passes the pattern floor.
+  const exempted = await toolCall("bash", { command: "kubectl delete pod foo" });
+  assert.equal(exempted, undefined);
+  assert.ok(!notices.some(notice => /infra-destroy/.test(notice.text)), "the built-in is silent");
+});
+
+test("user command rules: a confirm rule without action defaults to dialog for user rules", async () => {
+  await writeFile(configPath(), JSON.stringify({ action: { commandRules: [{ id: "flux-suspend", pattern: "\\bflux\\s+suspend\\b", severity: "confirm" }] } }));
+  const allowed = await toolCall("bash", { command: "flux suspend kustomization apps" });
+  assert.equal(allowed, undefined);
+  assert.equal(confirms.length, 1, "default action for a user confirm rule is dialog");
+  confirms.length = 0;
+});
