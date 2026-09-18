@@ -128,6 +128,27 @@ export async function evaluateOutput(tool: string, text: string, task: string | 
   return verdict;
 }
 
+/** Session-bookkeeping view of per-block verdicts: the worst security signal wins, and retention stays per block. */
+export function mergeOutput(blocks: readonly OutputVerdict[]): OutputVerdict {
+  const secretBlocks = blocks.filter(block => block.secret);
+  const secretIds = [...new Set(blocks.flatMap(block => block.secretIds ?? []))];
+  const syntheticIds = [...new Set(blocks.flatMap(block => block.syntheticIds ?? []))];
+  const injections = blocks.map(block => block.injection).filter((value): value is number => value !== undefined);
+  const exfiltrations = blocks.map(block => block.exfiltration).filter((value): value is number => value !== undefined);
+  const failed = blocks.find(block => block.error !== undefined);
+  return {
+    secret: secretBlocks.length > 0,
+    ...(secretBlocks.length ? { secretId: secretBlocks[0]!.secretId, secretIds } : {}),
+    suspicious: blocks.some(block => block.suspicious),
+    ...(injections.length ? { injection: Math.max(...injections) } : {}),
+    ...(exfiltrations.length ? { exfiltration: Math.max(...exfiltrations) } : {}),
+    // Retention is decided per block; the merged view never drives a joined excerpt.
+    retention: "all",
+    ...(syntheticIds.length ? { syntheticIds } : {}),
+    ...(failed?.error !== undefined ? { error: failed.error, ...(failed.errorCode ? { errorCode: failed.errorCode } : {}) } : {}),
+  };
+}
+
 /** No copied tool text enters the instruction channel. A warning is not proof of an attack. */
 export function securityNotice(verdict: OutputVerdict): string | undefined {
   const messages: string[] = [];

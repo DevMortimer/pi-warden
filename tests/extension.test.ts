@@ -263,18 +263,33 @@ test("tail compression stores exact full output and preserves done-check evidenc
   } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
 });
 
-test("multiple text blocks keep their positions and are not compressed", async () => {
+test("multi-block results: retention is decided per text block, order and non-text parts stay", async () => {
   await grantConsent();
-  nextAnswers = { injection: 0.95, retention: "summary_only" };
+  nextAnswers = { retention: "summary_only" };
   const first = "first block\n".repeat(1000);
-  const last = "last block\n".repeat(1000);
+  const last = "last block!\n".repeat(1000);
   const image = { type: "image", data: "synthetic", mimeType: "image/png" };
-  const patch = await fire("tool_result", { toolName: "read", input: {}, toolCallId: "mixed", isError: false, content: [{ type: "text", text: first }, image, { type: "text", text: last }] }) as { content: Array<{ text?: string }> };
+  const patch = await fire("tool_result", { toolName: "read", input: {}, toolCallId: "mixed", isError: false, content: [{ type: "text", text: first }, image, { type: "text", text: last }] }) as { content: Array<{ type: string; text?: string }> };
   assert.equal(patch.content.length, 3);
-  assert.strictEqual(patch.content[1], image);
-  assert.ok(patch.content[0]!.text!.includes(first));
-  assert.ok(patch.content[2]!.text!.includes(last));
-  assert.ok(!("retention" in requests.at(-1)!.questions));
+  assert.strictEqual(patch.content[1], image, "the image block keeps its position untouched");
+  assert.match(patch.content[0]!.text!, /pi-warden: summary_only; 12000 original characters/, "the first block is compressed on its own retention");
+  assert.match(patch.content[0]!.text!, /first block/, "the first block's excerpt carries its own content");
+  assert.match(patch.content[2]!.text!, /pi-warden: summary_only; 12000 original characters/, "the last block is compressed separately");
+  assert.match(patch.content[2]!.text!, /last block/);
+  assert.ok(!patch.content[0]!.text!.includes("last block"), "blocks are judged and excerpted separately, not flattened");
+  assert.equal(requests.filter(request => "retention" in request.questions).length, 2, "each large text block earns its own retention request");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /text block 1 of 2[\s\S]*text block 2 of 2/, "the trace names each compressed block");
+});
+
+test("a credential in one text block banners that block only; siblings stay untouched", async () => {
+  const patch = await fire("tool_result", { toolName: "read", input: {}, toolCallId: "mixed-secret", isError: false, content: [{ type: "text", text: "plain prose\n".repeat(50) }, { type: "text", text: "TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM" }, { type: "text", text: "more prose\n".repeat(50) }] }) as { content: Array<{ type: string; text?: string }> };
+  assert.equal(patch.content.length, 3);
+  assert.ok(!patch.content[0]!.text!.includes("pi-warden:"), "the clean first block is untouched");
+  assert.match(patch.content[1]!.text!, /Possible credentials in this output/, "the block carrying the secret earns the banner");
+  assert.match(patch.content[1]!.text!, /TOKEN=/, "the secret block's text is preserved, not dropped");
+  assert.match(patch.content[2]!.text!, /^more prose/, "the last block is untouched");
+  assert.equal(sentMessages.length, 1, "one security steer for the block that earned it");
 });
 
 test("secret warnings work offline; disabled output guards and failed requests preserve content", async () => {

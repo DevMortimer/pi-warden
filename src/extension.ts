@@ -16,7 +16,7 @@ import type { PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
-import { compressOutput, duplicateNote, evaluateOutput, outputKey, saveOutput, securityNotice } from "./output.js";
+import { compressOutput, duplicateNote, evaluateOutput, mergeOutput, outputKey, saveOutput, securityNotice } from "./output.js";
 import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
@@ -621,10 +621,29 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // Duplicate detection is code only: an identical result adds nothing, whatever Jev would say about it.
     const key = config.context.enabled && !recallRead && textBlocks.length === 1 && text.length >= config.context.duplicateMinChars ? outputKey(text) : undefined;
     const earlier = key ? ledger.duplicateOf(key) : undefined;
-    const output: OutputVerdict = earlier || recallRead ? { secret: false, suspicious: false, retention: "all" } : await evaluateOutput(event.toolName, text, latestUserPrompt(ctx), {
-      security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
-      signal: ctx.signal, compressible: textBlocks.length === 1, taskContext: recentTaskContext(ctx),
-    });
+    // A multi-block result is judged per text block: each block earns its own retention and banner, and the merged
+    // verdict feeds the session bookkeeping below. A block below both thresholds spends no request; its credential
+    // scan still runs offline.
+    const multiBlock = textBlocks.length > 1 && !earlier && !recallRead;
+    const blockVerdicts: OutputVerdict[] = [];
+    let output: OutputVerdict;
+    if (earlier || recallRead) {
+      output = { secret: false, suspicious: false, retention: "all" };
+    } else if (multiBlock) {
+      for (const blockText of textBlocks.map(part => part.text ?? "")) {
+        if (ctx.signal?.aborted) break;
+        blockVerdicts.push(await evaluateOutput(event.toolName, blockText, latestUserPrompt(ctx), {
+          security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
+          signal: ctx.signal, compressible: true, taskContext: recentTaskContext(ctx),
+        }));
+      }
+      output = mergeOutput(blockVerdicts);
+    } else {
+      output = await evaluateOutput(event.toolName, text, latestUserPrompt(ctx), {
+        security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
+        signal: ctx.signal, compressible: true, taskContext: recentTaskContext(ctx),
+      });
+    }
     if (ctx.signal?.aborted) return;
     if (output.error) noteError(ctx, output.error, output.errorCode);
     let content = event.content;
@@ -633,8 +652,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const secretValues = output.secretIds ?? (output.secret && output.secretId !== undefined ? [output.secretId] : []);
     const unseenSecrets = secretValues.filter((id) => !secretsSeen.has(id));
     const secretRepeat = output.secret && secretValues.length > 0 && unseenSecrets.length === 0;
+    // Per-block banners are computed before secretsSeen is updated, so a block whose values were all announced
+    // earlier stays quiet while a block with a new value earns the banner.
+    const blockNotices = multiBlock ? blockVerdicts.map(verdict => {
+      const values = verdict.secretIds ?? (verdict.secret && verdict.secretId !== undefined ? [verdict.secretId] : []);
+      const repeat = verdict.secret && values.length > 0 && values.every(id => secretsSeen.has(id));
+      return securityNotice(repeat ? { ...verdict, secret: false } : verdict);
+    }) : [];
     if (unseenSecrets.length) for (const id of unseenSecrets) secretsSeen.add(id);
-    const notice = securityNotice(secretRepeat ? { ...output, secret: false } : output);
+    const notice = multiBlock ? blockNotices.find(banner => banner !== undefined) : securityNotice(secretRepeat ? { ...output, secret: false } : output);
     // Fixture and documentation stand-ins (`devtok_`, `sk-synthetic-`, an alphabet run) earn one trace line and nothing else:
     // no banner in the result and no steer. Most credential steers in the benchmark were these values read from a test file.
     const unseenSynthetic = (output.syntheticIds ?? []).filter((id) => !secretsSeen.has(id));
@@ -670,34 +696,73 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
     }
     if (config.context.enabled && !earlier && !recallRead && textBlocks.length === 1 && text.length >= config.context.tailMinChars) ledger.candidate();
-    const excerpt = earlier ? undefined : compressOutput(text, output.retention, output.format);
-    if (excerpt && !ctx.signal?.aborted) {
-      try {
-        const path = await saveOutput(text);
-        const replacement = `${excerpt}\n\n${recallInstruction(recallTool, path)}`;
-        const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement) - (notice ? Buffer.byteLength(notice) * 2 + 4 : 0);
-        if (bytesSaved > 0) {
-          content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
-          ledger.record(path, bytesSaved);
-          storedPath = path;
-          record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
-            `retention: ${output.retention}; confidence ${output.confidence?.toFixed(2)}; format ${output.format ?? "generic"}${output.formatConfidence === undefined ? "" : ` (${output.formatConfidence.toFixed(2)})`}; ${output.model}; ${output.elapsedMs} ms`,
-            `saved ${bytesSaved} bytes; full output: ${path}`,
-            formatLedger(ledger.snapshot()),
-          ]);
+    if (multiBlock && !ctx.signal?.aborted) {
+      // Retention and banners per block; block order and non-text parts are never touched.
+      content = [...content];
+      let textIndex = 0;
+      for (let index = 0; index < content.length; index++) {
+        const part = content[index]!;
+        if (part.type !== "text") continue;
+        const verdict = blockVerdicts[textIndex];
+        const blockNotice = blockNotices[textIndex];
+        const blockText = part.text ?? "";
+        textIndex++;
+        if (!verdict) continue;
+        let replacement: string | undefined;
+        const excerpt = compressOutput(blockText, verdict.retention, verdict.format);
+        if (excerpt) {
+          try {
+            const path = await saveOutput(blockText);
+            const body = `${blockNotice ? `${blockNotice}\n\n` : ""}${excerpt}\n\n${recallInstruction(recallTool, path)}`;
+            const bytesSaved = Buffer.byteLength(blockText) - Buffer.byteLength(body);
+            if (bytesSaved > 0) {
+              replacement = body;
+              ledger.record(path, bytesSaved);
+              storedPath = path;
+              record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: verdict.retention, bytesSaved: String(bytesSaved) }), [
+                `text block ${textIndex} of ${blockVerdicts.length}: retention ${verdict.retention}; confidence ${verdict.confidence?.toFixed(2)}; format ${verdict.format ?? "generic"}${verdict.formatConfidence === undefined ? "" : ` (${verdict.formatConfidence.toFixed(2)})`}; saved ${bytesSaved} bytes; full output: ${path}`,
+                formatLedger(ledger.snapshot()),
+              ]);
+            }
+          } catch {
+            noteError(ctx, "Could not store full output; keeping the block unchanged.", undefined);
+          }
         }
-      } catch {
-        noteError(ctx, "Could not store full output; keeping it unchanged.", undefined);
+        if (!replacement && blockNotice) replacement = `${blockNotice}\n\n${blockText}\n\n${blockNotice}`;
+        if (replacement) content[index] = { ...part, text: replacement };
+      }
+    } else {
+      const excerpt = earlier ? undefined : compressOutput(text, output.retention, output.format);
+      if (excerpt && !ctx.signal?.aborted) {
+        try {
+          const path = await saveOutput(text);
+          const replacement = `${excerpt}\n\n${recallInstruction(recallTool, path)}`;
+          const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement) - (notice ? Buffer.byteLength(notice) * 2 + 4 : 0);
+          if (bytesSaved > 0) {
+            content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
+            ledger.record(path, bytesSaved);
+            storedPath = path;
+            record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
+              `retention: ${output.retention}; confidence ${output.confidence?.toFixed(2)}; format ${output.format ?? "generic"}${output.formatConfidence === undefined ? "" : ` (${output.formatConfidence.toFixed(2)})`}; ${output.model}; ${output.elapsedMs} ms`,
+              `saved ${bytesSaved} bytes; full output: ${path}`,
+              formatLedger(ledger.snapshot()),
+            ]);
+          }
+        } catch {
+          noteError(ctx, "Could not store full output; keeping it unchanged.", undefined);
+        }
       }
     }
     if (key && !earlier) ledger.remember(key, event.toolName, storedPath);
     if (notice && textBlocks.length) {
-      let index = 0;
-      content = content.map(part => {
-        if (part.type !== "text") return part;
-        index++;
-        return { ...part, text: `${index === 1 ? `${notice}\n\n` : ""}${part.text}${index === textBlocks.length ? `\n\n${notice}` : ""}` };
-      });
+      if (!multiBlock) {
+        let index = 0;
+        content = content.map(part => {
+          if (part.type !== "text") return part;
+          index++;
+          return { ...part, text: `${index === 1 ? `${notice}\n\n` : ""}${part.text}${index === textBlocks.length ? `\n\n${notice}` : ""}` };
+        });
+      }
       const delivered = steer(config, "security", notice);
       record(ctx, config, "security", renderTemplate(config.widget.security, {
         tool: event.toolName, injection: output.injection?.toFixed(2), exfiltration: output.exfiltration?.toFixed(2),
