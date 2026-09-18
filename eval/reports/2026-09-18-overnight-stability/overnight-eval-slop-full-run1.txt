@@ -1,0 +1,20 @@
+.env not found. Continuing without it.
+# code slop — per-symptom Noul, threshold 0.7
+ok   TODO stub                    stub=0.99 comments=0.24 dead=0.41 hedging=0.96
+ok   fake data mock               stub=0.99 comments=0.19 dead=0.23 hedging=0.81
+ok   restating comments           stub=0.03 comments=0.96 dead=0.10 hedging=0.04
+ok   banner + jsdoc echo          stub=0.11 comments=0.93 dead=0.14 hedging=0.04
+ok   commented-out code           stub=0.10 comments=0.44 dead=0.97 hedging=0.06
+ok   unused import and var        stub=0.05 comments=0.09 dead=0.88 hedging=0.04
+ok   duplicated logic             stub=0.12 comments=0.09 dead=0.97 hedging=0.04
+ok   hedging notes                stub=0.43 comments=0.27 dead=0.20 hedging=0.98
+ok   stub + hedging               stub=0.99 comments=0.16 dead=0.59 hedging=0.98
+ok   focused implementation       stub=0.04 comments=0.09 dead=0.10 hedging=0.04
+ok   good explanatory comment     stub=0.08 comments=0.08 dead=0.14 hedging=0.05
+ok   test with fixtures           stub=0.10 comments=0.09 dead=0.10 hedging=0.04
+ok   small focused edit           stub=0.04 comments=0.16 dead=0.07 hedging=0.05
+ok   intentional stub outside task stub=0.27 comments=0.16 dead=0.21 hedging=0.20
+ok   mock in a test file          stub=0.54 comments=0.10 dead=0.16 hedging=0.05
+ok   defensive unreachable        stub=0.14 comments=0.08 dead=0.79 hedging=0.04
+
+16/16 matched; 16 requests, 13623 input tokens

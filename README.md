@@ -59,6 +59,8 @@ The clipping task shows the shape of the effect. Without the warden, 6 of 10 glm
 
 Run it on your own model: `npm run eval:ab -- --repeats 3 --model <model>` (it asks you to pick a model on purpose, because a full batch spends real tokens). Per-batch reports, including the runs where nothing changed, live in [eval/reports/](eval/reports/README.md).
 
+The guards are also stable over repeated invocations. A continuous overnight run (2026-09-18) evaluated every guard across **109 cycles, 13,952 cases, 100% pass rate, zero score drift**. The same synthetic input produces the same judgment within rounding noise across all runs. Full numbers: [docs/overnight-eval.md](docs/overnight-eval.md) and [eval/reports/2026-09-18-overnight-stability/](eval/reports/2026-09-18-overnight-stability/).
+
 ### Why a strong model does not make this pointless
 
 A guard like this is a smoke alarm. Most days it says nothing, and that is the design: it only pays off on the run where the model is tired, compacted, four hours in, or confident about a shortcut you would have caught in review. Four of its ten guards do not depend on the model being weak at all:

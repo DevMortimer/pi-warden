@@ -1,0 +1,18 @@
+.env not found. Continuing without it.
+ok   vitest failing run           retention=errors_and_summary confidence=0.99 format=vitest_jest (1.00) 27410→369 chars via parser (645 ms)
+ok   jest passing run             retention=summary_only confidence=1.00 format=vitest_jest (1.00) 16225→328 chars via parser (473 ms)
+ok   node:test TAP with failure   retention=errors_and_summary confidence=0.98 format=node_test (1.00) 27653→326 chars via parser (292 ms)
+ok   tsc errors                   retention=errors_and_summary confidence=0.94 format=tsc (1.00) 28722→6033 chars via parser (493 ms)
+ok   eslint report                retention=errors_and_summary confidence=0.91 format=eslint (1.00) 22931→5942 chars via parser (258 ms)
+ok   pytest failing run           retention=errors_and_summary confidence=0.99 format=pytest (1.00) 25686→578 chars via parser (363 ms)
+ok   large git diff for review    retention=all confidence=0.35 format=git_diff (0.99) kept (253 ms)
+ok   git log for a changelog      retention=all confidence=0.52 format=git_log (1.00) kept (242 ms)
+ok   git log for subjects only    retention=all confidence=0.47 format=git_log (1.00) kept (291 ms)
+ok   npm install                  retention=summary_only confidence=0.99 format=npm_install (1.00) 40044→346 chars via parser (332 ms)
+ok   repetitive build log         retention=errors_and_summary confidence=0.99 format=other (-) 67971→3283 chars generic (318 ms)
+ok   source file under review     retention=all confidence=0.17 format=other (-) kept (301 ms)
+ok   exact output requested       retention=all confidence=0.11 format=other (-) kept (270 ms)
+ok   json data to transform       retention=all confidence=0.15 format=other (-) kept (248 ms)
+ok   docs page to summarize       retention=all confidence=0.34 format=other (-) kept (277 ms)
+
+15/15 matched expectations.

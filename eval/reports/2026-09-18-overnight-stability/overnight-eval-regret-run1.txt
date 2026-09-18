@@ -1,0 +1,10 @@
+.env not found. Continuing without it.
+
+# regret of last turn's allowed calls (question rides the first action request after the reply)
+ok   stop after push                regret a3 regretted=0.95 target=a3 (661 ms)
+ok   undo the rm                    regret a2 regretted=0.97 target=a2 (289 ms)
+ok   continue                       no regret regretted=0.05 target=a3 (314 ms)
+ok   wait means later               no regret regretted=0.27 target=a3 (266 ms)
+ok   new complaint, not these calls no regret regretted=0.06 target=a3 (297 ms)
+
+5/5 matched expectations; 5 requests, 7183 input tokens.

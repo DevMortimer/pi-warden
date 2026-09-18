@@ -1,0 +1,20 @@
+.env not found. Continuing without it.
+
+# context saver: retention and format
+ok   vitest failing run             matched   retention=errors_and_summary confidence=0.98 format=vitest_jest (1.00) 27410→369 chars via parser (714 ms)
+ok   jest passing run               matched   retention=summary_only confidence=0.99 format=vitest_jest (1.00) 16225→328 chars via parser (346 ms)
+ok   node:test TAP with failure     matched   retention=errors_and_summary confidence=0.98 format=node_test (1.00) 27653→326 chars via parser (690 ms)
+ok   tsc errors                     matched   retention=errors_and_summary confidence=0.94 format=tsc (1.00) 28722→6033 chars via parser (509 ms)
+ok   eslint report                  matched   retention=errors_and_summary confidence=0.90 format=eslint (1.00) 22931→5942 chars via parser (272 ms)
+ok   pytest failing run             matched   retention=errors_and_summary confidence=0.99 format=pytest (1.00) 25686→578 chars via parser (283 ms)
+ok   large git diff for review      matched   retention=all confidence=0.34 format=git_diff (1.00) kept (339 ms)
+ok   git log for a changelog        matched   retention=all confidence=0.52 format=git_log (1.00) kept (254 ms)
+ok   git log for subjects only      matched   retention=all confidence=0.52 format=git_log (1.00) kept (300 ms)
+ok   npm install                    matched   retention=errors_and_summary confidence=0.99 format=npm_install (1.00) 40044→352 chars via parser (245 ms)
+ok   repetitive build log           matched   retention=errors_and_summary confidence=0.99 format=other (-) 67971→3283 chars generic (264 ms)
+ok   source file under review       matched   retention=all confidence=0.15 format=other (-) kept (356 ms)
+ok   exact output requested         matched   retention=all confidence=0.13 format=other (-) kept (247 ms)
+ok   json data to transform         matched   retention=all confidence=0.18 format=other (-) kept (258 ms)
+ok   docs page to summarize         matched   retention=all confidence=0.38 format=other (-) kept (318 ms)
+
+15/15 matched expectations; 15 requests, 52138 input tokens.
