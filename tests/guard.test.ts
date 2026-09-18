@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
+import { buildRequest, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -792,4 +792,53 @@ test("pathRules: default config keeps sensitive-path behavior unchanged", () => 
   assert.ok(matchPatterns("bash", { command: "cat ~/.ssh/id_rsa" }, cwd, pathOptions([])).some(hit => hit.id === "sensitive-path"));
   assert.ok(matchPatterns("read", { path: "/home/michaelmacleod/.netrc" }, cwd, pathOptions([])).some(hit => hit.id === "sensitive-path"));
   assert.equal(matchPatterns("read", { path: "src/index.ts" }, cwd, pathOptions([])).length, 0, "ordinary paths fire nothing");
+});
+
+test("pathRules: access:write fires the read side when the command both reads and writes matching paths", () => {
+  const rules = [{ id: "audit", paths: ["/var/audit/*.log"], access: "write" as const, tools: ["*"] as string[], action: "confirm" as const, onlyIfExists: false }];
+  // cat reads a.log, tee writes b.log — the read side should fire (writesToThis does not suppress the mention)
+  assert.equal(matchPatterns("bash", { command: "cat /var/audit/a.log | tee /var/audit/b.log" }, cwd, pathOptions(rules)).filter(hit => hit.id === "audit").length, 1, "the read side fires");
+  // tee to a write-only path flows (it is a write, not a read)
+  assert.equal(matchPatterns("bash", { command: "cat x | tee /var/audit/node1.log" }, cwd, pathOptions(rules)).filter(hit => hit.id === "audit").length, 0, "a write to the write-only path flows");
+});
+
+test("pathRules: a rule with explicit bash in tools fires on bash commands", () => {
+  const rules = [{ id: "ssh-keys", paths: ["~/.ssh/id_*"], access: "read" as const, tools: ["write", "edit", "bash"] as string[], action: "confirm" as const, onlyIfExists: false }];
+  const hits = matchPatterns("bash", { command: "bash -c 'echo x > /home/test/.ssh/id_rsa'" }, "/home/test", pathOptions(rules));
+  assert.ok(hits.some(hit => hit.id === "ssh-keys"), "the bash tool name enables the command surface");
+});
+
+test("pathRules: ctx_execute_file reads fire access:none rules on the file surface", () => {
+  const rules = [{ id: "ssh-keys", paths: ["~/.ssh/id_*"], access: "none" as const, tools: ["*"] as string[], action: "confirm" as const, onlyIfExists: false }];
+  const hits = matchPatterns("ctx_execute_file", { path: "/home/test/.ssh/id_rsa" }, "/home/test", pathOptions(rules));
+  assert.ok(hits.some(hit => hit.id === "ssh-keys"), "ctx_execute_file is a read, not excluded from the file surface");
+});
+
+test("pathRules: mention tail anchor — .env.example does not fire a **/.env rule, .env does", () => {
+  const rules = [{ id: "env", paths: ["**/.env"], access: "none" as const, tools: ["*"] as string[], action: "warn" as const, onlyIfExists: false }];
+  assert.equal(matchPatterns("bash", { command: "cat .env.example" }, cwd, pathOptions(rules)).filter(hit => hit.id === "env").length, 0, ".env.example does not match a .env rule");
+  assert.equal(matchPatterns("bash", { command: "cat .env" }, cwd, pathOptions(rules)).filter(hit => hit.id === "env").length, 1, ".env does match");
+  // Multi-line: .env on its own line in a heredoc body still matches
+  assert.equal(matchPatterns("bash", { command: "bash <<'EOF'\ncat .env\nEOF" }, cwd, pathOptions(rules)).filter(hit => hit.id === "env").length, 1, ".env on its own line in a heredoc body matches");
+});
+
+test("pathRules: write sinks — >| and >& operators, tee with multiple targets and --append, grep-tee is not a phantom", () => {
+  const rules = [{ id: "audit", paths: ["/var/audit/*.log"], access: "read" as const, tools: ["*"] as string[], action: "warn" as const, onlyIfExists: false }];
+  assert.ok(matchPatterns("bash", { command: "sort x >| /var/audit/f.log" }, cwd, pathOptions(rules)).some(hit => hit.id === "audit"), ">| is a redirect operator");
+  assert.ok(matchPatterns("bash", { command: "sort x >& /var/audit/f.log" }, cwd, pathOptions(rules)).some(hit => hit.id === "audit"), ">& is a redirect operator");
+  assert.ok(matchPatterns("bash", { command: "cat x | tee /var/audit/a.log /var/audit/b.log" }, cwd, pathOptions(rules)).some(hit => hit.id === "audit"), "tee with two targets fires");
+  assert.ok(matchPatterns("bash", { command: "cat x | tee --append /var/audit/app.log" }, cwd, pathOptions(rules)).some(hit => hit.id === "audit"), "tee --append fires");
+  assert.equal(matchPatterns("bash", { command: "grep tee /var/audit/app.log" }, cwd, pathOptions(rules)).filter(hit => hit.id === "audit").length, 0, "grep mentioning tee is not a phantom tee target");
+});
+
+test("pathRules: inertPathRules detects access:write with only write tools and read-scoped rules without read in action.tools", () => {
+  // access:write with only write/edit tools: writes flow, nothing is held
+  const writeOnly = [{ id: "audit", paths: ["/var/audit/*.log"], access: "write" as const, tools: ["write", "edit"] as string[], action: "confirm" as const }];
+  assert.ok(inertPathRules(writeOnly, ["bash", "write", "edit"]).includes("audit"), "access:write with only write tools is inert");
+  // access:read with only read tools, read not in action.tools: the read tool is never inspected
+  const readOnly = [{ id: "keys", paths: ["~/.ssh/id_*"], access: "read" as const, tools: ["read"] as string[], action: "confirm" as const }];
+  assert.ok(inertPathRules(readOnly, ["bash", "write", "edit"]).includes("keys"), "read-scoped rule without read in action.tools is inert");
+  // access:read with write tools: writes are held — not inert
+  const notInert = [{ id: "repo", paths: ["deploy.yaml"], access: "read" as const, tools: ["write", "edit"] as string[], action: "confirm" as const }];
+  assert.equal(inertPathRules(notInert, ["bash", "write", "edit"]).length, 0, "access:read with write tools is not inert");
 });
