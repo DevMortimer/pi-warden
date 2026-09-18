@@ -32,6 +32,8 @@ export interface StuckVerdict {
   source: "repeat" | "typesafe" | "error";
   failures: number;
   reasons: string[];
+  /** True when the repeat that fired was a successful call printing the same output, not a failure loop. */
+  successRepeat?: boolean;
   judgment?: StuckJudgment;
   error?: string;
   errorCode?: IntegrationErrorCode;
@@ -118,10 +120,20 @@ export class AttemptWindow {
     return this.attempts.filter(attempt => attempt.failed && attempt.key === latest.key && attempt.outputKey === latest.outputKey).length;
   }
 
-  /** Latest result failed, enough failures accumulated, and the cool-down since the last check has passed. */
+  /** How many successful attempts repeat the latest attempt's exact call with the same normalised output. A poll that
+   * prints the answer it already printed carries no new information: the model is re-running instead of reading. */
+  successRepeats(): number {
+    const latest = this.attempts.at(-1);
+    if (!latest || latest.failed) return 0;
+    return this.attempts.filter(attempt => !attempt.failed && attempt.key === latest.key && attempt.outputKey === latest.outputKey).length;
+  }
+
+  /** Latest result failed with enough failures behind it, or succeeded but repeats itself, and the cool-down has passed. */
   shouldJudge(config: StuckGuardConfig): boolean {
     const latest = this.attempts.at(-1);
-    return Boolean(latest?.failed) && this.failures() >= config.minFailures && this.sinceJudgment >= config.cooldown;
+    if (!latest) return false;
+    if (latest.failed) return this.failures() >= config.minFailures && this.sinceJudgment >= config.cooldown;
+    return this.successRepeats() >= config.minFailures && this.sinceJudgment >= config.cooldown;
   }
 }
 
@@ -165,6 +177,10 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   if (repeats >= options.config.minFailures) {
     return { stuck: true, source: "repeat", failures, reasons: [`the same call failed ${repeats} times with the same output`] };
   }
+  const successRepeats = window.successRepeats();
+  if (successRepeats >= options.config.minFailures) {
+    return { stuck: true, source: "repeat", failures, reasons: [`the same call succeeded ${successRepeats} times with the same output`], successRepeat: true };
+  }
   if (!options.judge) return { stuck: false, source: "repeat", failures, reasons: [] };
   window.markJudged();
   const result = await ask(options.judge, buildStuckRequest(window.attempts, task), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
@@ -183,8 +199,12 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   return { stuck, source: "typesafe", failures, reasons, judgment };
 }
 
-/** Steering text for the agent. Names the pattern and asks for a change of method, not another retry. */
+/** Steering text for the agent. Names the pattern and asks for a change of method, not another retry. A successful
+ * repeat is a different disease than a failure loop: the model already has the answer, so it should use it. */
 export function stuckNudge(verdict: StuckVerdict): string {
+  if (verdict.successRepeat) {
+    return `pi-warden: ${verdict.reasons.join("; ")}. Stop re-running it: the answer is already in the last output. Act on that result, move to the next step, or tell the user why the same call has to run again.`;
+  }
   return `pi-warden: ${verdict.reasons.join("; ")}. Stop retrying. Re-read the last error output carefully, state a new hypothesis about the cause, and either gather the missing information (read the relevant file, check versions or paths) or try a different method. If two different methods have failed, report the blocker to the user with the exact error instead of trying again.`;
 }
 

@@ -86,6 +86,17 @@ test("AttemptWindow trims, counts failures and exact repeats, and honours the co
   assert.equal(repeats.shouldJudge(stuckConfig), true);
   repeats.push(makeAttempt("bash", { command: "ls" }, text("ok"), false));
   assert.equal(repeats.shouldJudge(stuckConfig), false, "latest result succeeded");
+
+  const polling = new AttemptWindow(12);
+  const poll = { command: "sleep 5 && gh pr checks 2673" };
+  for (let index = 0; index < 2; index++) polling.push(makeAttempt("bash", poll, text("all checks passed"), false));
+  assert.equal(polling.successRepeats(), 2);
+  assert.equal(polling.shouldJudge(stuckConfig), false, "2 successful repeats < minFailures 3");
+  polling.push(makeAttempt("bash", poll, text("all checks passed"), false));
+  assert.equal(polling.successRepeats(), 3);
+  assert.equal(polling.shouldJudge(stuckConfig), true, "a successful poll that keeps printing the same answer is judged");
+  polling.push(makeAttempt("bash", poll, text("3 of 4 checks passed"), false));
+  assert.equal(polling.successRepeats(), 1, "a changed answer is progress, not a repeat");
   repeats.reset();
   assert.equal(repeats.attempts.length, 0);
 });
@@ -128,6 +139,18 @@ test("evaluateStuck decides exact repeats in code and asks Jev otherwise", async
   const offline = await evaluateStuck(varied, "fix tests", { config: stuckConfig, timeoutMs: 1000 });
   assert.equal(offline.stuck, false);
   assert.equal(offline.source, "repeat");
+
+  const pollWindow = new AttemptWindow(12);
+  for (let index = 0; index < 3; index++) pollWindow.push(makeAttempt("bash", { command: "sleep 5 && gh pr checks 2673" }, text("all checks passed"), false));
+  const pollJudge = stuckJudge(0, 0, 0);
+  const pollVerdict = await evaluateStuck(pollWindow, "watch the PR", { config: stuckConfig, judge: pollJudge, timeoutMs: 1000 });
+  assert.equal(pollVerdict.stuck, true, "the same call succeeding with the same output is a repeat, decided in code");
+  assert.equal(pollVerdict.source, "repeat");
+  assert.equal(pollVerdict.successRepeat, true);
+  assert.equal(pollJudge.calls.length, 0, "no network for successful repeats either");
+  assert.match(pollVerdict.reasons[0] ?? "", /succeeded 3 times with the same output/);
+  assert.match(stuckNudge(pollVerdict), /Stop re-running it/, "the nudge says to use the answer, not to debug a failure");
+  assert.match(formatStuck(pollVerdict), /successful repeat \u00b7 stuck$/);
 
   const errored = await evaluateStuck(varied, "fix tests", { config: stuckConfig, judge: failing, timeoutMs: 1000 });
   assert.equal(errored.stuck, false);
