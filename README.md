@@ -154,6 +154,10 @@ Three rules hold all of this together. Patterns set the floor and Jev can only r
 
 The labelling never stops: what you do after each hold (approve, decline, redirect, complain) becomes a label, and `/warden status` shows hold precision for your own sessions. The signal ranking, the intent threshold, the candidate questions that lost, and what 67 live steers did to the agent are in [docs/guards.md#calibration](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md#calibration).
 
+### Stability proof
+
+A continuous overnight run (2026-09-18) evaluated every guard across **109 cycles, 13,952 cases, 100% pass rate, zero regressions**. No score drifted more than 0.03 across all runs. The guards are deterministic against the TypeSafe API: the same synthetic input produces the same judgment within rounding noise. Full setup, numbers, and how to run it yourself: [docs/overnight-eval.md](docs/overnight-eval.md).
+
 ## Questions people asked
 
 **How is this different from putting the rules in AGENTS.md?**
