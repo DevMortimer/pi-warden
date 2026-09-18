@@ -576,6 +576,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       track(false);
       return undefined;
     }
+    if (verdict.level === "deny") {
+      stats.held++;
+      track(true, "declined", "deny");
+      if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · blocked ${event.toolName}: ${verdict.reasons.join("; ")}`, "error");
+      notifyDesktop(ctx, config, `Blocked ${event.toolName}: ${verdict.reasons.join("; ")}. A deny rule matched; the call never ran.`);
+      return { block: true, reason: `pi-warden blocked this ${event.toolName} call (${verdict.reasons.join("; ")}). A deny rule matched; this command is not allowed to run. Ask the user if this is genuinely required.` };
+    }
     if (verdict.level !== "confirm") { track(false); return undefined; }
 
     const reasons = verdict.reasons.join("; ");
@@ -585,6 +592,17 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       else if (!ctx.hasUI) warnSteer(reasons);
       track(false);
       return undefined;
+    }
+    // A user-defined confirm rule prompts the user regardless of mode; the operator chose this prompt.
+    // The action defaults to dialog at parse time (the reason one writes such a rule); hold restores steer semantics.
+    const dialogRule = verdict.patterns.some(hit => hit.action === "dialog");
+    if (dialogRule && ctx.hasUI && (mode as string) !== "advise") {
+      notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
+      const allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {});
+      if (allowed) { track(true, "approved", "dialog"); return undefined; }
+      stats.held++;
+      track(true, "declined", "dialog");
+      return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${reasons}). Do not retry it unchanged; ask the user how to proceed.` };
     }
     if (mode === "confirm") {
       notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);

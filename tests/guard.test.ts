@@ -613,3 +613,72 @@ test("context-mode and powershell tools are guarded through their command fields
   assert.equal(unknown.source, "typesafe");
   assert.match(unknown.summary.input ?? "", /query/);
 });
+
+test("commandRules: user rules match against stripDataText output, not raw command", () => {
+  const config = { ...defaultConfig().action, commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" as const }], commandDenyRules: [], exemptRules: [] };
+  assert.ok(matchPatterns("bash", { command: "kubectl delete pod foo" }, undefined, { commandRules: config.commandRules, commandDenyRules: [], exemptRules: [] }).some(hit => hit.id === "kubectl-delete"));
+  assert.equal(matchPatterns("bash", { command: "cat <<'EOF'\nkubectl delete pod foo\nEOF" }, cwd, { commandRules: config.commandRules, commandDenyRules: [], exemptRules: [] }).length, 0, "data heredoc body does not fire");
+  assert.ok(matchPatterns("bash", { command: "sh <<'EOF'\nkubectl delete pod foo\nEOF" }, cwd, { commandRules: config.commandRules, commandDenyRules: [], exemptRules: [] }).some(hit => hit.id === "kubectl-delete"), "shell-sink heredoc body does fire");
+  assert.equal(matchPatterns("bash", { command: "git commit -m 'kubectl delete pod'" }, cwd, { commandRules: config.commandRules, commandDenyRules: [], exemptRules: [] }).length, 0, "commit message data text does not fire");
+});
+
+test("commandRules: severity ladder interacts with built-ins via higher()", async () => {
+  const config = { ...defaultConfig().action, commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" as const }], commandDenyRules: [], exemptRules: [] };
+  const warn = await evaluateAction({ tool: "bash", input: { command: "git push origin feature" }, cwd, task: "push" }, { config });
+  assert.equal(warn.level, "warn");
+  assert.ok(warn.patterns.some(hit => hit.id === "git-push-any"));
+  const confirm = { ...defaultConfig().action, commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" as const }], commandDenyRules: [], exemptRules: [] };
+  const held = await evaluateAction({ tool: "bash", input: { command: "kubectl delete pod foo" }, cwd, task: "cleanup" }, { config: confirm });
+  assert.equal(held.level, "confirm");
+  const both = { ...defaultConfig().action, commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" as const }], commandDenyRules: [], exemptRules: [] };
+  const stacked = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push" }, { config: both });
+  assert.equal(stacked.level, "confirm", "built-in destructive rule raises above the user's warn");
+  assert.ok(stacked.patterns.some(hit => hit.id === "git-force-push"));
+  assert.ok(stacked.patterns.some(hit => hit.id === "git-push-any"));
+});
+
+test("commandDenyRules: deny blocks with no dialog, no judge", async () => {
+  const config = { ...defaultConfig().action, commandRules: [], commandDenyRules: [{ id: "never-talos-reset", pattern: "\\btalosctl\\s+reset\\b", severity: "deny" as const }], exemptRules: [] };
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "talosctl reset --nodes talos1" }, cwd, task: "reset" }, { config, judge: judge(0.05, 0.05) });
+  assert.equal(verdict.level, "deny");
+  assert.equal(verdict.source, "pattern");
+  assert.equal(verdict.judgment, undefined, "deny skips the judge entirely");
+  assert.ok(verdict.patterns.some(hit => hit.id === "never-talos-reset"));
+});
+
+test("commandRules: exemptRules silences a built-in; unknown id surfaces as no match, not a crash", () => {
+  const config = { ...defaultConfig().action, commandRules: [], commandDenyRules: [], exemptRules: ["infra-destroy"] };
+  const exempted = matchPatterns("bash", { command: "kubectl delete pod foo" }, undefined, { commandRules: [], commandDenyRules: [], exemptRules: config.exemptRules });
+  assert.equal(exempted.filter(hit => hit.id === "infra-destroy").length, 0, "built-in is exempted");
+  assert.ok(exempted.length === 0, "no other rule fires for this command");
+  const unknown = matchPatterns("bash", { command: "rm -rf /" }, undefined, { commandRules: [], commandDenyRules: [], exemptRules: ["nonexistent-rule-id"] });
+  assert.ok(unknown.some(hit => hit.id === "rm-recursive-dangerous-target"), "unknown exempt id does not interfere with other rules");
+});
+
+test("commandRules: caseSensitive and message override work", () => {
+  const rules = [{ id: "custom-sql-drop", pattern: "\\bDROP\\s+TABLE\\b", severity: "warn" as const, caseSensitive: true as const, message: "SQL DROP is not allowed" }];
+  assert.ok(matchPatterns("bash", { command: "echo DROP TABLE users" }, undefined, { commandRules: rules, commandDenyRules: [], exemptRules: [] }).some(hit => hit.id === "custom-sql-drop"));
+  assert.equal(matchPatterns("bash", { command: "echo drop table users" }, undefined, { commandRules: rules, commandDenyRules: [], exemptRules: [] }).filter(hit => hit.id === "custom-sql-drop").length, 0, "case-sensitive does not match lowercase");
+  const hits = matchPatterns("bash", { command: "echo DROP TABLE users" }, undefined, { commandRules: rules, commandDenyRules: [], exemptRules: [] });
+  const ruleHit = hits.find(hit => hit.id === "custom-sql-drop");
+  assert.equal(ruleHit?.label, "SQL DROP is not allowed", "message replaces the derived label");
+});
+
+test("commandRules: confirm with action dialog prompts the user regardless of mode", async () => {
+  const config = { ...defaultConfig().action, commandRules: [{ id: "flux-suspend", pattern: "\\bflux\\s+suspend\\b", severity: "confirm" as const, action: "dialog" as const }], commandDenyRules: [], exemptRules: [] };
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "flux suspend kustomization apps" }, cwd, task: "pause" }, { config, judge: judge(0.1, 0.1) });
+  assert.equal(verdict.level, "confirm");
+  assert.ok(verdict.patterns.some(hit => hit.action === "dialog"), "the dialog action is on the pattern hit");
+});
+
+test("commandRules: confirm without action defaults to dialog for user rules", async () => {
+  const config = { ...defaultConfig().action, commandRules: [{ id: "helm-uninstall", pattern: "\\bhelm\\s+(?:uninstall|delete)\\b", severity: "confirm" as const }], commandDenyRules: [], exemptRules: [] };
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "helm uninstall my-release" }, cwd, task: "remove" }, { config });
+  assert.equal(verdict.level, "confirm");
+  assert.equal(verdict.patterns[0]?.action, undefined, "action is unset; the extension checks default dialog behavior");
+});
+
+test("commandRules: invalid regex is skipped, not a crash", () => {
+  const rules = [{ id: "broken", pattern: "[", severity: "warn" as const }];
+  assert.equal(matchPatterns("bash", { command: "ls" }, undefined, { commandRules: rules, commandDenyRules: [], exemptRules: [] }).length, 0, "invalid regex matches nothing");
+});

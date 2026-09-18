@@ -19,6 +19,22 @@ export interface OffTaskThreshold {
   steer: number;
 }
 
+/** A user-defined command rule, matched against the stripDataText-processed command. */
+export interface CommandRule {
+  /** Stable id; same namespace as built-in rule ids, so exemptRules can reference either. */
+  id: string;
+  /** Regex source string; compiled case-insensitively unless caseSensitive is true. */
+  pattern: string;
+  /** warn: notice to the agent; confirm: hold (action dialog steers); deny: block with no dialog. */
+  severity: "warn" | "confirm" | "deny";
+  /** When severity is confirm, dialog (default) prompts the user; hold uses steer semantics. */
+  action?: "dialog" | "hold";
+  /** Optional human label shown instead of the derived one. */
+  message?: string;
+  /** Match case-sensitively. */
+  caseSensitive?: boolean;
+}
+
 export interface ActionGuardConfig {
   enabled: boolean;
   /** Tool names inspected before execution. Read-only tools are skipped to keep latency low. */
@@ -35,6 +51,12 @@ export interface ActionGuardConfig {
   visibleMismatch: number;
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
   feedbackLog: boolean;
+  /** User-defined command rules (user file only; project files cannot set severity above warn). */
+  commandRules: CommandRule[];
+  /** User-defined deny rules, shorthand for commandRules with severity deny (user file only). */
+  commandDenyRules: CommandRule[];
+  /** Built-in or user rule ids to exempt (user file only). */
+  exemptRules: string[];
 }
 
 export interface StuckGuardConfig {
@@ -203,7 +225,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 6;
+export const CONFIG_SCHEMA = 7;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -223,6 +245,9 @@ export function defaultConfig(): WardenConfig {
       intentMismatch: 0.9,
       visibleMismatch: 0.8,
       feedbackLog: true,
+      commandRules: [],
+      commandDenyRules: [],
+      exemptRules: [],
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
@@ -299,7 +324,42 @@ export function isMode(value: unknown): value is WardenMode {
   return value === "steer" || value === "confirm" || value === "advise";
 }
 
-function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number): ActionGuardConfig {
+function parseCommandRule(raw: unknown, defaultSeverity: CommandRule["severity"]): CommandRule | undefined {
+  if (!isObject(raw)) return undefined;
+  const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : undefined;
+  const pattern = typeof raw.pattern === "string" && raw.pattern.trim() ? raw.pattern : undefined;
+  if (!id || !pattern) return undefined;
+  const severity = raw.severity === "warn" || raw.severity === "confirm" || raw.severity === "deny" ? raw.severity : defaultSeverity;
+  // Dialog is the default for a confirm rule (the reason one writes such a rule); hold restores steer semantics.
+  const action = raw.action === "dialog" || raw.action === "hold" ? raw.action : severity === "confirm" ? "dialog" : undefined;
+  const message = typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : undefined;
+  const caseSensitive = typeof raw.caseSensitive === "boolean" ? raw.caseSensitive : false;
+  return { id, pattern, severity, ...(action ? { action } : {}), ...(message ? { message } : {}), ...(caseSensitive ? { caseSensitive } : {}) };
+}
+
+function parseCommandRules(raw: unknown, defaultSeverity: CommandRule["severity"]): CommandRule[] {
+  if (!Array.isArray(raw)) return [];
+  const ids = new Set<string>();
+  const rules: CommandRule[] = [];
+  for (const item of raw) {
+    const rule = parseCommandRule(item, defaultSeverity);
+    if (!rule || ids.has(rule.id)) continue;
+    ids.add(rule.id);
+    rules.push(rule);
+  }
+  return rules;
+}
+
+function parseExemptRules(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const ids = new Set<string>();
+  for (const item of raw) {
+    if (typeof item === "string" && item.trim()) ids.add(item.trim());
+  }
+  return [...ids];
+}
+
+function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, source: "user" | "project"): ActionGuardConfig {
   const withTimeout = { ...base, timeoutMs };
   if (!isObject(raw)) return withTimeout;
   const tools = Array.isArray(raw.tools) ? raw.tools.filter((tool): tool is string => typeof tool === "string" && tool.trim().length > 0) : base.tools;
@@ -313,6 +373,9 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number): 
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
     visibleMismatch: Math.min(probability(raw.visibleMismatch, base.visibleMismatch), probability(raw.intentMismatch, base.intentMismatch)),
     feedbackLog: boolean(raw.feedbackLog, base.feedbackLog),
+    commandRules: source === "user" ? parseCommandRules(raw.commandRules, "warn") : [],
+    commandDenyRules: source === "user" ? parseCommandRules(raw.commandDenyRules, "deny") : [],
+    exemptRules: source === "user" ? parseExemptRules(raw.exemptRules) : [],
   };
 }
 
@@ -436,7 +499,7 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
     subagent: applySubagent(base.subagent, raw.subagent),
     // A project file may switch notifications off or on, but never names a command to run.
     notify: applyNotify(base.notify, raw.notify, source === "user"),
-    action: applyAction(base.action, raw.action, timeoutMs),
+    action: applyAction(base.action, raw.action, timeoutMs, source),
     stuck: applyStuck(base.stuck, raw.stuck),
     done: applyDone(base.done, raw.done),
     slop: applySlop(base.slop, raw.slop),

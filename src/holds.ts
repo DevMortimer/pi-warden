@@ -21,7 +21,7 @@ import type { ActionSummary, Level, PreviousAction, ScopeLabel, Verdict } from "
  * outcome, never the command or path. The in-memory summary serves the regret question and stays in memory.
  */
 export type CallOutcome = "pending" | "approved" | "declined" | "replanned" | "regretted" | "accepted";
-export type OutcomeVia = "retry" | "dialog" | "next prompt" | "jev" | "text";
+export type OutcomeVia = "retry" | "dialog" | "next prompt" | "jev" | "text" | "deny";
 
 export interface CallScores {
   irreversible: number;
