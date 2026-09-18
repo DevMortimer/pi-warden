@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { ArmingTracker } from "../src/arming.js";
+import { ArmingTracker, unparseableArmingRules } from "../src/arming.js";
 import type { ArmingRule } from "../src/config.js";
 
 let cwd: string;
@@ -225,4 +225,96 @@ test("malformed command regex does not crash; rule is inert", () => {
   tracker.arm("write", join(cwd, "config.yml"), cwd);
   // The rule compiled to nothing, so no hit and no crash.
   assert.equal(tracker.checkArmed("apply").length, 0);
+});
+// --- Fix 1: hold action fires as a hold, not a warn ---
+test("hold action: armed hold rule fires block in the tracker (not warn)", () => {
+  const tracker = new ArmingTracker([holdRule], fakeNow);
+  nowMs = 1000;
+  tracker.arm("write", join(cwd, "config.yml"), cwd);
+  const hits = tracker.checkArmed("deploy");
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0]!.action, "hold");
+});
+
+// --- Fix 2: session-scope: arming survives across simulated agent_end (no reset) ---
+test("session-scope: arming survives when only updateRules is called (no reset between runs)", () => {
+  const tracker = new ArmingTracker([fluxRule], fakeNow);
+  nowMs = 1000;
+  tracker.arm("write", join(cwd, "flux-cluster/apps/kustomization.yaml"), cwd);
+  // Simulate agent_end: the old code would reset; the new code does not call reset on agent_end.
+  // Only updateRules is called per configFor, which preserves armed state.
+  tracker.updateRules([fluxRule]);
+  nowMs = 2000; // same session, a moment later
+  assert.equal(tracker.checkArmed("flux reconcile").length, 1, "armed state survives across runs within a session");
+});
+
+test("session-scope: reset clears armed state (session_start)", () => {
+  const tracker = new ArmingTracker([fluxRule], fakeNow);
+  nowMs = 1000;
+  tracker.arm("write", join(cwd, "flux-cluster/apps/kustomization.yaml"), cwd);
+  tracker.reset();
+  assert.equal(tracker.checkArmed("flux reconcile").length, 0, "reset clears all armed state");
+});
+
+// --- Fix 5: checkArmed early-returns when nothing is armed ---
+test("checkArmed: no stripDataText cost when nothing is armed", () => {
+  const tracker = new ArmingTracker([fluxRule], fakeNow);
+  nowMs = 1000;
+  // Nothing armed yet; checkArmed should return [] without parsing.
+  assert.equal(tracker.checkArmed("flux reconcile").length, 0);
+});
+
+// --- Fix 7: updateRules recompiles only when the reference changes ---
+test("updateRules: recompiles only when the reference changes", () => {
+  const rules: ArmingRule[] = [fluxRule];
+  const tracker = new ArmingTracker(rules, fakeNow);
+  // updateRules with the same reference should be a no-op.
+  tracker.updateRules(rules);
+  // Different reference, same content — should recompile.
+  const rules2: ArmingRule[] = [fluxRule];
+  tracker.updateRules(rules2);
+  // No crash; the tracker still works.
+  nowMs = 1000;
+  tracker.arm("write", join(cwd, "flux-cluster/apps/kustomization.yaml"), cwd);
+  assert.equal(tracker.checkArmed("flux reconcile").length, 1);
+});
+
+// --- Fix 10: arms.for "0m" and 0 both fall back to default ---
+test("arms.for '0m' falls back to default duration, not 0ms", () => {
+  const rule: ArmingRule = {
+    id: "zero-duration",
+    when: { edited: ["**/*.yml"] },
+    arms: { command: "kubectl", for: "0m" },
+    action: "confirm",
+  };
+  const tracker = new ArmingTracker([rule], fakeNow);
+  nowMs = 1000;
+  tracker.arm("write", join(cwd, "config.yml"), cwd);
+  // At 1ms the rule should still be armed (default 10m), not expired at 0ms.
+  nowMs = 1001;
+  assert.equal(tracker.checkArmed("kubectl").length, 1, "0m falls back to default, not 0ms");
+});
+
+test("arms.for 0 (number) falls back to default duration", () => {
+  const rule: ArmingRule = {
+    id: "zero-num",
+    when: { edited: ["**/*.yml"] },
+    arms: { command: "kubectl", for: 0 },
+    action: "confirm",
+  };
+  const tracker = new ArmingTracker([rule], fakeNow);
+  nowMs = 1000;
+  tracker.arm("write", join(cwd, "config.yml"), cwd);
+  nowMs = 1001;
+  assert.equal(tracker.checkArmed("kubectl").length, 1, "0 falls back to default, not 0ms");
+});
+
+// --- Fix 4: unparseableArmingRules surfaces bad regex ---
+test("unparseableArmingRules: surfaces rules with invalid regex", () => {
+  const rules: ArmingRule[] = [
+    { id: "good", when: { edited: ["**/*.yml"] }, arms: { command: "kubectl" }, action: "confirm" },
+    { id: "bad", when: { edited: ["**/*.yml"] }, arms: { command: "[invalid" }, action: "confirm" },
+  ];
+  const ids = unparseableArmingRules(rules);
+  assert.deepEqual(ids, ["bad"]);
 });

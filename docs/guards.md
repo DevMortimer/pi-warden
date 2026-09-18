@@ -67,7 +67,7 @@ It is not cheap: the two full runs above made about 32,000 requests and 80M inpu
 
 `action.armingRules` (user file only) is the session-state capability: a preparation (editing files matching `when.edited` globs) arms a command pattern (`arms.command`) for a window (`arms.for`, default 10 minutes). While armed, matching commands fire the rule's `action` — `confirm` (dialog), `hold` (steer), or `block` (deny). The hit is deterministic and never depends on Jev; if Jev is available, armed-rule names ride as context so the judge can weigh them.
 
-This catches the class of incident where each individual call was harmless (edit a config, then run the reconciler that applies it) but the composition was destructive — no single-call rule can see it, and the judge evaluates one call at a time. The state is session-scoped (dies on `agent_end`), refreshed on each matching edit, visible in `/warden status`, and never inferred: the operator declares the edit-to-command relationship, so the false-positive rate is the declared pattern's match rate, nothing more.
+This catches the class of incident where each individual call was harmless (edit a config, then run the reconciler that applies it) but the composition was destructive — no single-call rule can see it, and the judge evaluates one call at a time. The state lives for the rule's window within a session, cleared on `session_start` and refreshed on each matching edit, visible in `/warden status`, and never inferred: the operator declares the edit-to-command relationship, so the false-positive rate is the declared pattern's match rate, nothing more.
 
 ## Rules
 

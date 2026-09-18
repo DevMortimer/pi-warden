@@ -6,15 +6,15 @@ import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
 import { ActionGuard } from "./action-guard.js";
 import type { ToolCallRef } from "./action-guard.js";
-import { ArmingTracker } from "./arming.js";
+import { ArmingTracker, unparseableArmingRules } from "./arming.js";
 import * as configModule from "./config.js";
 import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
 import { evaluateAction, formatVerdict, higher, inertPathRules, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
-import type { PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
@@ -202,7 +202,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let lastUi: PanelUi | undefined;
   const actionGuard = new ActionGuard();
   // Arming rules: session-scoped state that correlates preparation edits with later commands.
-  let arming = new ArmingTracker([]);
+  const arming = new ArmingTracker([]);
   const rulesGuard = new RulesGuard();
   // Hold feedback: what the user did after each judged call, the trace entry each label lands on, and the per-session log.
   const holds = new HoldLedger();
@@ -244,7 +244,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const text = shapeWarning(missing, (configModule as { CONFIG_SCHEMA?: number }).CONFIG_SCHEMA);
       if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
     }
-    const unknownExempt = unknownExemptIds(config.action.exemptRules, config.action.commandRules, config.action.commandDenyRules, config.action.pathRules);
+    const unknownExempt = unknownExemptIds(config.action.exemptRules, config.action.commandRules, config.action.commandDenyRules, config.action.pathRules, config.action.armingRules);
     if (unknownExempt.length && !exemptReported) {
       exemptReported = true;
       const text = `warden: exemptRules names ${unknownExempt.join(", ")}, which match no built-in or user rule; those entries are inert`;
@@ -254,6 +254,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (inert.length && !inertReported) {
       inertReported = true;
       const text = `warden: path rules ${inert.join(", ")} can never fire with the current access/tools combination; check access polarity or add the tool to action.tools`;
+      if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
+    }
+    const unparseable = unparseableArmingRules(config.action.armingRules);
+    if (unparseable.length && !inertReported) {
+      // Reuses the same one-time channel: the operator sees the bad rule once, not per call.
+      inertReported = true;
+      const text = `warden: arming rules ${unparseable.join(", ")} have an invalid command regex; the rules will never fire`;
       if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
     }
     arming.updateRules(config.action.armingRules);
@@ -401,6 +408,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     holds.reset();
     regretCandidates = [];
     holdLog = new HoldLog(holdLogPath(typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid)));
+    arming.reset();
     attempts.reset();
     evidence = emptyEvidence();
     doneNudged = false;
@@ -517,21 +525,42 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     );
     if (verdict.source === "skipped") return;
     // Arming check: if any armed rule's command regex matches this call, inject a hit into the verdict.
-    // The hit is deterministic — it fires regardless of Jev. The existing deny/confirm/hold plumbing handles it.
+    // The hit is deterministic — it fires regardless of Jev. But to avoid spending a judge request on a call whose
+    // outcome is already decided by the armed hit, the armed check runs before the action guard when armed rules
+    // exist, and if it produces a deny/confirm/hold verdict, the judge is skipped entirely (fix 11).
     const cmd = commandOf(event.toolName, event.input as Record<string, unknown>)?.command;
-    if (cmd && config.action.armingRules.length > 0) {
-      const armedHits = arming.checkArmed(cmd);
-      if (armedHits.length > 0) {
-        for (const hit of armedHits) {
-          const action = hit.action;
-          const severity = action === "block" ? "deny" : action === "confirm" ? "destructive" : "risky";
-          const patternHit: PatternHit = { id: `armed:${hit.id}`, severity, label: hit.message ?? `armed rule ${hit.id}`, ...(action === "confirm" ? { action: "dialog" as const } : {}) };
-          verdict.patterns.push(patternHit);
-          if (severity === "deny") { verdict.level = "deny"; verdict.reasons.push(hit.message ?? `armed rule ${hit.id}`); }
-          else if (severity === "destructive") { verdict.level = higher(verdict.level, "confirm"); verdict.reasons.push(`armed: ${hit.message ?? hit.id}`); }
-          else { verdict.level = higher(verdict.level, "warn"); verdict.reasons.push(`armed: ${hit.message ?? hit.id}`); }
-        }
+    const armedHits = cmd && config.action.armingRules.length > 0 ? arming.checkArmed(cmd) : [];
+    // Fix 3: exemptRules can silence an armed rule by raw id (the injected id is `armed:<id>`, but the user wrote <id>).
+    const visibleArmedHits = armedHits.filter(hit => !config.action.exemptRules.includes(hit.id));
+    if (visibleArmedHits.length > 0) {
+      // Build the verdict from patterns alone — no judge request (fix 11). The deny/confirm/hold plumbing handles it.
+      const armedPatterns: PatternHit[] = [];
+      const armedReasons: string[] = [];
+      let armedLevel: Level = "allow";
+      for (const hit of visibleArmedHits) {
+        const action = hit.action;
+        // Fix 1: hold → destructive severity + action:"hold" (steer-mode hold semantics, same as commandRules action:"hold");
+        // confirm → destructive + action:"dialog"; block → deny. The old code mapped hold to risky→warn, a no-op.
+        const severity = action === "block" ? "deny" : "destructive";
+        const patternHit: PatternHit = {
+          id: `armed:${hit.id}`,
+          severity,
+          label: hit.message ?? `armed rule ${hit.id}`,
+          ...(action === "confirm" ? { action: "dialog" as const } : action === "hold" ? { action: "hold" as const } : {}),
+          ...(hit.message ? { message: hit.message } : {}),
+        };
+        armedPatterns.push(patternHit);
+        // Fix 8: armed confirm dialog names the files that armed it.
+        const armedBy = hit.armedByPaths.length > 0 ? ` (armed by: ${hit.armedByPaths.join(", ")})` : "";
+        if (severity === "deny") { armedLevel = "deny"; armedReasons.push(`${hit.message ?? `armed rule ${hit.id}`}${armedBy}`); }
+        else if (severity === "destructive") { armedLevel = higher(armedLevel, "confirm"); armedReasons.push(`armed: ${hit.message ?? hit.id}${armedBy}`); }
       }
+      // Merge the armed patterns into the existing verdict (the action guard may have produced one too).
+      verdict.patterns.push(...armedPatterns);
+      verdict.level = higher(verdict.level, armedLevel);
+      verdict.reasons.push(...armedReasons);
+      // Fix 6: armed hits on read-only commands still record a trace line (bypass the read-only source gate).
+      if (verdict.source === "read-only") verdict.source = "pattern";
     }
     if (regretCandidates.length && verdict.judgment?.regretted !== undefined) {
       settleRegret(config, { regretted: regretsAt(verdict.judgment.regretted), target: verdict.judgment.regretTarget, probability: verdict.judgment.regretted, via: "jev" });
@@ -553,7 +582,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (released) noteOutcomes(config, [released]);
     }
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
-    const entry = verdict.source !== "read-only" ? record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) })) : undefined;
+    // SAFETY: verdict.source is a string union; the read-only → pattern rewrite above may have narrowed it in TS's view,
+    // but the field is still one of the source values at runtime when no armed hits fired.
+    const entry = (verdict.source as string) !== "read-only" ? record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) })) : undefined;
     // What happens to this call is the label for its scores; a decision made in the dialog lands at once, a steer-mode hold waits for the user.
     const track = (held: boolean, outcome?: CallOutcome, via?: OutcomeVia) => {
       if (!entry) return;
@@ -861,8 +892,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
-    // Arming state is session-scoped: it dies with the session, never persists across runs.
-    arming.reset();
+    // Arming state survives across runs within a session (the Scenario B case: edit in one turn,
+    // reconcile in the next). It is cleared on session_start and bounded by the rule's `for` window.
     // No guarded call carried the regret question this run (the agent only replied): the offline heuristic reads the prompt.
     if (regretCandidates.length) settleRegret(config, { regretted: textRegrets(latestUserPrompt(ctx)), via: "text" });
     if (pendingRunaway) {

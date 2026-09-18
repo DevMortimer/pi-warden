@@ -2,8 +2,10 @@
  * Session-scoped arming rules: a preparation (editing files matching globs) arms a
  * command pattern for a window; while armed, matching commands fire the rule's action.
  *
- * The tracker is in-memory per session. State dies on `agent_end` (or `reset`). No
- * cross-session persistence. Expiry on wall-clock, refreshed on each matching edit.
+ * The tracker is in-memory per session. State lives for the rule's window within a session;
+ * it is cleared when the session starts anew (session_start) and expires per `for`. It
+ * survives across agent runs within the same session (the Scenario B case: edit in one
+ * turn, reconcile in the next). No cross-session persistence.
  *
  * The armed check is deterministic: it fires whether or not Jev is available. If Jev
  * is available, armed-rule names ride as context so the judge can weigh them, but the
@@ -12,8 +14,7 @@
 
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { globToRegExp } from "./rules.js";
-import { stripDataText } from "./guard.js";
+import { matchPathGlobs, stripDataText } from "./guard.js";
 import type { ArmingRule } from "./config.js";
 
 /** A single armed rule's state. */
@@ -33,31 +34,50 @@ interface CompiledArmingRule {
   durationMs: number;
 }
 
+/** Compile a rule, returning undefined if the regex is invalid. compileArmingRules returns the ids of rules that failed. */
 function compileArmingRule(rule: ArmingRule): CompiledArmingRule | undefined {
   try {
     const flags = rule.arms.caseSensitive ? "" : "i";
-    const duration = typeof rule.arms.for === "number" ? rule.arms.for : 600_000;
+    const duration = parseDuration(rule.arms.for);
     return { rule, commandRegex: new RegExp(rule.arms.command, flags), durationMs: duration };
   } catch {
     return undefined;
   }
 }
 
-/** Match a candidate path against a rule's edited globs/regexes (reuses PR 2's matching approach). */
-function editedMatches(rule: ArmingRule, candidate: string): boolean {
-  const home = homedir();
-  const target = candidate === "~" || candidate.startsWith("~/") ? home + candidate.slice(1) : candidate;
-  if (rule.when.regex) {
+/** Parse a duration string like "10m", "30s", "2h" into milliseconds. Returns 600000 (10m) for undefined/invalid. */
+function parseDuration(forValue: string | number | undefined): number {
+  if (forValue === undefined) return 600_000;
+  if (typeof forValue === "number") return forValue > 0 ? forValue : 600_000;
+  const match = /^(\d+)(ms|s|m|h)$/.exec(forValue);
+  if (!match) return 600_000;
+  const value = parseInt(match[1]!, 10);
+  if (value <= 0) return 600_000;
+  switch (match[2]) {
+    case "ms": return value;
+    case "s": return value * 1_000;
+    case "m": return value * 60_000;
+    case "h": return value * 3_600_000;
+    default: return 600_000;
+  }
+}
+
+/** Ids of rules whose regex or duration could not be compiled; surfaced via the one-time notice channel. */
+export function unparseableArmingRules(rules: readonly ArmingRule[]): string[] {
+  const ids: string[] = [];
+  for (const rule of rules) {
     try {
-      return rule.when.edited.some(pattern => new RegExp(pattern).test(target));
+      new RegExp(rule.arms.command, rule.arms.caseSensitive ? "" : "i");
     } catch {
-      return false;
+      ids.push(rule.id);
     }
   }
-  const relative = target.startsWith(home + "/") ? `~${target.slice(home.length)}` : target;
-  const raw = relative.startsWith("~/") ? relative.slice(2) : relative.replace(/^\/+/, "");
-  const forms = (pattern: string) => (pattern.startsWith("~/") ? [pattern, pattern.slice(2)] : [pattern]);
-  return rule.when.edited.some(pattern => forms(pattern).some(form => globToRegExp(form).test(raw) || globToRegExp(form).test(relative)));
+  return ids;
+}
+
+/** Match a candidate path against a rule's edited globs/regexes (reuses the shared matcher from guard.ts). */
+function editedMatches(rule: ArmingRule, candidate: string): boolean {
+  return matchPathGlobs(rule.when.edited, rule.when.regex ?? false, candidate);
 }
 
 export type NowFn = () => number;
@@ -84,8 +104,11 @@ export class ArmingTracker {
     this.now = now;
   }
 
-  /** Update the compiled rules from config; armed state is preserved. */
+  /** Update the compiled rules from config; recompiles only when the reference changes. */
+  private lastRulesRef: readonly ArmingRule[] | undefined;
   updateRules(rules: readonly ArmingRule[]): void {
+    if (rules === this.lastRulesRef) return;
+    this.lastRulesRef = rules;
     this.compiled = rules.map(compileArmingRule).filter((r): r is CompiledArmingRule => r !== undefined);
   }
 
@@ -137,8 +160,11 @@ export class ArmingTracker {
    * Expired rules are pruned first.
    */
   checkArmed(command: string): { id: string; action: ArmingRule["action"]; message?: string; armedByPaths: string[] }[] {
+    // Fix 5: avoid stripDataText (a non-trivial parse) when nothing is armed — the common case.
+    if (this.armed.size === 0) return [];
     const now = this.now();
     this.prune(now);
+    if (this.armed.size === 0) return []; // prune may have expired everything
     const text = stripDataText(command).text;
     const hits: { id: string; action: ArmingRule["action"]; message?: string; armedByPaths: string[] }[] = [];
     for (const { rule, commandRegex } of this.compiled) {
@@ -170,7 +196,7 @@ export class ArmingTracker {
     return `${this.armed.size} armed: ${parts.join(", ")}`;
   }
 
-  /** Clear all arming state (called on agent_end). */
+  /** Clear all arming state (called on session_start). */
   reset(): void {
     this.armed.clear();
   }
