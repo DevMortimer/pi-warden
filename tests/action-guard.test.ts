@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { ActionGuard } from "../src/action-guard.js";
 import type { Conversation, InspectOptions, ToolCallRef } from "../src/action-guard.js";
 import { defaultConfig } from "../src/config.js";
-import type { Judge } from "../src/jev.js";
+import type { Judge } from "pi-typesafe";
 
 interface Request { state: { action: { command?: string; path?: string } }; questions: Record<string, unknown> }
 interface Answers { irreversible: number; offTask?: number; scope?: string; mutates?: number; approved?: number }

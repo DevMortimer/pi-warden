@@ -1,7 +1,7 @@
 import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { evaluateAction, textApproves } from "./guard.js";
 import type { PreviousAction, TaskMessage, Verdict } from "./guard.js";
-import type { Judge } from "./jev.js";
+import type { Judge } from "pi-typesafe";
 
 /** One tool call as the agent proposed it. `id` is Pi's tool call id, stable across hooks and retries. */
 export interface ToolCallRef {

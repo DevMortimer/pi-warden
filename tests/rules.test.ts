@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { defaultConfig } from "../src/config.js";
 import type { RulesConfig } from "../src/config.js";
-import type { Judge } from "../src/jev.js";
+import type { Judge } from "pi-typesafe";
 import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeTarget, evaluateRules, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
 import type { RulesVerdict, RuleSet } from "../src/rules.js";
 

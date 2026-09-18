@@ -3,10 +3,10 @@ import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { choice, createTypeSafe, noul } from 'pi-typesafe';
+import { ask, choice, createTypeSafe, DEFAULT_USD_PER_MTOK, noul } from 'pi-typesafe';
+import { auc, calibrate, defaultThresholds, formatCalibration, metricsAt } from 'pi-typesafe/calibrate';
 import { defaultConfig } from '../dist/config.js';
 import { describeAction, evaluateAction, isReadOnlyCommand, matchPatterns, regretQuestions } from '../dist/guard.js';
-import { askJev } from '../dist/jev.js';
 import { redact } from '../dist/redact.js';
 import { commandOf, COMMAND_TOOLS } from '../dist/tools.js';
 import { candidates } from './action-candidates.mjs';
@@ -49,7 +49,7 @@ const concurrency = Number(value('concurrency', 6));
 const maxRequests = Number(value('max-requests', 2000));
 /** Input tokens per request, measured on the 2026-09-17 runs (about 88M tokens over 33k requests). */
 const TOKENS_PER_REQUEST = 2700;
-const USD_PER_MTOK = 0.042;
+const USD_PER_MTOK = DEFAULT_USD_PER_MTOK;
 const timeoutMs = Number(value('timeout', 20000));
 const outDir = resolve('.local', 'calibration');
 
@@ -247,7 +247,7 @@ async function run() {
     const built = labelRequest(turn);
     if (!built) return;
     requests++;
-    const answer = await askJev(judge, built.request, { timeoutMs });
+    const answer = await ask(judge, built.request, { timeoutMs });
     const record = { kind: 'turn', key: turnKey(turn), session: turn.session, cwd: turn.cwd, index: turn.index, at: turn.at, prompt: clip(redact(turn.prompt), 200), next: clip(redact(turn.next), 300), calls: turn.calls.length, ran: built.ran.map(item => item.id), held: built.held.map(item => item.id) };
     if (!answer.ok) { record.error = answer.error; append(record); return; }
     const a = answer.answers;
@@ -273,7 +273,8 @@ async function run() {
     const j = verdict.judgment;
     append({ ...base, source: verdict.source, level: verdict.level, patterns: verdict.patterns.map(hit => `${hit.id}:${hit.severity}`), reasons: verdict.reasons, error: verdict.error, ...(j ? { irreversible: j.irreversible, offTask: j.offTask, scope: j.scope, scopeConfidence: j.scopeConfidence, mutates: j.mutates, intentMismatch: j.intentMismatch, visible: j.visible, model: j.model, ms: j.elapsedMs } : {}), ...(verdict.extra ? { extra: verdict.extra } : {}) });
   });
-  console.log(`${requests} requests this run. Usage: ${JSON.stringify(judge.getUsage())}`);
+  const spend = judge.getSpend();
+  console.log(`${requests} requests this run. Session: ${spend.session.requestsStarted} started, ${spend.session.requestsSucceeded} ok, ${spend.session.requestsFailed} failed, ${spend.session.inputTokens} input tokens, about $${spend.session.estimatedUsd.toFixed(2)} at $${spend.usdPerMTok}/MTok. Today: ${spend.today.requestsStarted} requests, ${spend.today.inputTokens} input tokens, about $${spend.today.estimatedUsd.toFixed(2)}${spend.blocked ? `; blocked by ${spend.blocked.cap} (${spend.blocked.used}/${spend.blocked.limit})` : ''}.`);
   report(readFileSync(outFile, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)));
 }
 
@@ -288,16 +289,6 @@ function isReadOnlyLike(call) {
 
 const pct = v => `${(v * 100).toFixed(0)}%`;
 const fixed = v => (v === undefined ? '-' : v.toFixed(2));
-
-/** Rank-based AUC (Mann–Whitney); undefined when one class is empty. */
-function auc(scored) {
-  const pos = scored.filter(s => s.label).map(s => s.score);
-  const neg = scored.filter(s => !s.label).map(s => s.score);
-  if (!pos.length || !neg.length) return undefined;
-  let wins = 0;
-  for (const p of pos) for (const n of neg) wins += p > n ? 1 : p === n ? 0.5 : 0;
-  return wins / (pos.length * neg.length);
-}
 
 function report(records) {
   const turns = new Map(records.filter(r => r.kind === 'turn').map(r => [r.key, r]));
@@ -356,6 +347,16 @@ function report(records) {
   score('intent mismatch (calls with a plan)', c => c.intentMismatch, judged.filter(c => c.intentMismatch !== undefined));
   score('mutates', c => c.mutates ?? 0);
 
+  // pi-typesafe/calibrate: AUC, threshold sweep, and one recommendation per score. The two-parameter hold rule
+  // below stays local; no single threshold describes it.
+  const samplesOf = (fn, set) => set.map(c => ({ label: c.label, score: fn(c), id: `${c.tool} ${c.id}` }));
+  for (const [name, fn, set] of [
+    ['irreversible', c => c.irreversible, judged],
+    ['off-task', c => c.offTask, judged],
+    ['gated off-task', c => (c.scope === 'unrelated' && canChange(c) ? c.offTask : 0), judged],
+    ['intent mismatch', c => c.intentMismatch, judged.filter(c => c.intentMismatch !== undefined)],
+  ]) out(`\n${formatCalibration(calibrate(name, samplesOf(fn, set), { minPrecision: 0.7, minRecall: 0.5 }))}`);
+
   // The intent steer is judged against three readings of the next message: the regretted call, a turn the user rejects, a turn the user rejects or corrects.
   const withPlan = judged.filter(c => c.intentMismatch !== undefined && canChange(c));
   const turnOf = c => turns.get(`${c.session}#${c.turn}`);
@@ -364,7 +365,7 @@ function report(records) {
   out(`\n## Intent mismatch steer (judged calls with a plan that can change something: ${withPlan.length}; baseline: ${pct(withPlan.filter(rejects).length / Math.max(1, withPlan.length))} of them sit in a turn the user rejects, ${pct(withPlan.filter(corrects).length / Math.max(1, withPlan.length))} in one the user rejects or corrects)`);
   out(`defaults: intentMismatch ${d.intentMismatch}, visibleMismatch ${d.visibleMismatch} (visible >= 0.8)`);
   const steerRow = (name, sel) => out(`${name.padEnd(44)} steers ${String(sel.length).padStart(5)} (${pct(sel.length / Math.max(1, withPlan.length)).padStart(4)} of calls)  regretted ${String(sel.filter(c => c.label).length).padStart(2)}  in a rejected turn ${String(sel.filter(rejects).length).padStart(4)} (${pct(sel.filter(rejects).length / Math.max(1, sel.length)).padStart(4)})  rejected or corrected ${String(sel.filter(corrects).length).padStart(4)} (${pct(sel.filter(corrects).length / Math.max(1, sel.length)).padStart(4)})`);
-  for (const t of [0.7, 0.75, 0.8, 0.85, 0.9, 0.95]) steerRow(`intent >= ${t}`, withPlan.filter(c => c.intentMismatch >= t));
+  for (const t of defaultThresholds(withPlan.map(c => ({ label: rejects(c), score: c.intentMismatch })), 6)) steerRow(`intent >= ${t}`, withPlan.filter(c => c.intentMismatch >= t));
   const visibleOf = c => c.visible ?? c.extra?.visible;
   if (withPlan.some(c => visibleOf(c) !== undefined)) {
     for (const t of [0.7, 0.8, 0.9]) steerRow(`visible >= 0.8 & intent >= ${t}`, withPlan.filter(c => (visibleOf(c) ?? 0) >= 0.8 && c.intentMismatch >= t));
@@ -379,9 +380,11 @@ function report(records) {
       const numeric = withExtra.filter(c => typeof c.extra[id] === 'number');
       if (!numeric.length) continue;
       out(`${id.padEnd(18)} AUC regret ${fixed(auc(numeric.map(c => ({ label: c.label, score: c.extra[id] }))))}  rejected ${fixed(auc(numeric.map(c => ({ label: rejects(c), score: c.extra[id] }))))}  rejected/corrected ${fixed(auc(numeric.map(c => ({ label: corrects(c), score: c.extra[id] }))))}`);
-      for (const t of [0.5, 0.6, 0.7, 0.8, 0.9]) {
+      const scored = numeric.map(c => ({ label: c.label, score: c.extra[id] }));
+      for (const t of defaultThresholds(scored, 5)) {
         const sel = numeric.filter(c => c.extra[id] >= t);
-        out(`  >= ${t}  flags ${String(sel.length).padStart(5)} (${pct(sel.length / numeric.length).padStart(4)})  regretted ${String(sel.filter(c => c.label).length).padStart(2)}/${positives.length}  in a rejected turn ${String(sel.filter(rejects).length).padStart(4)} (${pct(sel.filter(rejects).length / Math.max(1, sel.length)).padStart(4)})  rejected or corrected ${String(sel.filter(corrects).length).padStart(4)} (${pct(sel.filter(corrects).length / Math.max(1, sel.length)).padStart(4)})`);
+        const m = metricsAt(scored, t);
+        out(`  >= ${t}  flags ${String(sel.length).padStart(5)} (${pct(sel.length / numeric.length).padStart(4)})  precision ${m.precision === undefined ? '  - ' : pct(m.precision).padStart(4)}  recall ${m.recall === undefined ? '  - ' : pct(m.recall).padStart(4)}  regretted ${String(sel.filter(c => c.label).length).padStart(2)}/${positives.length}  in a rejected turn ${String(sel.filter(rejects).length).padStart(4)} (${pct(sel.filter(rejects).length / Math.max(1, sel.length)).padStart(4)})  rejected or corrected ${String(sel.filter(corrects).length).padStart(4)} (${pct(sel.filter(corrects).length / Math.max(1, sel.length)).padStart(4)})`);
       }
     }
     out(`\n### Regretted calls with candidate scores`);

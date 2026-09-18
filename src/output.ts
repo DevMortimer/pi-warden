@@ -2,14 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { choice, noul } from "pi-typesafe";
-import type { IntegrationErrorCode } from "pi-typesafe";
+import { ask, choice, noul } from "pi-typesafe";
+import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { ContextConfig, SecurityConfig } from "./config.js";
 import { formatExcerpt, formatQuestion } from "./excerpt.js";
 import type { OutputFormat } from "./excerpt.js";
 import type { TaskMessage } from "./guard.js";
-import { askJev } from "./jev.js";
-import type { Judge } from "./jev.js";
 import { findSecrets, partitionSecrets, redact, secretFingerprint, secretIds } from "./redact.js";
 
 export type Retention = "all" | "errors_and_summary" | "summary_only";
@@ -100,7 +98,7 @@ export async function evaluateOutput(tool: string, text: string, task: string | 
   const security = options.security.enabled && (contentTool || text.length >= 2048);
   const compress = options.context.enabled && options.compressible !== false && text.length >= options.context.tailMinChars;
   if (!text.trim() || options.signal?.aborted || !options.judge || (!security && !compress)) return verdict;
-  const result = await askJev(options.judge, buildOutputRequest(tool, text, task, security, compress, options.taskContext), { timeoutMs: options.timeoutMs, signal: options.signal });
+  const result = await ask(options.judge, buildOutputRequest(tool, text, task, security, compress, options.taskContext), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {
     verdict.error = result.error;
     if (result.errorCode) verdict.errorCode = result.errorCode;

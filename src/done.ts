@@ -1,9 +1,7 @@
-import { choice, noul } from "pi-typesafe";
-import type { IntegrationErrorCode } from "pi-typesafe";
+import { ask, choice, noul } from "pi-typesafe";
+import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { DoneGuardConfig } from "./config.js";
 import { isReadOnlyCommand } from "./guard.js";
-import { askJev } from "./jev.js";
-import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 import { commandOf } from "./tools.js";
 import { DEFAULT_TEMPLATES, doneTokens, renderTemplate } from "./widget.js";
@@ -162,7 +160,7 @@ export interface DoneOptions {
 }
 
 export async function evaluateDone(task: string | undefined, finalMessage: string, evidence: RunEvidence, options: DoneOptions): Promise<DoneVerdict> {
-  const result = await askJev(options.judge, buildDoneRequest(task, finalMessage, evidence), { timeoutMs: options.timeoutMs, signal: options.signal });
+  const result = await ask(options.judge, buildDoneRequest(task, finalMessage, evidence), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { unverified: false, falseClaim: false, reasons: [], evidence, error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   const judgment: DoneJudgment = {
     claimsDone: result.answers.claims_done.noul,

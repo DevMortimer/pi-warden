@@ -1,11 +1,9 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { choice, noul, score } from "pi-typesafe";
-import type { IntegrationErrorCode, Questions } from "pi-typesafe";
+import { ask, choice, noul, score } from "pi-typesafe";
+import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
 import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
-import { askJev } from "./jev.js";
-import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 import { commandOf } from "./tools.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
@@ -122,7 +120,7 @@ export interface Verdict {
   errorCode?: IntegrationErrorCode;
 }
 
-export type { Judge } from "./jev.js";
+export type { Judge } from "pi-typesafe";
 
 export interface EvaluateOptions {
   config: ActionGuardConfig;
@@ -623,7 +621,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   if (!judge) return withPlan({ level, source: "pattern", summary, patterns, reasons });
 
   const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions });
-  const result = await askJev(judge, request, { timeoutMs: config.timeoutMs, signal: options.signal });
+  const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {
     if (!config.failOpen) {
       level = higher(level, "confirm");

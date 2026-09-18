@@ -1,6 +1,6 @@
 # For extension authors
 
-Every guard is a plain function you can call with any object that has pi-typesafe's `evaluate` method as the judge. The library has no dependency on Pi's runtime, so it is safe to use in tests.
+Every guard is a plain function you can call with any object that has pi-typesafe's `evaluate` method as the judge. The library has no dependency on Pi's runtime, so it is safe to use in tests. Calls go through pi-typesafe's `ask`, so timeouts, aborts, and error shapes are pi-typesafe's contract.
 
 ```ts
 import { evaluateAction, evaluateRules, RuleStore, defaultConfig } from "pi-warden";
@@ -23,4 +23,4 @@ What spans calls in a session lives in `ActionGuard` (hold, reply, retry approva
 
 Also exported: `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `describeAction`, `parseRules`, `matchGlob`, `redact`, `syntheticish`, `partitionSecrets`, `formatVerdict`, the question sets, the stuck detector, the runaway guard, the notifier, the done-check, the subagent triage (`newReports`, `triageReport`, `WakePolicy`), and the config helpers.
 
-For the Jev client itself (`createTypeSafe`, `choice`, `score`, `noul`, the key store, the login prompt) see [pi-typesafe](https://github.com/DevMortimer/pi-typesafe#for-extension-authors).
+For the Jev client itself (`createTypeSafe`, `ask`, `choice`, `score`, `noul`, `authState`, `describeAuth`, `getSpend`, the key store, the login prompt, `pi-typesafe/calibrate`) see [pi-typesafe](https://github.com/DevMortimer/pi-typesafe#for-extension-authors).
