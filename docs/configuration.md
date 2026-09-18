@@ -113,11 +113,21 @@ A wince-style setup for a backend repo (the full version is [`examples/pi-warden
 
 ## Status line and trace sidebar
 
-The line above the editor shows the latest verdict per guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`. `/warden trace`, `ctrl+shift+w`, and a click on the line each toggle a right-hand sidebar with the full trace, newest first, live. The sidebar does not take the keyboard; click inside it for arrow keys and PgUp/PgDn, `c` clears, Esc hands input back, `q` closes. `widget.panelWidth` sets its width.
+The line above the editor shows the latest verdict per guard. The verdict leads as a chip, the guard follows, and the body reads as data:
+
+```text
+OK     rules · prose · done
+WARN   action  write · irreversible 0.09 · off-task 0.95 · unrelated · slop: none · off task
+       context bash · duplicate · saved 1024 bytes
+```
+
+A verdict the guard found nothing in (`ok`, `allow`, `skipped`) folds into one line per verdict naming the guards that spoke, so a quiet turn costs one line instead of one per guard. A quiet verdict keeps its own line when the line names a finding or a caveat (`typesafe error`, `user approved`, `slop: <symptom>`, `patterns: <id>`), because folding it would report a verdict the guard did not give. The worst verdict sits last, nearest the editor. Folded detail is not lost: `/warden status` prints the raw line per guard under `Last:`, and the sidebar keeps every event with its scores.
+
+`/warden trace`, `ctrl+shift+w`, and a click on the line each toggle a right-hand sidebar with the full trace, newest first, live. The sidebar does not take the keyboard; click inside it for arrow keys and PgUp/PgDn, `c` clears, Esc hands input back, `q` closes. `widget.panelWidth` sets its width.
 
 Clicks and the wheel need Pi's fullscreen mode (`tuiMode: "fullscreen"` in `/settings`). In macOS Terminal.app enable View → Allow Mouse Reporting.
 
-Templates in `config.widget` control the text. Segments are separated by ` · `; a segment whose token has no value is dropped:
+Templates in `config.widget` control the text. Segments are separated by ` · `; a segment whose token has no value is dropped. A template should end on `{level}` or `{status}`: that trailing word becomes the chip. A template that keeps the level mid-line gives the line no chip, and the guard name leads it instead:
 
 ```json
 "widget": {

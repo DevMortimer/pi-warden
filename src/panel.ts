@@ -1,21 +1,8 @@
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { Trace } from "./trace.js";
-
-interface ThemeLike { fg(color: string, text: string): string; bold(text: string): string }
-
-const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", confirm: "error", stuck: "error", "false claim": "error", stopped: "error", "stopped, recovering": "error", violation: "warning", skipped: "muted", wake: "warning", silent: "muted", "appended silently": "muted", "possible credentials": "warning", error: "error" };
-
-/**
- * Body segments read as data, not prose: the subject (tool, path, agent) stays in the text tone, numeric values keep the
- * text tone, and the labels around them sit one step down in muted. Labels dim so the eye lands on what was measured.
- */
-function renderSegment(segment: string, subject: boolean, theme: ThemeLike): string {
-  if (subject) return theme.fg("text", segment);
-  const value = /^(.+[ \t])([0-9][0-9.]*)$/.exec(segment);
-  if (value) return theme.fg("muted", value[1]!) + theme.fg("text", value[2]!);
-  return theme.fg("muted", segment);
-}
+import { LEVEL_COLOR, parseVerdictLine, renderSegment } from "./widget.js";
+import type { ThemeLike } from "./widget.js";
 
 export interface PanelActions {
   /** Remove the sidebar. */
@@ -65,18 +52,13 @@ export class TracePanel implements Component {
     const RAIL = 16;
     for (let index = entries.length - 1; index >= 0; index--) {
       const entry = entries[index]!;
-      const segments = entry.line.split(" · ");
-      const last = segments.at(-1)!;
-      const hasStatus = segments.length > 1 && LEVEL_COLOR[last] !== undefined;
-      const status = hasStatus ? segments.pop()! : undefined;
-      if (segments[0] === "warden") segments.shift();
-      if (segments[0] === entry.guard) segments.shift();
+      const { status, body } = parseVerdictLine(entry.line, entry.guard);
       const color = LEVEL_COLOR[status ?? ""] ?? "text";
       const chip = status ? `${theme.bold(theme.fg(color, status.toUpperCase()))}  ` : "";
       const indent = RAIL + (status ? status.length + 2 : 0);
       const head = `${theme.fg("muted", new Date(entry.at).toTimeString().slice(0, 8))} ${theme.fg(color, theme.bold(entry.guard.padEnd(6)))} `;
-      const body = segments.map((segment, n) => renderSegment(segment, n === 0, theme)).join(theme.fg("dim", " · "));
-      const wrapped = wrapTextWithAnsi(body, Math.max(10, width - indent));
+      const rendered = body.map((segment, n) => renderSegment(segment, n === 0, theme)).join(theme.fg("dim", " · "));
+      const wrapped = wrapTextWithAnsi(rendered, Math.max(10, width - indent));
       out.push(head + chip + (wrapped[0] ?? ""));
       for (const continuation of wrapped.slice(1)) out.push(" ".repeat(indent) + continuation);
       for (const detail of entry.details) {

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { MouseRegion, Text } from "@earendil-works/pi-tui";
+import { MouseRegion } from "@earendil-works/pi-tui";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { authState, createTypeSafe, describeAuth } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
@@ -34,7 +34,7 @@ import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from ".
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName, TraceEntry } from "./trace.js";
-import { DEFAULT_TEMPLATES, proseTokens, renderTemplate, TOKEN_NAMES } from "./widget.js";
+import { DEFAULT_TEMPLATES, proseTokens, renderTemplate, statusWidget, TOKEN_NAMES } from "./widget.js";
 
 export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
@@ -263,9 +263,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!ctx.hasUI) return;
     lastUi = ctx.ui as unknown as PanelUi;
     if (!config.widget.enabled || widget.size === 0) { ctx.ui.setWidget(WIDGET, undefined); return; }
-    const lines = [...widget.values()];
-    // A custom component so a click (fullscreen mode) opens the trace panel; plain lines otherwise look the same.
-    ctx.ui.setWidget(WIDGET, (_tui, theme) => new MouseRegion(new Text(lines.map(line => theme.fg("muted", line)).join("\n"), 0, 0), event => {
+    const entries = [...widget].map(([guard, line]) => ({ guard, line }));
+    // A custom component so the lines wrap to the pane and a click (fullscreen mode) opens the trace panel.
+    ctx.ui.setWidget(WIDGET, (_tui, theme) => new MouseRegion(statusWidget(entries, theme), event => {
       if (event.type !== "click" || event.button !== "left") return undefined;
       togglePanel(lastUi, config);
       return { handled: true };

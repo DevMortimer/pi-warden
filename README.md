@@ -38,7 +38,7 @@ Then, inside Pi:
 
 1. `/warden enable`. Read the data notice and confirm. If no key is stored yet, paste one from [console.typesafe.ai](https://console.typesafe.ai) (hidden input, saved owner-only, shared with pi-typesafe).
 2. `/warden test` shows one synthetic verdict and what the agent would be told.
-3. Work as usual. The line above the editor shows the latest verdict; `ctrl+shift+w` opens the trace with the scores and the exact text the agent received.
+3. Work as usual. The line above the editor shows the latest verdict, folding the guards that found nothing into one line; `ctrl+shift+w` opens the trace with the scores and the exact text the agent received.
 
 Requires Pi 0.85 or newer and Node.js 22.19 or newer. Without a key, the offline parts still run: the pattern list, the runaway stop, duplicate-output notes, sensitive-path notes, and the credential-shape warnings. The [examples folder](examples/README.md) has a starter rules file and both config files.
 
@@ -191,7 +191,7 @@ Two optional files: your defaults in `~/.pi/agent/pi-warden/config.json` (`/ward
 
 ## Status line and trace
 
-The line above the editor shows the latest verdict per guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`. `/warden trace`, `ctrl+shift+w`, or a click on the line opens a right-hand sidebar with the full trace, newest first. Clicks need Pi's fullscreen mode (`tuiMode: "fullscreen"` in `/settings`). Widget templates and placement: [docs/configuration.md#status-line-and-trace-sidebar](https://github.com/DevMortimer/pi-warden/blob/main/docs/configuration.md#status-line-and-trace-sidebar).
+The line above the editor shows the latest verdict per guard, the verdict leading as a chip: `WARN action write · irreversible 0.09 · off-task 0.95 · unrelated · off task`. The guards that found nothing fold into one line per verdict, so a quiet turn costs one line. `/warden trace`, `ctrl+shift+w`, or a click on the line opens a right-hand sidebar with the full trace, newest first. Clicks need Pi's fullscreen mode (`tuiMode: "fullscreen"` in `/settings`). Widget templates and placement: [docs/configuration.md#status-line-and-trace-sidebar](https://github.com/DevMortimer/pi-warden/blob/main/docs/configuration.md#status-line-and-trace-sidebar).
 
 ## For extension authors
 

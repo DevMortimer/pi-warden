@@ -14,9 +14,9 @@
 
 ## Status line and trace
 
-The line above the editor shows the latest verdict per guard, for example `warden · bash · irreversible 0.84 · off-task 0.86 · unrelated · confirm`. `/warden trace`, `ctrl+shift+w`, or a click on the line opens a right-hand sidebar with the full trace, newest first, including the exact text sent to the agent. Clicks need Pi's fullscreen mode (`tuiMode: "fullscreen"` in `/settings`).
+The line above the editor shows the latest verdict per guard, the verdict leading as a chip (`WARN action write · irreversible 0.09 · off-task 0.95 · unrelated · off task`). Verdicts the guard found nothing in fold into one line per verdict (`OK rules · prose · done`), so a quiet turn costs one line; a line that names a finding or a caveat keeps its own. `/warden trace`, `ctrl+shift+w`, or a click on the line opens a right-hand sidebar with the full trace, newest first, including the exact text sent to the agent. Clicks need Pi's fullscreen mode (`tuiMode: "fullscreen"` in `/settings`).
 
-The status line is one template per guard (`widget.action`, `widget.security`, `widget.subagent`, and so on): segments separated by ` · `, each dropped when its token has no value. Placement, width, the shortcut, and the available tokens per guard are in [configuration.md](configuration.md#status-line-and-trace-sidebar).
+The status line is one template per guard (`widget.action`, `widget.security`, `widget.subagent`, and so on): segments separated by ` · `, each dropped when its token has no value. The template's trailing `{level}` or `{status}` becomes the chip; `/warden status` prints the raw line per guard under `Last:`, folded or not. Placement, width, the shortcut, and the available tokens per guard are in [configuration.md](configuration.md#status-line-and-trace-sidebar).
 
 ### Steers sent, per guard
 

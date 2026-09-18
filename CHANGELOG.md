@@ -4,6 +4,14 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## 0.22.0
+
+### Changed
+
+- Status line design pass (WARDEN-TUI-1, the widget half). The verdict leads each line as a bold colored chip (`WARN`, `STUCK`, `UNVERIFIED`) instead of hiding at the end; the redundant `warden ·` prefix is gone; the guard follows in muted and the body reads as data (subject in the text tone, labels muted, numeric values bright) — the same palette and vocabulary as the 0.19.0 sidebar pass.
+- Verdicts the guard found nothing in (`ok`, `allow`, `skipped`) fold into one line per verdict, naming the guards that spoke: six guards firing in one turn cost one line, not six, and the folded scores stay in the sidebar. A quiet verdict keeps its own line when the line names a finding or a caveat — `typesafe error`, `user approved`, `slop: <symptom>`, `patterns: <id>` — because folding it would report a verdict the guard did not give. The worst verdict sits last, nearest the editor.
+- The folded line is a display choice, not data loss: `/warden status` prints the raw line per guard under `Last:`, and the trace sidebar keeps every event with its scores. Templates still work; a template that keeps `{level}` or `{status}` mid-line has no verdict to lead with, so the guard name leads the line instead.
+
 ## 0.21.0
 
 ### Added
