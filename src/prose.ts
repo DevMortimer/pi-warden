@@ -108,6 +108,69 @@ export class ProseTrend {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Restatement: a reply whose substantive sentences were already sent earlier in the same run. This is the end-of-task
+// disease the per-reply wordy check cannot see: each accounting reply is short and fine on its own, while the run
+// collects five of them that all restate "CON-375 is complete". Measured in code only, recorded in the trace, never a
+// steer. A nudge cannot retract the reply and would cost the very turn it warns against.
+
+/** Sentences shorter than this (as content words) carry nothing worth comparing. */
+export const SENTENCE_MIN_CHARS = 24;
+/** A sentence sharing this share of another's content words restates it. */
+export const SENTENCE_OVERLAP = 0.7;
+/** A reply restates when at least this share of its substantive sentences was already sent this run. */
+export const RESTATE_SHARE = 0.5;
+/** Restatement needs more than one substantive sentence, so a one-line acknowledgement never flags. */
+export const RESTATE_MIN_SENTENCES = 2;
+
+const contentWords = (sentence: string): Set<string> =>
+  new Set(sentence.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word.length > 2));
+
+/** The substantive sentences of a reply, as content-word sets. */
+export function substantiveSentences(text: string): Array<Set<string>> {
+  return text
+    .split(/(?:[.!?]|\n)+\s*/)
+    .map(contentWords)
+    .filter(set => [...set].join(" ").length >= SENTENCE_MIN_CHARS);
+}
+
+/** Share of `reply`'s substantive sentences that restate a sentence of `earlier` replies (0..1). */
+export function restatedShare(reply: string, earlier: readonly string[]): number {
+  const mine = substantiveSentences(reply);
+  const pool = earlier.flatMap(text => substantiveSentences(text));
+  if (!mine.length || !pool.length) return 0;
+  let restated = 0;
+  sentence: for (const sentence of mine) {
+    for (const old of pool) {
+      let shared = 0;
+      for (const word of sentence) if (old.has(word)) shared++;
+      if (shared / sentence.size >= SENTENCE_OVERLAP) { restated++; continue sentence; }
+    }
+  }
+  return restated / mine.length;
+}
+
+/** Remembers the final messages of the current run; reset with each user prompt, since answering the user is never a restatement. */
+export class RestatementWindow {
+  private readonly finals: string[] = [];
+
+  constructor(private readonly limit = 4) {}
+
+  /** 0..1 share of the reply already stated in an earlier final of this run. */
+  share(reply: string): number {
+    return restatedShare(reply, this.finals);
+  }
+
+  record(reply: string): void {
+    this.finals.push(reply);
+    if (this.finals.length > this.limit) this.finals.shift();
+  }
+
+  reset(): void {
+    this.finals.length = 0;
+  }
+}
+
 /** Queued for the next user prompt, so it shapes the next reply without spending a turn. */
 export function proseNudge(symptoms: readonly ProseSymptom[], audience: string, counts: Record<ProseSymptom, number>): string {
   const parts = symptoms.map(symptom => `${PROSE_LABELS[symptom]}${counts[symptom] >= 3 ? ` (${counts[symptom]} replies this session)` : ""}`);

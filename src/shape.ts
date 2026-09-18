@@ -36,6 +36,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     maxRequests: source.maxRequests ?? 500,
     steerVisible: source.steerVisible ?? false,
     notices: source.notices ?? false,
+    steerBudget: typeof source.steerBudget === "number" && source.steerBudget >= 0 ? source.steerBudget : 3,
     action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, feedbackLog: false }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, nudge: false }),
     done: section("done", { ...off, claimsDone: 1, nudge: false }),

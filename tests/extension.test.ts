@@ -814,7 +814,7 @@ test("slop symptoms steer the agent after the write without holding it; steers a
   assert.equal(sentMessages.length, 3);
   assert.match(sentMessages[2]!.message.content, /\(3th time this session\)[\s\S]*standing rule/);
 
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, steerVisible: true }));
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, steerVisible: true, steerBudget: 0 }));
   await toolCall("write", { path: join(temporary, "src", "d.ts"), content: "export const d = () => null; // TODO" });
   assert.equal((sentMessages[3]!.message as { display?: boolean }).display, true);
 });
@@ -885,9 +885,11 @@ test("rules: a write in a project with pi-warden.md gets its own request beside 
     await runCommand("status");
     assert.match(notices.at(-1)!.text, /Rules: none found\./);
 
-    // Without consent nothing is sent, and the sensitive-path note still works.
+    // Without consent nothing is sent, and the sensitive-path note still works. A new prompt refills the steer budget:
+    // the writes above spent this run's three notices.
     await rm(configPath(), { force: true });
     await writeFile(join(temporary, ".pi", "pi-warden.json"), JSON.stringify({ rules: { sensitivePaths: { "**/permissions*": "Ask for a security review" } } }));
+    await newPrompt("add the permissions helper");
     requests.length = 0; networkCalls = 0;
     await toolCall("write", { path: join(temporary, "src", "auth", "permissions.ts"), content: "export const can = () => true;" });
     assert.equal(networkCalls, 0);
@@ -1482,4 +1484,60 @@ test("widget templates come from config and unknown or empty tokens drop their s
   await writeFile(configPath(), JSON.stringify({ widget: { enabled: false } }));
   await toolCall("bash", { command: "rm -rf dist" });
   assert.equal(widgets.at(-1), undefined, "widget disabled clears the line");
+});
+
+test("a repeated notice is recorded only, not re-sent as another steer", async () => {
+  await grantConsent();
+  const first = await toolResult("read", {}, "TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", false) as { content: Array<{ text: string }> };
+  assert.match(first.content[0]!.text, /do not echo or commit/);
+  const second = await toolResult("read", {}, "AWS_ACCESS_KEY_ID=AKIA3M7QZ2PRT9LVXW8Y", false) as { content: Array<{ text: string }> };
+  assert.match(second.content[0]!.text, /do not echo or commit/, "the banner still reaches the user through the tool result");
+  assert.equal(sentMessages.length, 1, "the second identical notice costs no accounting turn");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /steer recorded, not delivered/, "the trace says the repeat was recorded, not delivered");
+});
+
+test("the per-run steer budget records further non-critical notices instead of delivering them", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, steerBudget: 1, rules: { sensitivePaths: { "tests/secrets/**": "never commit fixtures" } } }));
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
+  await toolCall("edit", { path: "tests/secrets/a.ts", edits: [{ oldText: "old", newText: "new" }] });
+  assert.equal(sentMessages.length, 1, "the first notice of the run is delivered");
+  const secret = await toolResult("read", {}, "TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", false) as { content: Array<{ text: string }> };
+  assert.match(secret.content[0]!.text, /do not echo or commit/, "the banner still reaches the user through the tool result");
+  assert.equal(sentMessages.length, 1, "the second notice of the run costs no accounting turn");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /steer recorded, not delivered/, "the trace says the over-budget notice was recorded, not delivered");
+  // A different secret value: the per-value dedup would silence a repeat of the same value.
+  sentMessages.length = 0;
+  await newPrompt("Now review the fixtures");
+  await toolResult("read", {}, "GITHUB_TOKEN=ghp_Dk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aX", false);
+  assert.equal(sentMessages.length, 1, "the first notice of the next run is delivered again");
+});
+
+test("critical guards deliver past the spent steer budget", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, steerBudget: 1 }));
+  await toolResult("read", {}, "TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", false);
+  assert.equal(sentMessages.length, 1, "the budget is spent by the security notice");
+  await toolResult("edit", { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] }, "changed", false);
+  nextAnswers = { claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.95, outcome: "complete" };
+  await agentEnd("All done, the feature is complete and shipped.");
+  assert.equal(sentMessages.length, 2, "the done-check follow-up is critical and delivers anyway");
+  assert.match(sentMessages.at(-1)!.message.content, /reports completion \(0\.95\)/, "the delivered follow-up asks the agent to verify before claiming done");
+});
+
+test("a final reply that restates this run's earlier reply is counted, not steered", async () => {
+  await grantConsent();
+  const done = "CON-375 done: draft PR 2688 is pushed with code, tests and screenshots, and Linear is In Review. Worktree millia-con375 awaits review.";
+  const again = "CON-375 is complete: the draft PR 2688 is pushed together with code, tests and screenshots, and Linear sits In Review. The worktree millia-con375 now awaits review.";
+  await agentEnd(done);
+  await agentEnd(again);
+  await runCommand("status", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /1 restatements/, "the status counts the restatement");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /restated \d+% of \d+ sentences · recorded only/, "the trace records the restatement without steering another turn");
+  // A fresh prompt clears the window: answering the user is never a restatement.
+  await newPrompt("Squash and merge it");
+  await agentEnd(done);
+  await runCommand("status", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /1 restatements/, "the same answer to a new prompt does not count again");
 });

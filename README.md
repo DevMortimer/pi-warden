@@ -22,6 +22,7 @@ The verdicts above are real output from `npm run test:live`. Independent project
 | **Action** | every `bash`, `write`, `edit` (and context-mode's `ctx_execute*`) before it runs | holds irreversible calls and tells the agent why, so it re-plans or asks you; steers it back when a change is unrelated to your request |
 | **Security** | written code and tool output | flags hardcoded secrets, disabled TLS, unsafe interpolation; marks injected instructions in tool output; fixture and documentation stand-ins are traced, never announced |
 | **Runaway** | the reply stream | stops a reply that repeats the same block over and over (code only, no request) |
+| **Steer budget** | the agent's attention | bounds the steers one run can demand: repeats and notices past the budget are recorded in the trace only, and a final reply that mostly restates an earlier reply of the same run is counted, never steered |
 | **Subagent triage** | async subagent reports | Jev decides whether a child report is worth waking the agent for; routine progress stays in context and costs no request ([detail](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md#subagent-triage)) |
 | **Notifications** (opt-in) | moments that need you | desktop notification for a held call, a confirm dialog, a runaway stop |
 

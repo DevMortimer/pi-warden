@@ -49,7 +49,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
   "subagent": { "enabled": true, "wake": true, "threshold": 0.8, "cooldownMs": 120000 },
   "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "steerVisible": false,
-  "notices": false
+  "notices": false,
+  "steerBudget": 3
 }
 ```
 
@@ -81,6 +82,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `widget.*` | Status line placement, sidebar shortcut and width, per-guard text templates (below). |
 | `steerVisible` | Show steer messages in the transcript instead of only in the trace panel. |
 | `notices` | Print the per-call warning notices (`warden · …`) in the transcript. Off by default; the widget, the trace panel, and `/warden trace` always show every event. |
+| `steerBudget` | Steers delivered to the agent per run before further non-critical ones are recorded in the trace only. Every delivered steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the final status. `0` disables the budget. Critical guards (stuck, done, runaway recovery, subagent wake) always deliver. |
 
 ## Project config
 

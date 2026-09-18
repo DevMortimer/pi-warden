@@ -11,11 +11,11 @@ import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, pr
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, intentSteer, offTaskSteer, repeatSteer, SLOP_LABELS, SteerRepeatWindow, steerReason } from "./guard.js";
+import { evaluateAction, formatVerdict, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason } from "./guard.js";
 import type { PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
-import { evaluateProse, proseNudge, ProseTrend } from "./prose.js";
+import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
 import { compressOutput, duplicateNote, evaluateOutput, outputKey, saveOutput, securityNotice } from "./output.js";
 import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
@@ -44,19 +44,20 @@ const CONFIRM_TEXT_LIMIT = 500;
 /** Which guard spent the user's attention. The status line reports one count per guard. */
 export type SteerGuard = "action" | "rules" | "security" | "stuck" | "done" | "prose" | "runaway" | "subagent";
 
-interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; steers: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number }
-const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, steers: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0 });
+interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number; restatements: number }
+const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, steers: 0, steersSkipped: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0, restatements: 0 });
 
 /**
  * One steer message can carry notes from more than one guard, so the per-guard numbers may add up to more than the
  * message count; the line says so instead of hiding it. Worst offender first: that is the number worth acting on.
  */
-export function formatSteers(stats: { steers: number; steerGuards: Partial<Record<SteerGuard, number>> }): string {
-  if (!stats.steers) return "Steers sent: 0.";
+export function formatSteers(stats: { steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>> }): string {
+  if (!stats.steers && !stats.steersSkipped) return "Steers sent: 0.";
   const counts = Object.entries(stats.steerGuards).sort((a, b) => b[1]! - a[1]!) as Array<[SteerGuard, number]>;
   const reasons = counts.reduce((total, [, count]) => total + count, 0);
   const extra = reasons > stats.steers ? `; ${reasons - stats.steers} of them carried more than one reason` : "";
-  return `Steers sent: ${stats.steers} (${counts.map(([guard, count]) => `${guard} ${count}`).join(", ")}${extra}).`;
+  const skipped = stats.steersSkipped ? `; ${stats.steersSkipped} recorded only (repeats or over the per-run budget)` : "";
+  return `Steers sent: ${stats.steers} (${counts.map(([guard, count]) => `${guard} ${count}`).join(", ")}${extra})${skipped}.`;
 }
 
 function latestUserPrompt(ctx: ExtensionContext): string | undefined {
@@ -292,14 +293,32 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   };
   /** Every steer is counted against the guard that asked for it; the status line shows where the noise comes from. */
   const steerRepeats = new SteerRepeatWindow();
-  const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean }) => {
+  /** Guards whose notices gate the run itself; they deliver even when the per-run steer budget is spent. */
+  const CRITICAL_STEER_GUARDS: ReadonlySet<SteerGuard> = new Set(["stuck", "done", "runaway", "subagent"]);
+  let steersThisRun = 0;
+  /** The final messages of the current run, for restatement measurement. */
+  const finals = new RestatementWindow();
+  /** Returns true when the message was delivered; false means it was recorded in the trace only. */
+  const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean }): boolean => {
+    const names = typeof guard === "string" ? [guard] : [...guard];
+    for (const name of names) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
+    const critical = names.every(name => CRITICAL_STEER_GUARDS.has(name));
+    const overBudget = config.steerBudget > 0 && steersThisRun >= config.steerBudget;
+    // A notice delivered once is already in the agent's context. Sending the repeat again costs the accounting turn it
+    // forbids, so repeats are recorded only. The same goes for notices past the per-run steer budget: every delivered
+    // steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the
+    // final status. A notice skipped for the budget keeps its fingerprint, so the same notice can deliver next run.
+    // Critical guards (stuck, done, runaway recovery, subagent wake) always deliver: their message starts the turn.
+    const deliver = critical || (!overBudget && !steerRepeats.seen(content));
+    if (!deliver) {
+      stats.steersSkipped++;
+      return false;
+    }
     stats.steers++;
-    const guards = typeof guard === "string" ? guard : guard.join(", ");
-    for (const name of typeof guard === "string" ? [guard] : guard) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
-    // The same notice with only a score changed has been delivered once; the agent owes it no second accounting.
-    if (steerRepeats.seen(content)) content = repeatSteer(guards);
+    steersThisRun++;
     const { display, ...delivery } = options ?? { deliverAs: "steer" as const };
-    return pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: display ?? config.steerVisible }, delivery);
+    pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: display ?? config.steerVisible }, delivery);
+    return true;
   };
   /**
    * Desktop notification for a moment that needs the user back at the terminal. Interactive sessions only: a headless run
@@ -371,6 +390,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     subagentSeen.clear();
     wakePolicy.reset();
     steerRepeats.reset();
+    steersThisRun = 0;
+    finals.reset();
     runaway.reset();
     runawayStops = 0;
     pendingRunaway = undefined;
@@ -381,11 +402,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
   });
 
-  // A new user prompt starts a new attempt history and a new done-check budget.
+  // A new user prompt starts a new attempt history, a new steer budget, and a new restatement window; answering the
+  // user is never a restatement.
   pi.on("before_agent_start", async (event, ctx) => {
     const config = configFor(ctx);
     attempts = new AttemptWindow(config.stuck.window);
     doneNudged = false;
+    steersThisRun = 0;
+    finals.reset();
     runaway.reset();
     runawayStops = 0;
     pendingRunaway = undefined;
@@ -469,6 +493,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // Notes for the agent about the content it just wrote: slop, rule violations, and sensitive paths arrive as one message.
     const notes: string[] = [];
     const noteGuards = new Set<SteerGuard>();
+    /** Sensitive-path notes ride with the combined steer for this call; their trace waits for the delivery result. */
+    const pathNoteTraces: Array<(delivered: boolean) => void> = [];
     if (verdict.judgment?.securityRisk !== undefined && verdict.judgment.securityRisk >= config.security.threshold) {
       steer(config, "security", "pi-warden: the proposed write may introduce a security weakness. Check for embedded credentials, disabled TLS, unsafe command/SQL interpolation, broad permissions, or bypassed verification; use a safe implementation instead.");
     }
@@ -527,13 +553,21 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (hits.length && verdict.summary.path) {
         stats.pathNotes++;
         const told = pathNoteSteer(verdict.summary.path, hits);
-        record(ctx, config, "rules", renderTemplate(config.widget.rules, { tool: event.toolName, path: verdict.summary.path, violations: `sensitive path ${hits.map(hit => hit.glob).join(", ")}`, status: "note" }), [`${event.toolName} ${verdict.summary.path} matches ${hits.map(hit => hit.glob).join(", ")} in rules.sensitivePaths`, `agent told: ${told}`]);
-        if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · sensitive path · ${verdict.summary.path} (${hits.map(hit => hit.glob).join(", ")}); the agent was given the note`, "warning");
+        // A repeat or a spent steer budget records the note without the agent reading it again, so the trace waits
+        // for the combined steer's delivery result instead of claiming the agent was told.
+        pathNoteTraces.push((delivered: boolean) => {
+          record(ctx, config, "rules", renderTemplate(config.widget.rules, { tool: event.toolName, path: verdict.summary.path, violations: `sensitive path ${hits.map(hit => hit.glob).join(", ")}`, status: "note" }), [`${event.toolName} ${verdict.summary.path} matches ${hits.map(hit => hit.glob).join(", ")} in rules.sensitivePaths`, delivered ? `agent told: ${told}` : `steer recorded, not delivered (a repeat or the per-run budget): ${told}`]);
+          if (delivered && ctx.hasUI && config.notices) ctx.ui.notify(`warden · sensitive path · ${verdict.summary.path} (${hits.map(hit => hit.glob).join(", ")}); the agent was given the note`, "warning");
+        });
         noteGuards.add("rules");
         notes.push(told);
       }
     }
-    if (notes.length) steer(config, [...noteGuards], notes.join("\n\n"));
+    if (notes.length) {
+      const delivered = steer(config, [...noteGuards], notes.join("\n\n"));
+      for (const traceNote of pathNoteTraces) traceNote(delivered);
+      pathNoteTraces.length = 0;
+    }
     const warnSteer = (label: string) => steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${label}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`);
     if (verdict.level === "warn") {
       stats.warned++;
@@ -664,13 +698,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         index++;
         return { ...part, text: `${index === 1 ? `${notice}\n\n` : ""}${part.text}${index === textBlocks.length ? `\n\n${notice}` : ""}` };
       });
-      steer(config, "security", notice);
+      const delivered = steer(config, "security", notice);
       record(ctx, config, "security", renderTemplate(config.widget.security, {
         tool: event.toolName, injection: output.injection?.toFixed(2), exfiltration: output.exfiltration?.toFixed(2),
         status: [output.suspicious && "untrusted instructions", output.secret && "possible credentials"].filter(Boolean).join(", "),
       }), [
         `jev: injection ${output.injection?.toFixed(2) ?? "not judged"}; exfiltration ${output.exfiltration?.toFixed(2) ?? "not judged"}`,
-        `output sample: ${redact(text).slice(0, 300)}`, `agent told: ${notice}`,
+        `output sample: ${redact(text).slice(0, 300)}`, delivered ? `agent told: ${notice}` : `steer recorded, not delivered (a repeat or the per-run budget): ${notice}`,
       ]);
     }
     const patch = content === event.content ? undefined : { content };
@@ -708,6 +742,22 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       return;
     }
     const finalMessage = finalAssistantText(event.messages);
+    // Restatement is measured in code, before any judging: the run that collects five accounting replies restating the
+    // same completion status is the noise the user sees, and it is invisible to every per-reply and per-call guard.
+    if (finalMessage) {
+      const share = finals.share(finalMessage);
+      finals.record(finalMessage);
+      const sentences = substantiveSentences(finalMessage).length;
+      if (share >= RESTATE_SHARE && sentences >= RESTATE_MIN_SENTENCES) {
+        stats.restatements++;
+        const line = `warden · prose · restated ${Math.round(share * 100)}% of ${sentences} sentences · recorded only`;
+        record(ctx, config, "prose", line, [
+          `${Math.round(share * 100)}% of this reply's substantive sentences were already sent in an earlier reply of this run`,
+          "no steer: a nudge cannot retract the reply and would cost the turn it warns against",
+        ]);
+        if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · prose: the final reply restates ${Math.round(share * 100)}% of what was already said this run (recorded, not steered)`, "warning");
+      }
+    }
     const judge = judgeFor(config);
     if (!finalMessage || !judge) return;
     // Pi shows the agent as working until this hook returns, so the two independent checks share one round trip.
@@ -778,7 +828,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.rules.enabled && "rules", config.context.enabled && "context", config.runaway.enabled && "runaway", config.subagent.enabled && "subagent triage", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}; ${auth.text}`,
-            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan, ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}.`,
+            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan, ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}. Steer budget: ${config.steerBudget === 0 ? "off" : `${config.steerBudget} per run`}.`,
             formatSteers(stats),
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),

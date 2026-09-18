@@ -161,3 +161,10 @@ Off by default. With `"notify": { "enabled": true }` in your config, a held call
 ## Steer messages
 
 Nudges from the rules, slop, stuck, done, prose, security, runaway, and subagent guards are custom messages in the agent's context. By default they are hidden from the transcript (`steerVisible: false`); the notification tells you a nudge happened and the trace panel shows the exact text. `/warden status` counts them per guard (`Steers sent: ...`, see [commands.md](commands.md#steers-sent-per-guard)). When the per-session request budget is spent, pi-warden says so once and continues with offline checks.
+
+Two bounds keep a closing run from turning into six accounting replies that all restate the final status (each delivered steer costs the agent at least one LLM turn, and the model fills that turn with a status restatement):
+
+- A notice delivered once is not re-sent. A repeat (same text, scores ignored) is recorded in the trace with its text under `steer recorded, not delivered`; the first copy is already in the agent's context.
+- `steerBudget` (default 3) caps the steers one run can demand. Further non-critical notices are recorded only; the same notice can deliver on the next run. Stuck, done, runaway recovery, and subagent wake are critical and always deliver, because their message starts the turn it asks for.
+
+At the end of a run the final message is also compared with the run's earlier final messages, in code, with no request. A reply whose substantive sentences mostly restate an earlier reply of the same run is counted as a restatement in the trace and `/warden status`; it is never steered, because a nudge cannot retract the reply and would cost the turn it warns against.

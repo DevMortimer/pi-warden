@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, repeatSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves } from "../src/guard.js";
+import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -576,7 +576,6 @@ test("a repeated steer collapses to the one-line notice; a changed notice does n
   assert.equal(window.seen(first), false, "the first copy is delivered in full");
   assert.equal(window.seen(rescored), true, "only the score changed: same notice");
   assert.equal(window.seen("pi-warden: the content just written to src/a.ts violates a rule"), false, "a different notice is delivered in full");
-  assert.match(repeatSteer("action"), /^pi-warden: this repeats the last note about action/);
   assert.match(steerFingerprint(rescored), /^pi-warden: this ctx_execute call does something different \(intent mismatch #\)\. It ran\.$/);
   window.reset();
   assert.equal(window.seen(first), false, "a reset window delivers the full notice again");

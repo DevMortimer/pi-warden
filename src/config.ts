@@ -193,6 +193,10 @@ export interface WardenConfig {
   steerVisible: boolean;
   /** Per-call warning notices ("warden · …") in the transcript. Off by default; the widget and trace panel always show them. */
   notices: boolean;
+  /** Steers delivered to the agent per run before further non-critical ones are recorded in the trace only. Every delivered
+   * steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the final
+   * status. 0 disables the budget. Critical guards (stuck, done, runaway, subagent wake) always deliver. */
+  steerBudget: number;
 }
 
 export const PACKAGE_NAME = "pi-warden";
@@ -230,6 +234,7 @@ export function defaultConfig(): WardenConfig {
     widget: defaultWidgetConfig(),
     steerVisible: false,
     notices: false,
+    steerBudget: 3,
   };
 }
 
@@ -460,6 +465,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     widget: applyWidget(base.widget, raw.widget),
     steerVisible: boolean(raw.steerVisible, base.steerVisible),
     notices: boolean(raw.notices, base.notices),
+    steerBudget: typeof raw.steerBudget === "number" && Number.isInteger(raw.steerBudget) && raw.steerBudget >= 0 ? raw.steerBudget : base.steerBudget,
   };
 }
 

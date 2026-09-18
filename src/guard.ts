@@ -583,11 +583,6 @@ export class SteerRepeatWindow {
   }
 }
 
-/** The one-line stand-in for a repeated notice; the full text of the first copy is still in the agent's context. */
-export function repeatSteer(guards: string): string {
-  return `pi-warden: this repeats the last note about ${guards}; nothing new is owed for it. Keep any acknowledgement to one short line and continue the task, or wait for the user.`;
-}
-
 /** The agent's words as they leave the machine: redacted and bounded. Undefined when the agent said nothing. */
 export function describePlan(plan: string | undefined): string | undefined {
   const text = plan?.trim();
