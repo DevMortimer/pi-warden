@@ -1,24 +1,14 @@
 # pi-warden
 
-Makes the [Pi](https://pi.dev) agent follow your project's rules. An `AGENTS.md` asks the model to remember; pi-warden checks. On every write and edit, [Jev](https://typesafe.ai) judges the change against the rules in your `pi-warden.md` (about 250 ms, a fraction of a cent) and the violated rule is quoted back into the agent's own context. The same channel names slop, breaks retry loops, calls out "done" when no test ran, keeps large tool output small, and holds the rare destructive command. You keep working; the agent gets a nudge instead of you getting a dialog.
+Your `AGENTS.md` is a request. pi-warden is the check behind it.
+
+On every write and edit, [Jev](https://typesafe.ai) judges the change against the rules in your `pi-warden.md` and quotes the broken rule back into the agent's own context. The same channel names slop, breaks retry loops, calls out "done" when no test ran, keeps large tool output small, triages async subagent reports, and holds the rare destructive command. You keep working. The agent gets a nudge instead of you getting a dialog.
+
+Measured: 150 paired headless runs broke a project rule **6 times with pi-warden off and 0 times with it on**. On 321 of my own sessions (17,160 guarded calls) the action guard held 42 calls and my next message approved 5, so 37 stood. A judgment costs about 1,000 input tokens (roughly $0.00004) and lands in about 0.3 s, which is why it can fire on every guarded call.
 
 ![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
 The verdicts above are real output from `npm run test:live`. Independent project; not affiliated with TypeSafe AI or the Pi authors. Built on [pi-typesafe](https://github.com/DevMortimer/pi-typesafe).
-
-## In one minute
-
-```bash
-pi install npm:pi-warden
-```
-
-Then, inside Pi:
-
-1. `/warden enable`. Read the data notice and confirm. If no key is stored yet, paste one from [console.typesafe.ai](https://console.typesafe.ai) (hidden input, saved owner-only, shared with pi-typesafe).
-2. `/warden test` shows one synthetic verdict and what the agent would be told.
-3. Work as usual. The line above the editor shows the latest verdict; `ctrl+shift+w` opens the trace with the scores and the exact text the agent received.
-
-Requires Pi 0.85 or newer and Node.js 22.19 or newer. Without a key, the offline parts still run: the pattern list, the runaway stop, duplicate-output notes, sensitive-path notes, and the credential-shape warnings. The [examples folder](examples/README.md) has a starter rules file and both config files.
 
 ## What it watches
 
@@ -37,24 +27,51 @@ Requires Pi 0.85 or newer and Node.js 22.19 or newer. Without a key, the offline
 
 Three jobs, one channel: keep the agent on your rules, keep slop out of the code and the replies, keep the context small. The action guard is the seatbelt underneath: on 17,000 recorded calls it held 42 times. Everything arrives through the agent's own context, so the agent gets smarter and you are not the approval button. Full detail per guard, with thresholds and tuning numbers, is in [docs/guards.md](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md).
 
+## In one minute
+
+```bash
+pi install npm:pi-warden
+```
+
+Then, inside Pi:
+
+1. `/warden enable`. Read the data notice and confirm. If no key is stored yet, paste one from [console.typesafe.ai](https://console.typesafe.ai) (hidden input, saved owner-only, shared with pi-typesafe).
+2. `/warden test` shows one synthetic verdict and what the agent would be told.
+3. Work as usual. The line above the editor shows the latest verdict; `ctrl+shift+w` opens the trace with the scores and the exact text the agent received.
+
+Requires Pi 0.85 or newer and Node.js 22.19 or newer. Without a key, the offline parts still run: the pattern list, the runaway stop, duplicate-output notes, sensitive-path notes, and the credential-shape warnings. The [examples folder](examples/README.md) has a starter rules file and both config files.
+
 ## Does it improve the code?
 
-**Short answer: yes, on a model that breaks rules.** The same five tasks through glm-5.3-flash broke a rule in **7 of 25 runs without pi-warden and 1 of 25 with it**, at no cost in passing tests. On a model that already writes clean code (deepseek-v4.1-flash) it changed nothing measurable: 0 rule-breaking runs in either cell.
+**Short answer: the warden cell did not break a rule in 150 paired runs. The control cells did, in 6 of them.**
 
-`npm run eval:ab` runs the same fixture tasks through headless Pi twice. The control cell gets the five rules as prose in `AGENTS.md`; the warden cell gets the same file plus pi-warden enforcing `pi-warden.md`. A mechanical checker scores every final diff and shares no code with the guard, so no guard verdict can influence a score; each task ships a shortcut that passes the provided tests while breaking a rule, so only the checker can tell the cells apart. Run it on your own model: `npm run eval:ab -- --repeats 5 --model <model>` (about 45 minutes and a few hundred thousand tokens for 50 runs).
+`npm run eval:ab` runs the same fixture tasks through headless Pi twice. The control cell gets the rules as prose in `AGENTS.md`; the warden cell gets the same file plus pi-warden enforcing `pi-warden.md`. A mechanical checker scores every final diff and shares no code with the guard, so no guard verdict can influence a score. Each task ships a shortcut that passes the provided tests while breaking a rule, so only the checker can tell the cells apart.
 
-Results so far, 50 runs per model (5 tasks, both cells, 5 repeats):
-
-| Model | Cell | Rule violations in final diffs | Tests fully passing | Median run time |
+| Model | Runs per cell | Control runs with a rule violation | Warden runs with a rule violation | Tests fully passing (control / warden) |
 | --- | --- | --- | --- | --- |
-| glm-5.3-flash | control | **7 of 25 runs** | 50 of 50 | 34 s |
-| glm-5.3-flash | warden | **1 of 25 runs** | 47 of 50 | 44 s |
-| deepseek-v4.1-flash | control | 0 of 25 runs | 25 of 25 | 15 s |
-| deepseek-v4.1-flash | warden | 0 of 25 runs | 25 of 25 | 20 s |
+| glm-5.3-flash | 60 | **5** | **0** | 54 of 60 / 55 of 60 |
+| deepseek-v4.1-flash | 90 | **1** | **0** | 84 of 90 / 82 of 90 |
 
-The clipping task shows the effect best. Without the warden, 6 of 10 glm runs cut user-visible text to fit. With it, 1 of 10, and every run that received a clip steer ended clean. On deepseek, a model that already wrote clean code, the warden changed nothing worth measuring and cost a few seconds per run.
+The rules the traps break are the ones no linter can check and no model knows from training: an endpoint pasted inline instead of imported from the config module, a `TODO` without an issue, `console.log` in library code, an exported function with no documented return value. The fixture carries ten of them, and both cells are told all ten: the warden only gets credit when the model forgets or cuts a corner.
 
-The honest footnotes. The glm test failures in the warden cell are model variance, not guard interference: a 20-run retry-only batch put both cells at 8 of 10, and the guard stayed silent in every failure. Credential steer noise was the one measured waste: 30 of deepseek's 34 steers were two fixture tokens the agent read from the test file it was editing. 0.14 traces those stand-ins instead, which replays those 50 runs at 2 credential steers instead of 30, both of them a real-shaped token an environment dump exposed. All numbers so far come from one machine and two models; per-batch reports live in [eval/reports/](eval/reports/README.md), and the claim has to survive your re-run too.
+The clipping task shows the shape of the effect. Without the warden, 6 of 10 glm runs cut user-visible text to fit. With it, 1 of 10, and every run that received a clip steer ended clean.
+
+Run it on your own model: `npm run eval:ab -- --repeats 3 --model <model>` (it asks you to pick a model on purpose, because a full batch spends real tokens). Per-batch reports, including the runs where nothing changed, live in [eval/reports/](eval/reports/README.md).
+
+### Why a strong model does not make this pointless
+
+A guard like this is a smoke alarm. Most days it says nothing, and that is the design: it only pays off on the run where the model is tired, compacted, four hours in, or confident about a shortcut you would have caught in review. Four of its ten guards do not depend on the model being weak at all:
+
+- **Context saver**: large tool output is replaced by the lines that matter plus a file pointer. That is your token bill, on any model.
+- **Runaway stop** and **stuck** break a loop the model cannot see itself repeating, on any model.
+- **Done-check** reads the final message against the checks that actually ran, so "all tests pass" gets checked, not trusted.
+- **Subagent triage** scans async child reports so routine progress does not wake the parent agent or cost a request.
+
+The rules side is calibrated for the tail, not the average. Judge it on the runs where it fires, which is what the [trace panel](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md) and `/warden status` hold precision are for.
+
+### What it does not do yet
+
+Published because the negative is as useful as the positive. On the current benchmark, the warden's delta is concentrated in the rules guard. Two axes showed no measurable delta: the reply's claims about tests and builds (0 false claims in either cell), and blast radius (7 unasked action runs in the control cell against 6 in the warden cell, where the guard warned on a recursive `rm` without holding it, and did not hold `sh scripts/deploy.sh` on a "deploy it" prompt). A 12-turn decay arc also found no rule-violation growth in either cell. Sample sizes are small (15 tasks, two models), the checker needed five corrections before its numbers were quotable, and the instrument is in the same repo as the thing it measures. Re-run it and quote the folder.
 
 ## Two moments from real sessions
 
@@ -121,14 +138,14 @@ Every guarded call (`bash`, `write`, `edit`, and shell-like tools such as contex
 
 1. **Read-only? Skip.** `git status && ls` or a `read`: no request, no line in the trace.
 2. **Pattern list, offline.** Force push, `git reset --hard`, recursive `rm` outside the project, SQL `DROP`/`TRUNCATE`/`DELETE FROM`, `curl | sh`, publishing, infrastructure destroys: the call is held. Risky but recoverable things (`rm -rf` on a project path, `sudo`, `--no-verify`, `gh pr merge`, touching `.env`) warn. Text that is data, such as a commit message that mentions `git push --force`, is not a command.
-3. **Jev, with your consent.** One request carries your request, up to eight earlier messages, the agent's own words right before the call (its plan), and the call itself. Jev answers fixed questions with probabilities: irreversible, off task, does it change anything, how it relates to the task, does it contradict the plan, is the effect visible outside the working tree. On a write the slop and security questions ride along, and the rules check is a second request in parallel. About 250 ms before the tool runs.
+3. **Jev, with your consent.** One request carries your request, up to eight earlier messages, the agent's own words right before the call (its plan), and the call itself. Jev answers fixed questions with probabilities: irreversible, off task, does it change anything, how it relates to the task, does it contradict the plan, is the effect visible outside the working tree. On a write the slop and security questions ride along, and the rules check is a second request in parallel. About 0.3 s before the tool runs.
 4. **Act.** Only two things hold a call: a destructive pattern, or `irreversible` at 0.7 or above. Everything else (off task, plan mismatch, slop, a rule violation, a security smell) tells the agent and lets the call run.
 
 In the default `steer` mode a hold goes back to the agent as its tool result with two acceptable next moves: find a recoverable way, or explain the action to you in a sentence and wait. If your reply approves it, the retry goes through. `confirm` mode shows you a dialog instead; `advise` never holds.
 
 Three rules hold all of this together. Patterns set the floor and Jev can only raise it. The agent's plan can add a nudge but never remove a hold. Jev decides, code applies the decision, and the LLM is never asked to judge itself.
 
-**Why Jev and not a second LLM call.** A pattern list cannot tell `db:reset` after "reset the database" from `db:reset` after "add a column", and a second LLM call per tool call is too slow and expensive. Jev returns calibrated probabilities to fixed questions in about 250 ms for a fraction of a cent, cheap enough for every guarded call. The full argument, and how large a request gets, is in [docs/guards.md#why-jev](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md#why-jev-and-not-a-second-llm-call).
+**Why Jev and not a second LLM call.** A pattern list cannot tell `db:reset` after "reset the database" from `db:reset` after "add a column", and a second LLM call per tool call is too slow and expensive. Jev returns calibrated probabilities to fixed questions, cheap enough for every guarded call. The full argument, and how large a request gets, is in [docs/guards.md#why-jev](https://github.com/DevMortimer/pi-warden/blob/main/docs/guards.md#why-jev-and-not-a-second-llm-call).
 
 ## What the numbers say
 
@@ -177,7 +194,7 @@ The line above the editor shows the latest verdict per guard, for example `warde
 
 ## For extension authors
 
-Every guard is a plain function you can call with any object that has pi-typesafe's `evaluate` method as the judge, and the library has no dependency on Pi's runtime, so it is safe in tests:
+Every guard is a plain function you can call with any object that has pi-typesafe's `evaluate` method as the judge, and the library has no dependency on Pi's runtime, so it is safe in tests. Calls go through pi-typesafe's `ask`, so timeouts, aborts, and error shapes are pi-typesafe's contract:
 
 ```ts
 import { evaluateAction, defaultConfig } from "pi-warden";
@@ -193,7 +210,7 @@ The rules guard, the session-level `ActionGuard` and `RulesGuard`, and the other
 
 ## Development
 
-`npm install`, then `npm run check` (typecheck, offline tests on a mocked transport, build). `npm run test:live` spends real judgments across the guards; `node scripts/calibrate-action.mjs --dry-run` estimates a calibration run on your own sessions; `npm run dev:pi` starts Pi with this working tree. The rules the code keeps (steers never hold, approval comes from the user only, a new question ships with a measurement) are in [CONTRIBUTING.md](CONTRIBUTING.md).
+`npm install`, then `npm run check` (typecheck, 185 offline tests on a mocked transport, build). `npm run test:live` spends real judgments across the guards; `node scripts/calibrate-action.mjs --dry-run` estimates a calibration run on your own sessions; `npm run eval:ab -- --dry-run` lists a benchmark batch without spending anything; `npm run dev:pi` starts Pi with this working tree. The rules the code keeps (steers never hold, approval comes from the user only, a new question ships with a measurement) are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
 
