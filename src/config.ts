@@ -384,7 +384,7 @@ function parseExemptRules(raw: unknown): string[] {
   return [...ids];
 }
 
-const PATH_TOOL_NAMES = new Set(["read", "write", "edit", "bash"]);
+const PATH_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file"]);
 
 function parsePathRule(raw: unknown): PathRule | undefined {
   if (!isObject(raw)) return undefined;

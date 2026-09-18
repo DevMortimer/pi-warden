@@ -6,7 +6,7 @@ import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
 import type { ActionGuardConfig, CommandRule, PathRule, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { globToRegExp } from "./rules.js";
-import { commandOf } from "./tools.js";
+import { COMMAND_TOOLS, commandOf } from "./tools.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
 export type Level = "allow" | "warn" | "confirm" | "deny";
@@ -372,6 +372,23 @@ export function unknownExemptIds(exemptRules: readonly string[], commandRules: r
   return exemptRules.filter(id => !known.has(id));
 }
 
+/** Path rules whose access + tools combo means they can never fire: `access:"write"` (reads held) with
+ * only write tools (writes flow, nothing to hold), or `tools:["read"]` when `read` is not in `action.tools`
+ * (the read tool is never inspected). Reported once at load, like unknown exempt ids. */
+export function inertPathRules(pathRules: readonly PathRule[], actionTools: readonly string[]): string[] {
+  const result: string[] = [];
+  for (const rule of pathRules) {
+    const fileTools = rule.tools.filter(tool => tool !== "*");
+    // access:"write" holds reads; a rule with only write/edit tools checks writes, which flow under "write".
+    if (rule.access === "write" && fileTools.length > 0 && fileTools.every(tool => tool === "write" || tool === "edit"))
+      result.push(rule.id);
+    // tools:["read"] when read is not in action.tools: the read tool is never inspected, so the rule never fires.
+    if (fileTools.length > 0 && fileTools.every(tool => tool === "read") && !actionTools.includes("read"))
+      result.push(rule.id);
+  }
+  return [...new Set(result)];
+}
+
 function compileUserRule(raw: CommandRule, defaultSeverity: Severity): CompiledUserRule | undefined {
   try {
     const flags = raw.caseSensitive ? "" : "i";
@@ -420,16 +437,27 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
 // in arbitrary argv are deliberately never classified: that is the positive-space treadmill this design exists to
 // avoid (docs/deterministic-floor-spec.md §PR 2, "What this deliberately does not do").
 
-/** Write-sinks a shell grammar actually defines: the target of a redirection, or tee's last argument. */
-const REDIRECT_TARGET = /(?:^|[\s;&|)(])\d*>{1,2}\s*(\S+)/g;
+/** Write-sinks a shell grammar actually defines: the target of a redirection, or tee's operands. */
+const REDIRECT_TARGET = /(?:^|[\s;&|)(])\d*>{1,2}[|&]?\s*(\S+)/g;
 
 function writeSinkTargets(command: string): string[] {
   const targets: string[] = [];
+  // Redirect targets are scanned on the full command, not per segment: `>|` and `>&` contain `|`/`&` that
+  // splitShell would split as pipe/and operators, separating the operator from its target.
+  for (const match of command.matchAll(REDIRECT_TARGET)) if (match[1]) targets.push(match[1]);
+  // tee writes every operand after its flags; an -a flag only appends, which is still a write.
+  // Head-anchored (segment head, skipping wrappers) so `grep tee file.log` is not mistaken for a tee invocation.
   for (const segment of splitShell(command)) {
-    for (const match of segment.matchAll(REDIRECT_TARGET)) if (match[1]) targets.push(match[1]);
-    // tee writes its last argument; an -a flag only appends, which is still a write.
-    const tee = /\btee\b(?:\s+-\w+)*\s+(\S+)\s*$/.exec(segment);
-    if (tee?.[1]) targets.push(tee[1]);
+    const heads = headOf(segment);
+    if (heads && heads === "tee") {
+      const tokens = segment.trim().split(/\s+/);
+      let i = tokens.indexOf("tee") + 1;
+      while (i < tokens.length && tokens[i]!.startsWith("-")) i++;
+      for (; i < tokens.length; i++) {
+        const t = tokens[i]!.replace(/["']/g, "");
+        if (t) targets.push(t);
+      }
+    }
   }
   return targets;
 }
@@ -475,8 +503,12 @@ function matchPathRules(tool: string, input: Record<string, unknown>, cwd: strin
   if (!rules?.length) return [];
   const hits: PatternHit[] = [];
   const fired = new Set<string>();
+  // The file surface checks the structured path field of the named file tools. The command surface covers every
+  // command tool ("*" or an explicit command tool name such as "bash" — COMMAND_TOOLS from tools.ts), because the
+  // write-sink and mention matching apply to any tool that carries a shell command.
   const applies = (rule: PathRule, surface: "file" | "command") =>
-    !exempt.has(rule.id) && (rule.tools.includes("*") || (surface === "file" ? rule.tools.includes(tool) : false));
+    !exempt.has(rule.id) && (rule.tools.includes("*")
+      || (surface === "command" ? COMMAND_TOOLS.includes(tool as (typeof COMMAND_TOOLS)[number]) : rule.tools.includes(tool)));
   const fire = (rule: PathRule, writeSide: boolean, label: string) => {
     if (fired.has(rule.id)) return;
     // The access dimension: "none" fires on any touch; "read" only on the write side (reads flow); "write" only on
@@ -486,9 +518,11 @@ function matchPathRules(tool: string, input: Record<string, unknown>, cwd: strin
       hits.push(pathRuleHit(rule, label));
     }
   };
-  // File surface: the structured path field, exact and cheap.
+  // File surface: the structured path field, exact and cheap. ctx_execute_file is a read like any other file
+  // tool (its command runs against the file but does not modify the path field); excluding it would leave reads
+  // of a protected path unmatchable.
   const path = typeof input.path === "string" && input.path.trim() ? input.path : undefined;
-  if (path && tool !== "ctx_execute_file") {
+  if (path) {
     for (const rule of rules) {
       if (!applies(rule, "file")) continue;
       if (rule.onlyIfExists !== false && cwd && !existsSync(resolve(cwd, path))) continue;
@@ -505,17 +539,23 @@ function matchPathRules(tool: string, input: Record<string, unknown>, cwd: strin
       if (rule.regex) { try { out.push(new RegExp(pattern)); } catch { /* invalid pattern matches nothing */ } }
       else {
         // globToRegExp builds `^(?:.*/)?…$` (plus one more `(?:.*/)?` per `**/` in the pattern); the command surface
-        // asks "does this text mention the path", so the head anchor and the depth prefixes come off and the tail
-        // stays (the mention must end the path, so `.env.example` does not count as a `.env` mention).
-        // The prefix is a literal run of `(?:.*\/)?`, so it is trimmed by slicing rather than by a second regex
-        // whose own escaping would have to mirror globToRegExp's output character for character.
+        // asks "does this text mention the path", so the head anchor and the depth prefixes come off. The tail
+        // stays anchored when the glob ends in a literal (`.env` must not match `.env.example`), but loses the `$`
+        // when it ends in a wildcard segment (`id_*` → `[^/]*$`, `.env.*` → `.env\.[^/]*$`): the wildcard already
+        // allows a suffix, and a hard `$` would prevent `id_ed25519.pub` from matching `id_*` in command text.
         const anchored = globToRegExp(pattern.startsWith("~/") ? pattern.slice(2) : pattern).source;
         let body = anchored;
-        // Each depth prefix is `(?:.*\/?` — group plus its optional marker — and the source may carry one or more.
         while (body.startsWith("^") || body.startsWith("(?:.*\\/)?")) {
           body = body.startsWith("^") ? body.slice(1) : body.slice("(?:.*\\/)?".length);
         }
-        const unanchored = body.endsWith("$") ? body.slice(0, -1) : body;
+        // The tail uses a path boundary instead of end-of-string: the path must be followed by a non-path
+        // character (whitespace, quote, pipe, semicolon, end-of-line, or end-of-string) so `.env` does not match
+        // `.env.example`, but `.env` on its own line in a heredoc body still matches. Wildcard-ending globs
+        // (`id_*`, `.env.*`) drop the boundary: the wildcard already allows a suffix.
+        const lastSegment = pattern.replace(/^.*\//, "");
+        const endsInWildcard = /[*?]/.test(lastSegment);
+        const tail = endsInWildcard ? "" : "(?=[\\s" + "'" + "`|;()&]|$)";
+        const unanchored = body.replace(/\$$/, tail);
         out.push(new RegExp(unanchored));
       }
     }
@@ -529,9 +569,30 @@ function matchPathRules(tool: string, input: Record<string, unknown>, cwd: strin
     const sinkWrite = (rule: PathRule) => sinks.some(target => pathRuleMatches(rule, target));
     for (const rule of rules) {
       if (!applies(rule, "command")) continue;
+      const writesToThis = sinkWrite(rule);
       if (rule.access === "none" && mentioned(rule)) fire(rule, false, rule.message ?? `touches ${rule.id}`);
-      if (sinkWrite(rule)) fire(rule, true, rule.message ?? `writes to ${rule.id}`);
-      else if (rule.access === "write" && mentioned(rule)) fire(rule, false, rule.message ?? `reads ${rule.id}`);
+      // Sink hits and bare mentions are independent: a command can both read and write the same path
+      // (`cat a.log | tee b.log`), so an else-if here would drop the read side whenever a write sink matched.
+      // fire()'s access gate and the fired set keep the two sides from double-reporting one rule.
+      if (writesToThis) fire(rule, true, rule.message ?? `writes to ${rule.id}`);
+      // For access:"write" (reads held, writes flow), a mention in a write-sink position is a write, not a read.
+      // `tee path` writes; `cat path` reads. A mention that does not correspond to a sink target is a read mention.
+      // The fired set prevents double-reporting when both a sink and a non-sink mention exist for the same rule.
+      // `writesToThis` is per-rule: if `cat a.log | tee b.log` matches one rule for both paths, the sink hit fires
+      // the write side (b.log) and the mention fires the read side (a.log) — fire() fires only once per rule (fired
+      // set), so the write side fires first; the read side's access gate (write access = !writeSide) would pass, but
+      // the fired set already has the rule. To let both sides fire independently, the mention must NOT be gated by
+      // writesToThis — it must fire on its own. The access gate in fire() and the fired set handle dedup: the write
+      // side fires first (writeSide=true, access:"write" → !writeSide → no fire); the read side then fires (writeSide=false,
+      // access:"write" → !writeSide → fire). The fired set prevents the write side from firing twice.
+      // For access:"write" (reads held, writes flow), a mention in a write-sink position is a write, not a read.
+      // `tee path` writes, not reads. To fire only on genuine read mentions, blank the sink targets from the
+      // text before checking mentions: if the path still appears, it is in a read position (`cat a.log | tee b.log`
+      // blanks b.log but a.log remains). If it was only in a sink, no mention remains and the read side stays quiet.
+      if (rule.access === "write") {
+        const textSansSinks = sinks.reduce((t, s) => t.replaceAll(s, ""), text);
+        if (mentionRegex(rule).some(re => re.test(textSansSinks))) fire(rule, false, rule.message ?? `reads ${rule.id}`);
+      }
     }
   }
   return hits;
