@@ -4,7 +4,18 @@ import type { Trace } from "./trace.js";
 
 interface ThemeLike { fg(color: string, text: string): string; bold(text: string): string }
 
-const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", confirm: "error", stuck: "error", "false claim": "error", stopped: "error", "stopped, recovering": "error", violation: "warning", skipped: "muted" };
+const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", confirm: "error", stuck: "error", "false claim": "error", stopped: "error", "stopped, recovering": "error", violation: "warning", skipped: "muted", wake: "warning", silent: "muted", "appended silently": "muted", "possible credentials": "warning", error: "error" };
+
+/**
+ * Body segments read as data, not prose: the subject (tool, path, agent) stays in the text tone, numeric values keep the
+ * text tone, and the labels around them sit one step down in muted. Labels dim so the eye lands on what was measured.
+ */
+function renderSegment(segment: string, subject: boolean, theme: ThemeLike): string {
+  if (subject) return theme.fg("text", segment);
+  const value = /^(.+[ \t])([0-9][0-9.]*)$/.exec(segment);
+  if (value) return theme.fg("muted", value[1]!) + theme.fg("text", value[2]!);
+  return theme.fg("muted", segment);
+}
 
 export interface PanelActions {
   /** Remove the sidebar. */
@@ -44,23 +55,33 @@ export class TracePanel implements Component {
     const keys = this.focused ? "↑↓ PgUp PgDn scroll · c clear · esc back to editor · q close" : "click for keys · wheel scrolls · /warden trace closes";
     out.push(theme.bold(theme.fg("accent", `${this.title}`)) + theme.fg("muted", ` · ${entries.length} event${entries.length === 1 ? "" : "s"}`));
     out.push(theme.fg("muted", keys));
-    out.push(theme.fg("muted", "─".repeat(Math.max(0, width))));
+    out.push(theme.fg("borderMuted", "─".repeat(Math.max(0, width))));
     if (!entries.length) {
       for (const line of wrapTextWithAnsi(theme.fg("muted", "No guarded activity yet this session. Verdicts, Jev scores, and what the agent was told will appear here."), Math.max(10, width))) out.push(line);
       return out.map(line => truncateToWidth(line, width, ""));
     }
+    // Left rail: time and guard label. The verdict leads the right column as a bold chip, so a scan down the pane reads
+    // the decisions first and the evidence after.
+    const RAIL = 16;
     for (let index = entries.length - 1; index >= 0; index--) {
       const entry = entries[index]!;
-      const status = entry.line.split(" · ").at(-1) ?? "";
-      const color = LEVEL_COLOR[status] ?? "text";
+      const segments = entry.line.split(" · ");
+      const last = segments.at(-1)!;
+      const hasStatus = segments.length > 1 && LEVEL_COLOR[last] !== undefined;
+      const status = hasStatus ? segments.pop()! : undefined;
+      if (segments[0] === "warden") segments.shift();
+      if (segments[0] === entry.guard) segments.shift();
+      const color = LEVEL_COLOR[status ?? ""] ?? "text";
+      const chip = status ? `${theme.bold(theme.fg(color, status.toUpperCase()))}  ` : "";
+      const indent = RAIL + (status ? status.length + 2 : 0);
       const head = `${theme.fg("muted", new Date(entry.at).toTimeString().slice(0, 8))} ${theme.fg(color, theme.bold(entry.guard.padEnd(6)))} `;
-      const headWidth = 9 + 7;
-      const body = wrapTextWithAnsi(theme.fg(color, entry.line), Math.max(10, width - headWidth));
-      out.push(head + (body[0] ?? ""));
-      for (const continuation of body.slice(1)) out.push(" ".repeat(headWidth) + continuation);
+      const body = segments.map((segment, n) => renderSegment(segment, n === 0, theme)).join(theme.fg("dim", " · "));
+      const wrapped = wrapTextWithAnsi(body, Math.max(10, width - indent));
+      out.push(head + chip + (wrapped[0] ?? ""));
+      for (const continuation of wrapped.slice(1)) out.push(" ".repeat(indent) + continuation);
       for (const detail of entry.details) {
-        const wrapped = wrapTextWithAnsi(detail, Math.max(10, width - headWidth - 2));
-        for (const [n, line] of wrapped.entries()) out.push(" ".repeat(headWidth) + theme.fg("muted", n === 0 ? "· " : "  ") + theme.fg("dim", line));
+        const detailLines = wrapTextWithAnsi(detail, Math.max(10, width - RAIL - 2));
+        for (const [n, line] of detailLines.entries()) out.push(" ".repeat(RAIL) + theme.fg("muted", n === 0 ? "· " : "  ") + theme.fg("dim", line));
       }
       out.push("");
     }
@@ -77,7 +98,10 @@ export class TracePanel implements Component {
     const visible = all.slice(this.scroll, this.scroll + this.viewport);
     if (all.length > this.viewport) {
       const last = visible.length - 1;
-      visible[last] = truncateToWidth(theme_fg(this.theme, "muted", `… ${all.length - this.scroll - this.viewport > 0 ? `${all.length - this.scroll - this.viewport} more lines below` : "end"} · ${this.scroll} above`), inner, "");
+      const below = all.length - this.scroll - this.viewport;
+      const above = this.scroll;
+      const label = below > 0 ? `… ${below} more below${above ? ` · ${above} above` : ""}` : `… end of trace${above ? ` · ${above} above` : ""}`;
+      visible[last] = truncateToWidth(theme_fg(this.theme, "dim", label), inner, "");
     }
     while (visible.length < this.viewport) visible.push("");
     return visible.map(line => border + line);

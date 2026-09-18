@@ -1406,7 +1406,7 @@ test("the widget is a clickable component: a left click toggles a non-capturing 
   assert.ok(panel.render(120).every(line => line.startsWith("│ ")), "a left border marks the pane");
   let text = panel.render(120).join("\n");
   assert.match(text, /pi-warden trace · 1 event/);
-  assert.match(text, /action\s+warden · bash · irreversible 0\.20/);
+  assert.match(text, /action\s+ALLOW\s+bash · irreversible 0\.20 · off-task 0\.10 · expected step/, "the verdict leads the entry as a chip; the redundant warden prefix is gone");
   assert.match(text, /· ran: npm test/);
   assert.match(text, /· jev: irreversible 0\.20 · off-task 0\.10 · expected step/);
 
@@ -1449,10 +1449,10 @@ test("/warden trace opens the panel with a UI and prints the trace without one; 
   await agentEnd("Fixed it.");
   await runCommand("trace");
   const text = openPanels[1]!.render(140).join("\n");
-  assert.match(text, /stuck\s+warden · stuck · 3 failures · exact repeat · stuck/);
+  assert.match(text, /stuck\s+STUCK\s+3 failures · exact repeat/);
   assert.match(text, /· 1\. ✗ npm test → 1 failing/);
   assert.match(text, /· agent told: pi-warden: the same call failed 3 times/);
-  assert.match(text, /done\s+warden · done-check · 1 changes/);
+  assert.match(text, /done\s+UNVERIFIED\s+done-check · 1 changes/, "the status token becomes the chip");
   assert.match(text, /· final message: Fixed it\./);
   assert.match(text, /· evidence: 1 code change; checks: npm test → failed/);
   openPanels[1]!.handleInput("q");
