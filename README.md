@@ -186,7 +186,7 @@ Seven commands: `/warden status`, `enable`, `disable`, `mode steer|confirm|advis
 
 ## Configuration
 
-Two optional files: your defaults in `~/.pi/agent/pi-warden/config.json` (`/warden config` opens it) and per-repo overrides in `.pi/pi-warden.json`. Common tweaks are `mode`, `steerVisible`, `notify.enabled`, `slop.prose.audience`, `rules.skip`, and `context.enabled`. Every key with its default, what a project file may and may not change, and the environment variables: [docs/configuration.md](https://github.com/DevMortimer/pi-warden/blob/main/docs/configuration.md). Worked examples of all three files: [examples/README.md](examples/README.md).
+Two optional files: your defaults in `~/.pi/agent/pi-warden/config.json` (`/warden config` opens it) and per-repo overrides in `.pi/pi-warden.json`. Common tweaks are `mode`, `steerVisible`, `notices`, `notify.enabled`, `slop.prose.audience`, `rules.skip`, and `context.enabled`. Every key with its default, what a project file may and may not change, and the environment variables: [docs/configuration.md](https://github.com/DevMortimer/pi-warden/blob/main/docs/configuration.md). Worked examples of all three files: [examples/README.md](examples/README.md).
 
 ## Status line and trace
 

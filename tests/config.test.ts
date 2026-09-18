@@ -33,6 +33,7 @@ test("defaults: guards on, steer mode, TypeSafe consent off, nudges on", () => {
   assert.equal(config.slop.enabled, true);
   assert.equal(config.slop.prose.enabled, true);
   assert.equal(config.steerVisible, false, "steers are hidden from the transcript by default; the trace shows them");
+  assert.equal(config.notices, false, "per-call warning notices are hidden from the transcript by default");
   assert.equal(config.timeoutMs, config.action.timeoutMs);
 });
 
@@ -68,6 +69,7 @@ test("user overrides accept valid values and ignore junk", () => {
   assert.equal(config.slop.prose.trend, 3, "trend is capped at the 3-reply window");
   assert.equal(config.slop.prose.threshold, 0.7, "out-of-range probability falls back");
   assert.equal(applyUserOverrides(defaultConfig(), { steerVisible: true }).steerVisible, true);
+  assert.equal(applyUserOverrides(defaultConfig(), { notices: true }).notices, true);
   assert.equal(applyUserOverrides(defaultConfig(), { mode: "loud" }).mode, "steer");
 });
 

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerReason, stripDataText, textApproves } from "../src/guard.js";
+import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, repeatSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -501,6 +501,7 @@ test("the agent's plan travels with the request and is judged for intent mismatc
   assert.equal(drift.plan, "Let me first list what is in build/ before removing anything.");
   assert.match(formatVerdict(drift), /off plan · warn$/);
   assert.match(intentSteer(drift), /^pi-warden: this bash call does something different from what you said you were about to do \(intent mismatch 0\.90\)\. It ran\./);
+  assert.match(intentSteer(drift), /at most one short sentence/, "the steer bounds the demanded reply instead of inviting an accounting");
 
   const readOnly = await evaluateAction({ tool: "bash", input: { command: "npm run check:manifest" }, cwd, task: "clean the build", plan: "I will delete build/ now." }, { config: config.action, judge: withIntent(0.9, 0.05) });
   assert.equal(readOnly.level, "allow", "a call that changes nothing is never warned about for drifting from the plan");
@@ -566,6 +567,19 @@ test("steerReason explains the hold and the two acceptable moves without echoing
   assert.match(text, /retry the same call and pi-warden will let it through/);
   assert.ok(!text.includes("origin main"));
   assert.match(steerReason(verdict, { canApprove: false }), /once the user has replied with approval/);
+});
+
+test("a repeated steer collapses to the one-line notice; a changed notice does not", () => {
+  const window = new SteerRepeatWindow();
+  const first = "pi-warden: this ctx_execute call does something different (intent mismatch 0.80). It ran.";
+  const rescored = "pi-warden: this ctx_execute call does something different (intent mismatch 0.89). It ran.";
+  assert.equal(window.seen(first), false, "the first copy is delivered in full");
+  assert.equal(window.seen(rescored), true, "only the score changed: same notice");
+  assert.equal(window.seen("pi-warden: the content just written to src/a.ts violates a rule"), false, "a different notice is delivered in full");
+  assert.match(repeatSteer("action"), /^pi-warden: this repeats the last note about action/);
+  assert.match(steerFingerprint(rescored), /^pi-warden: this ctx_execute call does something different \(intent mismatch #\)\. It ran\.$/);
+  window.reset();
+  assert.equal(window.seen(first), false, "a reset window delivers the full notice again");
 });
 
 test("context-mode and powershell tools are guarded through their command fields", async () => {

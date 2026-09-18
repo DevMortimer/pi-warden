@@ -191,6 +191,8 @@ export interface WardenConfig {
   widget: WidgetConfig;
   /** Show steer messages in the transcript. They are always visible in the trace panel. */
   steerVisible: boolean;
+  /** Per-call warning notices ("warden · …") in the transcript. Off by default; the widget and trace panel always show them. */
+  notices: boolean;
 }
 
 export const PACKAGE_NAME = "pi-warden";
@@ -227,6 +229,7 @@ export function defaultConfig(): WardenConfig {
     subagent: { enabled: true, wake: true, threshold: 0.8, cooldownMs: 120000 },
     widget: defaultWidgetConfig(),
     steerVisible: false,
+    notices: false,
   };
 }
 
@@ -456,6 +459,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     ...applyGuards(base, raw, shared.timeoutMs, "user"),
     widget: applyWidget(base.widget, raw.widget),
     steerVisible: boolean(raw.steerVisible, base.steerVisible),
+    notices: boolean(raw.notices, base.notices),
   };
 }
 

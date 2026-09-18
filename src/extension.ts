@@ -11,7 +11,7 @@ import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, pr
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, intentSteer, offTaskSteer, SLOP_LABELS, steerReason } from "./guard.js";
+import { evaluateAction, formatVerdict, intentSteer, offTaskSteer, repeatSteer, SLOP_LABELS, SteerRepeatWindow, steerReason } from "./guard.js";
 import type { PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
@@ -291,9 +291,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     noteOutcomes(config, holds.regret(result));
   };
   /** Every steer is counted against the guard that asked for it; the status line shows where the noise comes from. */
+  const steerRepeats = new SteerRepeatWindow();
   const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean }) => {
     stats.steers++;
+    const guards = typeof guard === "string" ? guard : guard.join(", ");
     for (const name of typeof guard === "string" ? [guard] : guard) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
+    // The same notice with only a score changed has been delivered once; the agent owes it no second accounting.
+    if (steerRepeats.seen(content)) content = repeatSteer(guards);
     const { display, ...delivery } = options ?? { deliverAs: "steer" as const };
     return pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: display ?? config.steerVisible }, delivery);
   };
@@ -366,6 +370,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     secretsSeen.clear();
     subagentSeen.clear();
     wakePolicy.reset();
+    steerRepeats.reset();
     runaway.reset();
     runawayStops = 0;
     pendingRunaway = undefined;
@@ -500,7 +505,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       noteGuards.add("action");
       for (const symptom of verdict.slopSymptoms) slopCounts[symptom]++;
       const where = verdict.summary.path ?? event.toolName;
-      if (ctx.hasUI) ctx.ui.notify(`warden · slop · ${where}: ${verdict.slopReasons.join("; ")}`, "warning");
+      if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · slop · ${where}: ${verdict.slopReasons.join("; ")}`, "warning");
       notes.push(slopSteer(where, verdict.slopSymptoms, slopCounts));
     }
     if (rulesCheck) {
@@ -514,7 +519,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         if (told) {
           stats.ruleViolations++;
           noteGuards.add("rules");
-          if (ctx.hasUI) ctx.ui.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
+          if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
           notes.push(told);
         }
       }
@@ -523,7 +528,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         stats.pathNotes++;
         const told = pathNoteSteer(verdict.summary.path, hits);
         record(ctx, config, "rules", renderTemplate(config.widget.rules, { tool: event.toolName, path: verdict.summary.path, violations: `sensitive path ${hits.map(hit => hit.glob).join(", ")}`, status: "note" }), [`${event.toolName} ${verdict.summary.path} matches ${hits.map(hit => hit.glob).join(", ")} in rules.sensitivePaths`, `agent told: ${told}`]);
-        if (ctx.hasUI) ctx.ui.notify(`warden · sensitive path · ${verdict.summary.path} (${hits.map(hit => hit.glob).join(", ")}); the agent was given the note`, "warning");
+        if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · sensitive path · ${verdict.summary.path} (${hits.map(hit => hit.glob).join(", ")}); the agent was given the note`, "warning");
         noteGuards.add("rules");
         notes.push(told);
       }
@@ -531,7 +536,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (notes.length) steer(config, [...noteGuards], notes.join("\n\n"));
     if (verdict.level === "warn") {
       stats.warned++;
-      if (ctx.hasUI) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
+      if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
       track(false);
       return undefined;
     }
@@ -540,7 +545,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const reasons = verdict.reasons.join("; ");
     if (mode === "advise") {
       stats.warned++;
-      if (ctx.hasUI) ctx.ui.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
+      if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
       track(false);
       return undefined;
     }
@@ -555,7 +560,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     stats.held++;
     actionGuard.hold(task);
     track(true);
-    if (ctx.hasUI) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
+    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
     notifyDesktop(ctx, config, `Held ${event.toolName}: ${reasons}. The agent will re-plan or ask you in chat.`);
     return { block: true, reason: told ?? steerReason(verdict, { canApprove: judge !== undefined }) };
   });
@@ -676,7 +681,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
     if (!verdict.stuck) return patch;
     stats.stuck++;
-    if (ctx.hasUI) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
+    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
     if (nudge) steer(config, "stuck", nudge);
     return patch;
   });
@@ -720,7 +725,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (nudge) { verdict.nudged = true; prose.markNudged(); stats.proseNudges++; }
       record(ctx, config, "prose", renderTemplate(config.widget.prose, proseTokens(verdict)), proseDetails(verdict, finalMessage, config.slop.prose.audience, nudge));
       if (nudge) {
-        if (ctx.hasUI) ctx.ui.notify(`warden · prose: ${due.join(", ")} in ${config.slop.prose.trend} of the last 3 replies (agent nudged for the next reply)`, "warning");
+        if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · prose: ${due.join(", ")} in ${config.slop.prose.trend} of the last 3 replies (agent nudged for the next reply)`, "warning");
         steer(config, "prose", nudge, { deliverAs: "nextTurn" });
       }
     }
@@ -732,7 +737,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     record(ctx, config, "done", formatDone(verdict, config.widget.done), doneDetails(verdict, finalMessage, nudge));
     if (!verdict.unverified) return;
     stats.unverified++;
-    if (ctx.hasUI) ctx.ui.notify(`warden · done-check: ${verdict.reasons.join("; ")}${nudge ? " (agent asked to verify)" : ""}`, "warning");
+    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · done-check: ${verdict.reasons.join("; ")}${nudge ? " (agent asked to verify)" : ""}`, "warning");
     if (nudge) {
       doneNudged = true;
       steer(config, "done", nudge, { deliverAs: "followUp", triggerTurn: true });

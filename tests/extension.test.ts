@@ -98,7 +98,7 @@ const readLog = async (path: string, lines: number, settled = true): Promise<Rec
   }
   throw new Error(`log at ${path} did not reach ${lines} labelled lines`);
 };
-const grantConsent = () => writeFile(configPath(), JSON.stringify({ typesafe: true }));
+const grantConsent = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true }));
 
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), "pi-warden-ext-"));
@@ -508,6 +508,7 @@ test("read-only tools and read-only shell commands pass without network or dialo
 });
 
 test("without consent, only pattern checks run: risky warns, destructive is held with a steer reason", async () => {
+  await writeFile(configPath(), JSON.stringify({ notices: true }));
   assert.equal(await toolCall("bash", { command: "rm -rf dist" }), undefined);
   assert.equal(networkCalls, 0);
   assert.equal(notices.length, 1);
@@ -523,6 +524,19 @@ test("without consent, only pattern checks run: risky warns, destructive is held
   assert.ok(!held?.reason?.includes("origin main"), "the reason does not echo the command");
   assert.match(notices.at(-1)!.text, /held bash: destructive: git force push/);
   assert.equal(networkCalls, 0);
+});
+
+test("per-call warning notices are off by default; the agent is still told, and notices: true restores them", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true }));
+  nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated" };
+  assert.equal(await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" }), undefined);
+  assert.equal(notices.length, 0, "no yellow warning in the transcript by default");
+  assert.match(widgets.at(-1)![0]!, /off task · warn$/, "the widget still shows the event");
+  assert.match(sentMessages.at(-1)?.message.content ?? "", /^pi-warden: this write call looks unrelated/, "the agent is still told");
+
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true }));
+  await toolCall("write", { path: join(temporary, "poem2.txt"), content: "daisies" });
+  assert.ok(notices.some(notice => /warden · write: /.test(notice.text)), "notices: true restores the warnings");
 });
 
 test("the agent's plan comes from the message that makes the call, falls back to its latest text under the prompt, and a mismatch steers", async () => {
@@ -704,7 +718,7 @@ test("the Action guard is wired to the session: the prompt is the task, siblings
 });
 
 test("mode confirm shows a dialog; mode advise only reports; PI_WARDEN_MODE overrides the file", async () => {
-  await writeFile(configPath(), JSON.stringify({ mode: "confirm" }));
+  await writeFile(configPath(), JSON.stringify({ mode: "confirm", notices: true }));
   const allowed = await toolCall("bash", { command: "git push --force origin main" });
   assert.equal(allowed, undefined);
   assert.equal(confirms.length, 1);
@@ -904,6 +918,7 @@ test("prose: the final reply is scored against the audience and the agent is nud
 });
 
 test("stuck detection: exact repeats are caught offline, varied failures ask Jev, and the agent is nudged once per cool-down", async () => {
+  await writeFile(configPath(), JSON.stringify({ notices: true }));
   await newPrompt("make the tests pass");
   await toolResult("bash", { command: "npm test" }, "1 failing", true);
   await toolResult("bash", { command: "npm test" }, "1 failing", true);

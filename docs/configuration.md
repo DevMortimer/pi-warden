@@ -48,7 +48,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
   "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
   "subagent": { "enabled": true, "wake": true, "threshold": 0.8, "cooldownMs": 120000 },
   "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
-  "steerVisible": false
+  "steerVisible": false,
+  "notices": false
 }
 ```
 
@@ -79,6 +80,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `subagent.cooldownMs` | At most one batched wake per window, so several children finishing together cost one interruption. |
 | `widget.*` | Status line placement, sidebar shortcut and width, per-guard text templates (below). |
 | `steerVisible` | Show steer messages in the transcript instead of only in the trace panel. |
+| `notices` | Print the per-call warning notices (`warden · …`) in the transcript. Off by default; the widget, the trace panel, and `/warden trace` always show every event. |
 
 ## Project config
 

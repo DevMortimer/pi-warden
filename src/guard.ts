@@ -555,6 +555,39 @@ function hasContent(summary: ActionSummary): boolean {
   return (summary.excerpt?.trim().length ?? 0) > 0 || (summary.edits?.some(edit => edit.newText.trim().length > 0) ?? false);
 }
 
+// ---------------------------------------------------------------------------
+// Steer repeats: the same notice with only a score changed carries no new information, but each copy makes the model
+// write another accounting paragraph. A window over normalised texts collapses those repeats to a one-line reminder.
+
+/** Scores, counts, and whitespace removed; the fingerprint of what the notice actually says. */
+export function steerFingerprint(content: string): string {
+  return content.replace(/\d+(?:\.\d+)?/g, "#").replace(/\s+/g, " ").trim();
+}
+
+export class SteerRepeatWindow {
+  private readonly recent: string[] = [];
+
+  constructor(private readonly window = 3) {}
+
+  /** True when this normalised text was already sent inside the window; the text is recorded either way. */
+  seen(content: string): boolean {
+    const fingerprint = steerFingerprint(content);
+    const repeat = this.recent.includes(fingerprint);
+    this.recent.push(fingerprint);
+    if (this.recent.length > this.window) this.recent.shift();
+    return repeat;
+  }
+
+  reset(): void {
+    this.recent.length = 0;
+  }
+}
+
+/** The one-line stand-in for a repeated notice; the full text of the first copy is still in the agent's context. */
+export function repeatSteer(guards: string): string {
+  return `pi-warden: this repeats the last note about ${guards}; nothing new is owed for it. Keep any acknowledgement to one short line and continue the task, or wait for the user.`;
+}
+
 /** The agent's words as they leave the machine: redacted and bounded. Undefined when the agent said nothing. */
 export function describePlan(plan: string | undefined): string | undefined {
   const text = plan?.trim();
@@ -724,17 +757,19 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   return verdict;
 }
 
-/** What the agent reads after a call that differs from its own plan ran: name the gap, ask it to keep words and calls in step. */
+/** What the agent reads after a call that differs from its own plan ran: name the gap, bound the answer to one line.
+ * Without the bound the model writes a full accounting of the notice at the end of every task, which is noise for the
+ * user reading the transcript; the wording below caps the demanded reply at one short sentence. */
 export function intentSteer(verdict: Verdict): string {
   const score = verdict.judgment?.intentMismatch;
   const visible = (verdict.judgment?.visible ?? 0) >= VISIBLE_THRESHOLD ? " and its effect is visible outside the working tree (a commit, push, merge, publish, or launched program)" : "";
-  return `pi-warden: this ${verdict.summary.tool} call does something different from what you said you were about to do${score === undefined ? "" : ` (intent mismatch ${percent(score)})`}${visible}. It ran. Before the next call, say what changed and why, and keep your stated plan and your calls in step; if the described step is still needed, do it.`;
+  return `pi-warden: this ${verdict.summary.tool} call does something different from what you said you were about to do${score === undefined ? "" : ` (intent mismatch ${percent(score)})`}${visible}. It ran. Do not write a report about this notice: in your next message, name what changed and why in at most one short sentence, then continue the task (or make the described call if it is still needed). If you already accounted for a similar notice, say nothing more about it.`;
 }
 
-/** What the agent reads after an unrelated change ran: the request it drifted from, and the two acceptable moves. */
+/** What the agent reads after an unrelated change ran: the request it drifted from, the two acceptable moves, one line. */
 export function offTaskSteer(verdict: Verdict): string {
   const score = verdict.judgment?.offTask;
-  return `pi-warden: this ${verdict.summary.tool} call looks unrelated to the user's request${score === undefined ? "" : ` (off-task ${percent(score)})`}. It ran. If it serves the request, say how in your next message; otherwise return to what the user asked for, or ask before widening the work.`;
+  return `pi-warden: this ${verdict.summary.tool} call looks unrelated to the user's request${score === undefined ? "" : ` (off-task ${percent(score)})`}. It ran. If it serves the request, say how in at most one short sentence; otherwise return to what the user asked for, or ask before widening the work. Do not restate session state or re-answer notices you have already addressed.`;
 }
 
 /** Offline stand-in for the approval question when TypeSafe is not available. */

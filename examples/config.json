@@ -2,6 +2,7 @@
   "typesafe": true,
   "mode": "steer",
   "steerVisible": false,
+  "notices": false,
   "rules": {
     "fallback": true,
     "maxChars": 8000
