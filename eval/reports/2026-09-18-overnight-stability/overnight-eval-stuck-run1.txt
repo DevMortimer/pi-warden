@@ -1,0 +1,8 @@
+.env not found. Continuing without it.
+
+# stuck detection
+ok   same idea, cosmetic changes    stuck     same=0.94 change=0.96 progress=0.06 (673 ms)
+ok   flailing edits, same error     stuck     same=undefined change=undefined progress=undefined (undefined ms)
+ok   investigating between failures ok        same=0.33 change=1.90 progress=0.87 (316 ms)
+
+3/3 matched expectations; 2 requests, 1664 input tokens.

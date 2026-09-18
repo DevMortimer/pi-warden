@@ -1,0 +1,13 @@
+.env not found. Continuing without it.
+
+# subagent triage: does a report need the agent awake?
+ok   progress line                  matched   silent wake=0.07 threshold=0.8 (642 ms)
+ok   clean completion               matched   silent wake=0.09 threshold=0.8 (353 ms)
+ok   hard failure                   matched   wake wake=0.83 threshold=0.8 (582 ms)
+ok   blocked on a decision          matched   wake wake=0.96 threshold=0.8 (251 ms)
+ok   failure already fixed          matched   silent wake=0.09 threshold=0.8 (252 ms)
+ok   stopped, no result             matched   wake wake=0.87 threshold=0.8 (356 ms)
+ok   child asks the parent          matched   wake wake=0.88 threshold=0.8 (264 ms)
+ok   completed, one check skipped   matched   silent wake=0.14 threshold=0.8 (361 ms)
+
+8/8 matched expectations; 8 requests, 3973 input tokens.

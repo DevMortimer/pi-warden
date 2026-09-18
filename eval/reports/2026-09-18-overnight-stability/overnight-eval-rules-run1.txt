@@ -1,0 +1,19 @@
+.env not found. Continuing without it.
+# rules: 8 from pi-warden.md
+
+ok   console.log in code                          8 asked → [no-console-statements] no-console-statements=1.00 (694 ms)
+ok   any parameter                                8 asked → [no-explicit-any-type] no-explicit-any-type=1.00 (244 ms)
+ok   python file: ts-scoped rules not asked       6 asked → []  (249 ms)
+ok   bare TODO                                    8 asked → [todo-comments-need-a-reference] todo-comments-need-a-reference=1.00 (336 ms)
+ok   TODO with ticket                             8 asked → []  (310 ms)
+ok   empty catch                                  8 asked → [no-empty-catch-blocks] no-empty-catch-blocks=0.98 (298 ms)
+ok   switch without default                       8 asked → [switch-statements-must-have-a-default-case] switch-statements-must-have-a-default-case=0.97 (637 ms)
+ok   hardcoded token                              8 asked → [no-hardcoded-credentials] no-hardcoded-credentials=0.88 (268 ms)
+ok   missing return type + bad boolean name       8 asked → [exported-functions-must-have-explicit-return-types, boolean-names-start-with-is-has-should-can] exported-functions-must-have-explicit-return-types=0.99 boolean-names-start-with-is-has-should-can=0.93 (547 ms)
+ok   compliant module                             8 asked → []  (502 ms)
+ok   compliant test with console in a string      8 asked → []  (355 ms)
+ok   markdown doc mentioning console.log          6 asked → []  (240 ms)
+ok   two edits, violation in the second           8 asked → [no-console-statements] in edit_2 no-console-statements=1.00 (252 ms)
+
+13/13 as expected
+requests: 13, input tokens: 27438
