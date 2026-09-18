@@ -63,6 +63,12 @@ It is not cheap: the two full runs above made about 32,000 requests and 80M inpu
 
 `action.pathRules` (user file only) gives the pattern floor a path dimension: which paths, which side of the access is held, which surfaces check, and what happens on a hit. The `access` field names the side that flows — `"read"` holds writes and lets reads through, `"write"` holds reads (a log the agent may create but never open), `"none"` holds any touch. File tools are checked through the structured `path` argument, exactly; the bash surface sees only two things: the whole data-text-stripped command for `none` rules (you declared the path always-matters, so a mention counts), and redirect/`tee` targets for the write side. Tokens in arbitrary argv are never classified — that is the false-positive treadmill this design exists to avoid. `note` actions ride the existing sensitive-path behavior (Jev decides whether a command that merely mentions the path can write); `warn`, `confirm` (a dialog), and `block` ride the command-rule ladder. Exempt a rule with `exemptRules` by id.
 
+### Arming rules
+
+`action.armingRules` (user file only) is the session-state capability: a preparation (editing files matching `when.edited` globs) arms a command pattern (`arms.command`) for a window (`arms.for`, default 10 minutes). While armed, matching commands fire the rule's `action` — `confirm` (dialog), `hold` (steer), or `block` (deny). The hit is deterministic and never depends on Jev; if Jev is available, armed-rule names ride as context so the judge can weigh them.
+
+This catches the class of incident where each individual call was harmless (edit a config, then run the reconciler that applies it) but the composition was destructive — no single-call rule can see it, and the judge evaluates one call at a time. The state is session-scoped (dies on `agent_end`), refreshed on each matching edit, visible in `/warden status`, and never inferred: the operator declares the edit-to-command relationship, so the false-positive rate is the declared pattern's match rate, nothing more.
+
 ## Rules
 
 Write your project's rules as Markdown headings in `pi-warden.md` at the project root (a starter file with a dozen rules is in [`examples/pi-warden.md`](../examples/pi-warden.md)):

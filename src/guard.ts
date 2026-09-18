@@ -147,7 +147,7 @@ export interface EvaluateOptions {
 }
 
 const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2, deny: 3 };
-const higher = (a: Level, b: Level): Level => (LEVEL_RANK[a] >= LEVEL_RANK[b] ? a : b);
+export const higher = (a: Level, b: Level): Level => (LEVEL_RANK[a] >= LEVEL_RANK[b] ? a : b);
 
 const TASK_LIMIT = 1500;
 const PLAN_LIMIT = 500;
@@ -440,7 +440,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
 /** Write-sinks a shell grammar actually defines: the target of a redirection, or tee's operands. */
 const REDIRECT_TARGET = /(?:^|[\s;&|)(])\d*>{1,2}[|&]?\s*(\S+)/g;
 
-function writeSinkTargets(command: string): string[] {
+export function writeSinkTargets(command: string): string[] {
   const targets: string[] = [];
   // Redirect targets are scanned on the full command, not per segment: `>|` and `>&` contain `|`/`&` that
   // splitShell would split as pipe/and operators, separating the operator from its target.
