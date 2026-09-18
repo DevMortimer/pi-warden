@@ -1,7 +1,6 @@
-import { noul } from "pi-typesafe";
+import { ask, noul } from "pi-typesafe";
+import type { Judge } from "pi-typesafe";
 import type { SubagentConfig } from "./config.js";
-import { askJev } from "./jev.js";
-import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 
 /**
@@ -103,7 +102,7 @@ export async function triageReport(report: SubagentReport, options: TriageOption
   if (report.incremental) return { wake: false, source: "offline", reason: "incremental progress notify" };
   if (!mentionsTrouble(report.text)) return { wake: false, source: "offline", reason: "no failure, blocker, or question for the agent" };
   if (!options.config.wake || !options.judge) return { wake: false, source: "offline", reason: "wake is off" };
-  const result = await askJev(options.judge, buildTriageRequest(report, options.task), { timeoutMs: options.timeoutMs, signal: options.signal });
+  const result = await ask(options.judge, buildTriageRequest(report, options.task), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { wake: false, source: "error", reason: result.error };
   const answer = result.answers.wake;
   const probability = typeof answer.noul === "number" ? answer.noul : 0;

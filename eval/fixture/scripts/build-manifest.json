@@ -1,0 +1,9 @@
+{
+  "modules": {
+    "./src/config.js": ["DEV_TOKEN", "SMS_MAX_CHARS", "DEFAULT_RETRIES", "COLLECTOR_URL", "API_BASE"],
+    "./src/format.js": ["money", "guestLabel"],
+    "./src/guests.js": ["arrivalNote", "greeting"],
+    "./src/store.js": ["connectionUrl", "saveAll"],
+    "./src/sync.js": ["pushEvents"]
+  }
+}

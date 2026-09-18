@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
-import { noul, score } from "pi-typesafe";
-import type { IntegrationErrorCode } from "pi-typesafe";
+import { ask, noul, score } from "pi-typesafe";
+import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { StuckGuardConfig } from "./config.js";
-import { askJev } from "./jev.js";
-import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 import { commandOf, outputReportsFailure } from "./tools.js";
 import { DEFAULT_TEMPLATES, renderTemplate, stuckTokens } from "./widget.js";
@@ -169,7 +167,7 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   }
   if (!options.judge) return { stuck: false, source: "repeat", failures, reasons: [] };
   window.markJudged();
-  const result = await askJev(options.judge, buildStuckRequest(window.attempts, task), { timeoutMs: options.timeoutMs, signal: options.signal });
+  const result = await ask(options.judge, buildStuckRequest(window.attempts, task), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { stuck: false, source: "error", failures, reasons: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   const judgment: StuckJudgment = {
     sameStrategy: result.answers.same_strategy.noul,

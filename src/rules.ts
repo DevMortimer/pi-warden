@@ -1,10 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { choice } from "pi-typesafe";
-import type { IntegrationErrorCode } from "pi-typesafe";
+import { ask, choice } from "pi-typesafe";
+import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { RulesConfig } from "./config.js";
-import { askJev } from "./jev.js";
-import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES, renderTemplate, rulesTokens } from "./widget.js";
 
@@ -423,7 +421,7 @@ export async function evaluateRules(tool: string, input: Record<string, unknown>
   const request = buildRulesRequest(target, set);
   const aggregate = set.aggregate !== undefined && !set.rules.length;
   const base = { tool: target.tool, path: target.path, sources: set.sources, asked: aggregate ? 1 : request.applicable.length, aggregate };
-  const result = await askJev(options.judge, { state: request.state, questions: request.questions }, { timeoutMs: options.timeoutMs, signal: options.signal });
+  const result = await ask(options.judge, { state: request.state, questions: request.questions }, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { source: "error", ...base, findings: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   const answers = result.answers as Record<string, { type: string; choice?: string; probabilities?: Record<string, number> } | undefined>;
   const read = (key: string, id: string, name: string): RuleScore | undefined => {

@@ -1,8 +1,6 @@
-import { noul } from "pi-typesafe";
-import type { IntegrationErrorCode } from "pi-typesafe";
+import { ask, noul } from "pi-typesafe";
+import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { ProseConfig } from "./config.js";
-import { askJev } from "./jev.js";
-import type { Judge } from "./jev.js";
 import { redact } from "./redact.js";
 
 export type ProseSymptom = "wordy" | "cliches" | "jargon";
@@ -70,7 +68,7 @@ export interface ProseOptions {
 }
 
 export async function evaluateProse(task: string | undefined, reply: string, options: ProseOptions): Promise<ProseVerdict> {
-  const result = await askJev(options.judge, buildProseRequest(task, reply, options.config.audience), { timeoutMs: options.timeoutMs, signal: options.signal });
+  const result = await ask(options.judge, buildProseRequest(task, reply, options.config.audience), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { flagged: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   const scores: Record<ProseSymptom, number> = { wordy: result.answers.wordy.noul, cliches: result.answers.cliches.noul, jargon: result.answers.jargon.noul };
   const flagged = PROSE_SYMPTOMS.filter(symptom => scores[symptom] >= options.config.threshold).sort((a, b) => scores[b] - scores[a]);

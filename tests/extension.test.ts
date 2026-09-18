@@ -1250,8 +1250,8 @@ test("a trusted project file can tune thresholds but an untrusted one is ignored
 
 test("/warden status, enable, disable, and test report and persist consent", async () => {
   await runCommand("status");
-  assert.match(notices[0]!.text, /TypeSafe judgments disabled \(run \/warden enable\)/);
-  assert.match(notices[0]!.text, /key from TYPESAFE_API_KEY/);
+  assert.match(notices[0]!.text, /TypeSafe judgments not consented \(run \/warden enable\)/);
+  assert.match(notices[0]!.text, /TypeSafe key: TYPESAFE_API_KEY \(not verified yet/);
 
   confirmResult = false;
   await runCommand("enable");
@@ -1328,7 +1328,7 @@ test("/warden enable without a key asks for one after consent, verifies it, stor
     assert.equal(networkCalls, 1, "the stored key powers judgments in the same session");
 
     await runCommand("status");
-    assert.match(notices.at(-1)!.text, /enabled via \/warden enable; key stored \(shared with pi-typesafe\)/);
+    assert.match(notices.at(-1)!.text, /consented via \/warden enable; TypeSafe key: \/typesafe login \(verified/);
   } finally {
     process.env.TYPESAFE_API_KEY = "offline-test-key";
   }
