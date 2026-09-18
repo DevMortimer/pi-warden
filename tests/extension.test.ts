@@ -539,6 +539,21 @@ test("per-call warning notices are off by default; the agent is still told, and 
   assert.ok(notices.some(notice => /warden · write: /.test(notice.text)), "notices: true restores the warnings");
 });
 
+test("a headless run tells the agent about warn-level calls; an interactive one keeps them in the UI", async () => {
+  await grantConsent();
+  nextAnswers = { irreversible: 0.55, off_task: 0.1, scope: "expected_step" };
+  await toolCall("bash", { command: "npm run db:reset" }, context({ hasUI: false }));
+  const headlessSteer = sentMessages.find(sent => sent.message.customType === "pi-warden-steer");
+  assert.match(headlessSteer?.message.content ?? "", /ran with a warning \(possibly irreversible 0\.55\)/, "a warn nobody can see is delivered to the agent");
+  assert.match(headlessSteer?.message.content ?? "", /it is on you/);
+
+  sentMessages.length = 0;
+  nextAnswers = { irreversible: 0.55, off_task: 0.1, scope: "expected_step" };
+  await toolCall("bash", { command: "npm run db:reset" });
+  assert.equal(sentMessages.find(sent => sent.message.customType === "pi-warden-steer"), undefined, "interactively the user sees the warning; no extra steer");
+  assert.match(notices.at(-1)!.text, /warden · bash: possibly irreversible 0\.55/);
+});
+
 test("the agent's plan comes from the message that makes the call, falls back to its latest text under the prompt, and a mismatch steers", async () => {
   await grantConsent();
   prompt = "Verify the RPC endpoint end to end";

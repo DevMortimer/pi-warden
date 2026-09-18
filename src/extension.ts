@@ -534,9 +534,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
     }
     if (notes.length) steer(config, [...noteGuards], notes.join("\n\n"));
+    const warnSteer = (label: string) => steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${label}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`);
     if (verdict.level === "warn") {
       stats.warned++;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
+      else if (!ctx.hasUI) warnSteer(verdict.reasons.join("; "));
       track(false);
       return undefined;
     }
@@ -546,6 +548,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (mode === "advise") {
       stats.warned++;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
+      else if (!ctx.hasUI) warnSteer(reasons);
       track(false);
       return undefined;
     }
