@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.27.1
+
+### Removed
+
+- Dead `SessionCompressionTracker` class — `getMultiplier()` and `record()` were never called outside tests. ~50 lines removed.
+
 ## 0.27.0
 
 ### Added
