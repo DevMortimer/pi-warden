@@ -55,7 +55,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
   "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "steerVisible": false,
   "notices": false,
-  "steerBudget": 3
+  "steerBudget": 3,
+  "typesafeBackend": "typesafe"
 }
 ```
 
@@ -63,6 +64,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | --- | --- |
 | `enabled` | Master switch for the extension. |
 | `typesafe` | Consent to send requests to TypeSafe. Set by `/warden enable`; only the user file or `PI_WARDEN_ENABLED=1` can grant it. |
+| `typesafeBackend` | The judgment service: `"typesafe"` (default) or `"openrouter"`. User file only — a project must not redirect judgments. |
 | `mode` | `steer` (hold goes back to the agent), `confirm` (dialog for you), `advise` (never holds). |
 | `timeoutMs` | Per-request timeout. On timeout the call is allowed with a warning when `action.failOpen` is true. |
 | `maxRequests` | Per-session request budget. When spent, pi-warden says so once and continues with offline checks. |
@@ -118,6 +120,7 @@ A wince-style setup for a backend repo (the full version is [`examples/pi-warden
 | Variable | Effect |
 | --- | --- |
 | `TYPESAFE_API_KEY` | Takes precedence over the key stored by `/warden enable` or `/typesafe login`. |
+| `OPENROUTER_API_KEY` | API key for the OpenRouter backend. Required when `typesafeBackend` is `"openrouter"`. |
 | `PI_WARDEN_ENABLED=1` | Grants consent for headless runs (same as `"typesafe": true`). |
 | `PI_WARDEN_MODE=steer\|confirm\|advise` | Overrides `mode`. |
 

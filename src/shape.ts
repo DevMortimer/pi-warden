@@ -31,6 +31,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   const config: WardenConfig = {
     enabled: source.enabled ?? true,
     typesafe: source.typesafe ?? false,
+    typesafeBackend: (source.typesafeBackend === "typesafe" || source.typesafeBackend === "openrouter") ? source.typesafeBackend : "typesafe",
     mode: isMode(source.mode) ? source.mode : "steer",
     timeoutMs: source.timeoutMs ?? 5000,
     maxRequests: source.maxRequests ?? 500,

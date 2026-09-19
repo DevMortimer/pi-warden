@@ -1,6 +1,8 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { JudgmentBackend } from "./backend.js";
+import { resolveBackend } from "./backend.js";
 import { COMMAND_TOOLS } from "./tools.js";
 import { defaultWidgetConfig } from "./widget.js";
 import type { WidgetConfig } from "./widget.js";
@@ -245,6 +247,8 @@ export interface WardenConfig {
   enabled: boolean;
   /** Consent to send task and action summaries to api.typesafe.ai. Set by /warden enable; never by a project file. */
   typesafe: boolean;
+  /** The decisions service the judgments go to. User file only: a project must not redirect judgments to another vendor. */
+  typesafeBackend: JudgmentBackend;
   /**
    * steer (default): a confirm-level call is held and the agent receives the judgment as its tool result, so it re-plans or asks
    * the user in chat. confirm: open a dialog and let the user decide (falls back to steer without a UI). advise: never hold; report only.
@@ -287,6 +291,7 @@ export function defaultConfig(): WardenConfig {
   return {
     enabled: true,
     typesafe: false,
+    typesafeBackend: "typesafe",
     mode: "steer",
     timeoutMs: 5000,
     maxRequests: 500,
@@ -678,6 +683,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
   return {
     enabled: boolean(raw.enabled, base.enabled),
     typesafe: boolean(raw.typesafe, base.typesafe),
+    typesafeBackend: resolveBackend(raw.typesafeBackend),
     mode: isMode(raw.mode) ? raw.mode : base.mode,
     ...shared,
     ...applyGuards(base, raw, shared.timeoutMs, "user"),
