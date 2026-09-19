@@ -2,13 +2,19 @@ import { createHash } from "node:crypto";
 
 const REPLACEMENT = "[redacted]";
 
+/** Credential-key names that appear in assignments and config values: `api_key=`, `password:`, `secret`, etc. */
+const CREDENTIAL_KEYS = /(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|private[_-]?key|passw(?:or)?d|passphrase|token|secret|credentials?)/i.source;
+
 /** Best-effort credential scrubbing for text that leaves the machine. Ordered: multi-token shapes before bare tokens. */
 const RULES: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, REPLACEMENT],
   [/(authorization\s*[:=]\s*)(?:basic|bearer|token)?\s*\S+/gi, `$1${REPLACEMENT}`],
   [/\b(bearer\s+)\S+/gi, `$1${REPLACEMENT}`],
-  [/((?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|private[_-]?key|passw(?:or)?d|passphrase|token|secret|credentials?)[a-z0-9_-]*\s*[=:]\s*["']?)([^\s"'&;]+)/gi, `$1${REPLACEMENT}`],
-  [/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, `$1${REPLACEMENT}@`],
+  // Quoted values can hold spaces (passphrases), so a quoted value is redacted whole before the unquoted rule.
+  [new RegExp(`((?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*)(["'])[^"'\\n]*\\2`, "gi"), `$1$2${REPLACEMENT}$2`],
+  [new RegExp(`((?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?)([^\\s"'&;]+)`, "gi"), `$1${REPLACEMENT}`],
+  // Any scheme, not just http(s): database and broker URLs (postgres://, mysql://, redis://, amqp://) carry passwords too.
+  [/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, `$1${REPLACEMENT}@`],
   [/\bsk-[A-Za-z0-9_-]{8,}/g, REPLACEMENT],
   [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g, REPLACEMENT],
   [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, REPLACEMENT],
@@ -42,10 +48,10 @@ const TOKEN_SHAPES: RegExp[] = [
 ];
 /** Assignments and headers whose value must still look like a secret. */
 const ASSIGNMENTS: RegExp[] = [
-  /(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|private[_-]?key|passw(?:or)?d|passphrase|token|secret|credentials?)[a-z0-9_-]*\s*[=:]\s*["']?([^\s"'&;,)]+)/gi,
+  new RegExp(`(?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?([^\\s"'&;,)]+)`, "gi"),
   /authorization\s*[:=]\s*(?:basic|bearer|token)?\s*([^\s"']+)/gi,
   /\bbearer\s+([^\s"']+)/gi,
-  /https?:\/\/[^\s/@:]+:([^\s/@]+)@/gi,
+  /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:([^\s/@]+)@/gi,
 ];
 /** Words that sit after `secret:` in code and docs. */
 const NOT_VALUES = new Set(["boolean", "string", "number", "object", "any", "unknown", "null", "undefined", "true", "false", "none", "nil", "void", "never", "required", "optional", "redacted", "hidden", "masked", "omitted", "unset", "missing", "empty", "changeme", "example", "placeholder", "password", "secret", "token", "value", "text", "str", "int", "bytes", "yes", "no", "on", "off", "auto", "default", "bearer", "basic", "env", "process", "os", "environ", "config", "settings", "input", "output", "prompt"]);

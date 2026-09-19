@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.29.1
+
+### Changed
+
+- Extracted duplicated credential-key regex alternation in `redact.ts` into a shared `CREDENTIAL_KEYS` constant.
+
 ## 0.29.0
 
 ### Changed
