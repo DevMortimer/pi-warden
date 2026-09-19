@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, describeAction, evaluateAction, formatVerdict, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
+import { buildRequest, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -695,4 +695,150 @@ test("commandRules: confirm without action defaults to dialog for user rules", a
 test("commandRules: invalid regex is skipped, not a crash", () => {
   const rules = [{ id: "broken", pattern: "[", severity: "warn" as const }];
   assert.equal(matchPatterns("bash", { command: "ls" }, undefined, { commandRules: rules, commandDenyRules: [], exemptRules: [] }).length, 0, "invalid regex matches nothing");
+});
+
+// ---------------------------------------------------------------------------
+// Path rules (PR 2): the access dimension, two surfaces, and the ladder.
+
+const pathOptions = (pathRules?: readonly import("../src/config.js").PathRule[]) =>
+  ({ commandRules: [], commandDenyRules: [], exemptRules: [], ...(pathRules ? { pathRules } : {}) });
+
+test("pathRules: file surface gates on the access dimension", async () => {
+  // Spec semantics: access names the side that FLOWS. "read" = reads flow, writes are held; "write" = writes flow,
+  // reads are held (an append-only log the agent may create but never open).
+  const rules = [
+    { id: "repo-readonly", paths: ["**/deploy.yaml"], access: "read" as const, tools: ["write", "edit", "read"], action: "confirm" as const },
+    { id: "audit-log", paths: ["audit/app.log"], access: "write" as const, tools: ["write", "edit", "read"], action: "block" as const },
+  ];
+  const mine = (hits: ReturnType<typeof matchPatterns>) => hits.filter(hit => hit.id === "repo-readonly" || hit.id === "audit-log");
+  await writeFile(join(cwd, "deploy.yaml"), "image: app\n");
+  const write = matchPatterns("write", { path: "deploy.yaml" }, cwd, pathOptions(rules));
+  assert.equal(mine(write).length, 1, "a write to deploy.yaml is held by the read-flow rule");
+  assert.equal(mine(write)[0]!.severity, "destructive", "confirm action maps to the destructive rung");
+  assert.equal(mine(write)[0]!.action, "dialog", "confirm path rules prompt like PR 1's dialog rules");
+  const flow = matchPatterns("read", { path: "deploy.yaml" }, cwd, pathOptions(rules));
+  assert.equal(mine(flow).length, 0, "a read of deploy.yaml flows under the read-flow rule");
+  await mkdir(join(cwd, "audit"), { recursive: true });
+  await writeFile(join(cwd, "audit", "app.log"), "entry\n");
+  const readHeld = matchPatterns("read", { path: "audit/app.log" }, cwd, pathOptions(rules));
+  assert.equal(mine(readHeld).length, 1, "a read of the write-flow path is held");
+  assert.equal(mine(readHeld)[0]!.severity, "deny", "block action maps to deny");
+  const writeFlows = matchPatterns("write", { path: "audit/app.log" }, cwd, pathOptions(rules));
+  assert.equal(mine(writeFlows).length, 0, "a write to the write-flow path flows");
+  await rm(join(cwd, "deploy.yaml"));
+  await rm(join(cwd, "audit"), { recursive: true, force: true });
+});
+
+test("pathRules: onlyIfExists skips phantom paths, and create-protect opts out", async () => {
+  const rules = [{ id: "env", paths: [".env"], access: "none" as const, tools: ["write", "edit"], action: "warn" as const }];
+  const hits = (opts?: readonly import("../src/config.js").PathRule[]) => matchPatterns("write", { path: ".env" }, cwd, pathOptions(opts)).filter(hit => hit.id === "env");
+  assert.equal(hits(rules).length, 0, "a .env that does not exist does not fire");
+  assert.equal(hits([{ ...rules[0]!, onlyIfExists: false }]).length, 1, "onlyIfExists false fires on the missing file (create-protect)");
+  await writeFile(join(cwd, ".env"), "SECRET=1\n");
+  assert.equal(hits(rules).length, 1, "an existing .env fires");
+  await rm(join(cwd, ".env"));
+});
+
+test("pathRules: the command surface matches write sinks and bare mentions per the access dimension", () => {
+  const none = [{ id: "env", paths: [".env"], access: "none" as const, tools: ["*"], action: "note" as const }];
+  const read = [{ id: "ssh", paths: ["~/.ssh/authorized_keys"], access: "read" as const, tools: ["*"], action: "block" as const }];
+  const write = [{ id: "audit", paths: ["/var/audit/*.log"], access: "write" as const, tools: ["*"], action: "confirm" as const }];
+  // A bare mention in a read position counts for "none" (any touch), not for "read" (writes only).
+  assert.equal(matchPatterns("bash", { command: "grep KEY .env" }, cwd, pathOptions(none)).filter(hit => hit.id === "env").length, 1, "none matches a bare mention");
+  assert.equal(matchPatterns("bash", { command: "cat ~/.ssh/authorized_keys" }, cwd, pathOptions(read)).filter(hit => hit.id === "ssh").length, 0, "a read mention flows under a read rule");
+  // Write sinks: redirection and tee targets are the write side.
+  assert.equal(matchPatterns("bash", { command: "echo bad >> ~/.ssh/authorized_keys" }, cwd, pathOptions(read)).filter(hit => hit.id === "ssh").length, 1, "an append redirection is a write");
+  assert.equal(matchPatterns("bash", { command: "cat x | tee /var/audit/node1.log" }, cwd, pathOptions(write)).filter(hit => hit.id === "audit").length, 0, "tee to the write-only path flows (it is a write)");
+  assert.equal(matchPatterns("bash", { command: "cat /var/audit/node1.log" }, cwd, pathOptions(write)).filter(hit => hit.id === "audit").length, 1, "reading the write-only path fires");
+  // A grep mentioning the path is a read, so a read rule (writes-only) does not fire on it.
+  assert.equal(matchPatterns("bash", { command: "ls /var/audit/" }, cwd, pathOptions(read)).filter(hit => hit.id === "audit").length, 0);
+});
+
+test("pathRules: a data heredoc mentioning the path does not fire on the command surface", () => {
+  const rules = [{ id: "env", paths: [".env"], access: "none" as const, tools: ["*"], action: "warn" as const }];
+  const command = "cat <<'EOF'\nthe .env file is documented here\nEOF";
+  assert.equal(matchPatterns("bash", { command }, cwd, pathOptions(rules)).filter(hit => hit.id === "env").length, 0, "heredoc data text is not a command surface match");
+  const executed = "bash <<'EOF'\ncat .env\nEOF";
+  assert.equal(matchPatterns("bash", { command: executed }, cwd, pathOptions(rules)).filter(hit => hit.id === "env").length, 1, "a shell-sink heredoc body is in scope");
+});
+
+test("pathRules: glob semantics, ~ expansion, and regex opt-in", () => {
+  const glob = [{ id: "keys", paths: ["~/.ssh/id_*"], access: "none" as const, tools: ["read"], action: "warn" as const }];
+  assert.equal(matchPatterns("read", { path: "~/.ssh/id_ed25519" }, cwd, pathOptions(glob)).length, 1, "~ expands and * matches within the segment");
+  assert.equal(matchPatterns("read", { path: "/home/michaelmacleod/.ssh/id_ed25519" }, cwd, pathOptions(glob)).length, 1, "the absolute spelling of the same path matches too");
+  const deep = [{ id: "env-anywhere", paths: ["**/.env"], access: "none" as const, tools: ["read"], action: "warn" as const }];
+  assert.equal(matchPatterns("read", { path: "apps/api/.env" }, cwd, pathOptions(deep)).length, 1, "** matches at any depth");
+  const regex = [{ id: "dated", paths: ["\\.env\\.[0-9]{4}"], regex: true, access: "none" as const, tools: ["read"], action: "warn" as const }];
+  assert.equal(matchPatterns("read", { path: ".env.2024" }, cwd, pathOptions(regex)).length, 1, "regex opt-in matches shapes globs cannot express");
+});
+
+test("pathRules: exemptRules silences a user path rule, and its id is known", () => {
+  const rules = [{ id: "env", paths: ["**/.env"], access: "none" as const, tools: ["*"], action: "block" as const }];
+  assert.equal(matchPatterns("bash", { command: "cat .env" }, cwd, pathOptions(rules)).filter(hit => hit.id === "env").length, 1, "the rule fires on a bash mention");
+  const exempted = matchPatterns("bash", { command: "cat .env" }, cwd, { ...pathOptions(rules), exemptRules: ["env"] });
+  assert.equal(exempted.filter(hit => hit.id === "env").length, 0, "exemptRules silences the path rule by id");
+  assert.deepEqual(unknownExemptIds(["env"], [], [], rules), [], "a path rule id counts as known");
+});
+
+test("pathRules: a block hit outranks a built-in confirm on the ladder", async () => {
+  const config = { ...defaultConfig().action, pathRules: [{ id: "never-dd", paths: ["/dev/sda"], access: "write" as const, tools: ["*"], action: "block" as const }] };
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "cat /dev/sda" }, cwd, task: "inspect the disk" }, { config });
+  assert.equal(verdict.level, "deny", "the deny hit wins over the built-in destructive confirm");
+  assert.ok(verdict.reasons.some(reason => reason.includes("never-dd")), "the path rule's id is named in the reasons");
+});
+
+test("pathRules: default config keeps sensitive-path behavior unchanged", () => {
+  // With no pathRules configured, the built-in SENSITIVE_PATH regex is the only path check and still fires.
+  assert.ok(matchPatterns("bash", { command: "cat ~/.ssh/id_rsa" }, cwd, pathOptions([])).some(hit => hit.id === "sensitive-path"));
+  assert.ok(matchPatterns("read", { path: "/home/michaelmacleod/.netrc" }, cwd, pathOptions([])).some(hit => hit.id === "sensitive-path"));
+  assert.equal(matchPatterns("read", { path: "src/index.ts" }, cwd, pathOptions([])).length, 0, "ordinary paths fire nothing");
+});
+
+test("pathRules: access:write fires the read side when the command both reads and writes matching paths", () => {
+  const rules = [{ id: "audit", paths: ["/var/audit/*.log"], access: "write" as const, tools: ["*"] as string[], action: "confirm" as const, onlyIfExists: false }];
+  // cat reads a.log, tee writes b.log — the read side should fire (writesToThis does not suppress the mention)
+  assert.equal(matchPatterns("bash", { command: "cat /var/audit/a.log | tee /var/audit/b.log" }, cwd, pathOptions(rules)).filter(hit => hit.id === "audit").length, 1, "the read side fires");
+  // tee to a write-only path flows (it is a write, not a read)
+  assert.equal(matchPatterns("bash", { command: "cat x | tee /var/audit/node1.log" }, cwd, pathOptions(rules)).filter(hit => hit.id === "audit").length, 0, "a write to the write-only path flows");
+});
+
+test("pathRules: a rule with explicit bash in tools fires on bash commands", () => {
+  const rules = [{ id: "ssh-keys", paths: ["~/.ssh/id_*"], access: "read" as const, tools: ["write", "edit", "bash"] as string[], action: "confirm" as const, onlyIfExists: false }];
+  const hits = matchPatterns("bash", { command: "bash -c 'echo x > /home/test/.ssh/id_rsa'" }, "/home/test", pathOptions(rules));
+  assert.ok(hits.some(hit => hit.id === "ssh-keys"), "the bash tool name enables the command surface");
+});
+
+test("pathRules: ctx_execute_file reads fire access:none rules on the file surface", () => {
+  const rules = [{ id: "ssh-keys", paths: ["~/.ssh/id_*"], access: "none" as const, tools: ["*"] as string[], action: "confirm" as const, onlyIfExists: false }];
+  const hits = matchPatterns("ctx_execute_file", { path: "/home/test/.ssh/id_rsa" }, "/home/test", pathOptions(rules));
+  assert.ok(hits.some(hit => hit.id === "ssh-keys"), "ctx_execute_file is a read, not excluded from the file surface");
+});
+
+test("pathRules: mention tail anchor — .env.example does not fire a **/.env rule, .env does", () => {
+  const rules = [{ id: "env", paths: ["**/.env"], access: "none" as const, tools: ["*"] as string[], action: "warn" as const, onlyIfExists: false }];
+  assert.equal(matchPatterns("bash", { command: "cat .env.example" }, cwd, pathOptions(rules)).filter(hit => hit.id === "env").length, 0, ".env.example does not match a .env rule");
+  assert.equal(matchPatterns("bash", { command: "cat .env" }, cwd, pathOptions(rules)).filter(hit => hit.id === "env").length, 1, ".env does match");
+  // Multi-line: .env on its own line in a heredoc body still matches
+  assert.equal(matchPatterns("bash", { command: "bash <<'EOF'\ncat .env\nEOF" }, cwd, pathOptions(rules)).filter(hit => hit.id === "env").length, 1, ".env on its own line in a heredoc body matches");
+});
+
+test("pathRules: write sinks — >| and >& operators, tee with multiple targets and --append, grep-tee is not a phantom", () => {
+  const rules = [{ id: "audit", paths: ["/var/audit/*.log"], access: "read" as const, tools: ["*"] as string[], action: "warn" as const, onlyIfExists: false }];
+  assert.ok(matchPatterns("bash", { command: "sort x >| /var/audit/f.log" }, cwd, pathOptions(rules)).some(hit => hit.id === "audit"), ">| is a redirect operator");
+  assert.ok(matchPatterns("bash", { command: "sort x >& /var/audit/f.log" }, cwd, pathOptions(rules)).some(hit => hit.id === "audit"), ">& is a redirect operator");
+  assert.ok(matchPatterns("bash", { command: "cat x | tee /var/audit/a.log /var/audit/b.log" }, cwd, pathOptions(rules)).some(hit => hit.id === "audit"), "tee with two targets fires");
+  assert.ok(matchPatterns("bash", { command: "cat x | tee --append /var/audit/app.log" }, cwd, pathOptions(rules)).some(hit => hit.id === "audit"), "tee --append fires");
+  assert.equal(matchPatterns("bash", { command: "grep tee /var/audit/app.log" }, cwd, pathOptions(rules)).filter(hit => hit.id === "audit").length, 0, "grep mentioning tee is not a phantom tee target");
+});
+
+test("pathRules: inertPathRules detects access:write with only write tools and read-scoped rules without read in action.tools", () => {
+  // access:write with only write/edit tools: writes flow, nothing is held
+  const writeOnly = [{ id: "audit", paths: ["/var/audit/*.log"], access: "write" as const, tools: ["write", "edit"] as string[], action: "confirm" as const }];
+  assert.ok(inertPathRules(writeOnly, ["bash", "write", "edit"]).includes("audit"), "access:write with only write tools is inert");
+  // access:read with only read tools, read not in action.tools: the read tool is never inspected
+  const readOnly = [{ id: "keys", paths: ["~/.ssh/id_*"], access: "read" as const, tools: ["read"] as string[], action: "confirm" as const }];
+  assert.ok(inertPathRules(readOnly, ["bash", "write", "edit"]).includes("keys"), "read-scoped rule without read in action.tools is inert");
+  // access:read with write tools: writes are held — not inert
+  const notInert = [{ id: "repo", paths: ["deploy.yaml"], access: "read" as const, tools: ["write", "edit"] as string[], action: "confirm" as const }];
+  assert.equal(inertPathRules(notInert, ["bash", "write", "edit"]).length, 0, "access:read with write tools is not inert");
 });

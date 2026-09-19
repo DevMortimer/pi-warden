@@ -59,6 +59,10 @@ No file needed the same rule steer twice in the window. The hold logs from one o
 
 It is not cheap: the two full runs above made about 32,000 requests and 80M input tokens together (about $3.40 at the listed rate), because every replay carries the prompt, eight context messages, the plan, the action, and the questions. `--dry-run` prints the request count, token estimate, and cost first; a run over 2,000 requests stops there unless you add `--yes`. The output stays under `.local/calibration/` (owner-only, never committed); `--report FILE` recomputes the tables without requests, `--project DIR` limits the run to one project's sessions.
 
+### Path rules
+
+`action.pathRules` (user file only) gives the pattern floor a path dimension: which paths, which side of the access is held, which surfaces check, and what happens on a hit. The `access` field names the side that flows — `"read"` holds writes and lets reads through, `"write"` holds reads (a log the agent may create but never open), `"none"` holds any touch. File tools are checked through the structured `path` argument, exactly; the bash surface sees only two things: the whole data-text-stripped command for `none` rules (you declared the path always-matters, so a mention counts), and redirect/`tee` targets for the write side. Tokens in arbitrary argv are never classified — that is the false-positive treadmill this design exists to avoid. `note` actions ride the existing sensitive-path behavior (Jev decides whether a command that merely mentions the path can write); `warn`, `confirm` (a dialog), and `block` ride the command-rule ladder. Exempt a rule with `exemptRules` by id.
+
 ## Rules
 
 Write your project's rules as Markdown headings in `pi-warden.md` at the project root (a starter file with a dozen rules is in [`examples/pi-warden.md`](../examples/pi-warden.md)):

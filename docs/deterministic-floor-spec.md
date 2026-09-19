@@ -209,8 +209,8 @@ New config key `action.pathRules` (user file only):
     {
       "id": "ssh-private-keys",
       "paths": ["~/.ssh/id_*", "~/.ssh/*.pem"],
-      "access": "write",          // "none" | "read" | "write"
-      "tools": ["write", "edit", "bash"],
+      "access": "read",           // "none" | "read" | "write" — "read" holds writes, reads flow
+      "tools": ["write", "edit", "*"],
       "action": "block",
       "message": "SSH private keys are never written by agents."
     },
@@ -286,6 +286,10 @@ not written by the user flows to Jev or nowhere.
 - Project-file rejection of `action` levels above `note` (threat model).
 - Existing sensitive-path behavior byte-identical with default config (the fixed regex
   reframed as default rules).
+
+**Note:** the built-in `SENSITIVE_PATH` regex stays hardcoded alongside user rules (a deliberate
+omission: the fixed list is stable and well-tested, and the escape hatch exists via `exemptRules`
+with the `sensitive-path` id). User `pathRules` layer on top of it; they do not replace it.
 
 ---
 

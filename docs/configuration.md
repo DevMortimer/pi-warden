@@ -26,7 +26,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "feedbackLog": true,
     "commandRules": [],
     "commandDenyRules": [],
-    "exemptRules": []
+    "exemptRules": [],
+    "pathRules": []
   },
   "rules": {
     "enabled": true,
@@ -72,6 +73,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `action.feedbackLog` | Write each judged call and its outcome to `~/.pi/agent/pi-warden/holds/`; never the command. |
 | `action.commandRules` | User-defined command rules: `{ id, pattern, severity: "warn" \| "confirm" \| "deny", action?, message?, caseSensitive? }`. Patterns match the data-text-stripped command, so heredoc bodies and commit messages do not fire them. `confirm` defaults to `action: "dialog"` (a prompt for you, in every mode); `action: "hold"` restores steer semantics. Patterns are JavaScript regexes matched against full commands, so a pattern with nested quantifiers can be slow on long commands — a pathological one is self-inflicted. User file only. |
 | `action.commandDenyRules` | The same shape, shorthand for `severity: "deny"`: the call is blocked with no dialog and no TypeSafe request. User file only. |
+| `action.pathRules` | User-defined path rules: `{ id, paths, access, tools, action, message?, onlyIfExists?, regex? }`. `paths` are globs (`**` any depth, `*` one segment, `?` one character, `~` expands; `regex: true` reads them as regexes). `access` is the dimension: `"none"` any touch matches, `"read"` writes are held and reads flow, `"write"` reads are held and writes flow (an append-only log). `tools` picks the surface: file tools by name check the structured `path` field; `"*"` also matches bash commands — a `none` rule fires on a mention anywhere in the data-text-stripped command, and the write side is matched only at redirect (`>`, `>>`) and `tee` targets, never in arbitrary argv. `action`: `note` (the default; the agent is told after the fact), `warn`, `confirm` (a dialog, in every mode), `block` (deny, no dialog). `onlyIfExists` defaults `true`, so phantom paths do not fire. A `read`-scoped rule needs `read` in `action.tools`, which does not inspect the read tools by default. User file only. |
 | `action.exemptRules` | Built-in or user rule ids to exempt, e.g. `["infra-destroy"]` for a workflow whose `kubectl delete` is routine; also `rm-recursive` / `rm-rf` / `rm-recursive-dangerous-target` (the `rm` classifier) and `sensitive-path`. An id naming nothing is inert and reported once at startup. Exempting `sensitive-path` removes the only deterministic credential-touch signal, Jev questions aside. User file only. |
 | `rules.*` | Rules source, threshold, path globs, sensitive-path notes. See [guards.md → Rules](guards.md#rules). |
 | `slop.*` | Code slop threshold and reply (prose) checks. `prose.audience` is `technical`, `plain`, or free text. |

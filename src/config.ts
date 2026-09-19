@@ -57,6 +57,28 @@ export interface ActionGuardConfig {
   commandDenyRules: CommandRule[];
   /** Built-in or user rule ids to exempt (user file only). */
   exemptRules: string[];
+  /** User-defined path rules with an access dimension (user file only; project files cannot act on them). */
+  pathRules: PathRule[];
+}
+
+/** A user-defined path rule: which paths, which side of the access is held, which tools, what happens on a hit. */
+export interface PathRule {
+  /** Stable id; same namespace as rule ids, so exemptRules can silence a user path rule too. */
+  id: string;
+  /** Path globs (`**` any depth, `*` one segment, `?` one character, `~` expands) or regex sources with regex: true. */
+  paths: string[];
+  /** Regex instead of glob for shapes globs cannot express. */
+  regex?: boolean;
+  /** Which touches match: "none" any touch; "read" writes only (reads flow); "write" reads only (writes flow). */
+  access: "none" | "read" | "write";
+  /** Which surfaces check the rule: file tools by name ("write", "edit", "read"), or "*" to also match bash commands. */
+  tools: string[];
+  /** note: tell the agent after the fact (the default, today's sensitive-path behavior); warn: notice; confirm: dialog; block: deny. */
+  action: "note" | "warn" | "confirm" | "block";
+  /** Optional human label shown instead of the derived one. */
+  message?: string;
+  /** Skip when the path does not exist (default true): phantom paths do not fire. */
+  onlyIfExists?: boolean;
 }
 
 export interface StuckGuardConfig {
@@ -248,6 +270,7 @@ export function defaultConfig(): WardenConfig {
       commandRules: [],
       commandDenyRules: [],
       exemptRules: [],
+      pathRules: [],
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
@@ -361,6 +384,37 @@ function parseExemptRules(raw: unknown): string[] {
   return [...ids];
 }
 
+const PATH_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file"]);
+
+function parsePathRule(raw: unknown): PathRule | undefined {
+  if (!isObject(raw)) return undefined;
+  const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : undefined;
+  const paths = globList(raw.paths, []);
+  if (!id || paths.length === 0) return undefined;
+  // "*" widens the rule to the bash surface; other entries name the structured file-tool surfaces.
+  const requested = Array.isArray(raw.tools) ? raw.tools.filter((tool): tool is string => typeof tool === "string" && tool.trim().length > 0).map(tool => tool.trim()) : ["*"];
+  const tools = requested.length > 0 ? requested : ["*"];
+  const access = raw.access === "none" || raw.access === "read" || raw.access === "write" ? raw.access : "none";
+  const action = raw.action === "warn" || raw.action === "confirm" || raw.action === "block" ? raw.action : "note";
+  const message = typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : undefined;
+  const onlyIfExists = raw.onlyIfExists === false ? false : true;
+  return { id, paths, ...(raw.regex === true ? { regex: true } : {}), access, tools, action, ...(message ? { message } : {}), ...(onlyIfExists === false ? { onlyIfExists: false } : {}) };
+}
+
+function parsePathRules(raw: unknown): PathRule[] {
+  if (!Array.isArray(raw)) return [];
+  const ids = new Set<string>();
+  const rules: PathRule[] = [];
+  for (const item of raw) {
+    const rule = parsePathRule(item);
+    // A tool name that is neither a structured surface nor "*" is inert on every surface; keep it only when it means something.
+    if (!rule || ids.has(rule.id) || !rule.tools.some(tool => tool === "*" || PATH_TOOL_NAMES.has(tool))) continue;
+    ids.add(rule.id);
+    rules.push(rule);
+  }
+  return rules;
+}
+
 function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, source: "user" | "project"): ActionGuardConfig {
   const withTimeout = { ...base, timeoutMs };
   if (!isObject(raw)) return withTimeout;
@@ -380,6 +434,8 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     commandRules: source === "user" ? parseCommandRules(raw.commandRules, "warn") : base.commandRules,
     commandDenyRules: source === "user" ? parseCommandRules(raw.commandDenyRules, "deny") : base.commandDenyRules,
     exemptRules: source === "user" ? parseExemptRules(raw.exemptRules) : base.exemptRules,
+    // Path rules are user-declared security policy: a project file cannot add, edit, or remove them either.
+    pathRules: source === "user" ? parsePathRules(raw.pathRules) : base.pathRules,
   };
 }
 

@@ -27,4 +27,4 @@ With consent, requests go to `https://api.typesafe.ai` only.
 
 Obvious credentials (`Authorization` headers, `TOKEN=` and `SECRET=` assignments, `sk-`, `ghp_`, `AKIA`, JWTs, URL passwords, PEM blocks) are replaced with `[redacted]` before sending. Best-effort; do not rely on it for prompts that contain secrets.
 
-Text steered to the agent names the tool, the reasons, and the scores, not the command. UI errors never include upstream response bodies or keys. Judgments are model output; thresholds are yours to tune.
+Text steered to the agent names the tool, the reasons, and the scores, not the command. User-declared path rules and command rules are evaluated entirely in code; their matches travel only as pattern ids and scores in the reasons, never as the matched path or command text. Arming-rule state (PR 3) is session-local memory that never leaves the machine. UI errors never include upstream response bodies or keys. Judgments are model output; thresholds are yours to tune.
