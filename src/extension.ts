@@ -233,6 +233,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
+  let warnedFallback = false;
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
@@ -453,6 +454,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
     client = undefined;
     budgetExhausted = false;
+    warnedFallback = false;
     stats = freshStats();
     widget.clear();
     trace.clear();
@@ -483,6 +485,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     lastNotifiedAt = 0;
     for (const symptom of Object.keys(slopCounts) as SlopSymptom[]) slopCounts[symptom] = 0;
     if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
+    // One-time notice when confirm mode falls back to steer (headless).
+    if (!warnedFallback && loadConfig().mode === "confirm" && !ctx.hasUI) {
+      warnedFallback = true;
+      const msg = "warden: confirm mode requires a UI; falling back to steer mode for this session.";
+      if (ctx.hasUI) ctx.ui.notify(msg, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: msg, display: true });
+    }
   });
 
   // A new user prompt starts a new attempt history, a new steer budget, and a new restatement window; answering the
