@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.28.4
+
+### Fixed
+
+- Extension no longer crashes on load when node:sqlite is unavailable (e.g. some Node v25 builds). Learning features disabled gracefully; all guards still work.
+
 ## 0.28.3
 
 ### Fixed

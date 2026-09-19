@@ -14,8 +14,8 @@ after(() => {
   rmSync(testDir, { recursive: true, force: true });
 });
 
-test("initSchema creates database with correct columns", () => {
-  initSchema();
+test("initSchema creates database with correct columns", async () => {
+  await initSchema();
   assert.ok(existsSync(process.env.PI_WARDEN_DB!), "database file exists");
 });
 
@@ -26,8 +26,8 @@ test("signatureHash produces consistent hashes", () => {
   assert.equal(h1.length, 16, "hash is 16 hex chars");
 });
 
-test("recordHold inserts a hold and returns an id", () => {
-  const id = recordHold({
+test("recordHold inserts a hold and returns an id", async () => {
+  const id = await recordHold({
     timestamp: Date.now(),
     projectRoot: "/test/project",
     tool: "bash",
@@ -43,8 +43,8 @@ test("recordHold inserts a hold and returns an id", () => {
   assert.ok(id > 0, "recordHold returns positive id");
 });
 
-test("recordOutcome updates the outcome", () => {
-  const id = recordHold({
+test("recordOutcome updates the outcome", async () => {
+  const id = await recordHold({
     timestamp: Date.now(),
     projectRoot: "/test/project",
     tool: "bash",
@@ -55,11 +55,11 @@ test("recordOutcome updates the outcome", () => {
     held: true,
     reasons: ["irreversible 0.5"],
   });
-  recordOutcome(id, "approved");
+  await recordOutcome(id, "approved");
 });
 
-test("querySmartHistory finds exact matches in same project", () => {
-  recordHold({
+test("querySmartHistory finds exact matches in same project", async () => {
+  await recordHold({
     timestamp: Date.now(),
     projectRoot: "/test/project",
     tool: "bash",
@@ -71,12 +71,12 @@ test("querySmartHistory finds exact matches in same project", () => {
     reasons: ["irreversible 0.5"],
   });
 
-  const history = querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/test/project");
+  const history = await querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/test/project");
   assert.ok(history.exact.length > 0, "finds exact matches");
 });
 
-test("querySmartHistory does not find matches in different project", () => {
-  const history = querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/other/project");
+test("querySmartHistory does not find matches in different project", async () => {
+  const history = await querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/other/project");
   assert.equal(history.exact.length, 0, "no matches in different project");
 });
 
@@ -101,16 +101,16 @@ test("calculateSmartConfidence returns high confidence for approved history", ()
   assert.ok(conf.confidence > 0.7, "high confidence for approvals");
 });
 
-test("shouldSkipHold never skips destructive patterns", () => {
-  const skip = shouldSkipHold("bash", { irreversible: 0.9, reasons: ["destructive: git reset"] }, "/test/project");
+test("shouldSkipHold never skips destructive patterns", async () => {
+  const skip = await shouldSkipHold("bash", { irreversible: 0.9, reasons: ["destructive: git reset"] }, "/test/project");
   assert.equal(skip.skip, false, "never skips destructive patterns");
   assert.ok(skip.reason.includes("destructive"), "reason mentions destructive");
 });
 
-test("shouldSkipHold skips when confidence is high with enough exact approvals", () => {
+test("shouldSkipHold skips when confidence is high with enough exact approvals", async () => {
   const now = Date.now();
   for (let i = 0; i < 3; i++) {
-    const id = recordHold({
+    const id = await recordHold({
       timestamp: now - i * 1000,
       projectRoot: "/skip/project",
       tool: "bash",
@@ -120,15 +120,15 @@ test("shouldSkipHold skips when confidence is high with enough exact approvals",
       held: true,
       reasons: ["irreversible 0.5"],
     });
-    recordOutcome(id, "approved");
+    await recordOutcome(id, "approved");
   }
-  const skip = shouldSkipHold("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/skip/project");
+  const skip = await shouldSkipHold("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/skip/project");
   assert.equal(skip.skip, true, "skips when confidence > 0.8 with >= 3 exact approvals");
   assert.ok(skip.confidence > 0.8, "confidence exceeds threshold");
 });
 
-test("querySmartHistory finds similar matches by irr proximity", () => {
-  recordHold({
+test("querySmartHistory finds similar matches by irr proximity", async () => {
+  await recordHold({
     timestamp: Date.now(),
     projectRoot: "/sim/project",
     tool: "bash",
@@ -138,7 +138,7 @@ test("querySmartHistory finds similar matches by irr proximity", () => {
     held: true,
     reasons: ["irreversible 0.6"],
   });
-  const history = querySmartHistory("bash", { irreversible: 0.7, reasons: ["irreversible 0.7"] }, "/sim/project");
+  const history = await querySmartHistory("bash", { irreversible: 0.7, reasons: ["irreversible 0.7"] }, "/sim/project");
   assert.ok(history.similar.length > 0, "finds similar matches within irr threshold");
 });
 
@@ -146,16 +146,16 @@ test("querySmartHistory finds similar matches by irr proximity", () => {
 
 import { analyzeThresholds, analyzePatterns, generateRecommendations } from "../src/learning.js";
 
-test("analyzeThresholds returns empty for insufficient data", () => {
-  const adjustments = analyzeThresholds("project-alpha");
+test("analyzeThresholds returns empty for insufficient data", async () => {
+  const adjustments = await analyzeThresholds("project-alpha");
   assert.equal(adjustments.length, 0, "no adjustments without enough data");
 });
 
-test("analyzeThresholds suggests lowering threshold when precision is low", () => {
+test("analyzeThresholds suggests lowering threshold when precision is low", async () => {
   const projectRoot = "project-beta";
   // Create many holds that get approved (low precision)
   for (let i = 0; i < 25; i++) {
-    const id = recordHold({
+    const id = await recordHold({
       timestamp: Date.now() - i * 1000,
       projectRoot,
       tool: "bash",
@@ -165,9 +165,9 @@ test("analyzeThresholds suggests lowering threshold when precision is low", () =
       held: true,
       reasons: ["irreversible 0.5"],
     });
-    recordOutcome(id, "approved");
+    await recordOutcome(id, "approved");
   }
-  const adjustments = analyzeThresholds(projectRoot);
+  const adjustments = await analyzeThresholds(projectRoot);
   assert.ok(adjustments.length > 0, "suggests adjustment for low precision");
   const first = adjustments[0];
   assert.ok(first, "first adjustment exists");
@@ -175,16 +175,16 @@ test("analyzeThresholds suggests lowering threshold when precision is low", () =
   assert.ok(first.suggestedThreshold < first.currentThreshold, "suggests lower threshold");
 });
 
-test("analyzePatterns returns empty for insufficient data", () => {
-  const insights = analyzePatterns("project-gamma");
+test("analyzePatterns returns empty for insufficient data", async () => {
+  const insights = await analyzePatterns("project-gamma");
   assert.equal(insights.length, 0, "no insights without enough data");
 });
 
-test("generateRecommendations combines threshold and pattern insights", () => {
+test("generateRecommendations combines threshold and pattern insights", async () => {
   const projectRoot = "project-delta";
   // Create some data
   for (let i = 0; i < 10; i++) {
-    recordHold({
+    await recordHold({
       timestamp: Date.now() - i * 1000,
       projectRoot,
       tool: "bash",
@@ -195,7 +195,7 @@ test("generateRecommendations combines threshold and pattern insights", () => {
       reasons: ["irreversible 0.5"],
     });
   }
-  const recommendations = generateRecommendations(projectRoot);
+  const recommendations = await generateRecommendations(projectRoot);
   assert.ok(Array.isArray(recommendations), "returns an array");
 });
 
@@ -203,19 +203,19 @@ test("generateRecommendations combines threshold and pattern insights", () => {
 
 import { analyzeSteerEffectivenessReport } from "../src/learning.js";
 
-test("analyzeSteerEffectivenessReport returns empty for insufficient data", () => {
-  const report = analyzeSteerEffectivenessReport("project-nu");
+test("analyzeSteerEffectivenessReport returns empty for insufficient data", async () => {
+  const report = await analyzeSteerEffectivenessReport("project-nu");
   assert.equal(report.overall, 0, "overall effectiveness is 0 for empty data");
   assert.equal(Object.keys(report.byType).length, 0, "no steer types");
   assert.equal(report.suggestions.length, 0, "no suggestions");
   assert.equal(report.topPatterns.length, 0, "no top patterns");
 });
 
-test("analyzeSteerEffectivenessReport tracks effectiveness by type", () => {
+test("analyzeSteerEffectivenessReport tracks effectiveness by type", async () => {
   const projectRoot = "project-xi";
   // Create holds with different outcomes
   for (let i = 0; i < 10; i++) {
-    const id = recordHold({
+    const id = await recordHold({
       timestamp: Date.now() - i * 1000,
       projectRoot,
       tool: "bash",
@@ -226,9 +226,9 @@ test("analyzeSteerEffectivenessReport tracks effectiveness by type", () => {
       reasons: ["irreversible 0.5"],
       agentReason: "irreversible action detected",
     });
-    recordOutcome(id, "approved");
+    await recordOutcome(id, "approved");
   }
-  const report = analyzeSteerEffectivenessReport(projectRoot);
+  const report = await analyzeSteerEffectivenessReport(projectRoot);
   assert.ok(report.overall > 0, "overall effectiveness is positive");
   assert.ok(Object.keys(report.byType).length > 0, "has steer types");
   assert.ok(report.topPatterns.length > 0, "has top patterns");
