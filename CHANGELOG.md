@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.28.2
+
+### Fixed
+
+- One-time warning when confirm mode falls back to steer in headless sessions.
+
 ## 0.28.1
 
 ### Fixed
