@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.28.1
+
+### Fixed
+
+- TypeSafe consent disclosure now mentions the SQLite hold database, its contents, and the retention policy.
+
 ## 0.28.0
 
 ### Added
