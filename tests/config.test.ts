@@ -266,3 +266,20 @@ test("arming rules parse duration strings and numbers", () => {
   assert.equal(config.action.armingRules[3]!.arms.for, 5000);
   assert.equal(config.action.armingRules[4]!.arms.for, 600_000, "default is 10 minutes");
 });
+
+test("defaults: typesafeBackend is typesafe", () => {
+  assert.equal(defaultConfig().typesafeBackend, "typesafe");
+});
+
+test("user overrides: typesafeBackend accepts valid values and ignores junk", () => {
+  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "openrouter" }).typesafeBackend, "openrouter");
+  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "typesafe" }).typesafeBackend, "typesafe");
+  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "azure" }).typesafeBackend, "typesafe", "invalid backend falls back");
+  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: null }).typesafeBackend, "typesafe", "null falls back");
+  assert.equal(applyUserOverrides(defaultConfig(), {}).typesafeBackend, "typesafe", "missing falls back");
+});
+
+test("project overrides cannot set typesafeBackend", () => {
+  const config = applyProjectOverrides(defaultConfig(), { typesafeBackend: "openrouter" });
+  assert.equal(config.typesafeBackend, "typesafe", "project file cannot redirect judgments");
+});

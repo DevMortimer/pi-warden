@@ -1,6 +1,6 @@
 {
   "name": "pi-warden",
-  "version": "0.25.1",
+  "version": "0.26.0",
   "description": "Makes the Pi agent follow your project's rules. Jev judges every write against your pi-warden.md and quotes the broken rule back to the agent, names slop, breaks stuck loops, calls out unverified done claims, compresses large tool output, and holds the rare destructive command. Built on pi-typesafe.",
   "type": "module",
   "license": "MIT",
@@ -81,6 +81,6 @@
     "typescript": "^6.0.0"
   },
   "dependencies": {
-    "pi-typesafe": "^0.5.0"
+    "pi-typesafe": "^0.6.0"
   }
 }

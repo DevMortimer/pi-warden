@@ -6,6 +6,7 @@ const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ 
 import { authState, createTypeSafe, describeAuth } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
+import { backendHost, disclosureFor, judgeOptions, keyAvailable, resolveBackend } from "./backend.js";
 import { ActionGuard } from "./action-guard.js";
 import type { ToolCallRef } from "./action-guard.js";
 import { ArmingTracker, unparseableArmingRules } from "./arming.js";
@@ -288,10 +289,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   };
   const consentGiven = (config: WardenConfig) => config.typesafe || process.env.PI_WARDEN_ENABLED === "1";
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
-  /** A consent flag is not proof that judgments happen; ask pi-typesafe for the real key state. */
+  /** A consent flag is not proof that judgments happen; check the key state for the chosen backend. */
   const judgeFor = (config: WardenConfig): TypeSafe | undefined => {
-    if (!consentGiven(config) || budgetExhausted || !authState().usable) return undefined;
-    return client ??= createTypeSafe({ maxRequests: config.maxRequests, timeoutMs: config.timeoutMs });
+    if (!consentGiven(config) || budgetExhausted) return undefined;
+    if (!keyAvailable(config.typesafeBackend, process.env, () => authState().usable)) return undefined;
+    return client ??= createTypeSafe(judgeOptions(config));
   };
   const noteError = (ctx: ExtensionContext, message: string, code: string | undefined) => {
     stats.errors++;
@@ -1040,7 +1042,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const usage = client?.getUsage();
           const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.rules.enabled && "rules", config.context.enabled && "context", config.runaway.enabled && "runaway", config.subagent.enabled && "subagent triage", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
           report([
-            `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}; ${auth.text}`,
+            `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}${config.typesafeBackend !== "typesafe" ? ` (${config.typesafeBackend})` : ""}; ${auth.text}`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan, ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}. Steer budget: ${config.steerBudget === 0 ? "off" : `${config.steerBudget} per run`}.`,
             formatSteers(stats),
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
@@ -1104,7 +1106,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }
         if (action === "test") {
           const judge = judgeFor(config);
-          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Clean up the demo directory") goes to api.typesafe.ai and may incur charges. ${disclosure}`)) return;
+          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Clean up the demo directory") goes to ${backendHost(config.typesafeBackend)} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
           const verdict = await evaluateAction(
             { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Clean up the demo directory" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge },

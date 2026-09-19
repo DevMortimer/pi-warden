@@ -4,7 +4,7 @@ What pi-warden sends to TypeSafe, what it keeps on this machine, and what it nev
 
 ## What is sent, per guard
 
-With consent, requests go to `https://api.typesafe.ai` only.
+With consent, requests go to `https://api.typesafe.ai` (default) or `https://openrouter.ai` when `typesafeBackend` is set to `"openrouter"` in the user config.
 
 | Guard | Sent |
 | --- | --- |

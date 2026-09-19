@@ -1,5 +1,6 @@
 import { isMode } from "./config.js";
 import type { WardenConfig } from "./config.js";
+import { resolveBackend } from "./backend.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
@@ -31,6 +32,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   const config: WardenConfig = {
     enabled: source.enabled ?? true,
     typesafe: source.typesafe ?? false,
+    typesafeBackend: resolveBackend(source.typesafeBackend),
     mode: isMode(source.mode) ? source.mode : "steer",
     timeoutMs: source.timeoutMs ?? 5000,
     maxRequests: source.maxRequests ?? 500,
