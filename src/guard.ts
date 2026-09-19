@@ -116,8 +116,10 @@ export interface Verdict {
   plan?: string;
   /** True when Jev finds the call at odds with the agent's stated plan and the call can change something; the agent is told. */
   intentMismatch?: boolean;
-  /** True when Jev finds the call unrelated to the request on a call that can change something; the agent is steered back to the task. */
+  /** True when Jev finds the call unrelated to the request on a call that can change something. Still steered in the reason log, but the steer message is suppressed until AUC improves above 0.51. */
   offTaskSteer?: boolean;
+  /** Off-task steer is recorded in the trace but not delivered to the agent; the score has no reliable signal yet (AUC 0.51). */
+  offTaskTraceOnly?: boolean;
   /** Answers to the caller's own `questions`: P(yes) for a noul, the picked option for a choice, the level for a score. */
   extra?: Record<string, number | string>;
   /** Safe TypeSafe error message when the judge could not answer. */
@@ -947,17 +949,47 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     reasons.push(`possibly irreversible ${percent(judgment.irreversible)}`);
   }
   // Off-task never holds: on 17k recorded calls the off-task hold caught none of the calls users regretted (AUC 0.51) and
-  // made 40% of the holds. Unrelated changes are warned about and the agent is steered back to the task instead.
-  const offTaskSteer = judgment.offTask >= config.offTask.steer && judgment.scope === "unrelated" && canChange;
-  if (offTaskSteer) {
+  // made 40% of the holds. Scope now gates off-task: the categorical answer vetoes or overrides the score, which alone
+  // has no signal (AUC 0.51). Off-task steers are trace-only until AUC clears 0.51 to avoid wasting agent turns on
+  // false positives.
+  let offTaskWarned = false;
+  let offTaskSteer = false;
+  let offTaskTraceOnly = false;
+  if (judgment.scope === "expected_step") {
+    // Scope says the call is a required step; the off-task score is noise. Do not warn.
+  } else if (judgment.scope === "unrelated") {
+    // The categorical answer is the signal; the score is not (AUC 0.51). Always warn when scope is unrelated.
+    offTaskWarned = true;
+    offTaskSteer = canChange;
+    offTaskTraceOnly = true; // trace-only until AUC clears 0.51
     level = higher(level, "warn");
-    reasons.push(`off-task ${percent(judgment.offTask)} (unrelated to the request; agent steered)`);
-  } else if (judgment.offTask >= config.offTask.steer && judgment.scope === "unrelated") {
+    if (canChange) {
+      reasons.push(`off-task ${percent(judgment.offTask)} (unrelated to the request; trace-only until AUC clears 0.51)`);
+    } else {
+      reasons.push(`off-task ${percent(judgment.offTask)} (unrelated, but read-only; trace-only)`);
+    }
+  } else if (judgment.scope === "plausible_side_step") {
+    // Reasonable supporting work whose necessity is not yet established; trace-only, no steer.
+    offTaskWarned = true;
+    offTaskTraceOnly = true;
     level = higher(level, "warn");
-    reasons.push(`off-task ${percent(judgment.offTask)} (unrelated, but read-only)`);
-  } else if (judgment.offTask >= config.offTask.warn && judgment.scope !== "unclear") {
-    level = higher(level, "warn");
-    reasons.push(`off-task ${percent(judgment.offTask)} (${judgment.scope.replace(/_/g, " ")})`);
+    reasons.push(`off-task ${percent(judgment.offTask)} (plausible side step; trace-only)`);
+  } else if (judgment.scope === "unclear") {
+    // Missing context is not itself off-task evidence; no warn.
+  } else {
+    // Fallback: scope answer was not provided (older judge). Fall back to the score, trace-only.
+    if (judgment.offTask >= config.offTask.steer) {
+      offTaskWarned = true;
+      offTaskSteer = canChange;
+      offTaskTraceOnly = true;
+      level = higher(level, "warn");
+      reasons.push(`off-task ${percent(judgment.offTask)} (trace-only until AUC clears 0.51)`);
+    } else if (judgment.offTask >= config.offTask.warn) {
+      offTaskWarned = true;
+      offTaskTraceOnly = true;
+      level = higher(level, "warn");
+      reasons.push(`off-task ${percent(judgment.offTask)} (trace-only)`);
+    }
   }
   if (options.security?.enabled && typeof answers.security_risk?.noul === "number") {
     judgment.securityRisk = answers.security_risk.noul;
@@ -980,6 +1012,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   const verdict: Verdict = withPlan({ level, source: "typesafe", summary, patterns, reasons, judgment });
   if (mismatch) verdict.intentMismatch = true;
   if (offTaskSteer) verdict.offTaskSteer = true;
+  if (offTaskTraceOnly) verdict.offTaskTraceOnly = true;
   if (options.questions) {
     const extra: Record<string, number | string> = {};
     for (const id of Object.keys(options.questions)) {

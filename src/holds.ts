@@ -54,6 +54,8 @@ export interface CallRecord {
   outcomeVia?: OutcomeVia;
   /** P(regret) from the question that labelled this call, when Jev answered it. */
   regret?: number;
+  /** Redacted excerpt of the call (command, path, or input); ≤120 chars. For auditing off-task and intent-mismatch. */
+  callExcerpt?: string;
 }
 
 export interface HoldSnapshot {
@@ -107,10 +109,11 @@ export class HoldLedger {
   /** One inspected call. `outcome` is set at once when the confirm dialog decided; a steer-mode hold starts pending. */
   record(verdict: Verdict, options: { held: boolean; mode: WardenMode; outcome?: CallOutcome | undefined; via?: OutcomeVia | undefined; at?: number; task?: string; plan?: string; contextSummary?: string; agentReason?: string }): CallRecord {
     const at = options.at ?? Date.now();
+    const { summary } = verdict;
     const record: CallRecord = {
       id: this.nextId++,
       at,
-      tool: verdict.summary.tool,
+      tool: summary.tool,
       level: verdict.level,
       source: verdict.source,
       mode: options.mode,
@@ -120,6 +123,9 @@ export class HoldLedger {
       planChars: verdict.plan?.length ?? 0,
       outcome: options.outcome ?? "pending",
     };
+    // Call excerpt for auditing: tool + path only (commands never reach the log).
+    if (summary.path) record.callExcerpt = `${summary.tool} ${summary.path}`;
+    else if (summary.tool) record.callExcerpt = summary.tool;
     const scores = scoresOf(verdict);
     if (scores) record.scores = scores;
     if (options.outcome && options.outcome !== "pending") { record.outcomeAt = at; if (options.via) record.outcomeVia = options.via; }

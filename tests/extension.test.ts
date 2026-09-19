@@ -793,7 +793,7 @@ test("with consent, Jev judgments drive warn and hold, and a quiet verdict folds
   nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated" };
   sentMessages.length = 0;
   assert.equal(await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" }), undefined);
-  assert.match(notices.at(-1)!.text, /^warden · write: off-task 0\.95 \(unrelated to the request; agent steered\)$/);
+  assert.match(notices.at(-1)!.text, /^warden · write: off-task 0\.95 \(unrelated to the request; trace-only until AUC clears 0\.51\)$/);
   assert.match(sentMessages.at(-1)?.message.content ?? "", /^pi-warden: this write call looks unrelated to the user's request \(off-task 0\.95\)\. It ran\./);
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+write · .*off task$/, "the widget still shows the event, as a warn chip");
   await runCommand("status");
