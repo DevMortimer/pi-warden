@@ -4,10 +4,10 @@
 import { createHash } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
-import { DatabaseSync } from "node:sqlite";
 import type { CallScores } from "./holds.js";
 
-let db: DatabaseSync | undefined;
+let db: import("node:sqlite").DatabaseSync | undefined;
+let sqliteAvailable: boolean | undefined;
 
 // --- Schema (shared constant) ---
 
@@ -37,28 +37,32 @@ export const HOLDS_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_holds_timestamp ON holds(timestamp);
 `;
 
-function getDb(): DatabaseSync {
-  if (!db) {
-    try {
-      const dbPath = process.env.PI_WARDEN_DB ?? join(homedir(), ".pi", "agent", "pi-warden", "holds.db");
-      db = new DatabaseSync(dbPath);
-      db.exec("PRAGMA journal_mode = WAL");
-    } catch (err) {
-      // Fail open: if DB is corrupted or inaccessible, return a no-op stub
-      console.warn("pi-warden: could not open holds.db:", err);
-      return {
-        exec() {},
-        prepare() { return { run() { return { lastInsertRowid: 0 }; }, all() { return []; } }; },
-        pragma() {},
-      } as unknown as DatabaseSync;
-    }
+const NOOP_DB = {
+  exec() {},
+  prepare() { return { run() { return { lastInsertRowid: 0 }; }, all() { return []; } }; },
+  pragma() {},
+} as unknown as import("node:sqlite").DatabaseSync;
+
+async function getDb(): Promise<import("node:sqlite").DatabaseSync> {
+  if (db) return db;
+  if (sqliteAvailable === false) return NOOP_DB;
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    sqliteAvailable = true;
+    const dbPath = process.env.PI_WARDEN_DB ?? join(homedir(), ".pi", "agent", "pi-warden", "holds.db");
+    db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA journal_mode = WAL");
+    return db;
+  } catch (err) {
+    sqliteAvailable = false;
+    console.warn("pi-warden: node:sqlite unavailable, learning features disabled:", err);
+    return NOOP_DB;
   }
-  return db;
 }
 
-export function initSchema(retentionDays = 365): void {
+export async function initSchema(retentionDays = 365): Promise<void> {
   try {
-    const d = getDb();
+    const d = await getDb();
     d.exec(HOLDS_SCHEMA);
     // Migrate: add columns that may be missing from older databases.
     try { d.exec("ALTER TABLE holds ADD COLUMN preceding_actions TEXT"); } catch { /* column exists */ }
@@ -184,8 +188,8 @@ export function toHoldRecord(
 
 // --- Recording ---
 
-export function recordHold(hold: HoldRecord): number {
-  const d = getDb();
+export async function recordHold(hold: HoldRecord): Promise<number> {
+  const d = await getDb();
   const hash = signatureHash(hold.tool, hold.scores);
   const stmt = d.prepare(`
     INSERT INTO holds
@@ -207,14 +211,14 @@ export function recordHold(hold: HoldRecord): number {
   return row.id;
 }
 
-export function recordOutcome(id: number, outcome: string): void {
-  try { getDb().prepare("UPDATE holds SET outcome = ?, outcome_at = ? WHERE id = ?").run(outcome, Date.now(), id); } catch (err) { console.warn("pi-warden: could not record hold outcome:", err); }
+export async function recordOutcome(id: number, outcome: string): Promise<void> {
+  try { (await getDb()).prepare("UPDATE holds SET outcome = ?, outcome_at = ? WHERE id = ?").run(outcome, Date.now(), id); } catch (err) { console.warn("pi-warden: could not record hold outcome:", err); }
 }
 
 // --- Querying ---
 
-export function querySmartHistory(tool: string, scores: HoldScores, projectRoot: string): SmartHistory {
-  const d = getDb();
+export async function querySmartHistory(tool: string, scores: HoldScores, projectRoot: string): Promise<SmartHistory> {
+  const d = await getDb();
   const hash = signatureHash(tool, scores);
 
   const exact = d.prepare(`
@@ -263,8 +267,8 @@ export function calculateSmartConfidence(history: SmartHistory): ConfidenceResul
 
 // --- Integration ---
 
-export function shouldSkipHold(tool: string, scores: HoldScores, projectRoot: string): SkipResult {
-  const history = querySmartHistory(tool, scores, projectRoot);
+export async function shouldSkipHold(tool: string, scores: HoldScores, projectRoot: string): Promise<SkipResult> {
+  const history = await querySmartHistory(tool, scores, projectRoot);
   const { confidence, reason } = calculateSmartConfidence(history);
 
   const isDestructive = scores.reasons.some(r => r.startsWith("destructive:"));
@@ -289,8 +293,8 @@ export interface ThresholdAdjustment {
 }
 
 /** Analyze hold outcomes to suggest threshold adjustments. */
-export function analyzeThresholds(projectRoot: string): ThresholdAdjustment[] {
-  const d = getDb();
+export async function analyzeThresholds(projectRoot: string): Promise<ThresholdAdjustment[]> {
+  const d = await getDb();
   const adjustments: ThresholdAdjustment[] = [];
 
   // Analyze action guard: look at holds vs approvals
@@ -353,8 +357,8 @@ export interface PatternInsight {
   suggestion: string;
 }
 
-export function analyzePatterns(projectRoot: string): PatternInsight[] {
-  const d = getDb();
+export async function analyzePatterns(projectRoot: string): Promise<PatternInsight[]> {
+  const d = await getDb();
   const insights: PatternInsight[] = [];
 
   // Get pattern outcomes
@@ -411,10 +415,10 @@ export interface ContextRecommendation {
 }
 
 /** Generate recommendations based on learning data. */
-export function generateRecommendations(projectRoot: string): ContextRecommendation[] {
+export async function generateRecommendations(projectRoot: string): Promise<ContextRecommendation[]> {
   const recommendations: ContextRecommendation[] = [];
 
-  const thresholdAdjustments = analyzeThresholds(projectRoot);
+  const thresholdAdjustments = await analyzeThresholds(projectRoot);
   for (const adj of thresholdAdjustments) {
     if (adj.confidence > 0.5) {
       recommendations.push({
@@ -425,7 +429,7 @@ export function generateRecommendations(projectRoot: string): ContextRecommendat
     }
   }
 
-  const patternInsights = analyzePatterns(projectRoot);
+  const patternInsights = await analyzePatterns(projectRoot);
   for (const insight of patternInsights.slice(0, 3)) {
     if (insight.falsePositiveRate > 0.6) {
       recommendations.push({
@@ -457,8 +461,8 @@ export interface SteerEffectivenessReport {
 }
 
 /** Analyze steer effectiveness from hold outcomes. */
-export function analyzeSteerEffectivenessReport(projectRoot: string): SteerEffectivenessReport {
-  const d = getDb();
+export async function analyzeSteerEffectivenessReport(projectRoot: string): Promise<SteerEffectivenessReport> {
+  const d = await getDb();
   const suggestions: string[] = [];
 
   // Get steer outcomes (inferred from hold outcomes)

@@ -211,7 +211,6 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const rulesGuard = new RulesGuard();
   // Hold feedback: what the user did after each judged call, the trace entry each label lands on, and the per-session log.
   const holds = new HoldLedger();
-  initSchema(loadConfig().learning.retentionDays);
   const learningIds = new Map<number, number>(); // holds.id -> learning.id
   // Prune learningIds when it grows large to prevent memory leaks
   function pruneLearningIds(): void {
@@ -456,6 +455,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     client = undefined;
     budgetExhausted = false;
     warnedFallback = false;
+    await initSchema(loadConfig().learning.retentionDays);
     stats = freshStats();
     widget.clear();
     trace.clear();
@@ -657,7 +657,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (released) {
         noteOutcomes(config, [released]);
         const learningId = learningIds.get(released.id);
-        if (learningId) recordOutcome(learningId, "approved");
+        if (learningId) recordOutcome(learningId, "approved").catch(err => console.warn("pi-warden: recordOutcome failed:", err));
       }
     }
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
@@ -679,13 +679,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       noteOutcomes(config, outcome ? [item] : []);
       // Record to SQLite for learning
       if (held) {
-        const id = recordHold(toHoldRecord(
+        recordHold(toHoldRecord(
           { at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores },
           ctx.cwd,
           { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: steerReason(verdict, { canApprove: judge !== undefined }) },
-        ));
-        learningIds.set(item.id, id);
-        if (outcome) recordOutcome(id, outcome);
+        )).then(id => {
+          learningIds.set(item.id, id);
+          if (outcome) recordOutcome(id, outcome).catch(err => console.warn("pi-warden: recordOutcome failed:", err));
+        }).catch(err => console.warn("pi-warden: recordHold failed:", err));
         pruneLearningIds();
       }
     };
@@ -1094,7 +1095,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             formatSteers(stats),
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),
-            ...(config.learning.patternAnalysis ? [`Learning: ${generateRecommendations(ctx.cwd).length} recommendations, steer effectiveness ${Math.round(analyzeSteerEffectivenessReport(ctx.cwd).overall * 100)}% (use /warden recommend for details)`] : []),
+            ...(config.learning.patternAnalysis ? [`Learning: ${(await generateRecommendations(ctx.cwd)).length} recommendations, steer effectiveness ${Math.round((await analyzeSteerEffectivenessReport(ctx.cwd)).overall * 100)}% (use /warden recommend for details)`] : []),
             `${formatHolds(holds.snapshot(), config.action.feedbackLog ? holdLog?.path : undefined)}${holdLog?.lastFailure ? ` Log write failed: ${holdLog.lastFailure}.` : ""}`,
             `Rules: ${config.rules.enabled ? `${rulesGuard.describe(ctx.cwd, config.rules)}${Object.keys(config.rules.sensitivePaths).length ? `; ${Object.keys(config.rules.sensitivePaths).length} sensitive path${Object.keys(config.rules.sensitivePaths).length === 1 ? "" : "s"}` : ""}` : "off"}.`,
             ...(config.action.armingRules.length > 0 ? [`Arming: ${arming.statusLine() || "no rules armed"}.`] : []),
@@ -1116,8 +1117,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }
         if (action === "recommend") {
           // Learning-driven recommendations based on hold history
-          const recommendations = generateRecommendations(ctx.cwd);
-          const steerReport = analyzeSteerEffectivenessReport(ctx.cwd);
+          const recommendations = await generateRecommendations(ctx.cwd);
+          const steerReport = await analyzeSteerEffectivenessReport(ctx.cwd);
           
           const lines: string[] = [];
           lines.push("pi-warden learning recommendations:");
