@@ -39,7 +39,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     steerVisible: source.steerVisible ?? false,
     notices: source.notices ?? false,
     steerBudget: typeof source.steerBudget === "number" && source.steerBudget >= 0 ? source.steerBudget : 3,
-    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [] }),
+    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], toolRecommendation: true }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false }),
     done: section("done", { ...off, claimsDone: 1, nudge: false }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
@@ -72,6 +72,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (!Array.isArray(config.action.exemptRules)) config.action = { ...config.action, exemptRules: [] };
   if (!Array.isArray(config.action.pathRules)) config.action = { ...config.action, pathRules: [] };
   if (!Array.isArray(config.action.armingRules)) config.action = { ...config.action, armingRules: [] };
+  if (typeof config.action.toolRecommendation !== "boolean") config.action = { ...config.action, toolRecommendation: true };
   // 0.12 renamed offTask.confirm to offTask.steer; an older config module still delivers `confirm`.
   if (typeof config.action.offTask?.steer !== "number") config.action = { ...config.action, offTask: { warn: config.action.offTask?.warn ?? 1, steer: (config.action.offTask as { confirm?: number } | undefined)?.confirm ?? 1 } };
   // The runaway guard added its template later than the other sections; an older widget section renders the default line.

@@ -36,4 +36,12 @@ export const candidates = {
       false: 'No: the message asks for work to be done or gives information; it does not ask the agent to stop acting.',
     },
   ),
+  // EXTRA: Tool/skill recommendation questions (measured, not acted on until promoted)
+  tool_recommendation_yes: noul(
+    'Is there a more appropriate tool or skill for this task than the current tool? Consider the available tools and skills listed in the options. If the current tool is appropriate, answer no.',
+    {
+      true: 'Yes: there is a tool or skill that would be significantly more appropriate for this task.',
+      false: 'No: the current tool is appropriate for this task.',
+    },
+  ),
 };

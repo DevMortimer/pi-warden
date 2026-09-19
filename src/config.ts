@@ -63,6 +63,8 @@ export interface ActionGuardConfig {
   pathRules: PathRule[];
   /** User-defined arming rules: editing files matching globs arms a command pattern for a window (user file only). */
   armingRules: ArmingRule[];
+  /** Ask Jev to recommend a more appropriate tool or skill for each guarded call (extra questions, recorded but not acted on until measured). */
+  toolRecommendation: boolean;
 }
 
 /** A user-defined path rule: which paths, which side of the access is held, which tools, what happens on a hit. */
@@ -325,6 +327,7 @@ export function defaultConfig(): WardenConfig {
       exemptRules: [],
       pathRules: [],
       armingRules: [],
+      toolRecommendation: true,
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
@@ -550,6 +553,8 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     pathRules: source === "user" ? parsePathRules(raw.pathRules) : base.pathRules,
     // Arming rules are user-declared security policy: same gate.
     armingRules: source === "user" ? parseArmingRules(raw.armingRules) : base.armingRules,
+    // Tool recommendation: extra questions recorded but not acted on until measured.
+    toolRecommendation: boolean(raw.toolRecommendation, base.toolRecommendation),
   };
 }
 

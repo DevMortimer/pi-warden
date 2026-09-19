@@ -1,7 +1,7 @@
 import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { evaluateAction, textApproves } from "./guard.js";
 import type { PreviousAction, TaskMessage, Verdict } from "./guard.js";
-import type { Judge } from "pi-typesafe";
+import type { Judge, Questions } from "pi-typesafe";
 
 /** One tool call as the agent proposed it. `id` is Pi's tool call id, stable across hooks and retries. */
 export interface ToolCallRef {
@@ -31,6 +31,8 @@ export interface InspectOptions {
   security?: SecurityConfig | undefined;
   /** Calls allowed in the previous turn; the regret question about them rides this call's request, never a sibling's. */
   previousActions?: readonly PreviousAction[] | undefined;
+  /** Extra questions over the same state, answered in verdict.extra and never acted on. */
+  questions?: Questions | undefined;
 }
 
 interface Prejudged { key: string; verdict: Promise<Verdict>; used: boolean }
@@ -59,7 +61,7 @@ export class ActionGuard {
     const retryAfterHold = this.holdPending && this.lastHoldPrompt !== task;
     const judgeCall = (tool: string, input: Record<string, unknown>, previousActions?: readonly PreviousAction[]) => evaluateAction(
       { tool, input, cwd: options.cwd, task, context: conversation.context, plan: conversation.plan },
-      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, retryAfterHold, previousActions },
+      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, retryAfterHold, previousActions, questions: options.questions },
     );
     // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
     if (options.judge && !retryAfterHold) {
