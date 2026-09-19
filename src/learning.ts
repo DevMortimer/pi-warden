@@ -269,3 +269,248 @@ export function shouldSkipHold(tool: string, scores: HoldScores, projectRoot: st
 
   return { skip: false, confidence, reason };
 }
+
+// --- Adaptive Thresholds ---
+
+/** Learn from past outcomes to suggest threshold adjustments. */
+export interface ThresholdAdjustment {
+  guard: string;
+  currentThreshold: number;
+  suggestedThreshold: number;
+  reason: string;
+  confidence: number;
+}
+
+/** Analyze hold outcomes to suggest threshold adjustments. */
+export function analyzeThresholds(projectRoot: string): ThresholdAdjustment[] {
+  const d = getDb();
+  const adjustments: ThresholdAdjustment[] = [];
+
+  // Analyze action guard: look at holds vs approvals
+  const actionHolds = d.prepare(`
+    SELECT outcome, COUNT(*) as cnt
+    FROM holds WHERE project_root = ? AND tool != 'rules' AND held = 1
+    GROUP BY outcome
+  `).all(projectRoot) as Record<string, unknown>[];
+
+  const totalHolds = actionHolds.reduce((sum, row) => sum + (row.cnt as number), 0);
+  if (totalHolds >= 10) {
+    const approved = actionHolds.find(row => row.outcome === 'approved')?.cnt as number ?? 0;
+    const declined = actionHolds.find(row => row.outcome === 'declined')?.cnt as number ?? 0;
+    const precision = totalHolds > 0 ? (declined + (actionHolds.find(row => row.outcome === 'replanned')?.cnt as number ?? 0)) / totalHolds : 0;
+    
+    // If precision is high (>0.7), we're catching real issues - keep or raise threshold
+    // If precision is low (<0.3), we're being too aggressive - lower threshold
+    if (precision < 0.3 && totalHolds >= 20) {
+      adjustments.push({
+        guard: 'action',
+        currentThreshold: 0.7,
+        suggestedThreshold: 0.6,
+        reason: `Low precision (${(precision * 100).toFixed(0)}%); consider lowering the confirmation threshold`,
+        confidence: Math.min(1, totalHolds / 50),
+      });
+    }
+  }
+
+  // Analyze regret rates
+  const regretRate = d.prepare(`
+    SELECT 
+      COUNT(CASE WHEN outcome = 'regretted' THEN 1 END) as regrets,
+      COUNT(CASE WHEN outcome IN ('accepted', 'regretted') THEN 1 END) as total
+    FROM holds WHERE project_root = ? AND held = 0
+  `).get(projectRoot) as { regrets: number; total: number } | undefined;
+
+  if (regretRate && regretRate.total >= 10) {
+    const rate = regretRate.regrets / regretRate.total;
+    if (rate > 0.15) {
+      adjustments.push({
+        guard: 'action',
+        currentThreshold: 0.7,
+        suggestedThreshold: 0.75,
+        reason: `High regret rate (${(rate * 100).toFixed(0)}%); consider raising the confirmation threshold`,
+        confidence: Math.min(1, regretRate.total / 30),
+      });
+    }
+  }
+
+  return adjustments;
+}
+
+// --- Pattern Learning ---
+
+/** Learn which patterns are most likely to be false positives. */
+export interface PatternInsight {
+  pattern: string;
+  falsePositiveRate: number;
+  sampleSize: number;
+  suggestion: string;
+}
+
+export function analyzePatterns(projectRoot: string): PatternInsight[] {
+  const d = getDb();
+  const insights: PatternInsight[] = [];
+
+  // Get pattern outcomes
+  const patterns = d.prepare(`
+    SELECT 
+      reasons,
+      outcome,
+      COUNT(*) as cnt
+    FROM holds WHERE project_root = ? AND held = 1
+    GROUP BY reasons, outcome
+  `).all(projectRoot) as Record<string, unknown>[];
+
+  // Aggregate by pattern category
+  const patternStats = new Map<string, { approved: number; declined: number; total: number }>();
+  
+  for (const row of patterns) {
+    const reasons = JSON.parse(row.reasons as string) as string[];
+    const outcome = row.outcome as string;
+    const cnt = row.cnt as number;
+    
+    for (const reason of reasons) {
+      const category = reason.split(':')[0] ?? 'unknown';
+      const stats = patternStats.get(category) ?? { approved: 0, declined: 0, total: 0 };
+      stats.total += cnt;
+      if (outcome === 'approved') stats.approved += cnt;
+      if (outcome === 'declined') stats.declined += cnt;
+      patternStats.set(category, stats);
+    }
+  }
+
+  for (const [pattern, stats] of patternStats) {
+    if (stats.total >= 5) {
+      const falsePositiveRate = stats.approved / stats.total;
+      if (falsePositiveRate > 0.5) {
+        insights.push({
+          pattern,
+          falsePositiveRate,
+          sampleSize: stats.total,
+          suggestion: `Pattern '${pattern}' has a ${(falsePositiveRate * 100).toFixed(0)}% false positive rate; consider adding it to exemptRules or raising its threshold`,
+        });
+      }
+    }
+  }
+
+  return insights.sort((a, b) => b.falsePositiveRate - a.falsePositiveRate);
+}
+
+// --- Contextual Recommendations ---
+
+export interface ContextRecommendation {
+  type: 'threshold' | 'exempt' | 'pattern';
+  message: string;
+  priority: 'high' | 'medium' | 'low';
+}
+
+/** Generate recommendations based on learning data. */
+export function generateRecommendations(projectRoot: string): ContextRecommendation[] {
+  const recommendations: ContextRecommendation[] = [];
+
+  const thresholdAdjustments = analyzeThresholds(projectRoot);
+  for (const adj of thresholdAdjustments) {
+    if (adj.confidence > 0.5) {
+      recommendations.push({
+        type: 'threshold',
+        message: `${adj.reason} (confidence: ${(adj.confidence * 100).toFixed(0)}%)`,
+        priority: adj.confidence > 0.7 ? 'high' : 'medium',
+      });
+    }
+  }
+
+  const patternInsights = analyzePatterns(projectRoot);
+  for (const insight of patternInsights.slice(0, 3)) {
+    if (insight.falsePositiveRate > 0.6) {
+      recommendations.push({
+        type: 'exempt',
+        message: insight.suggestion,
+        priority: insight.falsePositiveRate > 0.8 ? 'high' : 'medium',
+      });
+    }
+  }
+
+  return recommendations.sort((a, b) => {
+    const priorityOrder = { high: 0, medium: 1, low: 2 };
+    return priorityOrder[a.priority] - priorityOrder[b.priority];
+  });
+}
+
+// --- Steer Effectiveness Analysis ---
+
+/** Analyze which types of steers are most effective at changing agent behavior. */
+export interface SteerEffectivenessReport {
+  /** Overall effectiveness rate (0-1). */
+  overall: number;
+  /** Effectiveness by steer type. */
+  byType: Record<string, { effective: number; total: number; rate: number }>;
+  /** Suggestions for improving steer effectiveness. */
+  suggestions: string[];
+  /** Top performing steer patterns. */
+  topPatterns: Array<{ pattern: string; effectiveness: number; sampleSize: number }>;
+}
+
+/** Analyze steer effectiveness from hold outcomes. */
+export function analyzeSteerEffectivenessReport(projectRoot: string): SteerEffectivenessReport {
+  const d = getDb();
+  const suggestions: string[] = [];
+
+  // Get steer outcomes (inferred from hold outcomes)
+  const steerOutcomes = d.prepare(`
+    SELECT 
+      agent_reason,
+      outcome,
+      COUNT(*) as cnt
+    FROM holds WHERE project_root = ? AND held = 1 AND agent_reason IS NOT NULL
+    GROUP BY agent_reason, outcome
+  `).all(projectRoot) as Record<string, unknown>[];
+
+  // Analyze effectiveness: if a steer led to approval (agent fixed the issue), it was effective
+  const steerStats = new Map<string, { effective: number; total: number }>();
+
+  for (const row of steerOutcomes) {
+    const reason = row.agent_reason as string;
+    const outcome = row.outcome as string;
+    const cnt = row.cnt as number;
+
+    // Extract steer type from the reason
+    const steerType = reason.includes('irreversible') ? 'irreversible'
+      : reason.includes('off-task') ? 'off-task'
+      : reason.includes('intent mismatch') ? 'intent-mismatch'
+      : reason.includes('pattern') ? 'pattern'
+      : 'other';
+
+    const stats = steerStats.get(steerType) ?? { effective: 0, total: 0 };
+    stats.total += cnt;
+    if (outcome === 'approved') stats.effective += cnt; // Agent fixed the issue
+    steerStats.set(steerType, stats);
+  }
+
+  let totalEffective = 0;
+  let totalSteers = 0;
+  const byType: Record<string, { effective: number; total: number; rate: number }> = {};
+  const topPatterns: Array<{ pattern: string; effectiveness: number; sampleSize: number }> = [];
+
+  for (const [type, stats] of steerStats) {
+    const rate = stats.total > 0 ? stats.effective / stats.total : 0;
+    byType[type] = { effective: stats.effective, total: stats.total, rate };
+    totalEffective += stats.effective;
+    totalSteers += stats.total;
+
+    // Generate suggestions for ineffective steers
+    if (stats.total >= 5 && rate < 0.3) {
+      suggestions.push(`Steer type '${type}' has a ${(rate * 100).toFixed(0)}% effectiveness rate; consider rewording or adding more specific guidance`);
+    }
+
+    // Track top patterns
+    if (stats.total >= 3) {
+      topPatterns.push({ pattern: type, effectiveness: rate, sampleSize: stats.total });
+    }
+  }
+
+  const overall = totalSteers > 0 ? totalEffective / totalSteers : 0;
+
+  // Sort top patterns by effectiveness
+  topPatterns.sort((a, b) => b.effectiveness - a.effectiveness);
+
+  return { overall, byType, suggestions, topPatterns: topPatterns.slice(0, 5) };
+}

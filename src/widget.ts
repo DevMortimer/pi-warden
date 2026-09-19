@@ -8,6 +8,7 @@ import type { RunawayVerdict } from "./runaway.js";
 import type { StuckVerdict } from "./stuck.js";
 
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
+export type WidgetBarMode = "stack" | "live";
 
 /** Palette shared by the status line and the trace sidebar: one place decides what a verdict looks like. */
 export interface ThemeLike { fg(color: string, text: string): string; bold(text: string): string }
@@ -33,6 +34,7 @@ const SEVERITY: Record<string, number> = { warning: 1, error: 2 };
 export interface WidgetConfig {
   enabled: boolean;
   placement: WidgetPlacement;
+  barMode: WidgetBarMode;
   /** Keyboard shortcut that toggles the trace sidebar; empty string disables it. */
   shortcut: string;
   /** Sidebar width: a percentage string such as "40%" or a column count. */
@@ -50,6 +52,7 @@ export interface WidgetConfig {
 }
 
 export const DEFAULT_TEMPLATES = {
+  // --- Data style (current): pipe-separated tokens, label · value pairs ---
   action: "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop: {slop} · patterns: {patterns} · {flags} · {level}",
   stuck: "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
   done: "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
@@ -61,8 +64,218 @@ export const DEFAULT_TEMPLATES = {
   subagent: "warden · subagent · {agent} · {kind} · {wake} · {status}",
 } as const;
 
+/** Sentence-style templates: natural language, no " · " separators between semantic groups. */
+export const SENTENCE_TEMPLATES = {
+  // --- Action: 24 variants covering level × context combinations ---
+  action: {
+    // ALLOW variants
+    allow_default: "warden allowed {tool} action — {scope}",
+    allow_safe: "warden allowed {tool} action — low risk",
+    allow_read_only: "warden allowed {tool} action — read-only operation",
+    allow_with_context: "warden allowed {tool} action — {scope}, irreversibility {irreversible}",
+    allow_off_task: "warden allowed {tool} action — off-task but below threshold ({offTask})",
+    allow_intent_mismatch: "warden allowed {tool} action — plan mismatch ({intent}) but not blocking",
+    allow_slop: "warden allowed {tool} action — slop detected ({slop})", 
+    allow_patterns: "warden allowed {tool} action — patterns matched ({patterns})",
+    allow_approved: "warden allowed {tool} action — approved by user",
+    allow_typesafe_error: "warden allowed {tool} action — TypeSafe unavailable, pattern checks only",
+    // WARN variants
+    warn_off_task: "warden warned about {tool} action — off-task risk ({offTask})",
+    warn_irreversible: "warden warned about {tool} action — high irreversibility ({irreversible})",
+    warn_intent: "warden warned about {tool} action — differs from stated plan",
+    warn_slop: "warden warned about {tool} action — code slop detected ({slop})",
+    warn_patterns: "warden warned about {tool} action — security patterns matched ({patterns})",
+    warn_visible: "warden warned about {tool} action — visible outside working tree",
+    // HOLD variants
+    hold_irreversible: "warden held {tool} action — irreversibility {irreversible} exceeds threshold",
+    hold_dangerous: "warden held {tool} action — destructive pattern detected ({patterns})",
+    hold_deny: "warden blocked {tool} action — deny rule matched ({patterns})",
+    // Fallback
+    default: "warden {level}ed {tool} action",
+  },
+  // --- Stuck: 8 variants ---
+  stuck: {
+    stuck_repeat: "warden detected stuck loop — {failures} failures, same strategy ({sameStrategy})",
+    stuck_churn: "warden detected stuck loop — {failures} failures, churning approaches",
+    stuck_no_progress: "warden detected stuck loop — {failures} failures, no progress ({progress})",
+    stuck_repeat_successful: "warden detected repeated success — {failures} identical results, consider if the task is done",
+    stuck_typesafe_error: "warden stuck check unavailable — TypeSafe error",
+    stuck_recovering: "warden detected stuck loop — {failures} failures, now recovering",
+    ok: "warden checked stuck — no loop detected ({failures} failures, approach change {approachChange})",
+    default: "warden {status} — {failures} failures",
+  },
+  // --- Done: 10 variants ---
+  done: {
+    unverified: "warden flagged done claim — {checksPassed}/{checks} checks passed, {changes} changes, not verified",
+    false_claim: "warden flagged false done claim — {checksPassed}/{checks} checks failed",
+    ok: "warden confirmed done — {checksPassed}/{checks} checks passed, {changes} changes",
+    ok_all_passed: "warden confirmed done — all {checks} checks passed",
+    partial: "warden flagged done — {checksPassed}/{checks} checks passed, needs attention",
+    no_checks: "warden flagged done claim — no verification checks run",
+    typesafe_error: "warden done check unavailable — TypeSafe error",
+    unverified_nudged: "warden flagged done claim — agent asked to verify ({checksPassed}/{checks} passed)",
+    false_claim_nudged: "warden flagged false claim — agent asked to recheck",
+    default: "warden done check — {outcome}",
+  },
+  // --- Prose: 8 variants ---
+  prose: {
+    nudged: "warden nudged prose — {status} in recent replies",
+    wordy: "warden flagged prose — wordy ({wordy})",
+    cliches: "warden flagged prose — clichés detected ({cliches})",
+    jargon: "warden flagged prose — jargon detected ({jargon})",
+    multiple: "warden flagged prose — {status}",
+    ok: "warden checked prose — all clear",
+    typesafe_error: "warden prose check unavailable — TypeSafe error",
+    default: "warden prose — {status}",
+  },
+  // --- Security: 6 variants ---
+  security: {
+    injection: "warden flagged security — injection risk in {tool} output",
+    exfiltration: "warden flagged security — possible credentials in {tool} output",
+    both: "warden flagged security — injection and exfiltration risk in {tool} output",
+    suspicious: "warden flagged security — suspicious content in {tool} output",
+    ok: "warden checked {tool} output — no security issues",
+    default: "warden security — {tool}",
+  },
+  // --- Context: 5 variants ---
+  context: {
+    compressed: "warden compressed {tool} output — kept {retention}, saved {bytesSaved} bytes",
+    recalled: "warden recalled full {tool} output — agent needed the original",
+    kept: "warden kept {tool} output — {retention}",
+    large: "warden compressed {tool} output — {bytesSaved} bytes saved",
+    default: "warden context — {tool}, {retention}",
+  },
+  // --- Runaway: 4 variants ---
+  runaway: {
+    stopped: "warden stopped runaway {kind} — repeated {count}× ({chars} chars)",
+    stopped_recovering: "warden stopped runaway {kind} — repeated {count}×, agent recovering",
+    detected: "warden detected runaway {kind} — {count}× repetition",
+    default: "warden runaway — {kind}",
+  },
+  // --- Rules: 6 variants ---
+  rules: {
+    violations: "warden flagged rules — {violations} in {tool} {path}",
+    violation_single: "warden flagged rule — {violations}",
+    none: "warden checked rules — no violations in {tool} {path}",
+    skipped: "warden rules — skipped ({reasons})",
+    typesafe_error: "warden rules check unavailable — TypeSafe error",
+    default: "warden rules — {tool}",
+  },
+  // --- Subagent: 4 variants ---
+  subagent: {
+    wake: "warden woke for subagent report — {agent}, {kind}",
+    silent: "warden ignored subagent report — {agent}, {kind}",
+    appended: "warden appended subagent report — {agent}",
+    default: "warden subagent — {agent}",
+  },
+} as const;
+
+/** Pick the best sentence template for a verdict. Falls back to the data-style template. */
+export function pickSentenceTemplate(guard: string, tokens: Tokens): string {
+  const variants = SENTENCE_TEMPLATES[guard as keyof typeof SENTENCE_TEMPLATES] as Record<string, string> | undefined;
+  if (!variants) return DEFAULT_TEMPLATES[guard as keyof typeof DEFAULT_TEMPLATES] ?? "";
+  const level = tokens.level ?? tokens.status ?? "";
+  const tool = tokens.tool ?? "";
+  const has = (key: string) => tokens[key] && tokens[key] !== "none" && tokens[key] !== "0.00";
+  // Guard-specific selection logic
+  if (guard === "action") {
+    if (tokens.flags?.includes("user approved")) return variants.allow_approved!;
+    if (tokens.flags?.includes("typesafe error")) return variants.allow_typesafe_error!;
+    if (level === "allow" || level === "ok") {
+      if (has("patterns")) return variants.allow_patterns!;
+      if (tokens.slop && tokens.slop !== "none") return variants.allow_slop!;
+      if (tokens.flags?.includes("off task")) return variants.allow_off_task!;
+      if (tokens.flags?.includes("off plan")) return variants.allow_intent_mismatch!;
+      if (tokens.flags?.includes("read-only")) return variants.allow_read_only!;
+      if (tokens.irreversible && Number(tokens.irreversible) < 0.3) return variants.allow_safe!;
+      if (tokens.scope) return variants.allow_with_context!;
+      return variants.allow_default!;
+    }
+    if (level === "warn") {
+      if (has("slop") && tokens.slop !== "none") return variants.warn_slop!;
+      if (has("patterns")) return variants.warn_patterns!;
+      if (tokens.intent && Number(tokens.intent) > 0.5) return variants.warn_intent!;
+      if (tokens.visible && Number(tokens.visible) > 0.5) return variants.warn_visible!;
+      if (tokens.offTask && Number(tokens.offTask) > 0.5) return variants.warn_off_task!;
+      if (tokens.irreversible && Number(tokens.irreversible) > 0.5) return variants.warn_irreversible!;
+      return variants.warn_irreversible!;
+    }
+    if (level === "confirm" || level === "deny") {
+      if (level === "deny") return variants.hold_deny!;
+      if (has("patterns")) return variants.hold_dangerous!;
+      return variants.hold_irreversible!;
+    }
+    return variants.default!;
+  }
+  if (guard === "stuck") {
+    if (level === "stuck" || level === "error") {
+      if (tokens.flags?.includes("successful repeat")) return variants.stuck_repeat_successful!;
+      if (tokens.flags?.includes("churn")) return variants.stuck_churn!;
+      if (tokens.flags?.includes("typesafe error")) return variants.stuck_typesafe_error!;
+      if (tokens.flags?.includes("exact repeat")) return variants.stuck_repeat!;
+      if (tokens.progress && Number(tokens.progress) < 0.2) return variants.stuck_no_progress!;
+      return variants.stuck_repeat!;
+    }
+    if (level === "ok") return variants.ok!;
+    return variants.default!;
+  }
+  if (guard === "done") {
+    if (level === "false claim") return variants.false_claim!;
+    if (level === "unverified") {
+      if (tokens.flags?.includes("typesafe error")) return variants.typesafe_error!;
+      if (tokens.flags?.includes("nudged")) return variants.unverified_nudged!;
+      return variants.unverified!;
+    }
+    if (level === "ok") {
+      if (tokens.checks && tokens.checksPassed && tokens.checks === tokens.checksPassed) return variants.ok_all_passed!;
+      return variants.ok!;
+    }
+    return variants.default!;
+  }
+  if (guard === "prose") {
+    if (level === "nudged") return variants.nudged!;
+    if (level === "ok") return variants.ok!;
+    if (tokens.flags?.includes("typesafe error")) return variants.typesafe_error!;
+    if (has("wordy") && has("cliches") && has("jargon")) return variants.multiple!;
+    if (has("wordy")) return variants.wordy!;
+    if (has("cliches")) return variants.cliches!;
+    if (has("jargon")) return variants.jargon!;
+    return variants.default!;
+  }
+  if (guard === "security") {
+    if (has("injection") && has("exfiltration")) return variants.both!;
+    if (has("injection")) return variants.injection!;
+    if (has("exfiltration")) return variants.exfiltration!;
+    if (level === "ok") return variants.ok!;
+    return variants.default!;
+  }
+  if (guard === "context") {
+    if (tokens.bytesSaved && Number(tokens.bytesSaved) > 0) return variants.compressed!;
+    if (tokens.retention === "all") return variants.kept!;
+    return variants.default!;
+  }
+  if (guard === "runaway") {
+    if (level === "stopped, recovering") return variants.stopped_recovering!;
+    if (level === "stopped") return variants.stopped!;
+    return variants.default!;
+  }
+  if (guard === "rules") {
+    if (level === "violation") return variants.violations!;
+    if (level === "skipped") return variants.skipped!;
+    if (level === "ok") return variants.none!;
+    return variants.default!;
+  }
+  if (guard === "subagent") {
+    if (tokens.wake === "true") return variants.wake!;
+    if (level === "appended silently") return variants.appended!;
+    if (level === "silent") return variants.silent!;
+    return variants.default!;
+  }
+  return DEFAULT_TEMPLATES[guard as keyof typeof DEFAULT_TEMPLATES] ?? "";
+}
+
 export function defaultWidgetConfig(): WidgetConfig {
-  return { enabled: true, placement: "aboveEditor", shortcut: "ctrl+shift+w", panelWidth: "40%", ...DEFAULT_TEMPLATES };
+  return { enabled: true, placement: "aboveEditor", barMode: "live", shortcut: "ctrl+shift+w", panelWidth: "40%", ...DEFAULT_TEMPLATES };
 }
 
 export type Tokens = Record<string, string | undefined>;

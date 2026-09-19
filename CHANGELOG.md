@@ -8,6 +8,29 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.27.0
+
+### Added
+
+- Sentence-style status bar templates (70+ across all 9 guards). `pickSentenceTemplate()` selects the best template from token context; zero LLM cost.
+- `widget.barMode: "live"` (default): status bar shows one sentence like *"warden allowed bash action — write to src/config.ts"* instead of data-style tokens.
+- `widget.barMode: "stack"`: the previous multi-guard data-style view.
+- Compact sidebar mode: trace entries default to 1–3 lines; press `d` to toggle detailed view.
+- Interactive config panel (`/warden config`): arrow-key navigation, Enter to toggle booleans or edit values, `s` to save.
+- `/warden config set <key.path> <value>` and `/warden config get <key.path>` for quick CLI edits.
+- `TraceEntry.tokens` field for live-mode re-rendering with sentence templates.
+- `formatVerdictTokens()` returns both rendered line and raw tokens.
+- `setNestedValue`, `getNestedValue`, `parseConfigValue` config helpers.
+
+### Changed
+
+- `widget.barMode` defaults to `"live"`.
+- Removed 7 exported-but-never-called functions and 3 non-functional blocks (proactive guidance, adaptive thresholds, intent prediction).
+
+### Fixed
+
+- `/warden config` now works before any guard activity fires (`lastUi` set on session start).
+
 ## 0.26.0
 
 ### Added

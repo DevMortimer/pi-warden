@@ -92,6 +92,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `subagent.threshold` | P(report needs the agent awake) that wakes it. Conservative on purpose. |
 | `subagent.cooldownMs` | At most one batched wake per window, so several children finishing together cost one interruption. |
 | `widget.*` | Status line placement, sidebar shortcut and width, per-guard text templates (below). |
+| `learning.adaptiveThresholds` | Learn from hold outcomes and suggest threshold adjustments via `/warden recommend`. | 
+| `learning.patternAnalysis` | Analyze hold patterns and generate recommendations. |
 | `steerVisible` | Show steer messages in the transcript instead of only in the trace panel. |
 | `notices` | Print the per-call warning notices (`warden · …`) in the transcript. Off by default; the widget, the trace panel, and `/warden trace` always show every event. |
 | `steerBudget` | Steers delivered to the agent per run before further non-critical ones are recorded in the trace only. Every delivered steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the final status. `0` disables the budget. Critical guards (stuck, done, runaway recovery, subagent wake) always deliver. |

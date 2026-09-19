@@ -141,3 +141,97 @@ test("querySmartHistory finds similar matches by irr proximity", () => {
   const history = querySmartHistory("bash", { irreversible: 0.7, reasons: ["irreversible 0.7"] }, "/sim/project");
   assert.ok(history.similar.length > 0, "finds similar matches within irr threshold");
 });
+
+// --- Tests for new learning features ---
+
+import { analyzeThresholds, analyzePatterns, generateRecommendations } from "../src/learning.js";
+
+test("analyzeThresholds returns empty for insufficient data", () => {
+  const adjustments = analyzeThresholds("project-alpha");
+  assert.equal(adjustments.length, 0, "no adjustments without enough data");
+});
+
+test("analyzeThresholds suggests lowering threshold when precision is low", () => {
+  const projectRoot = "project-beta";
+  // Create many holds that get approved (low precision)
+  for (let i = 0; i < 25; i++) {
+    const id = recordHold({
+      timestamp: Date.now() - i * 1000,
+      projectRoot,
+      tool: "bash",
+      commandPreview: "test-command",
+      scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+      level: "confirm",
+      held: true,
+      reasons: ["irreversible 0.5"],
+    });
+    recordOutcome(id, "approved");
+  }
+  const adjustments = analyzeThresholds(projectRoot);
+  assert.ok(adjustments.length > 0, "suggests adjustment for low precision");
+  const first = adjustments[0];
+  assert.ok(first, "first adjustment exists");
+  assert.equal(first.guard, "action", "adjustment is for action guard");
+  assert.ok(first.suggestedThreshold < first.currentThreshold, "suggests lower threshold");
+});
+
+test("analyzePatterns returns empty for insufficient data", () => {
+  const insights = analyzePatterns("project-gamma");
+  assert.equal(insights.length, 0, "no insights without enough data");
+});
+
+test("generateRecommendations combines threshold and pattern insights", () => {
+  const projectRoot = "project-delta";
+  // Create some data
+  for (let i = 0; i < 10; i++) {
+    recordHold({
+      timestamp: Date.now() - i * 1000,
+      projectRoot,
+      tool: "bash",
+      commandPreview: "test-command",
+      scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+      level: "confirm",
+      held: true,
+      reasons: ["irreversible 0.5"],
+    });
+  }
+  const recommendations = generateRecommendations(projectRoot);
+  assert.ok(Array.isArray(recommendations), "returns an array");
+});
+
+// --- Tests for steer effectiveness report ---
+
+import { analyzeSteerEffectivenessReport } from "../src/learning.js";
+
+test("analyzeSteerEffectivenessReport returns empty for insufficient data", () => {
+  const report = analyzeSteerEffectivenessReport("project-nu");
+  assert.equal(report.overall, 0, "overall effectiveness is 0 for empty data");
+  assert.equal(Object.keys(report.byType).length, 0, "no steer types");
+  assert.equal(report.suggestions.length, 0, "no suggestions");
+  assert.equal(report.topPatterns.length, 0, "no top patterns");
+});
+
+test("analyzeSteerEffectivenessReport tracks effectiveness by type", () => {
+  const projectRoot = "project-xi";
+  // Create holds with different outcomes
+  for (let i = 0; i < 10; i++) {
+    const id = recordHold({
+      timestamp: Date.now() - i * 1000,
+      projectRoot,
+      tool: "bash",
+      commandPreview: "test-command",
+      scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+      level: "confirm",
+      held: true,
+      reasons: ["irreversible 0.5"],
+      agentReason: "irreversible action detected",
+    });
+    recordOutcome(id, "approved");
+  }
+  const report = analyzeSteerEffectivenessReport(projectRoot);
+  assert.ok(report.overall > 0, "overall effectiveness is positive");
+  assert.ok(Object.keys(report.byType).length > 0, "has steer types");
+  assert.ok(report.topPatterns.length > 0, "has top patterns");
+});
+
+

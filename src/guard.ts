@@ -1045,3 +1045,9 @@ export function steerReason(verdict: Verdict, options: { canApprove: boolean }):
 export function formatVerdict(verdict: Verdict, template: string = DEFAULT_TEMPLATES.action): string {
   return renderTemplate(template, actionTokens(verdict));
 }
+
+/** Render a verdict and return both the line and raw tokens, for live-mode re-rendering. */
+export function formatVerdictTokens(verdict: Verdict, template: string = DEFAULT_TEMPLATES.action): { line: string; tokens: Record<string, string | undefined> } {
+  const tokens = actionTokens(verdict);
+  return { line: renderTemplate(template, tokens), tokens };
+}

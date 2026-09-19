@@ -1,4 +1,4 @@
-export { evaluateAction, describeAction, describePlan, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, steerReason, intentSteer, offTaskSteer, steerFingerprint, SteerRepeatWindow, questions, intentQuestion, visibleQuestion, slopQuestions, approvalQuestion, securityQuestion, regretQuestions } from "./guard.js";
+export { evaluateAction, describeAction, describePlan, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, formatVerdictTokens, steerReason, intentSteer, offTaskSteer, steerFingerprint, SteerRepeatWindow, questions, intentQuestion, visibleQuestion, slopQuestions, approvalQuestion, securityQuestion, regretQuestions } from "./guard.js";
 export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, PreviousAction, ScannedCommand, ScopeLabel, Severity, Verdict } from "./guard.js";
 export { SLOP_SYMPTOMS, SLOP_LABELS } from "./guard.js";
 export { ActionGuard } from "./action-guard.js";
@@ -28,13 +28,15 @@ export { HoldLedger, HoldLog, holdLogPath, formatHolds, outcomeNote, regretsAt, 
 export type { CallOutcome, CallRecord, CallScores, HoldSnapshot, OutcomeVia } from "./holds.js";
 export type { ContextLedgerSnapshot, RecallKind } from "./saver.js";
 export type { ShapeResult } from "./shape.js";
-export { CONFIG_SCHEMA, defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, isRecallTool, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, PACKAGE_NAME } from "./config.js";
+export { CONFIG_SCHEMA, defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, isRecallTool, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, setNestedValue, getNestedValue, parseConfigValue, PACKAGE_NAME } from "./config.js";
 export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, RunawayConfig, NotifyConfig, SubagentConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
 export type { CommandView } from "./tools.js";
-export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, runawayTokens, rulesTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, TOKEN_NAMES } from "./widget.js";
-export type { WidgetConfig, WidgetPlacement, Tokens } from "./widget.js";
+export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, runawayTokens, rulesTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, SENTENCE_TEMPLATES, pickSentenceTemplate, TOKEN_NAMES } from "./widget.js";
+export type { WidgetConfig, WidgetPlacement, WidgetBarMode, Tokens } from "./widget.js";
 export { Trace, actionDetails, stuckDetails, doneDetails, proseDetails, runawayDetails, rulesDetails } from "./trace.js";
 export type { TraceEntry, GuardName } from "./trace.js";
 export { parseRules, condense, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, describeRuleSet, describeTarget, buildRulesRequest, ruleQuestion, evaluateRules, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, AGGREGATE_QUESTION, LOCATOR_QUESTION } from "./rules.js";
 export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef } from "./rules.js";
+export { initSchema, recordHold, recordOutcome as recordHoldOutcome, querySmartHistory, calculateSmartConfidence, shouldSkipHold, analyzeThresholds, analyzePatterns, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
+export type { HoldRecord, HoldScores, HoldLevel, HoldOutcome, HoldContext, SmartHistory, ConfidenceResult, SkipResult, ThresholdAdjustment, PatternInsight, ContextRecommendation, SteerEffectivenessReport } from "./learning.js";

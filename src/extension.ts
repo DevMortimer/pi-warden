@@ -11,18 +11,18 @@ import { ActionGuard } from "./action-guard.js";
 import type { ToolCallRef } from "./action-guard.js";
 import { ArmingTracker, unparseableArmingRules } from "./arming.js";
 import * as configModule from "./config.js";
-import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
+import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, PACKAGE_NAME, parseConfigValue, projectConfigPath, readUserConfig, setNestedValue, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, higher, inertPathRules, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import { evaluateAction, formatVerdict, formatVerdictTokens, higher, inertPathRules, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
-import { initSchema, recordHold, recordOutcome, toHoldRecord } from "./learning.js";
+import { initSchema, recordHold, recordOutcome, toHoldRecord, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
-import { compressOutput, duplicateNote, evaluateOutput, mergeOutput, outputKey, saveOutput, securityNotice } from "./output.js";
+import { compressOutput, duplicateNote, evaluateOutput, mergeOutput, outputKey, saveOutput, securityNotice, CompressionLearner, SessionCompressionTracker } from "./output.js";
 import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
@@ -32,7 +32,7 @@ import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
-import { openTracePanel } from "./panel.js";
+import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
@@ -40,7 +40,7 @@ import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from ".
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName, TraceEntry } from "./trace.js";
-import { DEFAULT_TEMPLATES, proseTokens, renderTemplate, statusWidget, TOKEN_NAMES } from "./widget.js";
+import { DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
 export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory. Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
@@ -236,6 +236,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
+  // Learns which compression strategies work best per tool, so the next call skips the judge when confident.
+  const compressionLearner = new CompressionLearner();
+  // Tracks session-level compression aggressiveness — later turns compress more.
+  const sessionCompression = new SessionCompressionTracker();
   // Secrets already announced this session, by fingerprint: the same key read twice earns one banner and one steer.
   const secretsSeen = new Set<string>();
   // Subagent report entries already triaged, by session entry id; the wake window outlives one scan.
@@ -312,7 +316,29 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!ctx.hasUI) return;
     lastUi = ctx.ui as unknown as PanelUi;
     if (!config.widget.enabled || widget.size === 0) { ctx.ui.setWidget(WIDGET, undefined); return; }
-    const entries = [...widget].map(([guard, line]) => ({ guard, line }));
+    let entries = [...widget].map(([guard, line]) => ({ guard, line }));
+    // In live mode: only show the most recent guard, re-rendered with sentence templates.
+    if (config.widget.barMode === "live" && entries.length > 0) {
+      const lastEntry = trace.entries().at(-1);
+      if (lastEntry?.tokens) {
+        const template = pickSentenceTemplate(lastEntry.guard, lastEntry.tokens);
+        const sentence = renderTemplate(template, lastEntry.tokens);
+        const chip = lastEntry.tokens.level ?? lastEntry.tokens.status;
+        ctx.ui.setWidget(WIDGET, (_tui, theme) => {
+          const color = LEVEL_COLOR[chip ?? ""] ?? "text";
+          const chipText = chip ? `${theme.bold(theme.fg(color as "text", chip.toUpperCase()))}  ` : "";
+          const guardText = theme.fg("muted", lastEntry.guard + " ");
+          const body = { render: (width: number) => [chipText + guardText + sentence], invalidate: () => {} };
+          return MouseRegion ? new MouseRegion(body, event => {
+            if (event.type !== "click" || event.button !== "left") return undefined;
+            togglePanel(lastUi, config);
+            return { handled: true };
+          }) : body;
+        }, { placement: config.widget.placement });
+        return;
+      }
+      entries = [entries.at(-1)!];
+    }
     // A custom component so the lines wrap to the pane and a click (fullscreen mode) opens the trace panel.
     // When the host TUI lacks MouseRegion (e.g. omp 18.2.5), the extension still loads — the widget
     // renders the same text, but a click does nothing. A missing named import is a link-time error
@@ -326,9 +352,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }) : body;
     }, { placement: config.widget.placement });
   };
-  const record = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig, guard: GuardName, line: string, details: string[]): TraceEntry => {
+  const record = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig, guard: GuardName, line: string, details: string[], tokens?: Record<string, string | undefined>): TraceEntry => {
     widget.set(guard, line);
-    const entry: TraceEntry = { at: Date.now(), guard, line, details };
+    const entry: TraceEntry = { at: Date.now(), guard, line, details, tokens };
     trace.push(entry);
     paint(ctx, config);
     return entry;
@@ -425,6 +451,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   };
 
   pi.on("session_start", async (_event, ctx) => {
+    if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
     client = undefined;
     budgetExhausted = false;
     stats = freshStats();
@@ -442,6 +469,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     doneNudged = false;
     prose.reset();
     ledger.reset();
+    compressionLearner.reset();
+    sessionCompression.reset();
     secretsSeen.clear();
     subagentSeen.clear();
     wakePolicy.reset();
@@ -461,6 +490,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // A new user prompt starts a new attempt history, a new steer budget, and a new restatement window; answering the
   // user is never a restatement.
   pi.on("before_agent_start", async (event, ctx) => {
+    if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
     const config = configFor(ctx);
     attempts = new AttemptWindow(config.stuck.window);
     doneNudged = false;
@@ -510,6 +540,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Every turn that runs after a compression is a turn that did not carry the removed text.
   pi.on("turn_end", async () => {
     ledger.turnEnd();
+    sessionCompression.turnEnd();
     actionGuard.turnEnd();
     rulesGuard.turnEnd();
   });
@@ -524,7 +555,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (storedPath) {
       const kind = classifyRecall(event.toolName, event.input, storedPath);
       const recalled = ledger.noteAccess(serializedInput, kind);
-      if (recalled) record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: `full output recalled (${kind})` }), [`the agent went back to ${recalled} (${kind === "full" ? "whole-file read" : "scoped access"})`, formatLedger(ledger.snapshot())]);
+      if (recalled) {
+        compressionLearner.noteRecall(event.toolName);
+        record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: `full output recalled (${kind})` }), [`the agent went back to ${recalled} (${kind === "full" ? "whole-file read" : "scoped access"})`, formatLedger(ledger.snapshot())]);
+      }
     }
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
@@ -619,7 +653,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
     // SAFETY: verdict.source is a string union; the read-only → pattern rewrite above may have narrowed it in TS's view,
     // but the field is still one of the source values at runtime when no armed hits fired.
-    const entry = (verdict.source as string) !== "read-only" ? record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) })) : undefined;
+    const actionFmt = formatVerdictTokens(verdict, config.widget.action);
+    const entry = (verdict.source as string) !== "read-only" ? record(ctx, config, "action", actionFmt.line, actionDetails(verdict, { mode, ...(told ? { told } : {}) }), actionFmt.tokens) : undefined;
     // What happens to this call is the label for its scores; a decision made in the dialog lands at once, a steer-mode hold waits for the user.
     const track = (held: boolean, outcome?: CallOutcome, via?: OutcomeVia) => {
       if (!entry) return;
@@ -783,14 +818,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         blockVerdicts.push(await evaluateOutput(event.toolName, blockText, latestUserPrompt(ctx), {
           security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
           signal: ctx.signal, compressible: true, taskContext: recentTaskContext(ctx),
-        }));
+        }, compressionLearner));
       }
       output = mergeOutput(blockVerdicts);
     } else {
       output = await evaluateOutput(event.toolName, text, latestUserPrompt(ctx), {
         security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
         signal: ctx.signal, compressible: true, taskContext: recentTaskContext(ctx),
-      });
+      }, compressionLearner);
     }
     if (ctx.signal?.aborted) return;
     if (output.error) noteError(ctx, output.error, output.errorCode);
@@ -867,6 +902,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
               replacement = body;
               ledger.record(path, bytesSaved);
               storedPath = path;
+              compressionLearner.record(event.toolName, verdict.retention, verdict.format, false);
               record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: verdict.retention, bytesSaved: String(bytesSaved) }), [
                 `text block ${textIndex} of ${blockVerdicts.length}: retention ${verdict.retention}; confidence ${verdict.confidence?.toFixed(2)}; format ${verdict.format ?? "generic"}${verdict.formatConfidence === undefined ? "" : ` (${verdict.formatConfidence.toFixed(2)})`}; saved ${bytesSaved} bytes; full output: ${path}`,
                 formatLedger(ledger.snapshot()),
@@ -890,6 +926,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
             ledger.record(path, bytesSaved);
             storedPath = path;
+            compressionLearner.record(event.toolName, output.retention, output.format, false);
             record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
               `retention: ${output.retention}; confidence ${output.confidence?.toFixed(2)}; format ${output.format ?? "generic"}${output.formatConfidence === undefined ? "" : ` (${output.formatConfidence.toFixed(2)})`}; ${output.model}; ${output.elapsedMs} ms`,
               `saved ${bytesSaved} bytes; full output: ${path}`,
@@ -1023,7 +1060,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
 
   const actions = ["status", "enable", "disable", "mode", "config", "test", "trace"];
   pi.registerCommand("warden", {
-    description: "pi-warden status, TypeSafe consent, steer/confirm/advise mode, config editor, trace panel, and a synthetic guard test",
+    description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
       return matches.length ? matches : null;
@@ -1047,6 +1084,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             formatSteers(stats),
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),
+            ...(config.learning.patternAnalysis ? [`Learning: ${generateRecommendations(ctx.cwd).length} recommendations, steer effectiveness ${Math.round(analyzeSteerEffectivenessReport(ctx.cwd).overall * 100)}% (use /warden recommend for details)`] : []),
             `${formatHolds(holds.snapshot(), config.action.feedbackLog ? holdLog?.path : undefined)}${holdLog?.lastFailure ? ` Log write failed: ${holdLog.lastFailure}.` : ""}`,
             `Rules: ${config.rules.enabled ? `${rulesGuard.describe(ctx.cwd, config.rules)}${Object.keys(config.rules.sensitivePaths).length ? `; ${Object.keys(config.rules.sensitivePaths).length} sensitive path${Object.keys(config.rules.sensitivePaths).length === 1 ? "" : "s"}` : ""}` : "off"}.`,
             ...(config.action.armingRules.length > 0 ? [`Arming: ${arming.statusLine() || "no rules armed"}.`] : []),
@@ -1064,6 +1102,54 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             return;
           }
           togglePanel(ctx.ui as unknown as PanelUi, config);
+          return;
+        }
+        if (action === "recommend") {
+          // Learning-driven recommendations based on hold history
+          const recommendations = generateRecommendations(ctx.cwd);
+          const steerReport = analyzeSteerEffectivenessReport(ctx.cwd);
+          
+          const lines: string[] = [];
+          lines.push("pi-warden learning recommendations:");
+          
+          if (recommendations.length === 0 && steerReport.suggestions.length === 0) {
+            lines.push(`No recommendations yet. Need more hold data (current: ${holds.snapshot().holds} holds).`);
+          } else {
+            if (recommendations.length > 0) {
+              lines.push("");
+              lines.push("Threshold & pattern recommendations:");
+              for (const rec of recommendations.slice(0, 5)) {
+                lines.push(`  [${rec.priority}] ${rec.message}`);
+              }
+            }
+            
+            if (steerReport.suggestions.length > 0) {
+              lines.push("");
+              lines.push("Steer effectiveness:");
+              lines.push(`  Overall effectiveness: ${(steerReport.overall * 100).toFixed(0)}%`);
+              for (const suggestion of steerReport.suggestions.slice(0, 3)) {
+                lines.push(`  ${suggestion}`);
+              }
+            }
+            
+            if (Object.keys(steerReport.byType).length > 0) {
+              lines.push("");
+              lines.push("Effectiveness by type:");
+              for (const [type, stats] of Object.entries(steerReport.byType)) {
+                lines.push(`  ${type}: ${(stats.rate * 100).toFixed(0)}% (${stats.effective}/${stats.total})`);
+              }
+            }
+            
+            if (steerReport.topPatterns.length > 0) {
+              lines.push("");
+              lines.push("Top performing patterns:");
+              for (const pattern of steerReport.topPatterns.slice(0, 3)) {
+                lines.push(`  ${pattern.pattern}: ${(pattern.effectiveness * 100).toFixed(0)}% effectiveness (${pattern.sampleSize} samples)`);
+              }
+            }
+          }
+          
+          report(lines.join("\n"));
           return;
         }
         if (action === "enable") {
@@ -1090,18 +1176,30 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "config") {
-          if (!ctx.hasUI) { report(`Edit ${userConfigPath()} directly. Defaults: ${JSON.stringify(defaultConfig())}`); return; }
-          const current = readUserConfig();
-          const seed = Object.keys(current).length ? current : { ...defaultConfig(), typesafe: config.typesafe };
-          const text = await ctx.ui.editor(`pi-warden config · ${userConfigPath()}`, JSON.stringify(seed, null, 2));
-          if (text === undefined) return;
-          let parsed: unknown;
-          try { parsed = JSON.parse(text); } catch { report("Invalid JSON; nothing was saved.", "error"); return; }
-          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) { report("The config must be a JSON object; nothing was saved.", "error"); return; }
-          const path = writeUserConfig(parsed as Record<string, unknown>);
-          const effective = applyUserOverrides(defaultConfig(), parsed);
-          client = undefined;
-          report(`Saved ${path}. Effective: guard ${effective.enabled && effective.action.enabled ? "on" : "off"}, mode ${effective.mode}, TypeSafe ${effective.typesafe ? "on" : "off"}, tools ${effective.action.tools.join(", ")}, irreversible hold ≥ ${effective.action.irreversible.confirm}, off-task steer ≥ ${effective.action.offTask.steer}, stuck ${effective.stuck.enabled ? "on" : "off"}, done-check ${effective.done.enabled ? "on" : "off"}, slop ${effective.slop.enabled ? "on" : "off"}.`);
+          if (argument && argument.startsWith("set ")) {
+            const rest = argument.slice(4).trim();
+            const spaceIndex = rest.indexOf(" ");
+            if (spaceIndex === -1) { report("Usage: /warden config set <key> <value>", "warning"); return; }
+            const keyPath = rest.slice(0, spaceIndex).trim();
+            const rawValue = rest.slice(spaceIndex + 1).trim();
+            const value = parseConfigValue(rawValue);
+            const current = readUserConfig();
+            const updated = setNestedValue(current as Record<string, unknown>, keyPath, value);
+            const savedPath = writeUserConfig(updated);
+            client = undefined;
+            report(`Saved ${keyPath} = ${JSON.stringify(value)}.`);
+            return;
+          }
+          if (argument && argument.startsWith("get ")) {
+            const keyPath = argument.slice(4).trim();
+            const current = readUserConfig();
+            const value = getNestedValue(current as Record<string, unknown>, keyPath);
+            const defaultValue = getNestedValue(defaultConfig() as unknown as Record<string, unknown>, keyPath);
+            report(value === undefined ? `${keyPath} not set (default: ${JSON.stringify(defaultValue)})` : `${keyPath} = ${JSON.stringify(value)}`);
+            return;
+          }
+          if (!ctx.hasUI || !lastUi) { report(`Edit ${userConfigPath()} directly. Use /warden config set <key> <value> for quick changes.`); return; }
+          openConfigPanel(lastUi, config, { width: config.widget.panelWidth });
           return;
         }
         if (action === "test") {
@@ -1111,7 +1209,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Clean up the demo directory" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge },
           );
-          record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode: activeMode(config, ctx.hasUI) }));
+          const fmt = formatVerdictTokens(verdict, config.widget.action);
+          record(ctx, config, "action", fmt.line, actionDetails(verdict, { mode: activeMode(config, ctx.hasUI) }), fmt.tokens);
           report(`${formatVerdict(verdict)}${verdict.reasons.length ? ` — ${verdict.reasons.join("; ")}` : ""}${judge ? "" : " (pattern checks only: TypeSafe judgments are not enabled or no key is configured)"}${verdict.error ? ` — ${verdict.error}` : ""}`);
           if (verdict.level === "confirm") {
             const mode = activeMode(config, ctx.hasUI);

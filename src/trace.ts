@@ -14,6 +14,8 @@ export interface TraceEntry {
   line: string;
   /** Redacted details: what was inspected, what Jev answered, what the agent was told. */
   details: string[];
+  /** Raw tokens for re-rendering in live mode with sentence templates. */
+  tokens?: Record<string, string | undefined> | undefined;
 }
 
 /** Session memory of guard decisions; the widget shows the latest line per guard, the panel shows the history. */

@@ -49,7 +49,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
     subagent: section("subagent", { ...off, wake: false, threshold: 1, cooldownMs: 0 }),
-    widget: section("widget", { ...off, placement: "aboveEditor", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
+    widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
+    learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1 }),
   };
   if (typeof config.slop.prose !== "object" || config.slop.prose === null) {
     missing.push("slop.prose");

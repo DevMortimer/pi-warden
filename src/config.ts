@@ -242,6 +242,17 @@ export function isRecallTool(value: unknown): value is RecallTool {
 
 export type WardenMode = "steer" | "confirm" | "advise";
 
+export interface LearningConfig {
+  /** Enable adaptive thresholds based on learning data. */
+  adaptiveThresholds: boolean;
+  /** Enable pattern analysis and recommendations. */
+  patternAnalysis: boolean;
+  /** Minimum number of holds before adaptive thresholds kick in. */
+  minHoldsForAdaptive: number;
+  /** How aggressively to adjust thresholds (0-1). Higher values mean faster adaptation. */
+  adaptationRate: number;
+}
+
 export interface WardenConfig {
   /** Master switch. false disables every guard, including offline pattern checks. */
   enabled: boolean;
@@ -280,6 +291,8 @@ export interface WardenConfig {
    * steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the final
    * status. 0 disables the budget. Critical guards (stuck, done, runaway, subagent wake) always deliver. */
   steerBudget: number;
+  /** Learning and adaptation settings. */
+  learning: LearningConfig;
 }
 
 export const PACKAGE_NAME = "pi-warden";
@@ -324,6 +337,7 @@ export function defaultConfig(): WardenConfig {
     steerVisible: false,
     notices: false,
     steerBudget: 3,
+    learning: { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1 },
   };
 }
 
@@ -626,6 +640,7 @@ function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
   return {
     enabled: boolean(raw.enabled, base.enabled),
     placement: raw.placement === "belowEditor" || raw.placement === "aboveEditor" ? raw.placement : base.placement,
+    barMode: raw.barMode === "live" || raw.barMode === "stack" ? raw.barMode : base.barMode,
     shortcut: typeof raw.shortcut === "string" ? raw.shortcut.trim() : base.shortcut,
     panelWidth: typeof raw.panelWidth === "number" && Number.isSafeInteger(raw.panelWidth) && raw.panelWidth >= 20 ? raw.panelWidth
       : typeof raw.panelWidth === "string" && /^[1-9]\d?%$/.test(raw.panelWidth.trim()) ? raw.panelWidth.trim() : base.panelWidth,
@@ -691,6 +706,17 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     steerVisible: boolean(raw.steerVisible, base.steerVisible),
     notices: boolean(raw.notices, base.notices),
     steerBudget: typeof raw.steerBudget === "number" && Number.isInteger(raw.steerBudget) && raw.steerBudget >= 0 ? raw.steerBudget : base.steerBudget,
+    learning: applyLearning(base.learning, raw.learning),
+  };
+}
+
+function applyLearning(base: LearningConfig, raw: unknown): LearningConfig {
+  if (!isObject(raw)) return base;
+  return {
+    adaptiveThresholds: boolean(raw.adaptiveThresholds, base.adaptiveThresholds),
+    patternAnalysis: boolean(raw.patternAnalysis, base.patternAnalysis),
+    minHoldsForAdaptive: Math.max(5, positiveInteger(raw.minHoldsForAdaptive, base.minHoldsForAdaptive)),
+    adaptationRate: Math.max(0, Math.min(1, probability(raw.adaptationRate, base.adaptationRate))),
   };
 }
 
@@ -730,4 +756,36 @@ export function writeUserConfig(raw: Json): string {
 /** Persists one top-level user setting without disturbing the rest of the file. */
 export function setUserSetting(key: "typesafe" | "enabled" | "mode", value: boolean | WardenMode): string {
   return writeUserConfig({ ...readUserConfig(), [key]: value });
+}
+
+export function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
+  const keys = path.split(".");
+  const result = { ...obj };
+  let current: Record<string, unknown> = result;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const key = keys[i]!;
+    current[key] = { ...(current[key] as Record<string, unknown> ?? {}) };
+    current = current[key] as Record<string, unknown>;
+  }
+  current[keys.at(-1)!] = value;
+  return result;
+}
+
+export function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
+  const keys = path.split(".");
+  let current: unknown = obj;
+  for (const key of keys) {
+    if (typeof current !== "object" || current === null) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+/** Coerce a CLI string into a JSON primitive so `/warden config set` stays ergonomic. */
+export function parseConfigValue(value: string): unknown {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (value === "null") return null;
+  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+  return value;
 }

@@ -9,3 +9,4 @@ coverage/
 .DS_Store
 docs/preview.html
 pi-warden.md
+AGENTS.md
