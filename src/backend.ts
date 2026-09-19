@@ -34,11 +34,9 @@ export function keyAvailable(
 
 /**
  * Build the options forwarded to `createTypeSafe`.
- * The `backend` field is only included when non-default so that older pi-typesafe
- * versions (which lack the field) silently ignore it. The caller must gate on
- * `keyAvailable` before calling `createTypeSafe`.
+ * The caller must gate on `keyAvailable` before calling `createTypeSafe`.
  */
-export function judgeOptions(config: { maxRequests: number; timeoutMs: number; typesafeBackend: JudgmentBackend }): TypeSafeOptions & { backend?: JudgmentBackend } {
+export function judgeOptions(config: { maxRequests: number; timeoutMs: number; typesafeBackend: JudgmentBackend }): TypeSafeOptions {
   return {
     maxRequests: config.maxRequests,
     timeoutMs: config.timeoutMs,
