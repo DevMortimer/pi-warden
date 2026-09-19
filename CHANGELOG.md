@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.29.2
+
 ### Added
 
 - GitHub Actions CI for pull requests, main pushes, version tags, and manual runs: workflow lint plus typecheck, offline tests, and build on Node 22.19.0, 24, and 26.
