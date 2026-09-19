@@ -106,3 +106,38 @@ test("shouldSkipHold never skips destructive patterns", () => {
   assert.equal(skip.skip, false, "never skips destructive patterns");
   assert.ok(skip.reason.includes("destructive"), "reason mentions destructive");
 });
+
+test("shouldSkipHold skips when confidence is high with enough exact approvals", () => {
+  const now = Date.now();
+  for (let i = 0; i < 3; i++) {
+    const id = recordHold({
+      timestamp: now - i * 1000,
+      projectRoot: "/skip/project",
+      tool: "bash",
+      commandPreview: "npm test",
+      scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+      level: "allow",
+      held: true,
+      reasons: ["irreversible 0.5"],
+    });
+    recordOutcome(id, "approved");
+  }
+  const skip = shouldSkipHold("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/skip/project");
+  assert.equal(skip.skip, true, "skips when confidence > 0.8 with >= 3 exact approvals");
+  assert.ok(skip.confidence > 0.8, "confidence exceeds threshold");
+});
+
+test("querySmartHistory finds similar matches by irr proximity", () => {
+  recordHold({
+    timestamp: Date.now(),
+    projectRoot: "/sim/project",
+    tool: "bash",
+    commandPreview: "rm -rf /tmp/test",
+    scores: { irreversible: 0.6, reasons: ["irreversible 0.6"] },
+    level: "allow",
+    held: true,
+    reasons: ["irreversible 0.6"],
+  });
+  const history = querySmartHistory("bash", { irreversible: 0.7, reasons: ["irreversible 0.7"] }, "/sim/project");
+  assert.ok(history.similar.length > 0, "finds similar matches within irr threshold");
+});

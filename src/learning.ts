@@ -5,6 +5,7 @@ import { createHash } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
 import { DatabaseSync } from "node:sqlite";
+import type { CallScores } from "./holds.js";
 
 let db: DatabaseSync | undefined;
 
@@ -15,14 +16,13 @@ export const HOLDS_SCHEMA = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp INTEGER NOT NULL,
     project_root TEXT NOT NULL,
-    session_id TEXT,
     tool TEXT NOT NULL,
     signature_hash TEXT NOT NULL,
     command_preview TEXT,
-    input_summary TEXT,
     task TEXT,
     plan TEXT,
     context_summary TEXT,
+    preceding_actions TEXT,
     scores TEXT NOT NULL,
     level TEXT NOT NULL,
     held INTEGER NOT NULL,
@@ -30,8 +30,7 @@ export const HOLDS_SCHEMA = `
     agent_reason TEXT,
     outcome TEXT,
     outcome_at INTEGER,
-    confidence REAL,
-    prediction TEXT
+    confidence REAL
   );
   CREATE INDEX IF NOT EXISTS idx_holds_project_signature ON holds(project_root, signature_hash);
   CREATE INDEX IF NOT EXISTS idx_holds_outcome ON holds(outcome);
@@ -57,33 +56,50 @@ function getDb(): DatabaseSync {
 }
 
 export function initSchema(): void {
-  try { getDb().exec(HOLDS_SCHEMA); } catch { /* fail open */ }
+  try {
+    const d = getDb();
+    d.exec(HOLDS_SCHEMA);
+    // Migrate: add columns that may be missing from older databases.
+    try { d.exec("ALTER TABLE holds ADD COLUMN preceding_actions TEXT"); } catch { /* column exists */ }
+  } catch { /* fail open */ }
 }
 
 // --- Types ---
 
 export interface HoldScores {
   irreversible: number;
+  /** Reason categories from the verdict, used for same-reason queries and destructive-pattern detection. */
   reasons: string[];
+}
+
+/** Enumerations for type safety over bare strings. */
+export type HoldLevel = "allow" | "deny" | "confirm";
+export type HoldOutcome = "approved" | "declined" | "replanned" | "accepted" | "regretted" | "pending";
+
+/** Context fields gathered at hold time, passed to toHoldRecord. */
+export interface HoldContext {
+  task?: string | undefined;
+  plan?: string | undefined;
+  contextSummary?: string | undefined;
+  precedingActions?: string | undefined;
+  agentReason?: string | undefined;
 }
 
 export interface HoldRecord {
   timestamp: number;
   projectRoot: string;
-  sessionId?: string;
   tool: string;
   commandPreview: string;
-  inputSummary?: string;
   task?: string;
   plan?: string;
   contextSummary?: string;
+  precedingActions?: string;
   scores: HoldScores;
-  level: string;
+  level: HoldLevel;
   held: boolean;
   reasons: string[];
   agentReason?: string;
   confidence?: number;
-  prediction?: string;
 }
 
 export interface SmartHistory {
@@ -114,14 +130,17 @@ export function signatureHash(tool: string, scores: HoldScores): string {
   return createHash("sha256").update(tool + ":" + JSON.stringify(scores)).digest("hex").slice(0, 16);
 }
 
-/** Score a batch of rows with time-decayed weights. Returns { score, totalWeight }. */
+/** Score a batch of rows with time-decayed weights. Returns { score, totalWeight }.
+ *  recent holds (< 1 week) weight fully, medium-age (< 4 weeks) at 70%, older at 40%.
+ *  Approved outcomes add the weight; replanned subtract half (user changed their mind). */
 function scoreRows(rows: Record<string, unknown>[], weight: number): { score: number; totalWeight: number } {
   const now = Date.now();
   const week = 7 * 24 * 60 * 60 * 1000;
   let score = 0;
   let totalWeight = 0;
   for (const row of rows) {
-    const age = now - (row.timestamp as number);
+    if (typeof row.timestamp !== "number" || typeof row.outcome !== "string") continue;
+    const age = now - row.timestamp;
     const ageWeight = age < week ? 1.0 : age < 4 * week ? 0.7 : 0.4;
     const w = weight * ageWeight;
     totalWeight += w;
@@ -133,28 +152,26 @@ function scoreRows(rows: Record<string, unknown>[], weight: number): { score: nu
 
 /** Build HoldRecord from held call data. Centralizes the field mapping. */
 export function toHoldRecord(
-  item: { at: number; tool: string; level: string; reasons: string[]; scores?: Record<string, unknown> },
+  item: { at: number; tool: string; level: string; reasons: string[]; scores?: CallScores | undefined },
   projectRoot: string,
-  task?: string,
-  plan?: string,
-  contextSummary?: string,
-  agentReason?: string,
+  ctx?: HoldContext,
 ): HoldRecord {
-  const raw = item.scores ?? {};
+  const raw = item.scores;
   const result: HoldRecord = {
     timestamp: item.at,
     projectRoot,
     tool: item.tool,
     commandPreview: item.tool,
-    scores: { irreversible: (raw.irreversible as number) ?? 0, reasons: (raw.reasons as string[]) ?? [] },
-    level: item.level,
+    scores: { irreversible: raw?.irreversible ?? 0, reasons: item.reasons },
+    level: item.level as HoldLevel,
     held: true,
     reasons: item.reasons,
   };
-  if (task) result.task = task;
-  if (plan) result.plan = plan;
-  if (contextSummary) result.contextSummary = contextSummary;
-  if (agentReason) result.agentReason = agentReason;
+  if (ctx?.task) result.task = ctx.task;
+  if (ctx?.plan) result.plan = ctx.plan;
+  if (ctx?.contextSummary) result.contextSummary = ctx.contextSummary;
+  if (ctx?.precedingActions) result.precedingActions = ctx.precedingActions;
+  if (ctx?.agentReason) result.agentReason = ctx.agentReason;
   return result;
 }
 
@@ -165,19 +182,19 @@ export function recordHold(hold: HoldRecord): number {
   const hash = signatureHash(hold.tool, hold.scores);
   const stmt = d.prepare(`
     INSERT INTO holds
-    (timestamp, project_root, session_id, tool, signature_hash, command_preview,
-     input_summary, task, plan, context_summary,
-     scores, level, held, reasons, agent_reason, confidence, prediction)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (timestamp, project_root, tool, signature_hash, command_preview,
+     task, plan, context_summary, preceding_actions,
+     scores, level, held, reasons, agent_reason, confidence)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
-    hold.timestamp, hold.projectRoot, hold.sessionId ?? null,
+    hold.timestamp, hold.projectRoot,
     hold.tool, hash, hold.commandPreview,
-    hold.inputSummary ?? null, hold.task ?? null, hold.plan ?? null,
-    hold.contextSummary ?? null,
+    hold.task ?? null, hold.plan ?? null,
+    hold.contextSummary ?? null, hold.precedingActions ?? null,
     JSON.stringify(hold.scores), hold.level, hold.held ? 1 : 0,
     JSON.stringify(hold.reasons), hold.agentReason ?? null,
-    hold.confidence ?? null, hold.prediction ?? null,
+    hold.confidence ?? null,
   );
   const row = d.prepare("SELECT last_insert_rowid() as id").get() as { id: number };
   return row.id;
@@ -224,6 +241,9 @@ export function calculateSmartConfidence(history: SmartHistory): ConfidenceResul
   const totalWeight = exact.totalWeight + similar.totalWeight + sameReason.totalWeight;
   if (totalWeight === 0) return { confidence: 0, reason: "no history", exactCount: 0, similarCount: 0, sameReasonCount: 0 };
 
+  // Normalize the weighted approval ratio to [0, 1].
+  // Raw ratio range is [-0.5, 1] (all-replanned to all-approved);
+  // the (x+1)/2 transform maps that to [0.25, 1], clamped to [0, 1].
   const confidence = Math.max(0, Math.min(1, ((exact.score + similar.score + sameReason.score) / totalWeight + 1) / 2));
   return {
     confidence,

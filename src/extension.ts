@@ -217,7 +217,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
 
   function summarizeContext(context?: readonly { role: string; text: string }[]): string | undefined {
     if (!context?.length) return undefined;
-    return context.slice(-4).map(m => m.role + ": " + m.text.slice(0, 200)).join("\n");
+    return context.slice(-8).map(m => m.role + ": " + redact(m.text.slice(0, 200))).join("\n");
   }
   const traceOf = new WeakMap<CallRecord, TraceEntry>();
   let holdLog: HoldLog | undefined;
@@ -543,7 +543,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       noteOutcomes(config, outcome ? [item] : []);
       // Record to SQLite for learning
       if (held) {
-        const id = recordHold(toHoldRecord({ at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores as unknown as Record<string, unknown> }, ctx.cwd, task, verdict.plan, ctxSummary, steerReason(verdict, { canApprove: judge !== undefined })));
+        const id = recordHold(toHoldRecord(
+          { at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores },
+          ctx.cwd,
+          { task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: steerReason(verdict, { canApprove: judge !== undefined }) },
+        ));
         learningIds.set(item.id, id);
         if (outcome) recordOutcome(id, outcome);
         pruneLearningIds();

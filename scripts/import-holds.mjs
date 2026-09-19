@@ -6,40 +6,14 @@ import { join } from "path";
 import { homedir } from "os";
 import { createHash } from "crypto";
 import { DatabaseSync } from "node:sqlite";
+import { HOLDS_SCHEMA } from "../dist/learning.js";
 
 const holdsDir = join(homedir(), ".pi", "agent", "pi-warden", "holds");
 const dbPath = join(homedir(), ".pi", "agent", "pi-warden", "holds.db");
 const db = new DatabaseSync(dbPath);
 
-// Shared schema from src/learning.ts
 db.exec("PRAGMA journal_mode = WAL");
-db.exec(`
-  CREATE TABLE IF NOT EXISTS holds (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp INTEGER NOT NULL,
-    project_root TEXT NOT NULL,
-    session_id TEXT,
-    tool TEXT NOT NULL,
-    signature_hash TEXT NOT NULL,
-    command_preview TEXT,
-    input_summary TEXT,
-    task TEXT,
-    plan TEXT,
-    context_summary TEXT,
-    scores TEXT NOT NULL,
-    level TEXT NOT NULL,
-    held INTEGER NOT NULL,
-    reasons TEXT,
-    agent_reason TEXT,
-    outcome TEXT,
-    outcome_at INTEGER,
-    confidence REAL,
-    prediction TEXT
-  );
-  CREATE INDEX IF NOT EXISTS idx_holds_project_signature ON holds(project_root, signature_hash);
-  CREATE INDEX IF NOT EXISTS idx_holds_outcome ON holds(outcome);
-  CREATE INDEX IF NOT EXISTS idx_holds_timestamp ON holds(timestamp);
-`);
+db.exec(HOLDS_SCHEMA);
 
 const stmt = db.prepare(`
   INSERT OR IGNORE INTO holds
