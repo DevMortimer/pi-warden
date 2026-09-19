@@ -8,6 +8,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.29.0
+
+### Changed
+
+- Off-task is now gated on the categorical scope answer instead of the score alone (AUC 0.51). `expected_step` vetoes off-task entirely; `unrelated` always warns; `plausible_side_step` warns trace-only. All off-task steers are trace-only until AUC clears 0.51.
+- Ledger records now include a `callExcerpt` (tool + path) for auditing off-task and intent-mismatch warns.
+
 ## 0.28.4
 
 ### Fixed
