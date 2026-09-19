@@ -3,19 +3,23 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
-import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
+import type { ActionGuardConfig, CommandRule, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { commandOf } from "./tools.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
-export type Level = "allow" | "warn" | "confirm";
-export type Severity = "destructive" | "risky" | "sensitive";
+export type Level = "allow" | "warn" | "confirm" | "deny";
+export type Severity = "destructive" | "risky" | "sensitive" | "deny";
 
 export interface PatternHit {
   id: string;
   severity: Severity;
   /** Short human label; never contains the matched text. */
   label: string;
+  /** For user-defined confirm rules: dialog prompts the user, hold uses steer semantics. */
+  action?: "dialog" | "hold";
+  /** Optional user-defined message, shown instead of the derived label. */
+  message?: string;
 }
 
 export interface ActionInput {
@@ -141,7 +145,7 @@ export interface EvaluateOptions {
   questions?: Questions | undefined;
 }
 
-const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2 };
+const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2, deny: 3 };
 const higher = (a: Level, b: Level): Level => (LEVEL_RANK[a] >= LEVEL_RANK[b] ? a : b);
 
 const TASK_LIMIT = 1500;
@@ -336,15 +340,69 @@ function isInside(target: string, cwd: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?: string): PatternHit[] {
+interface CompiledUserRule extends Rule { message?: string; action?: "dialog" | "hold"; }
+
+/** Compiled user rules and exempt ids; passed from the config so matchPatterns stays pure. */
+export interface PatternOptions {
+  commandRules?: readonly CommandRule[];
+  commandDenyRules?: readonly CommandRule[];
+  exemptRules?: readonly string[];
+}
+
+/** Every id exemptRules can legitimately name: the built-in shell rules, the rm-classifier's derived ids, and the
+ * sensitive-path id. Unknown ids (a typo, or a rule that never existed) are inert; this list lets the surface be
+ * reported once instead of discovered when the rule the user meant to silence keeps firing. */
+export const EXEMPTABLE_IDS: readonly string[] = [
+  ...SHELL_RULES.map(rule => rule.id),
+  "rm-recursive",
+  "rm-rf",
+  "rm-recursive-dangerous-target",
+  "sensitive-path",
+];
+
+/** Exempt ids that name neither a built-in, a classifier id, nor one of the user's own rules: inert, but
+ * almost certainly not what the user meant. */
+export function unknownExemptIds(exemptRules: readonly string[], commandRules: readonly CommandRule[] = [], commandDenyRules: readonly CommandRule[] = []): string[] {
+  const known = new Set(EXEMPTABLE_IDS);
+  for (const rule of commandRules) known.add(rule.id);
+  for (const rule of commandDenyRules) known.add(rule.id);
+  return exemptRules.filter(id => !known.has(id));
+}
+
+function compileUserRule(raw: CommandRule, defaultSeverity: Severity): CompiledUserRule | undefined {
+  try {
+    const flags = raw.caseSensitive ? "" : "i";
+    return { id: raw.id, severity: defaultSeverity, label: raw.message ?? raw.id, test: new RegExp(raw.pattern, flags), ...(raw.message ? { message: raw.message } : {}), ...(raw.action ? { action: raw.action } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?: string, options?: PatternOptions): PatternHit[] {
   const hits = new Map<string, PatternHit>();
   const add = (hit: PatternHit | undefined) => { if (hit && !hits.has(hit.id)) hits.set(hit.id, hit); };
   const raw = commandOf(tool, input)?.command;
+  const exempt = new Set(options?.exemptRules ?? []);
   if (raw) {
     const command = stripDataText(raw).text;
-    for (const rule of SHELL_RULES) if (rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
-    for (const segment of splitShell(command)) add(classifyRm(segment, cwd));
-    if (SENSITIVE_PATH.test(command)) add({ id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
+    for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
+    for (const segment of splitShell(command)) {
+      const hit = classifyRm(segment, cwd);
+      // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
+      if (hit && !exempt.has(hit.id)) add(hit);
+    }
+    if (!exempt.has("sensitive-path") && SENSITIVE_PATH.test(command)) add({ id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
+    for (const raw of options?.commandDenyRules ?? []) {
+      if (exempt.has(raw.id)) continue;
+      const compiled = compileUserRule(raw, "deny");
+      if (compiled && compiled.test.test(command)) add({ id: compiled.id, severity: "deny", label: compiled.message ?? compiled.label });
+    }
+    for (const raw of options?.commandRules ?? []) {
+      if (exempt.has(raw.id)) continue;
+      const severity: Severity = raw.severity === "deny" ? "deny" : raw.severity === "confirm" ? "destructive" : "risky";
+      const compiled = compileUserRule(raw, severity);
+      if (compiled && compiled.test.test(command)) add({ id: compiled.id, severity, label: compiled.message ?? compiled.label, ...(raw.action ? { action: raw.action } as { action: string } : {}) } as PatternHit & { action?: string });
+    }
   }
   const path = typeof input.path === "string" ? input.path : undefined;
   if (path && SENSITIVE_PATH.test(path)) add({ id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
@@ -622,13 +680,14 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   const plan = describePlan(action.plan);
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
-  const patterns = matchPatterns(action.tool, action.input, action.cwd);
+  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules });
   const reasons: string[] = [];
   let level: Level = "allow";
   // A shell command that merely mentions a secrets file (grep for key names, cat .env.example) is decided after Jev
   // says whether it can write; write/edit on such a path, and offline runs, keep the immediate warning.
   const deferSensitive = judge !== undefined && (action.tool !== "write" && action.tool !== "edit");
   for (const hit of patterns) {
+    if (hit.severity === "deny") { level = "deny"; reasons.push(hit.message ?? hit.label); continue; }
     if (hit.severity === "sensitive" && deferSensitive) continue;
     level = higher(level, hit.severity === "destructive" ? "confirm" : "warn");
     reasons.push(`${hit.severity}: ${hit.label}`);
@@ -642,6 +701,8 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       reasons.push(`${action.tool === "write" ? "creates" : "changes"} a file outside the project`);
     }
   }
+  // A deny-level pattern hit blocks the call immediately; no judge, no dialog.
+  if (level === "deny") return withPlan({ level, source: "pattern", summary, patterns, reasons });
   const view = commandOf(action.tool, action.input);
   if (view?.shell && patterns.length === 0 && isReadOnlyCommand(view.command)) {
     return { level, source: "read-only", summary, patterns, reasons };

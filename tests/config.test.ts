@@ -96,6 +96,42 @@ test("project overrides cannot grant consent, change the mode, or raise budgets"
   assert.deepEqual(quiet.notify.command, [], "but never names a command to run");
 });
 
+test("project overrides cannot set command rules, deny rules, or exempt rules", () => {
+  const config = applyProjectOverrides(defaultConfig(), { action: { commandRules: [{ id: "evil", pattern: ".", severity: "deny" }], commandDenyRules: [{ id: "evil-deny", pattern: ".", severity: "deny" }], exemptRules: ["infra-destroy"] } });
+  assert.deepEqual(config.action.commandRules, [], "project file cannot declare command rules");
+  assert.deepEqual(config.action.commandDenyRules, [], "project file cannot declare deny rules");
+  assert.deepEqual(config.action.exemptRules, [], "project file cannot exempt built-ins");
+});
+
+test("a trusted project action block cannot wipe the user's command rules", () => {
+  // The user's rules survive a project file that sets other action keys — action.tools is the documented case.
+  const userBase = applyUserOverrides(defaultConfig(), { action: {
+    commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" }],
+    commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b" }],
+    exemptRules: ["sudo"],
+  } });
+  const config = applyProjectOverrides(userBase, { action: { tools: ["bash", "write"] } });
+  assert.deepEqual(config.action.tools, ["bash", "write"], "the project override applied where it may");
+  assert.equal(config.action.commandRules.length, 1, "user command rules survive the project override");
+  assert.equal(config.action.commandRules[0]!.id, "kubectl-delete");
+  assert.equal(config.action.commandDenyRules.length, 1, "user deny rules survive the project override");
+  assert.equal(config.action.commandDenyRules[0]!.id, "never-reset");
+  assert.deepEqual(config.action.exemptRules, ["sudo"], "user exemptions survive the project override");
+});
+
+test("user config accepts command rules, deny rules, and exempt rules", () => {
+  const config = applyUserOverrides(defaultConfig(), { action: { commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" }], commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b" }], exemptRules: ["infra-destroy", "sudo"] } });
+  assert.equal(config.action.commandRules.length, 1);
+  assert.equal(config.action.commandRules[0]!.id, "kubectl-delete");
+  assert.equal(config.action.commandRules[0]!.severity, "confirm");
+  assert.equal(config.action.commandDenyRules.length, 1);
+  assert.equal(config.action.commandDenyRules[0]!.id, "never-reset");
+  assert.deepEqual(config.action.exemptRules, ["infra-destroy", "sudo"]);
+  const messy = applyUserOverrides(defaultConfig(), { action: { commandRules: [{ id: "x", pattern: ".", severity: "warn" }, { id: "x", pattern: ".", severity: "warn" }, { id: "", pattern: "." }, { id: "y", pattern: "" }] } });
+  assert.equal(messy.action.commandRules.length, 1, "duplicate ids and invalid entries are skipped");
+  assert.equal(messy.action.commandRules[0]!.id, "x");
+});
+
 test("loadConfig merges user then trusted project file, and survives malformed files", async () => {
   assert.equal(loadConfig({ cwd: project, projectTrusted: true }).typesafe, false, "no files yet");
   const path = setUserSetting("typesafe", true);

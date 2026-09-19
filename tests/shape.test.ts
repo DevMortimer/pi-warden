@@ -95,3 +95,18 @@ test("regression: the 0.9.0 live crash. A stale shape module returns a config wi
   assert.deepEqual(complete.missing, []);
   assert.equal(complete.config.rules.enabled, true);
 });
+
+test("an action section without commandRules leaves them empty, never undefined", () => {
+  const older = defaultConfig() as unknown as Record<string, unknown>;
+  const action = { ...(older.action as Record<string, unknown>) };
+  delete action.commandRules;
+  delete action.commandDenyRules;
+  delete action.exemptRules;
+  older.action = action;
+  const result = completeConfig(older as never);
+  // The shape fallback keeps the arrays present so pattern matching cannot dereference undefined.
+  assert.ok(Array.isArray(result.config.action.commandRules));
+  assert.ok(Array.isArray(result.config.action.commandDenyRules));
+  assert.ok(Array.isArray(result.config.action.exemptRules));
+  assert.doesNotThrow(() => result.config.action.commandRules.length + result.config.action.commandDenyRules.length + result.config.action.exemptRules.length);
+});

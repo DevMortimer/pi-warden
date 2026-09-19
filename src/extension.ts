@@ -11,7 +11,7 @@ import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, pr
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason } from "./guard.js";
+import { evaluateAction, formatVerdict, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, unknownExemptIds } from "./guard.js";
 import type { PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
@@ -229,12 +229,20 @@ export default function wardenExtension(pi: ExtensionAPI): void {
 
   // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
   let shapeReported = false;
+  // An exemptRules id that names neither a built-in nor one of the user's own rules is inert; said once, not per call.
+  let exemptReported = false;
   const configFor = (ctx: ExtensionContext | ExtensionCommandContext): WardenConfig => {
     const { config, missing } = guardCurrentSections(completeConfig(loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() })));
     if (missing.length && !shapeReported) {
       shapeReported = true;
       // A namespace read stays undefined (not a link error) when an older config module lacks the export.
       const text = shapeWarning(missing, (configModule as { CONFIG_SCHEMA?: number }).CONFIG_SCHEMA);
+      if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
+    }
+    const unknownExempt = unknownExemptIds(config.action.exemptRules, config.action.commandRules, config.action.commandDenyRules);
+    if (unknownExempt.length && !exemptReported) {
+      exemptReported = true;
+      const text = `warden: exemptRules names ${unknownExempt.join(", ")}, which match no built-in or user rule; those entries are inert`;
       if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
     }
     return config;
@@ -576,9 +584,28 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       track(false);
       return undefined;
     }
+    if (verdict.level === "deny") {
+      stats.held++;
+      track(true, "declined", "deny");
+      if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · blocked ${event.toolName}: ${verdict.reasons.join("; ")}`, "error");
+      notifyDesktop(ctx, config, `Blocked ${event.toolName}: ${verdict.reasons.join("; ")}. A deny rule matched; the call never ran.`);
+      return { block: true, reason: `pi-warden blocked this ${event.toolName} call (${verdict.reasons.join("; ")}). A deny rule matched; this command is not allowed to run. Ask the user if this is genuinely required.` };
+    }
     if (verdict.level !== "confirm") { track(false); return undefined; }
 
     const reasons = verdict.reasons.join("; ");
+    // A user-defined confirm rule prompts the user in every mode, advise included: the operator wrote the rule to be
+    // asked. Advise mode keeps Jev holds advisory; it does not soften a prompt the operator asked for by name.
+    // The action defaults to dialog at parse time (the reason one writes such a rule); hold restores steer semantics.
+    const dialogRule = verdict.patterns.some(hit => hit.action === "dialog");
+    if (dialogRule && ctx.hasUI) {
+      notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
+      const allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {});
+      if (allowed) { track(true, "approved", "dialog"); return undefined; }
+      stats.held++;
+      track(true, "declined", "dialog");
+      return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${reasons}). Do not retry it unchanged; ask the user how to proceed.` };
+    }
     if (mode === "advise") {
       stats.warned++;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");

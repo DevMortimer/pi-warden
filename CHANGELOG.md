@@ -4,10 +4,11 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
-## 0.24.0
+## Unreleased
 
 ### Added
 
+- User-defined command rules (`action.commandRules`, `action.commandDenyRules`, `action.exemptRules`, user config only): your own patterns on the same data-text-stripped command the built-ins read, with `warn`/`confirm`/`deny` severity. `confirm` defaults to a user dialog in every mode; `deny` blocks with no dialog and no TypeSafe request; `exemptRules` silences built-ins, the `rm` classifier ids, `sensitive-path`, and your own rules by id. The `deny` verdict renders as a chip in the status line and the trace sidebar.
 - Overnight eval stability proof: 109 cycles, 13,952 cases, 100% pass rate, zero score drift ([docs/overnight-eval.md](docs/overnight-eval.md), [eval/reports/2026-09-18-overnight-stability/](eval/reports/2026-09-18-overnight-stability/)). Confirms that guard thresholds are deterministic against the TypeSafe API and the case set is a reliable regression gate.
 
 ## 0.23.0
