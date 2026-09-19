@@ -50,7 +50,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
     subagent: section("subagent", { ...off, wake: false, threshold: 1, cooldownMs: 0 }),
     widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
-    learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1 }),
+    learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 }),
   };
   if (typeof config.slop.prose !== "object" || config.slop.prose === null) {
     missing.push("slop.prose");

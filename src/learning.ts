@@ -43,8 +43,9 @@ function getDb(): DatabaseSync {
       const dbPath = process.env.PI_WARDEN_DB ?? join(homedir(), ".pi", "agent", "pi-warden", "holds.db");
       db = new DatabaseSync(dbPath);
       db.exec("PRAGMA journal_mode = WAL");
-    } catch {
+    } catch (err) {
       // Fail open: if DB is corrupted or inaccessible, return a no-op stub
+      console.warn("pi-warden: could not open holds.db:", err);
       return {
         exec() {},
         prepare() { return { run() { return { lastInsertRowid: 0 }; }, all() { return []; } }; },
@@ -55,13 +56,19 @@ function getDb(): DatabaseSync {
   return db;
 }
 
-export function initSchema(): void {
+export function initSchema(retentionDays = 365): void {
   try {
     const d = getDb();
     d.exec(HOLDS_SCHEMA);
     // Migrate: add columns that may be missing from older databases.
     try { d.exec("ALTER TABLE holds ADD COLUMN preceding_actions TEXT"); } catch { /* column exists */ }
-  } catch { /* fail open */ }
+    // Prune old records if retention is enabled.
+    if (retentionDays > 0) {
+      const cutoff = Date.now() - retentionDays * 86_400_000;
+      d.prepare("DELETE FROM holds WHERE timestamp < ?").run(cutoff);
+      d.exec("VACUUM");
+    }
+  } catch (err) { console.warn("pi-warden: hold retention prune failed:", err); }
 }
 
 // --- Types ---
@@ -201,7 +208,7 @@ export function recordHold(hold: HoldRecord): number {
 }
 
 export function recordOutcome(id: number, outcome: string): void {
-  try { getDb().prepare("UPDATE holds SET outcome = ?, outcome_at = ? WHERE id = ?").run(outcome, Date.now(), id); } catch { /* fail open */ }
+  try { getDb().prepare("UPDATE holds SET outcome = ?, outcome_at = ? WHERE id = ?").run(outcome, Date.now(), id); } catch (err) { console.warn("pi-warden: could not record hold outcome:", err); }
 }
 
 // --- Querying ---

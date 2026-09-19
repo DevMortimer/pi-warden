@@ -8,6 +8,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.28.0
+
+### Added
+
+- \`learning.retentionDays\` config key (default 365) — prunes hold records older than this on startup. \`0\` disables pruning.
+
+### Fixed
+
+- SQLite hold database grew unboundedly; now pruned on startup with VACUUM.
+- Empty catch blocks in learning.ts now log warnings instead of silently swallowing errors.
+
 ## 0.27.2
 
 ### Fixed

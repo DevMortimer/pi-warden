@@ -94,6 +94,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `widget.*` | Status line placement, sidebar shortcut and width, per-guard text templates (below). |
 | `learning.adaptiveThresholds` | Learn from hold outcomes and suggest threshold adjustments via `/warden recommend`. | 
 | `learning.patternAnalysis` | Analyze hold patterns and generate recommendations. |
+| `learning.retentionDays` | Days to keep hold records in SQLite before pruning. Records older than this are deleted on startup. `0` disables pruning. Default: `365`. |
 | `steerVisible` | Show steer messages in the transcript instead of only in the trace panel. |
 | `notices` | Print the per-call warning notices (`warden · …`) in the transcript. Off by default; the widget, the trace panel, and `/warden trace` always show every event. |
 | `steerBudget` | Steers delivered to the agent per run before further non-critical ones are recorded in the trace only. Every delivered steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the final status. `0` disables the budget. Critical guards (stuck, done, runaway recovery, subagent wake) always deliver. |
