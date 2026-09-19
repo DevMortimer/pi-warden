@@ -669,7 +669,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         const id = recordHold(toHoldRecord(
           { at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores },
           ctx.cwd,
-          { task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: steerReason(verdict, { canApprove: judge !== undefined }) },
+          { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: steerReason(verdict, { canApprove: judge !== undefined }) },
         ));
         learningIds.set(item.id, id);
         if (outcome) recordOutcome(id, outcome);
