@@ -11,9 +11,8 @@ const holdsDir = join(homedir(), ".pi", "agent", "pi-warden", "holds");
 const dbPath = join(homedir(), ".pi", "agent", "pi-warden", "holds.db");
 const db = new DatabaseSync(dbPath);
 
+// Shared schema from src/learning.ts
 db.exec("PRAGMA journal_mode = WAL");
-
-// Ensure schema
 db.exec(`
   CREATE TABLE IF NOT EXISTS holds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,13 +20,12 @@ db.exec(`
     project_root TEXT NOT NULL,
     session_id TEXT,
     tool TEXT NOT NULL,
-    command_hash TEXT NOT NULL,
+    signature_hash TEXT NOT NULL,
     command_preview TEXT,
     input_summary TEXT,
     task TEXT,
     plan TEXT,
     context_summary TEXT,
-    preceding_actions TEXT,
     scores TEXT NOT NULL,
     level TEXT NOT NULL,
     held INTEGER NOT NULL,
@@ -36,17 +34,16 @@ db.exec(`
     outcome TEXT,
     outcome_at INTEGER,
     confidence REAL,
-    prediction TEXT,
-    plan_chars INTEGER DEFAULT 0
+    prediction TEXT
   );
-  CREATE INDEX IF NOT EXISTS idx_holds_project_command ON holds(project_root, command_hash);
+  CREATE INDEX IF NOT EXISTS idx_holds_project_signature ON holds(project_root, signature_hash);
   CREATE INDEX IF NOT EXISTS idx_holds_outcome ON holds(outcome);
   CREATE INDEX IF NOT EXISTS idx_holds_timestamp ON holds(timestamp);
 `);
 
 const stmt = db.prepare(`
   INSERT OR IGNORE INTO holds
-  (timestamp, project_root, session_id, tool, command_hash, command_preview,
+  (timestamp, project_root, session_id, tool, signature_hash, command_preview,
    scores, level, held, reasons, outcome, outcome_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
@@ -60,7 +57,7 @@ for (const file of files) {
     try {
       const r = JSON.parse(line);
       const scores = r.scores || {};
-      const commandHash = createHash("sha256")
+      const hash = createHash("sha256")
         .update(r.tool + ":" + JSON.stringify(scores))
         .digest("hex")
         .slice(0, 16);
@@ -70,7 +67,7 @@ for (const file of files) {
         "unknown",
         r.sessionId || null,
         r.tool || "unknown",
-        commandHash,
+        hash,
         r.tool + " irr=" + (scores.irreversible || 0).toFixed(2),
         JSON.stringify(scores),
         r.level || "allow",

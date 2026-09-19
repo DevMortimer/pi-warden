@@ -14,7 +14,7 @@ import type { RunEvidence } from "./done.js";
 import { evaluateAction, formatVerdict, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason } from "./guard.js";
 import type { PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
-import { initSchema, recordHold, recordOutcome } from "./learning.js";
+import { initSchema, recordHold, recordOutcome, toHoldRecord } from "./learning.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
 import { compressOutput, duplicateNote, evaluateOutput, mergeOutput, outputKey, saveOutput, securityNotice } from "./output.js";
@@ -205,6 +205,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const holds = new HoldLedger();
   initSchema();
   const learningIds = new Map<number, number>(); // holds.id -> learning.id
+  // Prune learningIds when it grows large to prevent memory leaks
+  function pruneLearningIds(): void {
+    if (learningIds.size > 1000) {
+      const entries = [...learningIds.entries()];
+      learningIds.clear();
+      // Keep only the most recent 500
+      for (const [k, v] of entries.slice(-500)) learningIds.set(k, v);
+    }
+  }
 
   function summarizeContext(context?: readonly { role: string; text: string }[]): string | undefined {
     if (!context?.length) return undefined;
@@ -534,25 +543,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       noteOutcomes(config, outcome ? [item] : []);
       // Record to SQLite for learning
       if (held) {
-        const learnScores: Record<string, unknown> = {};
-        if (item.scores) { for (const [k, v] of Object.entries(item.scores)) learnScores[k] = v; }
-        const holdOpts: import("./learning.js").HoldRecord = {
-          timestamp: item.at,
-          projectRoot: ctx.cwd,
-          tool: item.tool,
-          commandPreview: item.tool,
-          scores: learnScores,
-          level: item.level,
-          held: true,
-          reasons: item.reasons,
-        };
-        if (task) holdOpts.task = task;
-        if (verdict.plan) holdOpts.plan = verdict.plan;
-        if (ctxSummary) holdOpts.contextSummary = ctxSummary;
-        if (held) holdOpts.agentReason = steerReason(verdict, { canApprove: judge !== undefined });
-        const id = recordHold(holdOpts);
+        const id = recordHold(toHoldRecord({ at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores as unknown as Record<string, unknown> }, ctx.cwd, task, verdict.plan, ctxSummary, steerReason(verdict, { canApprove: judge !== undefined })));
         learningIds.set(item.id, id);
         if (outcome) recordOutcome(id, outcome);
+        pruneLearningIds();
       }
     };
     // The warn notice below names the mismatch to the user; the agent gets the steer with the other notes.
