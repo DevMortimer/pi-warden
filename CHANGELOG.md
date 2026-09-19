@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.28.3
+
+### Fixed
+
+- Temp output directories from saveOutput() are now cleaned up at session start (~2.5 MB/session leak).
+
 ## 0.28.2
 
 ### Fixed
