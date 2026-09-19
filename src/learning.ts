@@ -2,8 +2,9 @@
 // Records full context with each hold and predicts outcomes using history.
 
 import { createHash } from "crypto";
+import { mkdirSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import type { CallScores } from "./holds.js";
 
 let db: import("node:sqlite").DatabaseSync | undefined;
@@ -39,7 +40,7 @@ export const HOLDS_SCHEMA = `
 
 const NOOP_DB = {
   exec() {},
-  prepare() { return { run() { return { lastInsertRowid: 0 }; }, all() { return []; } }; },
+  prepare() { return { run() { return { changes: 0, lastInsertRowid: 0 }; }, get() { return undefined; }, all() { return []; } }; },
   pragma() {},
 } as unknown as import("node:sqlite").DatabaseSync;
 
@@ -50,6 +51,8 @@ async function getDb(): Promise<import("node:sqlite").DatabaseSync> {
     const { DatabaseSync } = await import("node:sqlite");
     sqliteAvailable = true;
     const dbPath = process.env.PI_WARDEN_DB ?? join(homedir(), ".pi", "agent", "pi-warden", "holds.db");
+    // DatabaseSync does not create parent directories; on a fresh machine the folder may not exist yet.
+    mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
     db = new DatabaseSync(dbPath);
     db.exec("PRAGMA journal_mode = WAL");
     return db;
@@ -198,7 +201,7 @@ export async function recordHold(hold: HoldRecord): Promise<number> {
      scores, level, held, reasons, agent_reason, confidence)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(
+  const result = stmt.run(
     hold.timestamp, hold.projectRoot,
     hold.tool, hash, hold.commandPreview,
     hold.task ?? null, hold.plan ?? null,
@@ -207,8 +210,7 @@ export async function recordHold(hold: HoldRecord): Promise<number> {
     JSON.stringify(hold.reasons), hold.agentReason ?? null,
     hold.confidence ?? null,
   );
-  const row = d.prepare("SELECT last_insert_rowid() as id").get() as { id: number };
-  return row.id;
+  return Number(result.lastInsertRowid);
 }
 
 export async function recordOutcome(id: number, outcome: string): Promise<void> {

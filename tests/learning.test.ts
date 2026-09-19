@@ -6,7 +6,8 @@ import { join } from "node:path";
 
 // Set test DB path before importing
 const testDir = mkdtempSync(join(tmpdir(), "pi-warden-learn-"));
-process.env.PI_WARDEN_DB = join(testDir, "holds.db");
+// A nested folder that does not exist yet: the database must create its own directory.
+process.env.PI_WARDEN_DB = join(testDir, "nested", "pi-warden", "holds.db");
 
 const { initSchema, recordHold, recordOutcome, querySmartHistory, calculateSmartConfidence, shouldSkipHold, signatureHash } = await import("../src/learning.js");
 

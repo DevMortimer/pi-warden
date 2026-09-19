@@ -79,6 +79,21 @@ test("missing scope context is not itself off-task evidence; scope expected_step
   assert.equal(destructive.level, "confirm", "missing context does not disable irreversible-action protection");
 });
 
+test("redact removes passwords from database and broker URLs, not just http(s)", () => {
+  for (const url of ["postgres://admin:hunter2secret@db.internal:5432/app", "mysql://root:s3cr3t-pw@127.0.0.1/app", "redis://default:r3disPass@cache:6379", "amqp://guest:guestpw@mq:5672"]) {
+    const out = redact(`DATABASE_URL=${url}`);
+    assert.ok(!/hunter2secret|s3cr3t-pw|r3disPass|guestpw/.test(out), out);
+  }
+  assert.equal(redact("git clone git@github.com:owner/repo.git"), "git clone git@github.com:owner/repo.git");
+  assert.ok(findSecrets("postgres://admin:hunter2secret@db.internal:5432/app").length > 0);
+});
+
+test("redact removes a whole quoted passphrase, spaces included", () => {
+  const out = redact('password = "correct horse battery staple"');
+  assert.ok(!/horse|battery|staple/.test(out), out);
+  assert.ok(out.includes("[redacted]"));
+});
+
 test("redact removes common credential shapes and keeps the rest", () => {
   const text = "curl -H 'Authorization: Bearer abc.def.ghi' -d 'TOKEN=sk-live-0123456789abcdef' https://user:pass@example.com AKIAABCDEFGHIJKLMNOP ghp_0123456789abcdefghijklmnopqrstuvwxyz";
   const out = redact(text);
