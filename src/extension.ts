@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
 import * as tuiModule from "@earendil-works/pi-tui";
@@ -469,6 +470,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     evidence = emptyEvidence();
     doneNudged = false;
     prose.reset();
+    // Clean up temp output dirs from the previous session.
+    for (const dir of ledger.storedPaths()) {
+      try { await rm(dir, { recursive: true, force: true }); } catch (err) { console.warn("pi-warden: temp cleanup failed:", err); }
+    }
     ledger.reset();
     compressionLearner.reset();
     secretsSeen.clear();

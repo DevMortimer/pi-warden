@@ -93,6 +93,11 @@ export class ContextLedger {
     return { large: this.large, compressed: this.compressed, duplicates: this.duplicates, bytesSaved: this.bytesSaved, turns: this.turns, tokenTurnsSaved: this.tokenTurnsSaved, recalls: this.recalls, recallsFull: this.recallsFull };
   }
 
+  /** Paths to temp files for cleanup at session start. Internal only — paths never leave the machine. */
+  storedPaths(): string[] {
+    return [...this.stored.keys()];
+  }
+
   reset(): void {
     this.large = 0; this.compressed = 0; this.duplicates = 0; this.bytesSaved = 0; this.turns = 0; this.tokenTurnsSaved = 0; this.recalls = 0; this.recallsFull = 0;
     this.stored.clear();
