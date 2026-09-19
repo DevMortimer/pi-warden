@@ -6,6 +6,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 0.25.0
+
+### Added
+
+- Smart hold learning system (src/learning.ts). Records full context (task, plan, conversation, agent reason) with each hold decision and predicts outcomes using historical patterns. SQLite database at ~/.pi/agent/pi-warden/holds.db. Query functions weight exact matches 5x, similar matches 2x, and same-reason matches 1x, with time decay. Never skips destructive patterns.
+
 ## 0.24.0
 
 ### Added

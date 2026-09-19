@@ -1,0 +1,143 @@
+import assert from "node:assert/strict";
+import { test, after } from "node:test";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Set test DB path before importing
+const testDir = mkdtempSync(join(tmpdir(), "pi-warden-learn-"));
+process.env.PI_WARDEN_DB = join(testDir, "holds.db");
+
+const { initSchema, recordHold, recordOutcome, querySmartHistory, calculateSmartConfidence, shouldSkipHold, signatureHash } = await import("../src/learning.js");
+
+after(() => {
+  rmSync(testDir, { recursive: true, force: true });
+});
+
+test("initSchema creates database with correct columns", () => {
+  initSchema();
+  assert.ok(existsSync(process.env.PI_WARDEN_DB!), "database file exists");
+});
+
+test("signatureHash produces consistent hashes", () => {
+  const h1 = signatureHash("bash", { irreversible: 0.5, reasons: ["test"] });
+  const h2 = signatureHash("bash", { irreversible: 0.5, reasons: ["test"] });
+  assert.equal(h1, h2, "same input produces same hash");
+  assert.equal(h1.length, 16, "hash is 16 hex chars");
+});
+
+test("recordHold inserts a hold and returns an id", () => {
+  const id = recordHold({
+    timestamp: Date.now(),
+    projectRoot: "/test/project",
+    tool: "bash",
+    commandPreview: "npm test",
+    task: "run tests",
+    plan: "execute test suite",
+    scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+    level: "allow",
+    held: true,
+    reasons: ["irreversible 0.5"],
+    agentReason: "Running tests as requested",
+  });
+  assert.ok(id > 0, "recordHold returns positive id");
+});
+
+test("recordOutcome updates the outcome", () => {
+  const id = recordHold({
+    timestamp: Date.now(),
+    projectRoot: "/test/project",
+    tool: "bash",
+    commandPreview: "npm test",
+    task: "run tests",
+    scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+    level: "allow",
+    held: true,
+    reasons: ["irreversible 0.5"],
+  });
+  recordOutcome(id, "approved");
+});
+
+test("querySmartHistory finds exact matches in same project", () => {
+  recordHold({
+    timestamp: Date.now(),
+    projectRoot: "/test/project",
+    tool: "bash",
+    commandPreview: "npm test",
+    task: "run tests",
+    scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+    level: "allow",
+    held: true,
+    reasons: ["irreversible 0.5"],
+  });
+
+  const history = querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/test/project");
+  assert.ok(history.exact.length > 0, "finds exact matches");
+});
+
+test("querySmartHistory does not find matches in different project", () => {
+  const history = querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/other/project");
+  assert.equal(history.exact.length, 0, "no matches in different project");
+});
+
+test("calculateSmartConfidence returns 0 for empty history", () => {
+  const conf = calculateSmartConfidence({ exact: [], similar: [], sameReason: [], signatureHash: "abc" });
+  assert.equal(conf.confidence, 0, "confidence is 0 for empty history");
+  assert.equal(conf.reason, "no history");
+});
+
+test("calculateSmartConfidence returns high confidence for approved history", () => {
+  const now = Date.now();
+  const conf = calculateSmartConfidence({
+    exact: [
+      { outcome: "approved", timestamp: now - 1000 },
+      { outcome: "approved", timestamp: now - 2000 },
+      { outcome: "approved", timestamp: now - 3000 },
+    ],
+    similar: [],
+    sameReason: [],
+    signatureHash: "abc",
+  });
+  assert.ok(conf.confidence > 0.7, "high confidence for approvals");
+});
+
+test("shouldSkipHold never skips destructive patterns", () => {
+  const skip = shouldSkipHold("bash", { irreversible: 0.9, reasons: ["destructive: git reset"] }, "/test/project");
+  assert.equal(skip.skip, false, "never skips destructive patterns");
+  assert.ok(skip.reason.includes("destructive"), "reason mentions destructive");
+});
+
+test("shouldSkipHold skips when confidence is high with enough exact approvals", () => {
+  const now = Date.now();
+  for (let i = 0; i < 3; i++) {
+    const id = recordHold({
+      timestamp: now - i * 1000,
+      projectRoot: "/skip/project",
+      tool: "bash",
+      commandPreview: "npm test",
+      scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+      level: "allow",
+      held: true,
+      reasons: ["irreversible 0.5"],
+    });
+    recordOutcome(id, "approved");
+  }
+  const skip = shouldSkipHold("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/skip/project");
+  assert.equal(skip.skip, true, "skips when confidence > 0.8 with >= 3 exact approvals");
+  assert.ok(skip.confidence > 0.8, "confidence exceeds threshold");
+});
+
+test("querySmartHistory finds similar matches by irr proximity", () => {
+  recordHold({
+    timestamp: Date.now(),
+    projectRoot: "/sim/project",
+    tool: "bash",
+    commandPreview: "rm -rf /tmp/test",
+    scores: { irreversible: 0.6, reasons: ["irreversible 0.6"] },
+    level: "allow",
+    held: true,
+    reasons: ["irreversible 0.6"],
+  });
+  const history = querySmartHistory("bash", { irreversible: 0.7, reasons: ["irreversible 0.7"] }, "/sim/project");
+  assert.ok(history.similar.length > 0, "finds similar matches within irr threshold");
+});
