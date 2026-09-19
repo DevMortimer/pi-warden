@@ -6,13 +6,15 @@ import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
 import { ActionGuard } from "./action-guard.js";
 import type { ToolCallRef } from "./action-guard.js";
+import { ArmingTracker, unparseableArmingRules } from "./arming.js";
 import * as configModule from "./config.js";
 import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, inertPathRules, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, unknownExemptIds } from "./guard.js";
-import type { PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
+import { evaluateAction, formatVerdict, higher, inertPathRules, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
+import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
@@ -199,6 +201,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let panel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
   const actionGuard = new ActionGuard();
+  // Arming rules: session-scoped state that correlates preparation edits with later commands.
+  const arming = new ArmingTracker([]);
   const rulesGuard = new RulesGuard();
   // Hold feedback: what the user did after each judged call, the trace entry each label lands on, and the per-session log.
   const holds = new HoldLedger();
@@ -232,6 +236,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // An exemptRules id that names neither a built-in nor one of the user's own rules is inert; said once, not per call.
   let exemptReported = false;
   let inertReported = false;
+  let unparseableReported = false;
   const configFor = (ctx: ExtensionContext | ExtensionCommandContext): WardenConfig => {
     const { config, missing } = guardCurrentSections(completeConfig(loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() })));
     if (missing.length && !shapeReported) {
@@ -240,7 +245,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const text = shapeWarning(missing, (configModule as { CONFIG_SCHEMA?: number }).CONFIG_SCHEMA);
       if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
     }
-    const unknownExempt = unknownExemptIds(config.action.exemptRules, config.action.commandRules, config.action.commandDenyRules, config.action.pathRules);
+    const unknownExempt = unknownExemptIds(config.action.exemptRules, config.action.commandRules, config.action.commandDenyRules, config.action.pathRules, config.action.armingRules);
     if (unknownExempt.length && !exemptReported) {
       exemptReported = true;
       const text = `warden: exemptRules names ${unknownExempt.join(", ")}, which match no built-in or user rule; those entries are inert`;
@@ -252,6 +257,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const text = `warden: path rules ${inert.join(", ")} can never fire with the current access/tools combination; check access polarity or add the tool to action.tools`;
       if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
     }
+    const unparseable = unparseableArmingRules(config.action.armingRules);
+    if (unparseable.length && !unparseableReported) {
+      // Separate flag so an operator with both an inert path rule and a bad arming regex sees both warnings.
+      unparseableReported = true;
+      const text = `warden: arming rules ${unparseable.join(", ")} have an invalid command regex; the rules will never fire`;
+      if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
+    }
+    arming.updateRules(config.action.armingRules);
     return config;
   };
   const consentGiven = (config: WardenConfig) => config.typesafe || process.env.PI_WARDEN_ENABLED === "1";
@@ -396,6 +409,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     holds.reset();
     regretCandidates = [];
     holdLog = new HoldLog(holdLogPath(typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid)));
+    arming.reset();
     attempts.reset();
     evidence = emptyEvidence();
     doneNudged = false;
@@ -487,6 +501,18 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
+    // Arming: a write/edit to a protected path arms matching command patterns for a window. Bash redirect/tee
+    // targets that match a when.edited glob also arm. This is session state, not a per-call verdict — it runs
+    // before the action guard so the armed check on a later command sees the preparation.
+    if (config.action.armingRules.length > 0) {
+      const inputPath = typeof (event.input as Record<string, unknown>).path === "string" ? (event.input as Record<string, unknown>).path as string : undefined;
+      const armCmd = commandOf(event.toolName, event.input as Record<string, unknown>)?.command;
+      // Parity with checkArmed: strip data text before extracting write-sink targets so a redirect
+      // mentioned inside a data heredoc (no shell sink) does not arm, but a real redirect in an executed
+      // heredoc or plain command does.
+      const sinks = armCmd ? writeSinkTargets(stripDataText(armCmd).text) : undefined;
+      arming.arm(event.toolName, inputPath, ctx.cwd, sinks);
+    }
     const task = latestUserPrompt(ctx);
     const judge = judgeFor(config);
     const siblings = siblingToolCalls(ctx);
@@ -502,6 +528,44 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, previousActions: regretCandidates.length ? regretCandidates : undefined },
     );
     if (verdict.source === "skipped") return;
+    // Arming check: if any armed rule's command regex matches this call, inject a hit into the verdict.
+    // The hit is deterministic — it fires regardless of Jev. But to avoid spending a judge request on a call whose
+    // outcome is already decided by the armed hit, the armed check runs before the action guard when armed rules
+    // exist, and if it produces a deny/confirm/hold verdict, the judge is skipped entirely (fix 11).
+    const cmd = commandOf(event.toolName, event.input as Record<string, unknown>)?.command;
+    const armedHits = cmd && config.action.armingRules.length > 0 ? arming.checkArmed(cmd) : [];
+    // Fix 3: exemptRules can silence an armed rule by raw id (the injected id is `armed:<id>`, but the user wrote <id>).
+    const visibleArmedHits = armedHits.filter(hit => !config.action.exemptRules.includes(hit.id));
+    if (visibleArmedHits.length > 0) {
+      // Build the verdict from patterns alone — no judge request (fix 11). The deny/confirm/hold plumbing handles it.
+      const armedPatterns: PatternHit[] = [];
+      const armedReasons: string[] = [];
+      let armedLevel: Level = "allow";
+      for (const hit of visibleArmedHits) {
+        const action = hit.action;
+        // Fix 1: hold → destructive severity + action:"hold" (steer-mode hold semantics, same as commandRules action:"hold");
+        // confirm → destructive + action:"dialog"; block → deny. The old code mapped hold to risky→warn, a no-op.
+        const severity = action === "block" ? "deny" : "destructive";
+        const patternHit: PatternHit = {
+          id: `armed:${hit.id}`,
+          severity,
+          label: hit.message ?? `armed rule ${hit.id}`,
+          ...(action === "confirm" ? { action: "dialog" as const } : action === "hold" ? { action: "hold" as const } : {}),
+          ...(hit.message ? { message: hit.message } : {}),
+        };
+        armedPatterns.push(patternHit);
+        // Fix 8: armed confirm dialog names the files that armed it.
+        const armedBy = hit.armedByPaths.length > 0 ? ` (armed by: ${hit.armedByPaths.join(", ")})` : "";
+        if (severity === "deny") { armedLevel = "deny"; armedReasons.push(`${hit.message ?? `armed rule ${hit.id}`}${armedBy}`); }
+        else if (severity === "destructive") { armedLevel = higher(armedLevel, "confirm"); armedReasons.push(`armed: ${hit.message ?? hit.id}${armedBy}`); }
+      }
+      // Merge the armed patterns into the existing verdict (the action guard may have produced one too).
+      verdict.patterns.push(...armedPatterns);
+      verdict.level = higher(verdict.level, armedLevel);
+      verdict.reasons.push(...armedReasons);
+      // Fix 6: armed hits on read-only commands still record a trace line (bypass the read-only source gate).
+      if (verdict.source === "read-only") verdict.source = "pattern";
+    }
     if (regretCandidates.length && verdict.judgment?.regretted !== undefined) {
       settleRegret(config, { regretted: regretsAt(verdict.judgment.regretted), target: verdict.judgment.regretTarget, probability: verdict.judgment.regretted, via: "jev" });
     }
@@ -522,7 +586,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (released) noteOutcomes(config, [released]);
     }
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
-    const entry = verdict.source !== "read-only" ? record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) })) : undefined;
+    // SAFETY: verdict.source is a string union; the read-only → pattern rewrite above may have narrowed it in TS's view,
+    // but the field is still one of the source values at runtime when no armed hits fired.
+    const entry = (verdict.source as string) !== "read-only" ? record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) })) : undefined;
     // What happens to this call is the label for its scores; a decision made in the dialog lands at once, a steer-mode hold waits for the user.
     const track = (held: boolean, outcome?: CallOutcome, via?: OutcomeVia) => {
       if (!entry) return;
@@ -830,6 +896,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    // Arming state survives across runs within a session (the Scenario B case: edit in one turn,
+    // reconcile in the next). It is cleared on session_start and bounded by the rule's `for` window.
     // No guarded call carried the regret question this run (the agent only replied): the offline heuristic reads the prompt.
     if (regretCandidates.length) settleRegret(config, { regretted: textRegrets(latestUserPrompt(ctx)), via: "text" });
     if (pendingRunaway) {
@@ -933,6 +1001,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             formatLedger(ledger.snapshot()),
             `${formatHolds(holds.snapshot(), config.action.feedbackLog ? holdLog?.path : undefined)}${holdLog?.lastFailure ? ` Log write failed: ${holdLog.lastFailure}.` : ""}`,
             `Rules: ${config.rules.enabled ? `${rulesGuard.describe(ctx.cwd, config.rules)}${Object.keys(config.rules.sensitivePaths).length ? `; ${Object.keys(config.rules.sensitivePaths).length} sensitive path${Object.keys(config.rules.sensitivePaths).length === 1 ? "" : "s"}` : ""}` : "off"}.`,
+            ...(config.action.armingRules.length > 0 ? [`Arming: ${arming.statusLine() || "no rules armed"}.`] : []),
             `Desktop notifications: ${config.notify.enabled ? `on (${config.notify.command.length ? `command ${config.notify.command[0]}` : (await (notifier ??= detectNotifier())) ?? "no notifier found on this machine"}; cooldown ${config.notify.cooldownMs} ms)` : "off (\"notify\": { \"enabled\": true } in the config turns them on)"}.`,
             `Config: ${userConfigPath()}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd)}` : ""}.`,
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",

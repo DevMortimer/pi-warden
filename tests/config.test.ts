@@ -220,3 +220,49 @@ test("regression: hostile config files cannot leave a guard's `.enabled` derefer
     assert.equal(typeof config.slop.prose.minChars, "number");
   }
 });
+
+test("project overrides cannot set arming rules", () => {
+  const config = applyProjectOverrides(defaultConfig(), { action: { armingRules: [{ id: "evil", when: { edited: ["**/*"] }, arms: { command: ".*" }, action: "block" }] } });
+  assert.deepEqual(config.action.armingRules, [], "a project file cannot declare arming rules");
+});
+
+test("a trusted project action block cannot wipe the user's arming rules", () => {
+  const userBase = applyUserOverrides(defaultConfig(), { action: {
+    armingRules: [{ id: "gitops", when: { edited: ["**/kustomization.yaml"] }, arms: { command: "\\bflux\\b", for: "10m" }, action: "confirm" }],
+  } });
+  const config = applyProjectOverrides(userBase, { action: { tools: ["bash", "write"] } });
+  assert.equal(config.action.armingRules.length, 1, "user arming rules survive the project override");
+  assert.equal(config.action.armingRules[0]!.id, "gitops");
+});
+
+test("user config accepts arming rules; invalid entries and duplicate ids are skipped", () => {
+  const config = applyUserOverrides(defaultConfig(), { action: { armingRules: [
+    { id: "gitops", when: { edited: ["**/kustomization.yaml"] }, arms: { command: "\\bflux\\b", for: "10m" }, action: "confirm" },
+    { id: "gitops", when: { edited: ["**/x.yaml"] }, arms: { command: "." }, action: "hold" },
+    { id: "", when: { edited: ["**/x.yaml"] }, arms: { command: "." }, action: "confirm" },
+    { id: "no-edited", when: { edited: [] }, arms: { command: "." }, action: "confirm" },
+    { id: "no-command", when: { edited: ["**/x.yaml"] }, arms: { command: "" }, action: "confirm" },
+    { id: "no-action", when: { edited: ["**/x.yaml"] }, arms: { command: "." } },
+    { id: "bad-when-tools", when: { edited: ["**/x.yaml"], tools: ["bash"] }, arms: { command: "." }, action: "confirm" },
+  ] } });
+  assert.equal(config.action.armingRules.length, 1, "only the valid rule survives");
+  assert.equal(config.action.armingRules[0]!.id, "gitops");
+  assert.equal(config.action.armingRules[0]!.when.tools, undefined);
+});
+
+test("arming rules parse duration strings and numbers", () => {
+  const config = applyUserOverrides(defaultConfig(), { action: { armingRules: [
+    { id: "string-minutes", when: { edited: ["**/x"] }, arms: { command: ".", for: "10m" }, action: "confirm" },
+    { id: "string-seconds", when: { edited: ["**/x"] }, arms: { command: ".", for: "30s" }, action: "confirm" },
+    { id: "string-hours", when: { edited: ["**/x"] }, arms: { command: ".", for: "2h" }, action: "confirm" },
+    { id: "number-ms", when: { edited: ["**/x"] }, arms: { command: ".", for: 5000 }, action: "confirm" },
+    { id: "default", when: { edited: ["**/x"] }, arms: { command: "." }, action: "confirm" },
+  ] } });
+  assert.equal(config.action.armingRules.length, 5);
+  assert.equal(typeof config.action.armingRules[0]!.arms.for, "number");
+  assert.equal(config.action.armingRules[0]!.arms.for, 600_000);
+  assert.equal(config.action.armingRules[1]!.arms.for, 30_000);
+  assert.equal(config.action.armingRules[2]!.arms.for, 7_200_000);
+  assert.equal(config.action.armingRules[3]!.arms.for, 5000);
+  assert.equal(config.action.armingRules[4]!.arms.for, 600_000, "default is 10 minutes");
+});

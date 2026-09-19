@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
-import type { ActionGuardConfig, CommandRule, PathRule, SecurityConfig, SlopGuardConfig } from "./config.js";
+import type { ActionGuardConfig, ArmingRule, CommandRule, PathRule, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { globToRegExp } from "./rules.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
@@ -147,7 +147,7 @@ export interface EvaluateOptions {
 }
 
 const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2, deny: 3 };
-const higher = (a: Level, b: Level): Level => (LEVEL_RANK[a] >= LEVEL_RANK[b] ? a : b);
+export const higher = (a: Level, b: Level): Level => (LEVEL_RANK[a] >= LEVEL_RANK[b] ? a : b);
 
 const TASK_LIMIT = 1500;
 const PLAN_LIMIT = 500;
@@ -364,11 +364,12 @@ export const EXEMPTABLE_IDS: readonly string[] = [
 
 /** Exempt ids that name neither a built-in, a classifier id, nor one of the user's own rules: inert, but
  * almost certainly not what the user meant. */
-export function unknownExemptIds(exemptRules: readonly string[], commandRules: readonly CommandRule[] = [], commandDenyRules: readonly CommandRule[] = [], pathRules: readonly PathRule[] = []): string[] {
+export function unknownExemptIds(exemptRules: readonly string[], commandRules: readonly CommandRule[] = [], commandDenyRules: readonly CommandRule[] = [], pathRules: readonly PathRule[] = [], armingRules: readonly ArmingRule[] = []): string[] {
   const known = new Set(EXEMPTABLE_IDS);
   for (const rule of commandRules) known.add(rule.id);
   for (const rule of commandDenyRules) known.add(rule.id);
   for (const rule of pathRules) known.add(rule.id);
+  for (const rule of armingRules) known.add(rule.id);
   return exemptRules.filter(id => !known.has(id));
 }
 
@@ -440,7 +441,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
 /** Write-sinks a shell grammar actually defines: the target of a redirection, or tee's operands. */
 const REDIRECT_TARGET = /(?:^|[\s;&|)(])\d*>{1,2}[|&]?\s*(\S+)/g;
 
-function writeSinkTargets(command: string): string[] {
+export function writeSinkTargets(command: string): string[] {
   const targets: string[] = [];
   // Redirect targets are scanned on the full command, not per segment: `>|` and `>&` contain `|`/`&` that
   // splitShell would split as pipe/and operators, separating the operator from its target.
@@ -462,24 +463,27 @@ function writeSinkTargets(command: string): string[] {
   return targets;
 }
 
-/** A rule's globs or regexes compiled once; `~` is expanded so `~/.ssh/id_*` works like the shell reads it. */
-function pathRuleMatches(rule: PathRule, candidate: string): boolean {
+/** Shared glob/regex path matcher used by both path rules (guard.ts) and arming rules (arming.ts).
+ *  Normalises ~ expansion and path separators, then tries the pattern in both tilde-prefixed and bare forms. */
+export function matchPathGlobs(patterns: readonly string[], useRegex: boolean, candidate: string): boolean {
   const home = homedir();
   const target = candidate === "~" || candidate.startsWith("~/") ? home + candidate.slice(1) : candidate;
-  if (rule.regex) {
+  if (useRegex) {
     try {
-      return rule.paths.some(pattern => new RegExp(pattern).test(target));
+      return patterns.some(pattern => new RegExp(pattern).test(target));
     } catch {
       return false;
     }
   }
-  // globToRegExp anchors at segment start and leaves the head unanchored (project-relative matching); an absolute
-  // or ~-prefixed target is normalised so the same glob matches either spelling: `~/.ssh/id_*` and a pattern stated
-  // without the tilde (`.ssh/id_*`) both match `~/.ssh/id_ed25519` and its absolute expansion.
   const relative = target.startsWith(home + "/") ? `~${target.slice(home.length)}` : target;
   const raw = relative.startsWith("~/") ? relative.slice(2) : relative.replace(/^\/+/, "");
   const forms = (pattern: string) => (pattern.startsWith("~/") ? [pattern, pattern.slice(2)] : [pattern]);
-  return rule.paths.some(pattern => forms(pattern).some(form => globToRegExp(form).test(raw) || globToRegExp(form).test(relative)));
+  return patterns.some(pattern => forms(pattern).some(form => globToRegExp(form).test(raw) || globToRegExp(form).test(relative)));
+}
+
+/** A rule's globs or regexes compiled once; `~` is expanded so `~/.ssh/id_*` works like the shell reads it. */
+function pathRuleMatches(rule: PathRule, candidate: string): boolean {
+  return matchPathGlobs(rule.paths, rule.regex ?? false, candidate);
 }
 
 /** Which side of a file tool's touch: write/edit change the file, every other tool only reads it. */

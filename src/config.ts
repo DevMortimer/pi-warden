@@ -59,6 +59,8 @@ export interface ActionGuardConfig {
   exemptRules: string[];
   /** User-defined path rules with an access dimension (user file only; project files cannot act on them). */
   pathRules: PathRule[];
+  /** User-defined arming rules: editing files matching globs arms a command pattern for a window (user file only). */
+  armingRules: ArmingRule[];
 }
 
 /** A user-defined path rule: which paths, which side of the access is held, which tools, what happens on a hit. */
@@ -79,6 +81,37 @@ export interface PathRule {
   message?: string;
   /** Skip when the path does not exist (default true): phantom paths do not fire. */
   onlyIfExists?: boolean;
+}
+
+/** A user-defined arming rule: a preparation (editing files matching globs) arms a command pattern for a window.
+ * While armed, matching commands fire the rule's action. This is the fix for the class of incident where each
+ * individual call was harmless (edit a config, then run the reconciler that applies it) but the composition was
+ * destructive — no single-call rule can catch it. */
+export interface ArmingRule {
+  /** Stable id; same namespace as rule ids, so exemptRules can silence an arming rule too. */
+  id: string;
+  /** The preparation: editing files matching these globs arms the rule. */
+  when: {
+    /** Path globs (`**` any depth, `*` one segment, `?` one character, `~` expands) or regex sources with regex: true. */
+    edited: string[];
+    /** Regex instead of glob for shapes globs cannot express. */
+    regex?: boolean;
+    /** Which file tools arm: default ["write", "edit"]. */
+    tools?: string[];
+  };
+  /** The armed command: while armed, commands matching this regex fire the rule's action. */
+  arms: {
+    /** Regex source string; compiled case-insensitively unless caseSensitive is true. */
+    command: string;
+    /** How long the rule stays armed after the last matching edit; default "10m". */
+    for?: string | number;
+    /** Match the command case-sensitively. */
+    caseSensitive?: boolean;
+  };
+  /** confirm: dialog (user-invoked prompt); hold: steer hold; block: deny. */
+  action: "confirm" | "hold" | "block";
+  /** Optional human label shown in the dialog/status. */
+  message?: string;
 }
 
 export interface StuckGuardConfig {
@@ -271,6 +304,7 @@ export function defaultConfig(): WardenConfig {
       commandDenyRules: [],
       exemptRules: [],
       pathRules: [],
+      armingRules: [],
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
@@ -415,6 +449,63 @@ function parsePathRules(raw: unknown): PathRule[] {
   return rules;
 }
 
+/** Parse a duration string ("10m", "30s", "2h") or number (ms) into milliseconds. */
+function parseDuration(raw: unknown, fallback: number): number {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return raw;
+  if (typeof raw !== "string") return fallback;
+  const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/.exec(raw.trim());
+  if (!match) return fallback;
+  const value = parseFloat(match[1]!);
+  const unit = match[2] ?? "m";
+  return value * (unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000);
+}
+
+const DEFAULT_ARMING_DURATION = 600_000; // 10 minutes
+const ARMING_TOOLS = new Set(["write", "edit"]);
+
+function parseArmingRule(raw: unknown): ArmingRule | undefined {
+  if (!isObject(raw)) return undefined;
+  const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : undefined;
+  const whenRaw = isObject(raw.when) ? raw.when : undefined;
+  const edited = globList(whenRaw?.edited, []);
+  if (!id || edited.length === 0) return undefined;
+  const armsRaw = isObject(raw.arms) ? raw.arms as Record<string, unknown> : {};
+  const command = typeof armsRaw.command === "string" && armsRaw.command.trim() ? armsRaw.command : undefined;
+  if (!command) return undefined;
+  const action = raw.action === "confirm" || raw.action === "hold" || raw.action === "block" ? raw.action : undefined;
+  if (!action) return undefined;
+  const toolsProvided = Array.isArray(whenRaw?.tools) && whenRaw!.tools.length > 0;
+  const tools = toolsProvided
+    ? (whenRaw!.tools as unknown[]).filter((t): t is string => typeof t === "string" && ARMING_TOOLS.has(t))
+    : ["write", "edit"];
+  // A when.tools that filters to nothing (e.g. ["bash"]) is inert: no tool would ever arm it.
+  if (toolsProvided && tools.length === 0) return undefined;
+  const forMs = parseDuration(armsRaw.for, DEFAULT_ARMING_DURATION);
+  const caseSensitive = typeof armsRaw.caseSensitive === "boolean" ? armsRaw.caseSensitive : false;
+  const message = typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : undefined;
+  const regex = whenRaw?.regex === true;
+  return {
+    id,
+    when: { edited, ...(regex ? { regex: true } : {}), ...(toolsProvided && tools.length > 0 ? { tools } : {}) },
+    arms: { command, for: forMs, ...(caseSensitive ? { caseSensitive } : {}) },
+    action,
+    ...(message ? { message } : {}),
+  };
+}
+
+function parseArmingRules(raw: unknown): ArmingRule[] {
+  if (!Array.isArray(raw)) return [];
+  const ids = new Set<string>();
+  const rules: ArmingRule[] = [];
+  for (const item of raw) {
+    const rule = parseArmingRule(item);
+    if (!rule || ids.has(rule.id)) continue;
+    ids.add(rule.id);
+    rules.push(rule);
+  }
+  return rules;
+}
+
 function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, source: "user" | "project"): ActionGuardConfig {
   const withTimeout = { ...base, timeoutMs };
   if (!isObject(raw)) return withTimeout;
@@ -436,6 +527,8 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     exemptRules: source === "user" ? parseExemptRules(raw.exemptRules) : base.exemptRules,
     // Path rules are user-declared security policy: a project file cannot add, edit, or remove them either.
     pathRules: source === "user" ? parsePathRules(raw.pathRules) : base.pathRules,
+    // Arming rules are user-declared security policy: same gate.
+    armingRules: source === "user" ? parseArmingRules(raw.armingRules) : base.armingRules,
   };
 }
 
