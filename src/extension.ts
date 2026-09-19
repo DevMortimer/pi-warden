@@ -761,7 +761,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const extraChoice = verdict.extra?.tool_recommendation_choice;
     if (typeof extraYes === "number" && extraYes >= 0.7 && typeof extraChoice === "string" && extraChoice !== "current") {
       const label = extraChoice.startsWith("skill:") ? `skill ${extraChoice.slice(6)}` : extraChoice.startsWith("tool:") ? `tool ${extraChoice.slice(5)}` : extraChoice;
-      steer(config, "action", `pi-warden strongly suggests you use the ${label} for this task instead of ${event.toolName}.`);
+      const steerMsg = `pi-warden strongly suggests you use the ${label} for this task instead of ${event.toolName}.`;
+      const delivered = steer(config, "action", steerMsg);
+      record(ctx, config, "action", `tool recommendation: use ${label} instead of ${event.toolName}`, actionDetails(verdict, { mode: activeMode(config, ctx.hasUI), ...(delivered ? { told: steerMsg } : {}) }));
     }
     const warnSteer = (label: string) => steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${label}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`);
     if (verdict.level === "warn") {
