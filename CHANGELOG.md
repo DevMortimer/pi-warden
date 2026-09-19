@@ -6,7 +6,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- GitHub Actions CI for pull requests, main pushes, version tags, and manual runs: workflow lint plus typecheck, offline tests, and build on Node 22.19.0, 24, and 26.
+- Package installation smoke checks and downloadable npm tarballs with SHA-256 checksums; validated version tags prepare draft GitHub releases without publishing to npm.
+
+### Docs
+
+- Documented CI checks and manual release steps, and corrected the contributor version-bump instructions.
 
 ## 0.29.1
 
