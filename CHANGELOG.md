@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.27.2
+
+### Fixed
+
+- Redact user prompts before storing in SQLite hold records (JSONL was already safe).
+
 ## 0.27.1
 
 ### Removed
