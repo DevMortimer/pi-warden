@@ -756,6 +756,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       for (const traceNote of pathNoteTraces) traceNote(delivered);
       pathNoteTraces.length = 0;
     }
+    // Tool-recommendation steer: if Jev says a better tool/skill exists, tell the agent.
+    const extraYes = verdict.extra?.tool_recommendation_yes;
+    const extraChoice = verdict.extra?.tool_recommendation_choice;
+    if (typeof extraYes === "number" && extraYes >= 0.7 && typeof extraChoice === "string" && extraChoice !== "current") {
+      const label = extraChoice.startsWith("skill:") ? `skill ${extraChoice.slice(6)}` : extraChoice.startsWith("tool:") ? `tool ${extraChoice.slice(5)}` : extraChoice;
+      steer(config, "action", `pi-warden strongly suggests you use the ${label} for this task instead of ${event.toolName}.`);
+    }
     const warnSteer = (label: string) => steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${label}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`);
     if (verdict.level === "warn") {
       stats.warned++;
