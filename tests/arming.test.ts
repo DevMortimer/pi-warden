@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { ArmingTracker, unparseableArmingRules } from "../src/arming.js";
+import { stripDataText, writeSinkTargets } from "../src/guard.js";
 import type { ArmingRule } from "../src/config.js";
 
 let cwd: string;
@@ -317,4 +318,27 @@ test("unparseableArmingRules: surfaces rules with invalid regex", () => {
   ];
   const ids = unparseableArmingRules(rules);
   assert.deepEqual(ids, ["bad"]);
+});
+
+// --- Cross-PR polish: arm/check text parity ---
+// A data heredoc mentioning a redirect to a when.edited glob must NOT arm (the redirect
+// is text, not a real write), but a shell-sink heredoc (real write) must arm.
+test("arm/check parity: data heredoc redirect does not produce a write-sink target", () => {
+  // A data heredoc (cat <<'EOF' with no shell sink) that mentions a redirect in its body.
+  const dataCmd = "cat <<'EOF'\nremember to redirect logs > ~/flux-cluster/kustomization.yaml someday\nEOF\necho done";
+  const stripped = stripDataText(dataCmd).text;
+  // The raw command has the redirect in the heredoc body; writeSinkTargets extracts it.
+  const rawSinks = writeSinkTargets(dataCmd);
+  // After stripDataText, the heredoc body is replaced with a placeholder — no redirect.
+  const strippedSinks = writeSinkTargets(stripped);
+  assert.ok(rawSinks.length > 0, "raw command has a phantom redirect in the data body");
+  assert.equal(strippedSinks.length, 0, "stripped command has no redirect — arm side must use stripped text");
+});
+
+test("arm/check parity: a real redirect in a shell-sink heredoc does produce a write-sink target", () => {
+  // A shell-sink heredoc: the body is executed, so the redirect is real.
+  const execCmd = "bash <<'EOF'\necho x > /tmp/kustomization.yaml\nEOF";
+  const stripped = stripDataText(execCmd).text;
+  const strippedSinks = writeSinkTargets(stripped);
+  assert.ok(strippedSinks.length > 0, "a shell-sink heredoc redirect survives stripDataText");
 });

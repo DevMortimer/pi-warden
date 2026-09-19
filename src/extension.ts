@@ -12,7 +12,7 @@ import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, pr
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, higher, inertPathRules, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import { evaluateAction, formatVerdict, higher, inertPathRules, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
@@ -236,6 +236,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // An exemptRules id that names neither a built-in nor one of the user's own rules is inert; said once, not per call.
   let exemptReported = false;
   let inertReported = false;
+  let unparseableReported = false;
   const configFor = (ctx: ExtensionContext | ExtensionCommandContext): WardenConfig => {
     const { config, missing } = guardCurrentSections(completeConfig(loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() })));
     if (missing.length && !shapeReported) {
@@ -257,9 +258,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
     }
     const unparseable = unparseableArmingRules(config.action.armingRules);
-    if (unparseable.length && !inertReported) {
-      // Reuses the same one-time channel: the operator sees the bad rule once, not per call.
-      inertReported = true;
+    if (unparseable.length && !unparseableReported) {
+      // Separate flag so an operator with both an inert path rule and a bad arming regex sees both warnings.
+      unparseableReported = true;
       const text = `warden: arming rules ${unparseable.join(", ")} have an invalid command regex; the rules will never fire`;
       if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
     }
@@ -506,7 +507,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (config.action.armingRules.length > 0) {
       const inputPath = typeof (event.input as Record<string, unknown>).path === "string" ? (event.input as Record<string, unknown>).path as string : undefined;
       const armCmd = commandOf(event.toolName, event.input as Record<string, unknown>)?.command;
-      const sinks = armCmd ? writeSinkTargets(armCmd) : undefined;
+      // Parity with checkArmed: strip data text before extracting write-sink targets so a redirect
+      // mentioned inside a data heredoc (no shell sink) does not arm, but a real redirect in an executed
+      // heredoc or plain command does.
+      const sinks = armCmd ? writeSinkTargets(stripDataText(armCmd).text) : undefined;
       arming.arm(event.toolName, inputPath, ctx.cwd, sinks);
     }
     const task = latestUserPrompt(ctx);
