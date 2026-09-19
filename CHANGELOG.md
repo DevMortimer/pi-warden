@@ -6,6 +6,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 0.26.0
+
+### Added
+
+- OpenRouter as a configurable judgment backend (`typesafeBackend` in user config). Set to `"openrouter"` to route Jev decisions through OpenRouter's decisions API instead of api.typesafe.ai. New `src/backend.ts` module; `OPENROUTER_API_KEY` env var; project overrides cannot redirect judgments.
+
+### Changed
+
+- Bumped pi-typesafe to ^0.6.0 (native `backend` option on `TypeSafeOptions`).
+- Deduplicated `resolveBackend` call in `shape.ts`.
+
 ## 0.25.0
 
 ### Added
