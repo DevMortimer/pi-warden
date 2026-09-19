@@ -9,11 +9,12 @@ import type { ToolCallRef } from "./action-guard.js";
 import * as configModule from "./config.js";
 import { applyUserOverrides, defaultConfig, isMode, loadConfig, PACKAGE_NAME, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig, WardenMode } from "./config.js";
-import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome } from "./done.js";
+import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
 import { evaluateAction, formatVerdict, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason } from "./guard.js";
 import type { PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
+import { initSchema, recordHold, recordOutcome } from "./learning.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
 import { compressOutput, duplicateNote, evaluateOutput, mergeOutput, outputKey, saveOutput, securityNotice } from "./output.js";
@@ -202,6 +203,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const rulesGuard = new RulesGuard();
   // Hold feedback: what the user did after each judged call, the trace entry each label lands on, and the per-session log.
   const holds = new HoldLedger();
+  initSchema();
+  const learningIds = new Map<number, number>(); // holds.id -> learning.id
+
+  function summarizeContext(context?: readonly { role: string; text: string }[]): string | undefined {
+    if (!context?.length) return undefined;
+    return context.slice(-4).map(m => m.role + ": " + m.text.slice(0, 200)).join("\n");
+  }
   const traceOf = new WeakMap<CallRecord, TraceEntry>();
   let holdLog: HoldLog | undefined;
   // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
@@ -504,16 +512,48 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (verdict.approvedByUser) {
       stats.approved++;
       const released = holds.approved(event.toolName);
-      if (released) noteOutcomes(config, [released]);
+      if (released) {
+        noteOutcomes(config, [released]);
+        const learningId = learningIds.get(released.id);
+        if (learningId) recordOutcome(learningId, "approved");
+      }
     }
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
     const entry = verdict.source !== "read-only" ? record(ctx, config, "action", formatVerdict(verdict, config.widget.action), actionDetails(verdict, { mode, ...(told ? { told } : {}) })) : undefined;
     // What happens to this call is the label for its scores; a decision made in the dialog lands at once, a steer-mode hold waits for the user.
     const track = (held: boolean, outcome?: CallOutcome, via?: OutcomeVia) => {
       if (!entry) return;
-      const item = holds.record(verdict, { held, mode, outcome, via });
+      const recordOpts: Parameters<typeof holds.record>[1] = { held, mode, outcome, via };
+      if (task) recordOpts.task = task;
+      if (verdict.plan) recordOpts.plan = verdict.plan;
+      const ctxSummary = summarizeContext(recentTaskContext(ctx));
+      if (ctxSummary) recordOpts.contextSummary = ctxSummary;
+      if (held) recordOpts.agentReason = steerReason(verdict, { canApprove: judge !== undefined });
+      const item = holds.record(verdict, recordOpts);
       traceOf.set(item, entry);
       noteOutcomes(config, outcome ? [item] : []);
+      // Record to SQLite for learning
+      if (held) {
+        const learnScores: Record<string, unknown> = {};
+        if (item.scores) { for (const [k, v] of Object.entries(item.scores)) learnScores[k] = v; }
+        const holdOpts: import("./learning.js").HoldRecord = {
+          timestamp: item.at,
+          projectRoot: ctx.cwd,
+          tool: item.tool,
+          commandPreview: item.tool,
+          scores: learnScores,
+          level: item.level,
+          held: true,
+          reasons: item.reasons,
+        };
+        if (task) holdOpts.task = task;
+        if (verdict.plan) holdOpts.plan = verdict.plan;
+        if (ctxSummary) holdOpts.contextSummary = ctxSummary;
+        if (held) holdOpts.agentReason = steerReason(verdict, { canApprove: judge !== undefined });
+        const id = recordHold(holdOpts);
+        learningIds.set(item.id, id);
+        if (outcome) recordOutcome(id, outcome);
+      }
     };
     // The warn notice below names the mismatch to the user; the agent gets the steer with the other notes.
     if (verdict.intentMismatch) {
@@ -774,7 +814,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     const patch = content === event.content ? undefined : { content };
     // Checks use the original result, not the excerpts or security banner.
-    if (config.done.enabled) recordOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
+    if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
     const verdict = await stuckCheck;
     if (!verdict) return patch;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);

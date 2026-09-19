@@ -105,7 +105,7 @@ export class HoldLedger {
   private nextId = 1;
 
   /** One inspected call. `outcome` is set at once when the confirm dialog decided; a steer-mode hold starts pending. */
-  record(verdict: Verdict, options: { held: boolean; mode: WardenMode; outcome?: CallOutcome | undefined; via?: OutcomeVia | undefined; at?: number }): CallRecord {
+  record(verdict: Verdict, options: { held: boolean; mode: WardenMode; outcome?: CallOutcome | undefined; via?: OutcomeVia | undefined; at?: number; task?: string; plan?: string; contextSummary?: string; agentReason?: string }): CallRecord {
     const at = options.at ?? Date.now();
     const record: CallRecord = {
       id: this.nextId++,
