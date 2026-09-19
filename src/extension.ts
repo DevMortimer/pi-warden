@@ -210,7 +210,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const rulesGuard = new RulesGuard();
   // Hold feedback: what the user did after each judged call, the trace entry each label lands on, and the per-session log.
   const holds = new HoldLedger();
-  initSchema();
+  initSchema(loadConfig().learning.retentionDays);
   const learningIds = new Map<number, number>(); // holds.id -> learning.id
   // Prune learningIds when it grows large to prevent memory leaks
   function pruneLearningIds(): void {

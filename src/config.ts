@@ -251,6 +251,8 @@ export interface LearningConfig {
   minHoldsForAdaptive: number;
   /** How aggressively to adjust thresholds (0-1). Higher values mean faster adaptation. */
   adaptationRate: number;
+  /** Days to keep hold records in SQLite before pruning. 0 disables pruning. */
+  retentionDays: number;
 }
 
 export interface WardenConfig {
@@ -337,7 +339,7 @@ export function defaultConfig(): WardenConfig {
     steerVisible: false,
     notices: false,
     steerBudget: 3,
-    learning: { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1 },
+    learning: { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 },
   };
 }
 
@@ -717,6 +719,7 @@ function applyLearning(base: LearningConfig, raw: unknown): LearningConfig {
     patternAnalysis: boolean(raw.patternAnalysis, base.patternAnalysis),
     minHoldsForAdaptive: Math.max(5, positiveInteger(raw.minHoldsForAdaptive, base.minHoldsForAdaptive)),
     adaptationRate: Math.max(0, Math.min(1, probability(raw.adaptationRate, base.adaptationRate))),
+    retentionDays: Math.max(0, positiveInteger(raw.retentionDays, base.retentionDays)),
   };
 }
 
