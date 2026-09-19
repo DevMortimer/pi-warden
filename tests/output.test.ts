@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig, applyUserOverrides, applyProjectOverrides } from "../src/config.js";
 import type { Judge } from "../src/guard.js";
-import { buildOutputRequest, compressOutput, duplicateNote, evaluateOutput, outputKey, saveOutput, securityNotice, CompressionLearner, SessionCompressionTracker } from "../src/output.js";
+import { buildOutputRequest, compressOutput, duplicateNote, evaluateOutput, outputKey, saveOutput, securityNotice, CompressionLearner } from "../src/output.js";
 import { secretIds } from "../src/redact.js";
 
 const options = () => ({ security: defaultConfig().security, context: defaultConfig().context, timeoutMs: 1000 });
@@ -191,38 +191,4 @@ test("CompressionLearner resets correctly", () => {
   assert.equal(best, undefined, "undefined after reset");
 });
 
-// --- Tests for session compression tracker ---
 
-test("SessionCompressionTracker starts with 1.0 multiplier", () => {
-  const tracker = new SessionCompressionTracker();
-  assert.equal(tracker.getMultiplier(), 1.0, "no extra compression at start");
-});
-
-test("SessionCompressionTracker increases compression over time", () => {
-  const tracker = new SessionCompressionTracker();
-  for (let i = 0; i < 10; i++) tracker.turnEnd();
-  assert.equal(tracker.getMultiplier(), 0.9, "10% more compression after 10 turns");
-  for (let i = 0; i < 15; i++) tracker.turnEnd();
-  assert.equal(tracker.getMultiplier(), 0.8, "20% more compression after 25 turns");
-  for (let i = 0; i < 10; i++) tracker.turnEnd();
-  assert.equal(tracker.getMultiplier(), 0.7, "30% more compression after 35 turns");
-});
-
-test("SessionCompressionTracker records stats correctly", () => {
-  const tracker = new SessionCompressionTracker();
-  tracker.record(1000, 500);
-  tracker.record(2000, 800);
-  const stats = tracker.stats();
-  assert.equal(stats.originalBytes, 3000, "total original bytes");
-  assert.equal(stats.savedBytes, 1700, "total saved bytes");
-  assert.ok(stats.saveRate > 0.5, "save rate above 50%");
-});
-
-test("SessionCompressionTracker resets correctly", () => {
-  const tracker = new SessionCompressionTracker();
-  tracker.record(1000, 500);
-  tracker.turnEnd();
-  tracker.reset();
-  assert.equal(tracker.getMultiplier(), 1.0, "multiplier reset");
-  assert.equal(tracker.stats().savedBytes, 0, "stats reset");
-});

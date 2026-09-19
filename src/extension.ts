@@ -22,7 +22,7 @@ import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, 
 import { initSchema, recordHold, recordOutcome, toHoldRecord, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
-import { compressOutput, duplicateNote, evaluateOutput, mergeOutput, outputKey, saveOutput, securityNotice, CompressionLearner, SessionCompressionTracker } from "./output.js";
+import { compressOutput, duplicateNote, evaluateOutput, mergeOutput, outputKey, saveOutput, securityNotice, CompressionLearner } from "./output.js";
 import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
@@ -238,8 +238,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const ledger = new ContextLedger();
   // Learns which compression strategies work best per tool, so the next call skips the judge when confident.
   const compressionLearner = new CompressionLearner();
-  // Tracks session-level compression aggressiveness — later turns compress more.
-  const sessionCompression = new SessionCompressionTracker();
+
   // Secrets already announced this session, by fingerprint: the same key read twice earns one banner and one steer.
   const secretsSeen = new Set<string>();
   // Subagent report entries already triaged, by session entry id; the wake window outlives one scan.
@@ -470,7 +469,6 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     prose.reset();
     ledger.reset();
     compressionLearner.reset();
-    sessionCompression.reset();
     secretsSeen.clear();
     subagentSeen.clear();
     wakePolicy.reset();
@@ -540,7 +538,6 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Every turn that runs after a compression is a turn that did not carry the removed text.
   pi.on("turn_end", async () => {
     ledger.turnEnd();
-    sessionCompression.turnEnd();
     actionGuard.turnEnd();
     rulesGuard.turnEnd();
   });
