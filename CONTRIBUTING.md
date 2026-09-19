@@ -28,7 +28,8 @@ Thank you. Complaints are as useful as code: a steer that annoyed you is calibra
 
 - One change per commit, with a message that says what changed and why. No tool or AI attribution lines.
 - Keep a PR to one topic. Update the README or the matching `docs/` file in the same PR when behaviour or config changes.
-- Releases are cut by the maintainer, about weekly; do not bump `package.json` in a PR.
+- The last commit on every PR is a version bump. It changes only `package.json` and `CHANGELOG.md`: move the release notes under the new version heading and leave `## Unreleased` at the top. Use `chore: version bump to X.Y.Z` as the commit message.
+- GitHub Actions runs the offline gate and package checks. Version tags prepare a draft GitHub release; npm publishing stays manual. See [CI and continuous delivery](docs/ci-cd.md) for checks and maintainer steps.
 
 ## Where to ask
 
