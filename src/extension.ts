@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { MouseRegion } from "@earendil-works/pi-tui";
 import type { KeyId } from "@earendil-works/pi-tui";
+import * as tuiModule from "@earendil-works/pi-tui";
+type MouseRegionConstructor = new (child: ReturnType<typeof statusWidget>, onMouse: (event: { type: string; button: string }) => { handled: boolean } | undefined) => import("@earendil-works/pi-tui").Component;
+const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ MouseRegion: MouseRegionConstructor }>).MouseRegion;
 import { authState, createTypeSafe, describeAuth } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
@@ -310,11 +312,17 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!config.widget.enabled || widget.size === 0) { ctx.ui.setWidget(WIDGET, undefined); return; }
     const entries = [...widget].map(([guard, line]) => ({ guard, line }));
     // A custom component so the lines wrap to the pane and a click (fullscreen mode) opens the trace panel.
-    ctx.ui.setWidget(WIDGET, (_tui, theme) => new MouseRegion(statusWidget(entries, theme), event => {
-      if (event.type !== "click" || event.button !== "left") return undefined;
-      togglePanel(lastUi, config);
-      return { handled: true };
-    }), { placement: config.widget.placement });
+    // When the host TUI lacks MouseRegion (e.g. omp 18.2.5), the extension still loads — the widget
+    // renders the same text, but a click does nothing. A missing named import is a link-time error
+    // that kills the entire extension silently; a missing namespace property is undefined.
+    ctx.ui.setWidget(WIDGET, (_tui, theme) => {
+      const body = statusWidget(entries, theme);
+      return MouseRegion ? new MouseRegion(body, event => {
+        if (event.type !== "click" || event.button !== "left") return undefined;
+        togglePanel(lastUi, config);
+        return { handled: true };
+      }) : body;
+    }, { placement: config.widget.placement });
   };
   const record = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig, guard: GuardName, line: string, details: string[]): TraceEntry => {
     widget.set(guard, line);
