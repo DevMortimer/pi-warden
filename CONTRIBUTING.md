@@ -18,7 +18,7 @@ Thank you. Complaints are as useful as code: a steer that annoyed you is calibra
 ## Rules the code keeps
 
 - **A new Jev question ships with a measurement.** Add it to `scripts/action-candidates.mjs` (or the guard's `*-cases.mjs` set), run it, and put the numbers in the PR and the Calibration section of `docs/guards.md`. An unmeasured question can be merged as `extra` (recorded, never acted on), not as a rule. See `docs/guards.md` → Calibration for the method.
-- **Steers never hold.** Only irreversible actions and destructive patterns block a call. Off-task, plan mismatch, slop, rules, and security notices tell the agent and let the call run.
+- **Steers never hold.** Three things block a call: a destructive pattern, a `deny` command rule (blocked outright, no dialog), or `irreversible` at 0.7 or above. Off-task, plan mismatch, slop, rules, and security notices tell the agent and let the call run.
 - **Approval comes from the user's message only.** Assistant text explains a call; it cannot approve one.
 - **Nothing that leaves the machine or lands in the trace carries a command, a path the user did not show, or a secret.** `redact()` before sending; reasons name patterns and scores. `docs/data-handling.md` must stay true after your change.
 - **Fail open, say so.** A TypeSafe error allows the call with a warning (`failOpen`); it never crashes a hook.
