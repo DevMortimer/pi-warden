@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.25.1
+
 ### Fixed
 
 - Host-TUI capability guard: the extension no longer crashes when the host's bundled `pi-tui` lacks the `MouseRegion` component (e.g. omp 18.2.5). A missing named import was a link-time error that silently killed every guard, the `/warden` command, and the shortcut. The import is now a namespace property read (`tuiModule.MouseRegion`), which degrades to `undefined` instead of failing. The status widget renders the same guard text without the clickable wrapper.
