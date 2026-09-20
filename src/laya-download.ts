@@ -73,19 +73,63 @@ interface HfFile {
 }
 
 /**
- * Fetch the file list from HuggingFace using the /tree endpoint,
- * which returns actual file sizes.  Directories have size 0 and
- * are excluded.
+ * Fetch all files in the repo with their sizes.
+ *
+ * Uses two HuggingFace endpoints because neither alone gives us everything:
+ * - `/api/models/{repo}` siblings: full file list (including nested paths like
+ *   `encoder/config.json`) but no sizes.
+ * - `/api/models/{repo}/tree/{ref}/{path}`: sizes for files in one directory,
+ *   but only returns direct children (not recursive).
+ *
+ * Strategy: get the full list from siblings, then walk each directory subtree
+ * via /tree to fill in sizes.
  */
 async function listRepoFiles(repo: string): Promise<HfFile[]> {
-  const url = `${HF_API}/api/models/${repo}/tree/main`;
-  const response = await fetchWithTimeout(url, 15_000);
-  if (!response.ok) throw new Error(`HuggingFace API ${response.status}: ${response.statusText}`);
-  const data = (await response.json()) as Array<{ path: string; size?: number; type?: string }>;
-  if (!Array.isArray(data)) throw new Error("unexpected HuggingFace API response shape");
-  return data
-    .filter((f): f is { path: string; size: number } => typeof f.path === "string" && typeof f.size === "number" && f.size > 0 && f.type !== "directory")
-    .map(f => ({ path: f.path, size: f.size! }));
+  // 1. Get the complete file list from siblings (includes nested paths).
+  const metaUrl = `${HF_API}/api/models/${repo}`;
+  const metaResp = await fetchWithTimeout(metaUrl, 15_000);
+  if (!metaResp.ok) throw new Error(`HuggingFace API ${metaResp.status}: ${metaResp.statusText}`);
+  const meta = (await metaResp.json()) as { siblings?: Array<{ rfilename: string }> };
+  if (!meta.siblings) throw new Error("no siblings in model info");
+
+  const allPaths = meta.siblings
+    .map(s => s.rfilename)
+    .filter(p => typeof p === "string" && p.length > 0);
+  if (allPaths.length === 0) throw new Error("model repo has no files");
+
+  // 2. Collect directory paths that need size lookups.
+  const dirs = new Set<string>();
+  for (const p of allPaths) {
+    const slash = p.indexOf("/");
+    if (slash !== -1) dirs.add(p.slice(0, slash));
+  }
+
+  // 3. Fetch sizes from /tree for each directory (root + subdirs).
+  const sizes = new Map<string, number>();
+  const fetchTree = async (dirPath: string) => {
+    const treeUrl = `${HF_API}/api/models/${repo}/tree/main${dirPath ? "/" + dirPath : ""}`;
+    const resp = await fetchWithTimeout(treeUrl, 15_000);
+    if (!resp.ok) return; // non-fatal: we'll download without size info
+    const entries = (await resp.json()) as Array<{ path: string; size?: number; type?: string }>;
+    if (!Array.isArray(entries)) return;
+    for (const e of entries) {
+      if (typeof e.path === "string" && typeof e.size === "number" && e.size > 0 && e.type !== "directory") {
+        // /tree returns repo-relative paths (e.g. "encoder/config.json"),
+        // not paths relative to the queried directory.
+        sizes.set(e.path, e.size);
+      }
+    }
+  };
+
+  // Fetch root + all known subdirectories in parallel.
+  await Promise.all([fetchTree(""), ...[...dirs].map(d => fetchTree(d))]);
+
+  // 4. Build the final file list.  Files without a size from /tree get size 0
+  //    (the download will still work; the progress bar just won't know the total
+  //    for that file).
+  return allPaths
+    .filter(p => !p.endsWith("/")) // skip pure directories
+    .map(p => ({ path: p, size: sizes.get(p) ?? 0 }));
 }
 
 /** Download a single file with progress tracking. */
