@@ -15,7 +15,6 @@ How to keep this current: add the entry in the same pull request as the change, 
 - `resolveRulesFile()` and `extractRules()` for token-aware rules file resolution.
 - `checkPiWardenMissing()` for first-run warning support.
 - `escalationThreshold` config key in `ActionGuardConfig` (default 0.85).
-- `toolRecommendation` config key in `ActionGuardConfig` (default true, recorded but not acted on until measured).
 - `/warden init` command: scaffolds a starter pi-warden.md with safety rules and project-type-specific rules.
 - `writeStarterRules()`, `generateStarterRules()`, `detectProjectType()`, `buildProjectContext()` in `src/init.ts`.
 - First-run warning when pi-warden.md is missing and a fallback is active.

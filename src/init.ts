@@ -44,6 +44,7 @@ function manifestSummary(cwd: string, filename: string): string | null {
     }
     return parts.join("; ") || null;
   } catch {
+    // Best-effort: unparseable manifest is not a failure, just skip this candidate.
     return null;
   }
 }
@@ -125,6 +126,44 @@ export function generateStarterRules(cwd: string): string {
     "paths: src/**",
     "A newly added exported function or class comes with at least one test that exercises its main behaviour.",
     "",
+  );
+
+  return lines.join("\n");
+}
+
+/**
+ * Build a ready-to-paste prompt for the model to generate pi-warden.md.
+ * Includes extracted project context and standard safety rules as a foundation.
+ */
+export function buildInitPrompt(cwd: string): string {
+  const context = buildProjectContext(cwd);
+  const projectType = detectProjectType(cwd);
+  const lines = [
+    "Create a `pi-warden.md` file for this project. Every `#` heading is one rule; the text under it is what Jev judges against.",
+    "",
+    "## Project context",
+    context,
+    "",
+    "## Rules to always include",
+    SAFETY_RULES,
+  ];
+
+  if (projectType === "typescript" || projectType === "javascript") {
+    lines.push(
+      "## Type-specific rules",
+      "- No explicit `any` in **/*.ts, **/*.tsx",
+      "- Exported functions declare their return type in src/**/*.ts",
+      "",
+    );
+  }
+
+  lines.push(
+    "## Requirements",
+    "- Under 50 rules",
+    "- Each rule is a `#` heading with a description under it",
+    "- Optional `paths:` line under a heading limits the rule to matching files",
+    "- No stubs, no TODOs, no placeholders",
+    "- Write the file to pi-warden.md at the project root",
   );
 
   return lines.join("\n");

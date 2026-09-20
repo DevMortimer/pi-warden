@@ -6,7 +6,7 @@ import { after, before, test } from "node:test";
 import { authorize, aggregateLevel, escalateBlastRadius, escalateRulesViolation, isAuthEligible, isNegated, parseViolationJudgments, patternHitsToViolations, removeAuthorized, scopeMatches } from "../src/guard.js";
 import type { Authorization, EscalatedViolation, Violation } from "../src/guard.js";
 import { checkPiWardenMissing, extractRules, resolveRulesFile } from "../src/rules-file.js";
-import { buildProjectContext, detectProjectType, generateStarterRules, writeStarterRules } from "../src/init.js";
+import { buildInitPrompt, buildProjectContext, detectProjectType, generateStarterRules, writeStarterRules } from "../src/init.js";
 
 let cwd: string;
 before(async () => {
@@ -483,5 +483,25 @@ test("buildProjectContext: reads package.json when present", async () => {
   const ctx = buildProjectContext(dir);
   assert.match(ctx, /name: my-app/);
   assert.match(ctx, /scripts: test, build/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("buildInitPrompt: includes project context and safety rules", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  await writeFile(join(dir, "tsconfig.json"), "{}");
+  const prompt = buildInitPrompt(dir);
+  assert.match(prompt, /Project type: typescript/);
+  assert.match(prompt, /No hardcoded secrets/);
+  assert.match(prompt, /No explicit/);
+  assert.match(prompt, /Under 50 rules/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("buildInitPrompt: generic project omits type-specific rules", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  const prompt = buildInitPrompt(dir);
+  assert.match(prompt, /Project type: generic/);
+  assert.doesNotMatch(prompt, /No explicit/);
+  assert.match(prompt, /No hardcoded secrets/);
   await rm(dir, { recursive: true, force: true });
 });

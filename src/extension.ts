@@ -32,7 +32,7 @@ import type { SearchTool } from "./recall.js";
 import { redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
-import { writeStarterRules } from "./init.js";
+import { writeStarterRules, buildInitPrompt } from "./init.js";
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
@@ -1241,7 +1241,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             }
           }
           const result = writeStarterRules(ctx.cwd, true);
-          report(`Wrote ${result.path}. Edit it to add project-specific rules — every # heading is one rule Jev judges against. Run /warden status to verify pi-warden picks it up.`);
+          const prompt = buildInitPrompt(ctx.cwd);
+          report(`Wrote ${result.path}. To tailor it to this project, paste the prompt below into a new conversation:\n\n${prompt}`);
           return;
         }
         if (action === "test") {

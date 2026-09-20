@@ -40,7 +40,7 @@ export { parseRules, condense, globToRegExp, matchGlob, projectPath, RuleStore, 
 export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef } from "./rules.js";
 export { resolveRulesFile, extractRules, checkPiWardenMissing } from "./rules-file.js";
 export type { ResolvedRulesFile } from "./rules-file.js";
-export { writeStarterRules, generateStarterRules, detectProjectType, buildProjectContext } from "./init.js";
+export { writeStarterRules, generateStarterRules, detectProjectType, buildProjectContext, buildInitPrompt } from "./init.js";
 export type { InitResult } from "./init.js";
 export { initSchema, recordHold, recordOutcome as recordHoldOutcome, querySmartHistory, calculateSmartConfidence, shouldSkipHold, analyzeThresholds, analyzePatterns, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 export type { HoldRecord, HoldScores, HoldLevel, HoldOutcome, HoldContext, SmartHistory, ConfidenceResult, SkipResult, ThresholdAdjustment, PatternInsight, ContextRecommendation, SteerEffectivenessReport } from "./learning.js";
