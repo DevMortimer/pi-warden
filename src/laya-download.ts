@@ -1,20 +1,33 @@
 /**
  * Download laya-mlx model weights from HuggingFace with a progress bar.
  *
- * Downloads to ~/.pi/agent/pi-warden/laya/ and creates a .done marker when complete.
- * A marker file avoids re-downloading on every session start.
+ * Downloads to ~/.pi/agent/pi-warden/laya/ using an atomic staging strategy:
+ * files are written to a .staging subdirectory first, then promoted to the final
+ * location only after all files are present and the required files are validated.
+ * A .done marker signals a complete, validated checkpoint.
  */
 
-import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { chmod, stat } from "node:fs/promises";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmod, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pipeline } from "node:stream/promises";
-import { createHash } from "node:crypto";
 
 const HF_API = "https://huggingface.co";
 const MODEL_REPO = "aac6fef/laya-mlx";
 const LAYA_DIR_NAME = "laya";
+
+/**
+ * Files that must exist for a valid checkpoint.
+ * Checked after download; missing files trigger a re-download.
+ */
+const REQUIRED_FILES = [
+  "model.safetensors",
+  "encoder/config.json",
+  "mlx_config.json",
+  "tokenizer/tokenizer.json",
+  "tokenizer/tokenizer_config.json",
+  "manifest.json",
+];
 
 /** The directory where model weights are stored. */
 export function layaModelDir(): string {
@@ -25,14 +38,33 @@ export function layaModelDir(): string {
   return join(agentDir, LAYA_DIR_NAME);
 }
 
-/** Marker file that signals a complete download. */
+/** Marker file that signals a complete, validated download. */
 function doneMarker(dir: string): string {
   return join(dir, ".done");
 }
 
-/** True when the model has already been downloaded. */
+/**
+ * True when the model directory exists, the .done marker is present,
+ * and all required files are on disk with non-zero size.
+ */
 export function layaModelReady(): boolean {
-  return existsSync(doneMarker(layaModelDir()));
+  const dir = layaModelDir();
+  if (!existsSync(doneMarker(dir))) return false;
+  return validateCheckpoint(dir);
+}
+
+/** Validate that all required checkpoint files exist with non-zero size. */
+function validateCheckpoint(dir: string): boolean {
+  for (const file of REQUIRED_FILES) {
+    const path = join(dir, file);
+    try {
+      const st = statSync(path);
+      if (st.size === 0) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 interface HfFile {
@@ -40,16 +72,20 @@ interface HfFile {
   size: number;
 }
 
-/** Fetch the file list from HuggingFace API. */
+/**
+ * Fetch the file list from HuggingFace using the /tree endpoint,
+ * which returns actual file sizes.  Directories have size 0 and
+ * are excluded.
+ */
 async function listRepoFiles(repo: string): Promise<HfFile[]> {
-  const url = `${HF_API}/api/models/${repo}`;
+  const url = `${HF_API}/api/models/${repo}/tree/main`;
   const response = await fetchWithTimeout(url, 15_000);
   if (!response.ok) throw new Error(`HuggingFace API ${response.status}: ${response.statusText}`);
-  const data = (await response.json()) as { siblings?: Array<{ rfilename: string; size?: number }> };
-  if (!data.siblings) throw new Error("no siblings in model info");
-  return data.siblings
-    .filter((s): s is { rfilename: string; size: number } => typeof s.rfilename === "string" && typeof s.size === "number" && s.size > 0)
-    .map(s => ({ path: s.rfilename, size: s.size }));
+  const data = (await response.json()) as Array<{ path: string; size?: number; type?: string }>;
+  if (!Array.isArray(data)) throw new Error("unexpected HuggingFace API response shape");
+  return data
+    .filter((f): f is { path: string; size: number } => typeof f.path === "string" && typeof f.size === "number" && f.size > 0 && f.type !== "directory")
+    .map(f => ({ path: f.path, size: f.size! }));
 }
 
 /** Download a single file with progress tracking. */
@@ -103,28 +139,47 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
  * Download the laya-mlx model. Shows a progress bar in the terminal.
  * Returns the model directory path.
  *
- * @param onStatus - callback for status messages (e.g., "Downloading model...")
+ * Uses atomic staging: files are written to a .staging subdirectory,
+ * then promoted to the final location only after all files download
+ * successfully.  An interrupted download leaves .staging behind, which
+ * is cleaned up on the next startup.
+ *
+ * @param onStatus - callback for status messages
  */
 export async function downloadLayaModel(onStatus?: (msg: string) => void): Promise<string> {
   const dir = layaModelDir();
 
   if (layaModelReady()) return dir;
 
-  mkdirSync(dir, { recursive: true });
+  // Clean up any leftover staging directory from a previous interrupted download.
+  const stagingDir = `${dir}.staging`;
+  await rm(stagingDir, { recursive: true, force: true }).catch((err) => {
+    console.warn(`pi-warden: could not clean staging dir: ${err instanceof Error ? err.message : err}`);
+  });
+
+  // If the final dir exists but is incomplete, remove it so we start fresh.
+  if (existsSync(dir) && !validateCheckpoint(dir)) {
+    onStatus?.("incomplete model cache detected; re-downloading...");
+    await rm(dir, { recursive: true, force: true }).catch((err) => {
+      console.warn(`pi-warden: could not remove incomplete model dir: ${err instanceof Error ? err.message : err}`);
+    });
+  }
+
+  mkdirSync(stagingDir, { recursive: true });
 
   onStatus?.("please wait, downloading laya-mlx model...");
 
-  // 1. List files
+  // 1. List files from the repo.
   const files = await listRepoFiles(MODEL_REPO);
+  if (files.length === 0) throw new Error("HuggingFace returned no files for the model repo");
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
 
-  // 2. Download each file with progress
+  // 2. Download each file into the staging directory.
   const progress = { downloaded: 0, total: totalBytes, filesDone: 0, filesTotal: files.length };
   const lastReport = { bytes: 0, time: Date.now() };
 
   const onProgress = (downloaded: number, total: number) => {
     const now = Date.now();
-    // Update at most every 200ms to avoid terminal thrash
     if (now - lastReport.time < 200 && downloaded < total) return;
     lastReport.bytes = downloaded;
     lastReport.time = now;
@@ -132,7 +187,6 @@ export async function downloadLayaModel(onStatus?: (msg: string) => void): Promi
     const pct = total > 0 ? (downloaded / total) * 100 : 0;
     const mb = (downloaded / (1024 * 1024)).toFixed(1);
     const totalMb = (total / (1024 * 1024)).toFixed(1);
-    // Simple progress bar
     const barLen = 30;
     const filled = Math.round((pct / 100) * barLen);
     const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
@@ -141,14 +195,30 @@ export async function downloadLayaModel(onStatus?: (msg: string) => void): Promi
 
   for (const file of files) {
     const fileUrl = `${HF_API}/${MODEL_REPO}/resolve/main/${file.path}`;
-    const dest = join(dir, file.path);
+    const dest = join(stagingDir, file.path);
     await downloadFile(fileUrl, dest, file.size, progress, onProgress);
     progress.filesDone++;
   }
 
   process.stderr.write("\n");
 
-  // 3. Write done marker
+  // 3. Validate required files in the staging directory.
+  if (!validateCheckpoint(stagingDir)) {
+    await rm(stagingDir, { recursive: true, force: true }).catch((err) => {
+      console.warn(`pi-warden: could not clean staging dir after validation failure: ${err instanceof Error ? err.message : err}`);
+    });
+    throw new Error("laya-mlx: download completed but required checkpoint files are missing");
+  }
+
+  // 4. Promote staging to final location (atomic on the same filesystem).
+  if (existsSync(dir)) {
+    await rm(dir, { recursive: true, force: true }).catch((err) => {
+      console.warn(`pi-warden: could not remove old model dir before promote: ${err instanceof Error ? err.message : err}`);
+    });
+  }
+  await rename(stagingDir, dir);
+
+  // 5. Write done marker.
   writeFileSync(doneMarker(dir), JSON.stringify({ files: files.map(f => f.path), totalBytes, downloadedAt: new Date().toISOString() }));
   await chmod(doneMarker(dir), 0o600);
 
@@ -201,8 +271,6 @@ export function invalidateVenv(): void {
     statSync(marker);
     unlinkSync(marker);
   } catch (err) {
-    // Marker does not exist or cannot be removed — nothing to invalidate.
     console.warn(`pi-warden: could not invalidate venv marker: ${err instanceof Error ? err.message : err}`);
   }
 }
-

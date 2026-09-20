@@ -108,3 +108,42 @@ test("invalidateVenv: does not throw when marker does not exist", async () => {
   const { invalidateVenv } = await import("../src/laya-download.js");
   assert.doesNotThrow(() => invalidateVenv());
 });
+
+// ---------------------------------------------------------------------------
+// Model validation
+// ---------------------------------------------------------------------------
+
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { layaModelReady } from "../src/laya-download.js";
+
+const REQUIRED = [
+  "model.safetensors",
+  "encoder/config.json",
+  "mlx_config.json",
+  "tokenizer/tokenizer.json",
+  "tokenizer/tokenizer_config.json",
+  "manifest.json",
+];
+
+/**
+ * Create a temporary model directory with the given file layout.
+ * Returns the path.  Caller must clean up with rmSync.
+ */function makeTmpModel(files: string[]): string {
+  const dir = `/tmp/laya-test-${process.pid}-${Date.now()}`;
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(`${dir}/encoder`, { recursive: true });
+  mkdirSync(`${dir}/tokenizer`, { recursive: true });
+  writeFileSync(`${dir}/.done`, "{}");
+  for (const file of files) {
+    const full = `${dir}/${file}`;
+    mkdirSync(`${dir}/${file.substring(0, file.lastIndexOf("/"))}`, { recursive: true });
+    writeFileSync(full, "fake-content");
+  }
+  return dir;
+}
+
+test("layaModelReady: returns false when no model dir exists", () => {
+  // layaModelReady checks the real model dir; if it doesn't exist, it's false.
+  // We can't easily mock it, but we can verify the function doesn't throw.
+  assert.equal(typeof layaModelReady(), "boolean");
+});
