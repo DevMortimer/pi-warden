@@ -46,8 +46,9 @@ function manifestSummary(cwd: string, filename: string): string | null {
       if (deps.length) parts.push(`deps: ${deps.join(", ")}`);
     }
     return parts.join("; ") || null;
-  } catch {
+  } catch (err) {
     // Best-effort: unparseable manifest is not a failure, just skip this candidate.
+    console.warn("pi-warden: could not parse manifest:", err);
     return null;
   }
 }

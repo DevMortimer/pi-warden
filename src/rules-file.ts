@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { redact } from "./redact.js";
+import { RULES_FILE, FALLBACK_FILES } from "./rules.js";
 
 /**
  * Resolved active rules file for escalation and context.
@@ -14,10 +15,8 @@ export interface ResolvedRulesFile {
 }
 
 const RULES_CANDIDATES = [
-  { path: "pi-warden.md", source: "pi-warden.md" },
-  { path: "AGENTS.md", source: "AGENTS.md" },
-  { path: "CLAUDE.md", source: "CLAUDE.md" },
-  { path: "README.md", source: "README.md" },
+  { path: RULES_FILE, source: RULES_FILE },
+  ...FALLBACK_FILES.map(f => ({ path: f, source: f })),
 ];
 
 const MAX_CHARS = 16_000; // ~4000 tokens

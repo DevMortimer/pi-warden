@@ -1361,7 +1361,7 @@ function escapeRegex(s: string): string {
 // Violation pipeline: convert pattern hits to violations, apply authorization, escalation, aggregation.
 
 /** Derive ViolationScope from tool input. */
-export function scopeFromInput(tool: string, input: Record<string, unknown>, _cwd?: string): ViolationScope | undefined {
+export function scopeFromInput(tool: string, input: Record<string, unknown>): ViolationScope | undefined {
   const paths: string[] = [];
   const path = typeof input.path === "string" ? input.path : undefined;
   if (path) paths.push(path);

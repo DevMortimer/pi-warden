@@ -18,10 +18,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 - `/warden init` command: scaffolds a starter pi-warden.md with safety rules and project-type-specific rules.
 - `writeStarterRules()`, `generateStarterRules()`, `detectProjectType()`, `buildProjectContext()` in `src/init.ts`.
 - First-run warning when pi-warden.md is missing and a fallback is active.
-- `violation_judgment` noul questions sent to Jev as extra (recorded, not acted on until measured): one per violation on the same request, returning P(yes) as a confidence value. Escalation functions (`escalateBlastRadius`, `escalateRulesViolation`) are exported but not yet wired into the pipeline.
+- Per-violation noul questions sent to Jev on the same request, returning P(yes) as a confidence value. Answers drive escalation (`escalateBlastRadius`, `escalateRulesViolation`) and aggregation (`aggregateLevel`) in the action guard pipeline. Calibrated: AUC 0.73 against regret, 0.42 against rejected turns (600 sessions, 2026-09-20).
 - `parseViolationJudgments()` for safe parsing of Jev noul responses with defaults for missing/malformed data; supports legacy choice fallback.
 - Resolved rules file (`rules`, `rulesSource`) passed to Jev in the request state.
-- `should_proceed` noul question on every action request: unified gate covering rule violations, unrequested scope, explicit constraint breaches, and material user decisions. Inverted: low P(yes) steers (never holds). Calibrated: AUC 0.07 (inverted) against regret, 0.64 against rejected turns (100 targeted sessions, 2026-09-20).
+- `should_proceed` noul question on every action request: unified gate covering rule violations, unrequested scope, explicit constraint breaches, and material user decisions. Inverted: low P(yes) steers (never holds). Calibrated: AUC 0.74 (inverted) against regret, 0.58 against rejected turns (600 sessions, 2026-09-20).
 - `action.shouldProceed` config key `{ hold: number }` (default 0.6): steer threshold for `should_proceed`.
 - `shouldProceedQuestion` exported from `src/guard.ts`.
 - `Verdict.shouldProceedSteer` flag for the unified gate steer.
