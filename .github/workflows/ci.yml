@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check workflow syntax and shell commands
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+
+  check:
+    name: Check (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.19.0", "24", "26"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  package:
+    name: Package
+    needs: [workflow-lint, check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: mkdir -p "$RUNNER_TEMP/package"
+      - name: Validate release tag and extract release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, 'Only stable versions can be released');
+          assert.equal(process.env.RELEASE_TAG, `v${version}`, 'Tag must match package.json');
+          const changelog = readFileSync('CHANGELOG.md', 'utf8');
+          const notes = changelog.split(`\n## ${version}\n`)[1]?.split('\n## ')[0]?.trim();
+          assert.ok(notes, 'CHANGELOG.md must contain notes for this version');
+          writeFileSync(`${process.env.RUNNER_TEMP}/package/release-notes.md`, `${notes}\n`);
+          NODE
+      - run: npm ci
+      - name: Build and smoke-test the npm tarball with the locked Pi peers
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP/package"
+          mkdir -p "$RUNNER_TEMP/package-smoke"
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          const dependencies = Object.fromEntries(Object.keys(lock.packages[''].peerDependencies).map(name => [name, lock.packages[`node_modules/${name}`].version]));
+          writeFileSync(`${process.env.RUNNER_TEMP}/package-smoke/package.json`, JSON.stringify({ private: true, type: 'module', dependencies }));
+          NODE
+          npm install --prefix "$RUNNER_TEMP/package-smoke" --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP/package"/pi-warden-*.tgz
+          cd "$RUNNER_TEMP/package-smoke"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, statSync } from 'node:fs';
+          import { dirname, resolve } from 'node:path';
+          import { fileURLToPath } from 'node:url';
+          import { defaultConfig, evaluateAction } from 'pi-warden';
+          import extension from 'pi-warden/extension';
+          assert.equal(typeof extension, 'function');
+          const metadataPath = fileURLToPath(import.meta.resolve('pi-warden/package.json'));
+          const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+          assert.equal(metadata.name, 'pi-warden');
+          assert.equal(typeof defaultConfig(), 'object');
+          assert.equal(typeof evaluateAction, 'function');
+          const targets = Object.values(metadata.exports).flatMap(value => typeof value === 'string' ? [value] : Object.values(value));
+          for (const target of [...targets, ...metadata.pi.extensions]) {
+            assert.ok(statSync(resolve(dirname(metadataPath), target)).isFile(), `Missing package entry: ${target}`);
+          }
+          for (const target of metadata.pi.extensions) {
+            assert.equal((await import(resolve(dirname(metadataPath), target))).default, extension);
+          }
+          NODE
+          cd "$RUNNER_TEMP/package"
+          sha256sum pi-warden-*.tgz > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/package/
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/package/
+      - name: Create a draft with the verified package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd "$RUNNER_TEMP/package"
+          sha256sum --check SHA256SUMS
+          gh release create "$RELEASE_TAG" pi-warden-*.tgz SHA256SUMS \
+            --verify-tag --draft --title "$RELEASE_TAG" --notes-file release-notes.md
