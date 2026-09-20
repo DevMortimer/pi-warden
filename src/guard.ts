@@ -11,6 +11,52 @@ import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
 export type Level = "allow" | "warn" | "confirm" | "deny";
 export type Severity = "destructive" | "risky" | "sensitive" | "deny";
+export type ViolationSource = "pattern" | "rules-guard" | "security-guard" | "slop-guard";
+
+/** Scope of a violation for deterministic authorization matching. */
+export interface ViolationScope {
+  /** File paths involved, e.g., ["eval/reports/"] */
+  paths?: string[] | undefined;
+  /** Deterministic labels for semantic scope matching, e.g., ["eval results", "evaluation reports"] */
+  labels?: string[] | undefined;
+  /** The full shell command, if bash */
+  command?: string | undefined;
+  /** The tool name, e.g., "bash", "write", "edit" */
+  tool?: string | undefined;
+}
+
+/** A pattern detection result enriched with severity, authorization eligibility, and scope. */
+export interface Violation {
+  id: string;
+  severity: Severity;
+  source: ViolationSource;
+  description: string;
+  /** The pi-warden.md rule text, if source is "rules-guard" */
+  matchedRule?: string;
+  /** Groups related patterns (e.g., "rm" covers rm, git-rm, find-delete) */
+  patternFamily?: string;
+  /** For authorization: paths, files, or targets affected */
+  scope?: ViolationScope;
+  /** Whether this violation can be suppressed by explicit user authorization */
+  authEligible: boolean;
+}
+
+/** Result of deterministic authorization analysis for one violation. */
+export interface Authorization {
+  /** true only if action + scope match AND no negation */
+  authorized: boolean;
+  /** prompt contains the action verb */
+  actionMatched: boolean;
+  /** prompt references the affected paths/targets (when scope exists) */
+  scopeMatched: boolean;
+  /** prompt negates the action ("don't", "do not", "never", "skip") */
+  negated: boolean;
+}
+
+/** A violation after escalation rules have been applied. */
+export interface EscalatedViolation extends Violation {
+  escalatedSeverity: Severity;
+}
 
 export interface PatternHit {
   id: string;
@@ -505,7 +551,7 @@ function pathRuleHit(rule: PathRule, label: string): PatternHit {
   return { id: rule.id, severity, label, ...(rule.action === "confirm" ? { action: "dialog" } : {}), ...(rule.message ? { message: rule.message } : {}) };
 }
 
-function matchPathRules(tool: string, input: Record<string, unknown>, cwd: string | undefined, rules: readonly PathRule[] | undefined, exempt: Set<string>): PatternHit[] {
+export function matchPathRules(tool: string, input: Record<string, unknown>, cwd: string | undefined, rules: readonly PathRule[] | undefined, exempt: Set<string>): PatternHit[] {
   if (!rules?.length) return [];
   const hits: PatternHit[] = [];
   const fired = new Set<string>();
@@ -1072,6 +1118,191 @@ export function steerReason(verdict: Verdict, options: { canApprove: boolean }):
   if (options.canApprove) lines.push("If the user's reply approves it, retry the same call and pi-warden will let it through.");
   else lines.push("pi-warden allows the same call again once the user has replied with approval.");
   return lines.join(" ");
+}
+
+// ---------------------------------------------------------------------------
+// Authorization: deterministic per-violation analysis of the user's prompt.
+
+/** Action verb families for authorization matching. Keys match violation patternFamily or id. */
+const ACTION_VERBS: Record<string, string[]> = {
+  "git-commit": ["commit"],
+  "git-push": ["push"],
+  "git-force-push": ["push"],
+  "git-force-with-lease": ["push"],
+  "deploy": ["deploy", "release", "ship"],
+  "rm": ["delete", "remove", "clean", "tidy", "purge"],
+  "rm-recursive": ["delete", "remove", "clean", "tidy", "purge"],
+  "rm-rf": ["delete", "remove", "clean", "tidy", "purge"],
+  "rm-recursive-dangerous-target": ["delete", "remove", "clean", "tidy", "purge"],
+  "find-delete": ["delete", "remove", "clean", "tidy", "purge"],
+  "git-rm": ["delete", "remove", "clean", "tidy", "purge"],
+  "publish": ["publish"],
+  "npm-publish": ["publish"],
+  "merge": ["merge"],
+  "pr-merge": ["merge"],
+  "git-reset-hard": ["reset"],
+  "git-clean": ["clean"],
+  "sql-drop": ["drop"],
+  "sql-truncate": ["truncate"],
+  "sql-delete": ["delete"],
+  "infra-destroy": ["destroy"],
+  "git-branch-force-delete": ["delete", "remove"],
+};
+
+const NEGATORS = /\b(?:don'?t|do\s+not|never|skip|avoid|without|no\s+(?:need\s+to\s+)?)\b/i;
+
+/** Check if a negator precedes the action verb within 40 characters. */
+export function isNegated(prompt: string, actionVerb: string): boolean {
+  const lower = prompt.toLowerCase();
+  const verbIndex = lower.indexOf(actionVerb);
+  if (verbIndex < 0) return false;
+  const beforeVerb = lower.slice(Math.max(0, verbIndex - 40), verbIndex);
+  return NEGATORS.test(beforeVerb);
+}
+
+/** Deterministic scope matching: exact path, basename, or explicit labels. */
+export function scopeMatches(prompt: string, scope: ViolationScope): boolean {
+  if (!scope.paths?.length && !scope.labels?.length) return true; // no scope = always matches
+  const lower = prompt.toLowerCase();
+  // Check paths: exact match or basename match
+  if (scope.paths?.length) {
+    const pathMatch = scope.paths.some(p => {
+      // Get the last non-empty segment for basename matching
+      const segments = p.split("/").filter(Boolean);
+      const basename = segments.at(-1)?.replace(/\.[^.]+$/, "") ?? p;
+      const baseLower = basename.toLowerCase();
+      return (baseLower.length > 0 && lower.includes(baseLower)) || lower.includes(p.toLowerCase());
+    });
+    if (pathMatch) return true;
+  }
+  // Check labels: explicit semantic labels
+  if (scope.labels?.length) {
+    return scope.labels.some(label => lower.includes(label.toLowerCase()));
+  }
+  return false;
+}
+
+/** Full authorization check for one violation against the user's prompt. */
+export function authorize(prompt: string, violation: Violation): Authorization {
+  if (!violation.authEligible) return { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
+  const verbs = ACTION_VERBS[violation.patternFamily ?? violation.id] ?? [];
+  const actionMatched = verbs.some(v => prompt.toLowerCase().includes(v));
+  if (!actionMatched) return { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
+  const negated = verbs.some(v => isNegated(prompt, v));
+  if (negated) return { authorized: false, actionMatched: true, scopeMatched: false, negated: true };
+  const scopeMatched = scopeMatches(prompt, violation.scope ?? {});
+  return { authorized: actionMatched && scopeMatched, actionMatched, scopeMatched, negated: false };
+}
+
+// ---------------------------------------------------------------------------
+// Violation pipeline: convert pattern hits to violations, apply authorization, escalation, aggregation.
+
+/** Derive ViolationScope from tool input. */
+export function scopeFromInput(tool: string, input: Record<string, unknown>, _cwd?: string): ViolationScope | undefined {
+  const paths: string[] = [];
+  const path = typeof input.path === "string" ? input.path : undefined;
+  if (path) paths.push(path);
+  const command = typeof input.command === "string" ? input.command : undefined;
+  const code = typeof input.code === "string" ? input.code : undefined;
+  const rawCommand = command ?? code;
+  return { paths: paths.length ? paths : undefined, command: rawCommand, tool };
+}
+
+/** Whether a violation from pattern detection is authorization-eligible. Hard denies and security denies are not. */
+export function isAuthEligible(hit: PatternHit): boolean {
+  if (hit.severity === "deny") return false; // hard deny: command rules, block actions
+  if (hit.severity === "sensitive") return false; // sensitive-path: security concern
+  // Pattern-detected risky/destructive hits are auth-eligible (user can explicitly authorize)
+  return true;
+}
+
+/** Generate deterministic labels for a pattern hit's scope. */
+function labelsForHit(hit: PatternHit): string[] {
+  const labels: string[] = [];
+  switch (hit.id) {
+    case "git-force-push": case "git-force-with-lease": case "git-push":
+      labels.push("git push", "push"); break;
+    case "git-reset-hard":
+      labels.push("git reset", "reset"); break;
+    case "git-clean":
+      labels.push("git clean", "clean"); break;
+    case "rm-rf": case "rm-recursive": case "rm-recursive-dangerous-target":
+      labels.push("rm", "remove", "delete files"); break;
+    case "find-delete":
+      labels.push("find delete", "delete files"); break;
+    case "git-branch-force-delete":
+      labels.push("delete branch", "branch"); break;
+    case "npm-publish": case "publish":
+      labels.push("publish", "npm publish"); break;
+    case "pr-merge":
+      labels.push("merge pr", "merge pull request"); break;
+    case "infra-destroy":
+      labels.push("destroy infrastructure", "terraform destroy", "kubectl delete"); break;
+    default: break;
+  }
+  return labels;
+}
+
+/** Convert PatternHit[] to Violation[] with authorization eligibility and scope. */
+export function patternHitsToViolations(hits: readonly PatternHit[], tool: string, input: Record<string, unknown>): Violation[] {
+  return hits.map(hit => ({
+    id: hit.id,
+    severity: hit.severity,
+    source: "pattern" as const,
+    description: hit.message ?? hit.label,
+    patternFamily: hit.id,
+    scope: { ...scopeFromInput(tool, input), labels: labelsForHit(hit) },
+    authEligible: isAuthEligible(hit),
+  }));
+}
+
+/** Escalation A: blast-radius / action authorization. */
+export function escalateBlastRadius(
+  violation: Violation,
+  authorization: Authorization,
+  jevJudgment: { violated: boolean; confidence: number },
+  config: { escalationThreshold: number },
+): Severity {
+  // Explicitly authorized: no escalation, keep original severity.
+  if (authorization.authorized) return violation.severity;
+  // Jev does not confirm the violation: no escalation.
+  if (!jevJudgment.violated || jevJudgment.confidence < config.escalationThreshold) return violation.severity;
+  // Escalate: risky → destructive, destructive → deny.
+  if (violation.severity === "risky") return "destructive";
+  if (violation.severity === "destructive") return "deny";
+  return violation.severity;
+}
+
+/** Escalation B: rules guard / content violations. */
+export function escalateRulesViolation(
+  violation: Violation,
+  jevJudgment: { violated: boolean; confidence: number },
+  config: { escalationThreshold: number },
+): Severity {
+  if (!violation.matchedRule) return violation.severity;
+  // Jev confirms the violation against an explicit rule: escalate to destructive (holds write).
+  if (jevJudgment.violated && jevJudgment.confidence >= config.escalationThreshold) return "destructive";
+  return violation.severity;
+}
+
+const SEVERITY_RANK: Record<Severity, number> = { risky: 1, destructive: 2, sensitive: 2, deny: 3 };
+
+/** Aggregate: final level is the highest severity among all remaining violations. */
+export function aggregateLevel(violations: readonly EscalatedViolation[]): Level {
+  if (violations.length === 0) return "allow";
+  const maxSeverity = violations.reduce(
+    (max, v) => Math.max(max, SEVERITY_RANK[v.escalatedSeverity] ?? 0),
+    0,
+  );
+  if (maxSeverity >= 3) return "deny";
+  if (maxSeverity >= 2) return "confirm";
+  if (maxSeverity >= 1) return "warn";
+  return "allow";
+}
+
+/** Remove authorized violations from the set. Returns only non-authorized violations. */
+export function removeAuthorized(violations: readonly Violation[], authorizations: readonly Authorization[]): Violation[] {
+  return violations.filter((_, index) => !authorizations[index]?.authorized);
 }
 
 /** One-line rendering for widgets and logs. Includes no command text. Templates: see widget.ts. */
