@@ -21,7 +21,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 - Per-violation noul questions sent to Jev on the same request, returning P(yes) as a confidence value. Answers drive escalation (`escalateBlastRadius`, `escalateRulesViolation`) and aggregation (`aggregateLevel`) in the action guard pipeline. Calibrated: AUC 0.73 against regret, 0.42 against rejected turns (600 sessions, 2026-09-20).
 - `parseViolationJudgments()` for safe parsing of Jev noul responses with defaults for missing/malformed data; supports legacy choice fallback.
 - Resolved rules file (`rules`, `rulesSource`) passed to Jev in the request state.
-- `should_proceed` noul question on every action request: unified gate covering rule violations, unrequested scope, explicit constraint breaches, and material user decisions. Inverted: low P(yes) steers (never holds). Calibrated: AUC 0.74 (inverted) against regret, 0.58 against rejected turns (600 sessions, 2026-09-20).
+- `should_proceed` noul question on every action request: unified gate covering rule violations, unrequested scope, explicit constraint breaches, and material user decisions. Calibrated: AUC 0.26 against regret, 0.58 against rejected turns (600 sessions, 2026-09-20).
 - `action.shouldProceed` config key `{ hold: number }` (default 0.6): steer threshold for `should_proceed`.
 - `shouldProceedQuestion` exported from `src/guard.ts`.
 - `Verdict.shouldProceedSteer` flag for the unified gate steer.
