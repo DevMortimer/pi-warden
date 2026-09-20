@@ -759,11 +759,12 @@ function violationJudgmentQuestions(violations: readonly Violation[]): Questions
   return questions;
 }
 
-/** Parse violation_judgment answers from verdict.extra. Noul questions return P(yes) as a number. */
+/** Parse violation_judgment answers from verdict.extra. Keys are `violation_<index>` (not
+ * violation id) so two violations with the same id but different scopes are independent. */
 export function parseViolationJudgments(violations: readonly Violation[], extra: Record<string, number | string> | undefined): ViolationJudgmentAnswer[] {
   if (!extra) return violations.map(() => ({ ...VIOLATION_DEFAULT }));
-  return violations.map(v => {
-    const answer = extra[`violation_${v.id}`];
+  return violations.map((_v, i) => {
+    const answer = extra[`violation_${i}`];
     if (typeof answer === "number") {
       // Noul returns P(yes) — high probability means Jev confirms the violation.
       return { violated: answer >= 0.5, confidence: answer };
@@ -979,8 +980,10 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       remainingAuthorizations.push(allAuthorizations[i]!);
     }
   }
-  const authorizedIds = new Set(allViolations.filter((_, i) => allAuthorizations[i]!.authorized).map(v => v.id));
-  const activePatterns = patterns.filter(p => !authorizedIds.has(p.id));
+  // Filter patterns to exclude authorized violations. Use per-instance index, not ID,
+  // so two violations with the same pattern ID but different scopes are independent.
+  const authorizedIndices = new Set(allViolations.map((_, i) => i).filter(i => allAuthorizations[i]!.authorized));
+  const activePatterns = patterns.filter((_, i) => !authorizedIndices.has(i));
   const reasons: string[] = [];
   let level: Level = "allow";
   // A shell command that merely mentions a secrets file (grep for key names, cat .env.example) is decided after Jev
@@ -1121,19 +1124,24 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   if (offTaskSteer) verdict.offTaskSteer = true;
   if (offTaskTraceOnly) verdict.offTaskTraceOnly = true;
   // Violation pipeline: parse per-violation Jev judgments, apply escalation, aggregate.
+  // Answers are keyed by violation index (not ID) so two violations with the same ID
+  // but different scopes each get their own Jev question and result.
   if (remainingViolations.length) {
-    // Build extra from violation answers for parsing and calibration retention.
     const violationExtra: Record<string, number | string> = {};
-    for (const v of remainingViolations) {
-      const id = `violation_${v.id}`;
-      const answer = (answers as Record<string, { noul?: number; choice?: string } | undefined>)[id];
-      if (typeof answer?.noul === "number") violationExtra[id] = answer.noul;
-      else if (typeof answer?.choice === "string") violationExtra[id] = answer.choice;
+    for (let i = 0; i < remainingViolations.length; i++) {
+      const key = `violation_${i}`;
+      const answer = (answers as Record<string, { noul?: number; choice?: string } | undefined>)[key];
+      if (typeof answer?.noul === "number") violationExtra[key] = answer.noul;
+      else if (typeof answer?.choice === "string") violationExtra[key] = answer.choice;
     }
     const violationAnswers = parseViolationJudgments(remainingViolations, violationExtra);
     const escalated: EscalatedViolation[] = remainingViolations.map((v, i) => {
       const jev = violationAnswers[i]!;
       const auth = remainingAuthorizations[i]!;
+      // All violations from this pipeline are pattern-sourced and go through Escalation A.
+      // Rules-guard violations are steered via rulesSteer() in the extension, arriving
+      // after the action guard decides (fire-and-forget async), so they cannot be routed
+      // through escalation here.
       const escalatedSeverity = v.source === "rules-guard"
         ? escalateRulesViolation(v, jev, { escalationThreshold: config.escalationThreshold })
         : escalateBlastRadius(v, auth, jev, { escalationThreshold: config.escalationThreshold });
@@ -1213,8 +1221,8 @@ export function steerReason(verdict: Verdict, options: { canApprove: boolean }):
 const ACTION_VERBS: Record<string, string[]> = {
   "git-commit": ["commit"],
   "git-push": ["push"],
-  "git-force-push": ["push"],
-  "git-force-with-lease": ["push"],
+  "git-force-push": ["force push", "force-push"],
+  "git-force-with-lease": ["force push", "force-push", "force-with-lease"],
   "deploy": ["deploy", "release", "ship"],
   "rm": ["delete", "remove", "clean", "tidy", "purge"],
   "rm-recursive": ["delete", "remove", "clean", "tidy", "purge"],
@@ -1246,9 +1254,11 @@ export function isNegated(prompt: string, actionVerb: string): boolean {
   return NEGATORS.test(beforeVerb);
 }
 
-/** Deterministic scope matching: exact path or basename. */
+/** Deterministic scope matching: exact path or basename. For command-scoped violations
+ * (bash with no file paths), scope is not required to match — the verb family alone
+ * determines authorization. File-scoped violations require the prompt to mention the path. */
 export function scopeMatches(prompt: string, scope: ViolationScope): boolean {
-  if (!scope.paths?.length) return true; // no scope = always matches
+  if (!scope.paths?.length) return true; // no file paths = always matches (command-scoped or no scope)
   const lower = prompt.toLowerCase();
   return scope.paths.some(p => {
     // Get the last non-empty segment for basename matching

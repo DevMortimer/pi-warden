@@ -109,19 +109,19 @@ test("regression: approval applies to the action, not the exact command string; 
 
 test("without a judge, a reply that reads as approval stands in for the question; anything else keeps the hold", async () => {
   const guard = new ActionGuard();
-  assert.equal((await guard.inspect(bash("c1", "git push --force"), under("fix the bug"), options())).level, "confirm", "destructive pattern");
-  guard.hold("fix the bug");
-  assert.equal((await guard.inspect(bash("c2", "git push --force"), under("fix the bug"), options())).level, "confirm", "same prompt");
-  guard.hold("fix the bug");
+  assert.equal((await guard.inspect(bash("c1", "git push --force"), under("push my branch"), options())).level, "confirm", "destructive pattern");
+  guard.hold("push my branch");
+  assert.equal((await guard.inspect(bash("c2", "git push --force"), under("push my branch"), options())).level, "confirm", "same prompt");
+  guard.hold("push my branch");
   assert.equal((await guard.inspect(bash("c3", "git push --force"), under("hmm, why is that needed?"), options())).level, "confirm", "a question is not approval");
   guard.hold("hmm, why is that needed?");
   assert.equal((await guard.inspect(bash("c4", "git push --force"), under("no, don't do that"), options())).level, "confirm", "a refusal with a yes-word is not approval");
   guard.hold("no, don't do that");
-  const approved = await guard.inspect(bash("c5", "git push --force"), under("yes, go ahead"), options());
+  const approved = await guard.inspect(bash("c5", "git push --force"), under("yes, that's fine"), options());
   assert.equal(approved.level, "allow");
   assert.equal(approved.approvedByUser, true);
   assert.equal(approved.reasons[0], "user approved in the latest message");
-  assert.equal((await guard.inspect(bash("c6", "git push --force"), under("yes, go ahead"), options())).level, "confirm", "approval is consumed by the call it released");
+  assert.equal((await guard.inspect(bash("c6", "git push --force"), under("yes, that's fine"), options())).level, "confirm", "approval is consumed by the call it released");
 });
 
 test("siblings of one assistant message are judged together, each once, only for the input they were judged with", async () => {

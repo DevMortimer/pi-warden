@@ -17,16 +17,20 @@ after(async () => { await rm(cwd, { recursive: true, force: true }); });
 // ---------------------------------------------------------------------------
 // Authorization: deterministic per-violation analysis.
 
-test("authorize: prompt matching the action verb and scope authorizes the violation", () => {
+test("authorize: force-push requires explicit 'force push' or 'force-push' in the prompt", () => {
   const violation: Violation = {
     id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push",
     patternFamily: "git-force-push",
     scope: { command: "git push --force origin main", tool: "bash" },
   };
-  const result = authorize("push my branch", violation);
-  assert.equal(result.authorized, true);
-  assert.equal(result.actionMatched, true);
-  assert.equal(result.negated, false);
+  // "push my branch" does NOT authorize force-push — user said push, not force push
+  assert.equal(authorize("push my branch", violation).authorized, false);
+  assert.equal(authorize("push my branch", violation).actionMatched, false);
+  // "force push my branch" authorizes force-push
+  assert.equal(authorize("force push my branch", violation).authorized, true);
+  assert.equal(authorize("force push my branch", violation).actionMatched, true);
+  // "force-push" hyphenated form also works
+  assert.equal(authorize("force-push origin main", violation).authorized, true);
 });
 
 test("authorize: negation in the prompt prevents authorization", () => {
@@ -35,11 +39,14 @@ test("authorize: negation in the prompt prevents authorization", () => {
     patternFamily: "git-force-push",
     scope: { command: "git push --force origin main", tool: "bash" },
   };
+  // Negation prevents authorization when the action verb is present
+  assert.equal(authorize("don't force push", violation).authorized, false);
+  assert.equal(authorize("don't force push", violation).negated, true);
+  assert.equal(authorize("never force push", violation).negated, true);
+  assert.equal(authorize("do not force-push", violation).negated, true);
+  // "push" alone does not match the force-push verb family, so no authorization attempted
   assert.equal(authorize("don't push", violation).authorized, false);
-  assert.equal(authorize("don't push", violation).negated, true);
-  assert.equal(authorize("never push", violation).negated, true);
-  assert.equal(authorize("do not push", violation).negated, true);
-  assert.equal(authorize("skip the push", violation).negated, true);
+  assert.equal(authorize("don't push", violation).actionMatched, false);
 });
 
 test("authorize: scope mismatch prevents authorization even when action matches", () => {
@@ -273,6 +280,20 @@ test("pipeline: hard deny is never removable by authorization", () => {
   assert.equal(aggregateLevel(escalated), "deny");
 });
 
+test("pipeline: normal push does NOT authorize force-push (regression)", () => {
+  const forcePush: Violation = {
+    id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push",
+    patternFamily: "git-force-push",
+    scope: { command: "git push --force origin main", tool: "bash" },
+  };
+  const auth = authorize("push my branch", forcePush);
+  assert.equal(auth.authorized, false, "'push my branch' does not authorize force-push");
+  const remaining = removeAuthorized([forcePush], [auth]);
+  assert.equal(remaining.length, 1, "force-push violation survives");
+  const escalated: EscalatedViolation[] = remaining.map(v => ({ ...v, escalatedSeverity: v.severity }));
+  assert.equal(aggregateLevel(escalated), "confirm", "unauthorized force-push stays at confirm");
+});
+
 // ---------------------------------------------------------------------------
 // parseViolationJudgments: defaults for missing/malformed Jev responses.
 
@@ -281,7 +302,7 @@ test("parseViolationJudgments: parses noul probability answers (primary path)", 
     { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" },
     { id: "git-push", severity: "destructive", source: "pattern", description: "git push" },
   ];
-  const extra = { "violation_rm-rf": 0.92, "violation_git-push": 0.15 };
+  const extra = { "violation_0": 0.92, "violation_1": 0.15 };
   const judgments = parseViolationJudgments(violations, extra);
   assert.equal(judgments.length, 2);
   assert.equal(judgments[0]!.violated, true);
@@ -295,7 +316,7 @@ test("parseViolationJudgments: parses legacy choice string answers", () => {
     { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" },
     { id: "git-push", severity: "destructive", source: "pattern", description: "git push" },
   ];
-  const extra = { "violation_rm-rf": "violation", "violation_git-push": "compliant" };
+  const extra = { "violation_0": "violation", "violation_1": "compliant" };
   const judgments = parseViolationJudgments(violations, extra);
   assert.equal(judgments.length, 2);
   assert.equal(judgments[0]!.violated, true);
@@ -319,10 +340,10 @@ test("parseViolationJudgments: noul answer at threshold boundary", () => {
     { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" },
   ];
   // Exactly 0.5 is the boundary: >= 0.5 means violated
-  const judgments50 = parseViolationJudgments(violations, { "violation_rm-rf": 0.5 });
+  const judgments50 = parseViolationJudgments(violations, { "violation_0": 0.5 });
   assert.equal(judgments50[0]!.violated, true);
   assert.equal(judgments50[0]!.confidence, 0.5);
-  const judgments49 = parseViolationJudgments(violations, { "violation_rm-rf": 0.49 });
+  const judgments49 = parseViolationJudgments(violations, { "violation_0": 0.49 });
   assert.equal(judgments49[0]!.violated, false);
   assert.equal(judgments49[0]!.confidence, 0.49);
 });

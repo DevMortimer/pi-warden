@@ -581,12 +581,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // First-run warning: pi-warden.md missing, one time per session.
     if (!warnedMissingRules && config.rules.enabled) {
       const { missing, fallbackSource } = checkPiWardenMissing(ctx.cwd);
-      if (missing) {
+      if (missing && ctx.hasUI) {
         warnedMissingRules = true;
         const msg = fallbackSource
           ? `No pi-warden.md detected. Using ${fallbackSource} as active fallback rules. Run /warden init to create project-specific rules.`
           : `No rules file detected (pi-warden.md, README.md, CLAUDE.md, or AGENTS.md). Run /warden init to create project-specific rules.`;
-        if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+        ctx.ui.notify(msg, "warning");
       }
     }
     // Arming: a write/edit to a protected path arms matching command patterns for a window. Bash redirect/tee

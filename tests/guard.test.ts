@@ -295,7 +295,7 @@ test("describeAction summarises tool input without leaking secrets or absolute p
 
 test("evaluateAction allows read-only commands without consulting the judge", async () => {
   const j = judge(0.9, 0.9);
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "git status" }, cwd, task: "fix the bug" }, { config: defaultConfig().action, judge: j });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git status" }, cwd, task: "push my branch" }, { config: defaultConfig().action, judge: j });
   assert.equal(verdict.level, "allow");
   assert.equal(verdict.source, "read-only");
   assert.equal(j.calls.length, 0);
@@ -303,7 +303,7 @@ test("evaluateAction allows read-only commands without consulting the judge", as
 
 test("evaluateAction escalates destructive patterns to confirm even before the judge answers", async () => {
   const j = judge(0.1, 0.1);
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "fix the bug" }, { config: defaultConfig().action, judge: j });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push my branch" }, { config: defaultConfig().action, judge: j });
   assert.equal(verdict.level, "confirm");
   assert.ok(verdict.patterns.some(hit => hit.id === "git-force-push"));
   assert.equal(j.calls.length, 1, "the judge still runs so the widget can show the off-task judgment");
@@ -586,7 +586,7 @@ test("textApproves is a conservative offline stand-in", () => {
 });
 
 test("steerReason explains the hold and the two acceptable moves without echoing the command", async () => {
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "fix the bug" }, { config: defaultConfig().action, judge: judge(0.9, 0.1) });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push" }, { config: defaultConfig().action, judge: judge(0.9, 0.1) });
   const text = steerReason(verdict, { canApprove: true });
   assert.match(text, /held this bash call/);
   assert.match(text, /git force push/);
@@ -617,7 +617,7 @@ test("context-mode and powershell tools are guarded through their command fields
   assert.equal(readOnly.source, "read-only");
   assert.equal(j.calls.length, 0);
 
-  const destructive = await evaluateAction({ tool: "ctx_execute", input: { language: "shell", code: "cd ~/app && git push --force origin main" }, cwd, task: "fix the bug" }, { config });
+  const destructive = await evaluateAction({ tool: "ctx_execute", input: { language: "shell", code: "cd ~/app && git push --force origin main" }, cwd, task: "push" }, { config });
   assert.equal(destructive.level, "confirm");
   assert.ok(destructive.patterns.some(hit => hit.id === "git-force-push"));
   assert.match(destructive.summary.command ?? "", /git push --force/);
@@ -660,7 +660,7 @@ test("commandRules: severity ladder interacts with built-ins via higher()", asyn
   const held = await evaluateAction({ tool: "bash", input: { command: "kubectl delete pod foo" }, cwd, task: "cleanup" }, { config: confirm });
   assert.equal(held.level, "confirm");
   const both = { ...defaultConfig().action, commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" as const }], commandDenyRules: [], exemptRules: [] };
-  const stacked = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "fix the bug" }, { config: both });
+  const stacked = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push" }, { config: both });
   assert.equal(stacked.level, "confirm", "built-in destructive rule raises above the user's warn");
   assert.ok(stacked.patterns.some(hit => hit.id === "git-force-push"));
   assert.ok(stacked.patterns.some(hit => hit.id === "git-push-any"));
