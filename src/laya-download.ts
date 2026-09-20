@@ -5,7 +5,7 @@
  * A marker file avoids re-downloading on every session start.
  */
 
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -155,3 +155,54 @@ export async function downloadLayaModel(onStatus?: (msg: string) => void): Promi
   onStatus?.("laya-mlx model ready.");
   return dir;
 }
+
+// ---------------------------------------------------------------------------
+// Managed virtual environment for Laya.
+// ---------------------------------------------------------------------------
+
+/**
+ * The directory where the pi-warden-managed Laya virtual environment lives.
+ * Uses the same agent dir as the model, keeping all Laya state together.
+ */
+export function layaVenvDir(): string {
+  const configured = process.env.PI_CODING_AGENT_DIR?.trim();
+  const agentDir = configured
+    ? (configured === "~" || configured.startsWith("~/") ? join(homedir(), configured.slice(1)) : configured)
+    : join(homedir(), ".pi", "agent");
+  return join(agentDir, "laya-venv");
+}
+
+/** Marker file that signals a working venv with laya importable. */
+function venvDoneMarker(dir: string): string {
+  return join(dir, ".done");
+}
+
+/** True when the venv exists and has laya importable. */
+export function layaVenvReady(): boolean {
+  return existsSync(venvDoneMarker(layaVenvDir()));
+}
+
+/** The Python executable inside the venv. */
+export function layaVenvPython(): string {
+  return join(layaVenvDir(), "bin", "python3");
+}
+
+/** Mark the venv as ready after successful installation. */
+export async function markVenvReady(): Promise<void> {
+  const marker = venvDoneMarker(layaVenvDir());
+  writeFileSync(marker, JSON.stringify({ createdAt: new Date().toISOString() }));
+  await chmod(marker, 0o600);
+}
+
+/** Remove the venv done marker so the next startup rebuilds it. */
+export function invalidateVenv(): void {
+  const marker = venvDoneMarker(layaVenvDir());
+  try {
+    statSync(marker);
+    unlinkSync(marker);
+  } catch (err) {
+    // Marker does not exist or cannot be removed — nothing to invalidate.
+    console.warn(`pi-warden: could not invalidate venv marker: ${err instanceof Error ? err.message : err}`);
+  }
+}
+

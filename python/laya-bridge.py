@@ -41,18 +41,10 @@ def main() -> None:
     # Load the model
     log(f"laya-bridge: loading model from {model_dir} ...")
     try:
-        # Try laya_mlx first (Apple Silicon native)
-        try:
-            import laya_mlx as laya
-            agent = laya.load(str(model_dir))
-            model_name = "laya-mlx"
-            log("laya-bridge: model loaded (laya_mlx)")
-        except ImportError:
-            # Fall back to standard laya
-            import laya
-            agent = laya.load(str(model_dir))
-            model_name = "laya"
-            log("laya-bridge: model loaded (laya)")
+        import laya_mlx as laya
+        agent = laya.load(str(model_dir))
+        model_name = "laya-mlx"
+        log("laya-bridge: model loaded")
     except Exception as e:
         err = {"error": f"failed to load model: {e}"}
         print(json.dumps(err))

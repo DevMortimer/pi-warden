@@ -14,7 +14,7 @@ import { stat } from "node:fs/promises";
 import type { Judge } from "pi-typesafe";
 import type { EvaluationOptions } from "pi-typesafe";
 import type { Questions, SystemOneRequest } from "@typesafe-ai/sdk";
-import { downloadLayaModel, layaModelDir, layaModelReady } from "./laya-download.js";
+import { downloadLayaModel, layaModelDir, layaModelReady, layaVenvDir, layaVenvReady, layaVenvPython, markVenvReady, invalidateVenv } from "./laya-download.js";
 
 const PYTHON_MIN_VERSION = [3, 11] as const;
 const STARTUP_TIMEOUT_MS = 30_000;
@@ -57,21 +57,20 @@ export class LayaJudge implements Judge {
   static async create(onStatus?: (msg: string) => void): Promise<LayaJudge> {
     const judge = new LayaJudge(onStatus);
 
-    // 1. Discover a suitable Python 3.11+ binary (fast, no downloads).
-    const python = await findPython();
-    if (!python) {
+    // 1. Discover a suitable Python 3.11+ binary.
+    const basePython = await findPython();
+    if (!basePython) {
       throw new Error(
         `laya-mlx requires Python ${PYTHON_MIN_VERSION[0]}.${PYTHON_MIN_VERSION[1]}+ but no suitable binary was found. ` +
-        `Checked versioned names (python3.14/3.13/3.12/3.11), Homebrew paths (/opt/homebrew/bin, /usr/local/bin), ` +
-        `and generic python3/python. Install Python ${PYTHON_MIN_VERSION[0]}.${PYTHON_MIN_VERSION[1]}+ and ensure it is on your PATH.`
+        `Install Python ${PYTHON_MIN_VERSION[0]}.${PYTHON_MIN_VERSION[1]}+ and ensure it is on your PATH.`
       );
     }
-    judge.python = python;
+    judge.python = basePython;
 
-    // 2. Ensure the Laya package is importable by this exact Python.
-    await ensureLayaPackage(python, onStatus);
+    // 2. Ensure a pi-warden-managed venv exists with laya-mlx installed.
+    const venvPython = await ensureLayaVenv(basePython, onStatus);
 
-    // 3. Download the model only after we know the runtime can serve it.
+    // 3. Download the model.
     let modelDir: string;
     if (!layaModelReady()) {
       modelDir = await downloadLayaModel(onStatus);
@@ -79,7 +78,8 @@ export class LayaJudge implements Judge {
       modelDir = layaModelDir();
     }
 
-    // 4. Spawn the bridge subprocess.
+    // 4. Spawn the bridge using the venv's Python (guaranteed to have laya-mlx).
+    judge.python = venvPython;
     await judge.spawnBridge(modelDir);
 
     return judge;
@@ -426,70 +426,131 @@ export async function findPython(): Promise<string | null> {
 }
 
 // ---------------------------------------------------------------------------
-// Package bootstrap: ensure `laya` is importable by the discovered Python.
+// Managed virtual environment: create venv, install laya-mlx, verify import.
 // ---------------------------------------------------------------------------
 
-/** Check whether the given Python can `import laya`. */
+const LAYA_MLX_PACKAGE = "laya-mlx";
+
+/** Check whether the given Python can `import laya_mlx`. */
 async function canImportLaya(python: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn(python, ["-c", "import laya"], { stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
+    const child = spawn(python, ["-c", "import laya_mlx"], { stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
     child.on("close", (code) => { resolve(code === 0); });
     child.on("error", () => { resolve(false); });
   });
 }
 
 /**
- * Ensure the Laya package is importable by the given Python interpreter.
- * If `import laya` fails, install `laya-mlx` (Apple Silicon) or `laya` (fallback)
- * using the SAME interpreter's pip, so the install/runtime environment is guaranteed
- * consistent.
+ * Ensure a pi-warden-managed venv exists with laya-mlx importable.
+ * Returns the venv's Python path.
+ *
+ * Lifecycle:
+ *  - If the venv marker exists and `import laya_mlx` works, return immediately.
+ *  - Otherwise create (or recreate) the venv, install laya-mlx, verify, mark done.
+ *  - If the venv directory exists but is broken (e.g. partial install), the marker
+ *    is absent so it gets recreated on top of the old directory.
  */
-async function ensureLayaPackage(python: string, onStatus?: (msg: string) => void): Promise<void> {
-  if (await canImportLaya(python)) return;
+async function ensureLayaVenv(basePython: string, onStatus?: (msg: string) => void): Promise<string> {
+  const venvDir = layaVenvDir();
+  const venvPy = layaVenvPython();
 
-  onStatus?.("laya package not found; installing into the detected Python environment...");
-
-  // Try laya-mlx first (Apple Silicon native), then fall back to laya.
-  const packages = ["laya-mlx", "laya"];
-  for (const pkg of packages) {
-    const installed = await pipInstall(python, pkg, onStatus);
-    if (installed) {
-      // Verify the install actually worked.
-      if (await canImportLaya(python)) {
-        onStatus?.(`laya package installed successfully via ${pkg}.`);
-        return;
-      }
-    }
+  // Fast path: venv exists and laya is importable.
+  if (layaVenvReady() && existsSync(venvPy)) {
+    if (await canImportLaya(venvPy)) return venvPy;
+    // Venv marker is stale — the package was removed or corrupted.
+    invalidateVenv();
   }
 
-  throw new Error(
-    `laya-mlx: failed to install the laya Python package. ` +
-    `Tried: ${packages.map(p => `\"${python} -m pip install ${p}\"`).join(", ")}. ` +
-    `Check that pip is available for \"${python}\" and that the network is reachable.`
-  );
+  // Ensure the base Python has the venv module.
+  if (!(await hasVenvModule(basePython))) {
+    throw new Error(
+      `laya-mlx: the detected Python ("${basePython}") lacks the venv module. ` +
+      `Install the python3-venv or python3-full package for your system.`
+    );
+  }
+
+  onStatus?.("setting up laya-mlx Python environment...");
+
+  // Create the venv.  If a broken venv directory exists, remove it first.
+  if (existsSync(venvDir)) {
+    await rmrf(venvDir);
+  }
+  await createVenv(basePython, venvDir);
+
+  // Install laya-mlx into the venv.
+  const installed = await pipInstall(venvPy, LAYA_MLX_PACKAGE);
+  if (!installed) {
+    invalidateVenv();
+    throw new Error(
+      `laya-mlx: failed to install ${LAYA_MLX_PACKAGE} into the managed venv. ` +
+      `Check your network connection and try again.`
+    );
+  }
+
+  // Verify the import actually works.
+  if (!(await canImportLaya(venvPy))) {
+    invalidateVenv();
+    throw new Error(
+      `laya-mlx: installed ${LAYA_MLX_PACKAGE} but \"import laya_mlx\" still fails. ` +
+      `The package may be incompatible with this Python version.`
+    );
+  }
+
+  await markVenvReady();
+  onStatus?.("laya-mlx environment ready.");
+  return venvPy;
 }
 
-/**
- * Run `python -m pip install <pkg>` using the exact same interpreter.
- * Returns true if pip exit code was 0.
- */
-async function pipInstall(python: string, pkg: string, onStatus?: (msg: string) => void): Promise<boolean> {
+/** Check if a Python has the venv module. */
+async function hasVenvModule(python: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn(python, ["-m", "pip", "install", "--quiet", pkg], {
+    const child = spawn(python, ["-c", "import venv"], { stdio: ["ignore", "pipe", "pipe"], timeout: 5000 });
+    child.on("close", (code) => { resolve(code === 0); });
+    child.on("error", () => { resolve(false); });
+  });
+}
+
+/** Create a venv at the given path using the base Python. */
+async function createVenv(basePython: string, venvDir: string): Promise<void> {
+  const ok = await new Promise<boolean>((resolve) => {
+    const child = spawn(basePython, ["-m", "venv", venvDir], {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+    });
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk; });
+    child.on("close", (code) => {
+      if (code !== 0) console.warn(`pi-warden: venv creation failed (exit ${code}): ${stderr.slice(0, 200)}`);
+      resolve(code === 0);
+    });
+    child.on("error", (err) => { console.warn(`pi-warden: venv creation error: ${err.message}`); resolve(false); });
+  });
+  if (!ok) throw new Error(`laya-mlx: failed to create virtual environment at ${venvDir}`);
+}
+
+/** Install a package into the venv using its pip. Returns true on success. */
+async function pipInstall(venvPython: string, pkg: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(venvPython, ["-m", "pip", "install", "--quiet", pkg], {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
     });
     let stderr = "";
     child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk; });
     child.on("close", (code) => {
-      if (code !== 0) {
-        console.warn(`pi-warden: pip install ${pkg} failed (exit ${code}): ${stderr.slice(0, 200)}`);
-      }
+      if (code !== 0) console.warn(`pi-warden: pip install ${pkg} failed (exit ${code}): ${stderr.slice(0, 200)}`);
       resolve(code === 0);
     });
-    child.on("error", (err) => {
-      console.warn(`pi-warden: pip install ${pkg} error: ${err.message}`);
-      resolve(false);
-    });
+    child.on("error", (err) => { console.warn(`pi-warden: pip install ${pkg} error: ${err.message}`); resolve(false); });
   });
+}
+
+/** Best-effort recursive remove.  Logs but does not throw on failure. */
+async function rmrf(dir: string): Promise<void> {
+  try {
+    const { rm } = await import("node:fs/promises");
+    await rm(dir, { recursive: true, force: true });
+  } catch (err) {
+    console.warn(`pi-warden: could not remove ${dir}: ${err instanceof Error ? err.message : err}`);
+  }
 }
