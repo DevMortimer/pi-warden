@@ -58,6 +58,9 @@ export type SteerGuard = "action" | "rules" | "security" | "stuck" | "done" | "p
 interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number; restatements: number }
 const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, steers: 0, steersSkipped: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0, restatements: 0 });
 
+/** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
+let initRunning = false;
+
 /**
  * One steer message can carry notes from more than one guard, so the per-guard numbers may add up to more than the
  * message count; the line says so instead of hiding it. Worst offender first: that is the number worth acting on.
@@ -1034,6 +1037,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     await checkSubagentReports(ctx, configFor(ctx));
   });
 
+  // Block new user messages while /warden init is generating pi-warden.md.
+  pi.on("input", async (event, ctx) => {
+    if (initRunning) {
+      ctx.ui.notify("pi-warden is generating rules. Please wait...", "warning");
+      return { action: "handled" };
+    }
+  });
+
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
@@ -1272,9 +1283,26 @@ export default function wardenExtension(pi: ExtensionAPI): void {
               return;
             }
           }
-          const result = writeStarterRules(ctx.cwd, true);
           const prompt = buildInitPrompt(ctx.cwd);
-          report(`Wrote ${result.path}. To tailor it to this project, paste the prompt below into a new conversation:\n\n${prompt}`);
+          initRunning = true;
+          if (ctx.hasUI) ctx.ui.notify("pi-warden: Generating rules file...", "info");
+          try {
+            // sendUserMessage throws when the agent is not idle. Brief wait so a
+            // just-closing confirm dialog does not cause a race.
+            for (let attempt = 0; attempt < 40; attempt++) {
+              if (ctx.isIdle()) break;
+              await new Promise(resolve => setTimeout(resolve, 250));
+            }
+            pi.sendUserMessage(prompt);
+            await ctx.waitForIdle();
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            report(`pi-warden init failed: ${detail}. Try creating pi-warden.md manually.`, "error");
+          } finally {
+            initRunning = false;
+          }
+          const wardenExists = existsSync(join(ctx.cwd, "pi-warden.md"));
+          report(wardenExists ? "pi-warden.md created. Review the rules and edit as needed." : "Agent did not create pi-warden.md. Create it manually or try /warden init again.");
           return;
         }
         if (action === "test") {
