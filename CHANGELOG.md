@@ -9,21 +9,27 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Added
 - Violation pipeline: deterministic per-violation authorization, escalation, and aggregation for pattern-detected and rules-guard violations.
 - `Violation`, `ViolationScope`, `Authorization`, `EscalatedViolation` types for the violation pipeline.
-- `authorize()`, `isNegated()`, `scopeMatches()`, `isAuthEligible()`, `patternHitsToViolations()` for deterministic authorization.
+- `authorize()`, `isNegated()`, `scopeMatches()`, `isAuthEligible()` (severity-based) for deterministic authorization.
 - `escalateBlastRadius()` and `escalateRulesViolation()` for Jev-backed severity escalation.
 - `aggregateLevel()` for final tool-call level from remaining violations.
 - `resolveRulesFile()` and `extractRules()` for token-aware rules file resolution.
 - `checkPiWardenMissing()` for first-run warning support.
 - `escalationThreshold` config key in `ActionGuardConfig` (default 0.85).
+- `toolRecommendation` config key in `ActionGuardConfig` (default true, recorded but not acted on until measured).
 - First-run warning when pi-warden.md is missing and a fallback is active.
-- `ViolationScope` supports `labels` for deterministic semantic scope matching.
-- Hard-deny violations (`authEligible: false`) are not removable by user authorization.
-
-### Changed
+- `violation_judgments` questions sent to Jev: one choice question per violation on the same request.
+- `parseViolationJudgments()` for safe parsing of Jev responses with defaults for missing/malformed data.
+- Resolved rules file (`rules`, `rulesSource`) passed to Jev in the request state.
 - `matchPathRules` is now exported for use by conscience-loader.
 
+### Changed
+- `ViolationScope` no longer has a `labels` field; scope matching uses paths only.
+- `Violation` no longer has an `authEligible` field; eligibility is derived from severity in `authorize()`.
+- `isAuthEligible()` now takes a `Severity` parameter instead of a `PatternHit`.
+- `escalateRulesViolation()` threshold check now matches `escalateBlastRadius()` style (guard clause for no-escalation).
+
 ### Tests
-- 35 new tests for authorization, escalation, aggregation, rules-file resolution, and first-run warning.
+- 38 tests for authorization, escalation, aggregation, violation judgment parsing, rules-file resolution, and first-run warning.
 
 ## 0.29.1
 

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { authorize, aggregateLevel, escalateBlastRadius, escalateRulesViolation, isAuthEligible, isNegated, patternHitsToViolations, removeAuthorized, scopeMatches } from "../src/guard.js";
+import { authorize, aggregateLevel, escalateBlastRadius, escalateRulesViolation, isAuthEligible, isNegated, parseViolationJudgments, patternHitsToViolations, removeAuthorized, scopeMatches } from "../src/guard.js";
 import type { Authorization, EscalatedViolation, Violation } from "../src/guard.js";
 import { checkPiWardenMissing, extractRules, resolveRulesFile } from "../src/rules-file.js";
 
@@ -19,7 +19,7 @@ after(async () => { await rm(cwd, { recursive: true, force: true }); });
 test("authorize: prompt matching the action verb and scope authorizes the violation", () => {
   const violation: Violation = {
     id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push",
-    patternFamily: "git-force-push", authEligible: true,
+    patternFamily: "git-force-push",
     scope: { command: "git push --force origin main", tool: "bash" },
   };
   const result = authorize("push my branch", violation);
@@ -31,7 +31,7 @@ test("authorize: prompt matching the action verb and scope authorizes the violat
 test("authorize: negation in the prompt prevents authorization", () => {
   const violation: Violation = {
     id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push",
-    patternFamily: "git-force-push", authEligible: true,
+    patternFamily: "git-force-push",
     scope: { command: "git push --force origin main", tool: "bash" },
   };
   assert.equal(authorize("don't push", violation).authorized, false);
@@ -44,21 +44,20 @@ test("authorize: negation in the prompt prevents authorization", () => {
 test("authorize: scope mismatch prevents authorization even when action matches", () => {
   const violation: Violation = {
     id: "rm-rf", severity: "destructive", source: "pattern", description: "rm -rf",
-    patternFamily: "rm-rf", authEligible: true,
-    scope: { paths: ["eval/reports/"], labels: ["eval results", "evaluation reports"], tool: "bash" },
+    patternFamily: "rm-rf",
+    scope: { paths: ["eval/reports/"], tool: "bash" },
   };
   // "delete tmp.txt" does not match the scope of "eval/reports/"
   assert.equal(authorize("delete tmp.txt", violation).authorized, false);
   assert.equal(authorize("delete tmp.txt", violation).scopeMatched, false);
-  // "delete eval results" matches via label
-  assert.equal(authorize("delete eval results", violation).authorized, true);
-  assert.equal(authorize("delete eval results", violation).scopeMatched, true);
+  // "delete eval/reports" matches via path
+  assert.equal(authorize("delete eval/reports", violation).authorized, true);
+  assert.equal(authorize("delete eval/reports", violation).scopeMatched, true);
 });
 
 test("authorize: hard-deny violations are not authorization-eligible", () => {
   const denyViolation: Violation = {
     id: "never-talos-reset", severity: "deny", source: "pattern", description: "blocked",
-    authEligible: false,
   };
   assert.equal(authorize("reset talos", denyViolation).authorized, false);
   assert.equal(authorize("reset talos", denyViolation).actionMatched, false);
@@ -67,7 +66,6 @@ test("authorize: hard-deny violations are not authorization-eligible", () => {
 test("authorize: sensitive-path violations are not authorization-eligible", () => {
   const sensitiveViolation: Violation = {
     id: "sensitive-path", severity: "sensitive", source: "pattern", description: "touches secrets",
-    authEligible: false,
   };
   assert.equal(authorize("read the env", sensitiveViolation).authorized, false);
 });
@@ -85,40 +83,34 @@ test("scopeMatches: basename match", () => {
   assert.equal(scopeMatches("clean up reports directory", { paths: ["eval/reports/"] }), true);
 });
 
-test("scopeMatches: label match for semantic inference", () => {
-  assert.equal(scopeMatches("delete eval results", { labels: ["eval results", "evaluation reports"] }), true);
-  assert.equal(scopeMatches("clean evaluation reports", { labels: ["eval results", "evaluation reports"] }), true);
-  assert.equal(scopeMatches("delete something unrelated", { labels: ["eval results"] }), false);
-});
-
 test("scopeMatches: no scope always matches", () => {
   assert.equal(scopeMatches("do anything", {}), true);
-  assert.equal(scopeMatches("do anything", { paths: undefined, labels: undefined }), true);
+  assert.equal(scopeMatches("do anything", { paths: undefined }), true);
 });
 
 // ---------------------------------------------------------------------------
 // Violation eligibility.
 
 test("isAuthEligible: risky and destructive are eligible; deny and sensitive are not", () => {
-  assert.equal(isAuthEligible({ id: "rm-rf", severity: "risky", label: "rm -rf" }), true);
-  assert.equal(isAuthEligible({ id: "rm-rf", severity: "destructive", label: "rm -rf" }), true);
-  assert.equal(isAuthEligible({ id: "never-rule", severity: "deny", label: "blocked" }), false);
-  assert.equal(isAuthEligible({ id: "sensitive-path", severity: "sensitive", label: "secrets" }), false);
+  assert.equal(isAuthEligible("risky"), true);
+  assert.equal(isAuthEligible("destructive"), true);
+  assert.equal(isAuthEligible("deny"), false);
+  assert.equal(isAuthEligible("sensitive"), false);
 });
 
 // ---------------------------------------------------------------------------
 // patternHitsToViolations: convert PatternHit[] to Violation[].
 
-test("patternHitsToViolations: converts hits with scope and eligibility", () => {
+test("patternHitsToViolations: converts hits with scope", () => {
   const hits = [
     { id: "git-force-push", severity: "destructive" as const, label: "git force push" },
     { id: "sensitive-path", severity: "sensitive" as const, label: "touches secrets" },
   ];
   const violations = patternHitsToViolations(hits, "bash", { command: "git push --force" });
   assert.equal(violations.length, 2);
-  assert.equal(violations[0]!.authEligible, true, "destructive is auth-eligible");
-  assert.equal(violations[1]!.authEligible, false, "sensitive is not auth-eligible");
-  assert.ok(violations[0]!.scope?.labels?.includes("git push"));
+  assert.equal(violations[0]!.severity, "destructive");
+  assert.equal(violations[1]!.severity, "sensitive");
+  assert.equal(violations[0]!.scope?.command, "git push --force");
 });
 
 // ---------------------------------------------------------------------------
@@ -126,7 +118,7 @@ test("patternHitsToViolations: converts hits with scope and eligibility", () => 
 
 test("escalateBlastRadius: authorized violation keeps original severity", () => {
   const violation: Violation = {
-    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true,
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf",
   };
   const authorized: Authorization = { authorized: true, actionMatched: true, scopeMatched: true, negated: false };
   assert.equal(escalateBlastRadius(violation, authorized, { violated: true, confidence: 0.95 }, { escalationThreshold: 0.85 }), "risky");
@@ -134,7 +126,7 @@ test("escalateBlastRadius: authorized violation keeps original severity", () => 
 
 test("escalateBlastRadius: unconfirmed violation keeps original severity", () => {
   const violation: Violation = {
-    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true,
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf",
   };
   const notAuthorized: Authorization = { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
   assert.equal(escalateBlastRadius(violation, notAuthorized, { violated: false, confidence: 0.5 }, { escalationThreshold: 0.85 }), "risky");
@@ -142,7 +134,7 @@ test("escalateBlastRadius: unconfirmed violation keeps original severity", () =>
 
 test("escalateBlastRadius: risky escalates to destructive when Jev confirms", () => {
   const violation: Violation = {
-    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true,
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf",
   };
   const notAuthorized: Authorization = { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
   assert.equal(escalateBlastRadius(violation, notAuthorized, { violated: true, confidence: 0.9 }, { escalationThreshold: 0.85 }), "destructive");
@@ -150,7 +142,7 @@ test("escalateBlastRadius: risky escalates to destructive when Jev confirms", ()
 
 test("escalateBlastRadius: destructive escalates to deny when Jev confirms", () => {
   const violation: Violation = {
-    id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push", authEligible: true,
+    id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push",
   };
   const notAuthorized: Authorization = { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
   assert.equal(escalateBlastRadius(violation, notAuthorized, { violated: true, confidence: 0.95 }, { escalationThreshold: 0.85 }), "deny");
@@ -162,7 +154,7 @@ test("escalateBlastRadius: destructive escalates to deny when Jev confirms", () 
 test("escalateRulesViolation: Jev confirms against matched rule escalates to destructive", () => {
   const violation: Violation = {
     id: "no-console", severity: "risky", source: "rules-guard", description: "no console",
-    matchedRule: "No console.log", authEligible: true,
+    matchedRule: "No console.log",
   };
   assert.equal(escalateRulesViolation(violation, { violated: true, confidence: 0.9 }, { escalationThreshold: 0.85 }), "destructive");
 });
@@ -170,14 +162,14 @@ test("escalateRulesViolation: Jev confirms against matched rule escalates to des
 test("escalateRulesViolation: Jev does not confirm keeps original severity", () => {
   const violation: Violation = {
     id: "no-console", severity: "risky", source: "rules-guard", description: "no console",
-    matchedRule: "No console.log", authEligible: true,
+    matchedRule: "No console.log",
   };
   assert.equal(escalateRulesViolation(violation, { violated: false, confidence: 0.3 }, { escalationThreshold: 0.85 }), "risky");
 });
 
 test("escalateRulesViolation: no matchedRule keeps original severity", () => {
   const violation: Violation = {
-    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true,
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf",
   };
   assert.equal(escalateRulesViolation(violation, { violated: true, confidence: 0.95 }, { escalationThreshold: 0.85 }), "risky");
 });
@@ -191,24 +183,24 @@ test("aggregateLevel: no violations returns allow", () => {
 
 test("aggregateLevel: highest severity wins", () => {
   const risky: EscalatedViolation = {
-    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true, escalatedSeverity: "risky",
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", escalatedSeverity: "risky",
   };
   assert.equal(aggregateLevel([risky]), "warn");
 
   const destructive: EscalatedViolation = {
-    id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push", authEligible: true, escalatedSeverity: "destructive",
+    id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push", escalatedSeverity: "destructive",
   };
   assert.equal(aggregateLevel([risky, destructive]), "confirm");
 
   const deny: EscalatedViolation = {
-    id: "never-rule", severity: "deny", source: "pattern", description: "blocked", authEligible: false, escalatedSeverity: "deny",
+    id: "never-rule", severity: "deny", source: "pattern", description: "blocked", escalatedSeverity: "deny",
   };
   assert.equal(aggregateLevel([risky, destructive, deny]), "deny");
 });
 
 test("aggregateLevel: mix of authorized (removed) and remaining violations", () => {
   const remaining: EscalatedViolation = {
-    id: "secret-literal", severity: "risky", source: "pattern", description: "secret", authEligible: true, escalatedSeverity: "risky",
+    id: "secret-literal", severity: "risky", source: "pattern", description: "secret", escalatedSeverity: "risky",
   };
   assert.equal(aggregateLevel([remaining]), "warn");
 });
@@ -217,8 +209,8 @@ test("aggregateLevel: mix of authorized (removed) and remaining violations", () 
 // removeAuthorized: filter out authorized violations.
 
 test("removeAuthorized: removes only authorized violations", () => {
-  const v1: Violation = { id: "git-commit", severity: "risky", source: "pattern", description: "commit", authEligible: true };
-  const v2: Violation = { id: "secret-literal", severity: "risky", source: "pattern", description: "secret", authEligible: true };
+  const v1: Violation = { id: "git-commit", severity: "risky", source: "pattern", description: "commit" };
+  const v2: Violation = { id: "secret-literal", severity: "risky", source: "pattern", description: "secret" };
   const auth1: Authorization = { authorized: true, actionMatched: true, scopeMatched: true, negated: false };
   const auth2: Authorization = { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
   const remaining = removeAuthorized([v1, v2], [auth1, auth2]);
@@ -227,7 +219,7 @@ test("removeAuthorized: removes only authorized violations", () => {
 });
 
 test("removeAuthorized: empty authorization array keeps all violations", () => {
-  const v1: Violation = { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true };
+  const v1: Violation = { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" };
   assert.equal(removeAuthorized([v1], []).length, 1);
 });
 
@@ -237,11 +229,11 @@ test("removeAuthorized: empty authorization array keeps all violations", () => {
 test("pipeline: authorized destructive action results in allow when no other violations", () => {
   const violation: Violation = {
     id: "rm-rf", severity: "destructive", source: "pattern", description: "rm -rf",
-    patternFamily: "rm-rf", authEligible: true,
-    scope: { paths: ["eval/reports/"], labels: ["eval results"], tool: "bash" },
+    patternFamily: "rm-rf",
+    scope: { paths: ["eval/reports/"], tool: "bash" },
   };
-  // User says "delete these eval results"
-  const auth = authorize("delete these eval results", violation);
+  // User says "delete eval/reports"
+  const auth = authorize("delete eval/reports", violation);
   assert.equal(auth.authorized, true, "user explicitly authorized this action on this scope");
   const remaining = removeAuthorized([violation], [auth]);
   assert.equal(remaining.length, 0, "authorized violation removed");
@@ -251,12 +243,11 @@ test("pipeline: authorized destructive action results in allow when no other vio
 test("pipeline: one authorized + one unauthorized violation", () => {
   const gitCommit: Violation = {
     id: "git-commit", severity: "risky", source: "pattern", description: "commit",
-    patternFamily: "git-commit", authEligible: true,
+    patternFamily: "git-commit",
     scope: { command: "git commit", tool: "bash" },
   };
   const secret: Violation = {
     id: "secret-literal", severity: "risky", source: "pattern", description: "secret",
-    authEligible: true,
   };
   const authCommit = authorize("commit the changes", gitCommit);
   const authSecret = authorize("commit the changes", secret);
@@ -272,7 +263,6 @@ test("pipeline: one authorized + one unauthorized violation", () => {
 test("pipeline: hard deny is never removable by authorization", () => {
   const denyViolation: Violation = {
     id: "never-deploy", severity: "deny", source: "pattern", description: "blocked",
-    authEligible: false,
   };
   const auth = authorize("deploy to production", denyViolation);
   assert.equal(auth.authorized, false, "deny violations are not auth-eligible");
@@ -280,6 +270,43 @@ test("pipeline: hard deny is never removable by authorization", () => {
   assert.equal(remaining.length, 1, "deny violation remains");
   const escalated: EscalatedViolation[] = remaining.map(v => ({ ...v, escalatedSeverity: v.severity }));
   assert.equal(aggregateLevel(escalated), "deny");
+});
+
+// ---------------------------------------------------------------------------
+// parseViolationJudgments: defaults for missing/malformed Jev responses.
+
+test("parseViolationJudgments: parses valid choice answers", () => {
+  const violations: Violation[] = [
+    { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" },
+    { id: "git-push", severity: "destructive", source: "pattern", description: "git push" },
+  ];
+  const extra = { "violation_rm-rf": "violation", "violation_git-push": "compliant" };
+  const judgments = parseViolationJudgments(violations, extra);
+  assert.equal(judgments.length, 2);
+  assert.equal(judgments[0]!.violated, true);
+  assert.equal(judgments[0]!.confidence, 0.9);
+  assert.equal(judgments[1]!.violated, false);
+  assert.equal(judgments[1]!.confidence, 0.9);
+});
+
+test("parseViolationJudgments: defaults to violated=true when extra is undefined", () => {
+  const violations: Violation[] = [
+    { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" },
+  ];
+  const judgments = parseViolationJudgments(violations, undefined);
+  assert.equal(judgments.length, 1);
+  assert.equal(judgments[0]!.violated, true);
+  assert.equal(judgments[0]!.confidence, 0.5);
+});
+
+test("parseViolationJudgments: defaults to violated=true for unknown answer", () => {
+  const violations: Violation[] = [
+    { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" },
+  ];
+  const extra = { "violation_rm-rf": 42 };
+  const judgments = parseViolationJudgments(violations, extra);
+  assert.equal(judgments[0]!.violated, true);
+  assert.equal(judgments[0]!.confidence, 0.5);
 });
 
 // ---------------------------------------------------------------------------

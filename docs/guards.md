@@ -69,6 +69,27 @@ It is not cheap: the two full runs above made about 32,000 requests and 80M inpu
 
 This catches the class of incident where each individual call was harmless (edit a config, then run the reconciler that applies it) but the composition was destructive — no single-call rule can see it, and the judge evaluates one call at a time. The state lives for the rule's window within a session, cleared on `session_start` and refreshed on each matching edit, visible in `/warden status`, and never inferred: the operator declares the edit-to-command relationship, so the false-positive rate is the declared pattern's match rate, nothing more.
 
+### Violation pipeline
+
+Pattern-detected hits are converted to `Violation` objects with deterministic authorization eligibility: `deny` and `sensitive` severity violations are not authorization-eligible (they cannot be suppressed by the user's prompt); `risky` and `destructive` violations are. Authorization is per-violation, not per-call: one command may produce multiple violations, and authorizing a `git-commit` does not authorize a `secret-literal` in the same call.
+
+Authorization checks three conditions against the user's prompt: (1) the prompt contains an action verb from the violation's family (e.g., "push" for `git-force-push`), (2) the scope matches (file paths or the command text appear in the prompt), and (3) no negation precedes the verb ("don't push", "never deploy"). All three must pass for authorization.
+
+After authorization removal, Jev receives the remaining violations as choice questions (`violation_<id>`) on the same request. Each asks whether the violation is genuine. The response is parsed from `verdict.extra`; missing or malformed answers default to `violated: true, confidence: 0.5` (safe direction).
+
+### Escalation
+
+After Jev judgment, escalation rules may raise a violation's severity:
+
+- **Escalation A (blast-radius):** For pattern-detected violations on destructive/deny actions. If the user explicitly authorized the action and scope, no escalation. If Jev confirms the violation at or above `action.escalationThreshold` (0.85), severity rises: `risky` → `destructive`, `destructive` → `deny`.
+- **Escalation B (rules guard):** For violations from the rules guard with a `matchedRule`. If Jev confirms the violation against the explicit rule at or above the threshold, severity rises to `destructive` (holds writes).
+
+The final tool-call level is the highest severity among all non-authorized violations after escalation: `deny` → `deny`, `destructive`/`sensitive` → `confirm`, `risky` → `warn`, none → `allow`.
+
+### Rules file resolution
+
+The escalation pipeline resolves the active rules file once per call: `pi-warden.md` → `AGENTS.md` → `CLAUDE.md` → `README.md`. If the resolved file exceeds ~4000 tokens, heading blocks are extracted and capped. The resolved content is sent to Jev in the request state as `rules` (with `rulesSource` naming the file). If no rules file exists, Jev receives no `rules` field and falls back to generic security judgment.
+
 ## Rules
 
 Write your project's rules as Markdown headings in `pi-warden.md` at the project root (a starter file with a dozen rules is in [`examples/pi-warden.md`](../examples/pi-warden.md)):
