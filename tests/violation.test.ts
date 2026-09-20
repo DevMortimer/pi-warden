@@ -6,6 +6,7 @@ import { after, before, test } from "node:test";
 import { authorize, aggregateLevel, escalateBlastRadius, escalateRulesViolation, isAuthEligible, isNegated, parseViolationJudgments, patternHitsToViolations, removeAuthorized, scopeMatches } from "../src/guard.js";
 import type { Authorization, EscalatedViolation, Violation } from "../src/guard.js";
 import { checkPiWardenMissing, extractRules, resolveRulesFile } from "../src/rules-file.js";
+import { buildProjectContext, detectProjectType, generateStarterRules, writeStarterRules } from "../src/init.js";
 
 let cwd: string;
 before(async () => {
@@ -275,7 +276,21 @@ test("pipeline: hard deny is never removable by authorization", () => {
 // ---------------------------------------------------------------------------
 // parseViolationJudgments: defaults for missing/malformed Jev responses.
 
-test("parseViolationJudgments: parses valid choice answers", () => {
+test("parseViolationJudgments: parses noul probability answers (primary path)", () => {
+  const violations: Violation[] = [
+    { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" },
+    { id: "git-push", severity: "destructive", source: "pattern", description: "git push" },
+  ];
+  const extra = { "violation_rm-rf": 0.92, "violation_git-push": 0.15 };
+  const judgments = parseViolationJudgments(violations, extra);
+  assert.equal(judgments.length, 2);
+  assert.equal(judgments[0]!.violated, true);
+  assert.equal(judgments[0]!.confidence, 0.92);
+  assert.equal(judgments[1]!.violated, false);
+  assert.equal(judgments[1]!.confidence, 0.15);
+});
+
+test("parseViolationJudgments: parses legacy choice string answers", () => {
   const violations: Violation[] = [
     { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" },
     { id: "git-push", severity: "destructive", source: "pattern", description: "git push" },
@@ -286,7 +301,7 @@ test("parseViolationJudgments: parses valid choice answers", () => {
   assert.equal(judgments[0]!.violated, true);
   assert.equal(judgments[0]!.confidence, 0.9);
   assert.equal(judgments[1]!.violated, false);
-  assert.equal(judgments[1]!.confidence, 0.9);
+  assert.equal(judgments[1]!.confidence, 0.1);
 });
 
 test("parseViolationJudgments: defaults to violated=true when extra is undefined", () => {
@@ -299,14 +314,17 @@ test("parseViolationJudgments: defaults to violated=true when extra is undefined
   assert.equal(judgments[0]!.confidence, 0.5);
 });
 
-test("parseViolationJudgments: defaults to violated=true for unknown answer", () => {
+test("parseViolationJudgments: noul answer at threshold boundary", () => {
   const violations: Violation[] = [
     { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf" },
   ];
-  const extra = { "violation_rm-rf": 42 };
-  const judgments = parseViolationJudgments(violations, extra);
-  assert.equal(judgments[0]!.violated, true);
-  assert.equal(judgments[0]!.confidence, 0.5);
+  // Exactly 0.5 is the boundary: >= 0.5 means violated
+  const judgments50 = parseViolationJudgments(violations, { "violation_rm-rf": 0.5 });
+  assert.equal(judgments50[0]!.violated, true);
+  assert.equal(judgments50[0]!.confidence, 0.5);
+  const judgments49 = parseViolationJudgments(violations, { "violation_rm-rf": 0.49 });
+  assert.equal(judgments49[0]!.violated, false);
+  assert.equal(judgments49[0]!.confidence, 0.49);
 });
 
 // ---------------------------------------------------------------------------
@@ -386,5 +404,84 @@ test("checkPiWardenMissing: returns no fallback when nothing exists", async () =
   const result = checkPiWardenMissing(dir);
   assert.equal(result.missing, true);
   assert.equal(result.fallbackSource, undefined);
+  await rm(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Init: starter rules file generation and writing.
+
+test("detectProjectType: detects typescript from tsconfig.json", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  await writeFile(join(dir, "tsconfig.json"), "{}");
+  assert.equal(detectProjectType(dir), "typescript");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("detectProjectType: detects generic when no manifest exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  assert.equal(detectProjectType(dir), "generic");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("generateStarterRules: includes safety rules and project type", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  await writeFile(join(dir, "tsconfig.json"), "{}");
+  const content = generateStarterRules(dir);
+  assert.match(content, /No hardcoded secrets/);
+  assert.match(content, /Comments explain why, not what/);
+  assert.match(content, /Project type: typescript/);
+  assert.match(content, /No explicit any/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("generateStarterRules: generic project has no type-specific rules", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  const content = generateStarterRules(dir);
+  assert.match(content, /No hardcoded secrets/);
+  assert.match(content, /Project type: generic/);
+  assert.doesNotMatch(content, /No explicit any/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writeStarterRules: writes pi-warden.md and returns result", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  const result = writeStarterRules(dir);
+  assert.equal(result.alreadyExists, false);
+  assert.match(result.path, /pi-warden\.md$/);
+  assert.match(result.content, /No hardcoded secrets/);
+  // Verify the file was actually written
+  const written = (await import("node:fs")).readFileSync(result.path, "utf8");
+  assert.match(written, /No hardcoded secrets/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writeStarterRules: returns alreadyExists=true without writing when file exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  await writeFile(join(dir, "pi-warden.md"), "# Existing rules\nKeep these.\n");
+  const result = writeStarterRules(dir);
+  assert.equal(result.alreadyExists, true);
+  assert.match(result.content, /Existing rules/);
+  // File should be unchanged
+  const content = (await import("node:fs")).readFileSync(result.path, "utf8");
+  assert.match(content, /Existing rules/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writeStarterRules: overwrite=true replaces existing file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  await writeFile(join(dir, "pi-warden.md"), "# Old rules\n");
+  const result = writeStarterRules(dir, true);
+  assert.equal(result.alreadyExists, true);
+  assert.match(result.content, /No hardcoded secrets/);
+  assert.doesNotMatch(result.content, /Old rules/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("buildProjectContext: reads package.json when present", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  await writeFile(join(dir, "package.json"), JSON.stringify({ name: "my-app", scripts: { test: "vitest", build: "tsc" } }));
+  const ctx = buildProjectContext(dir);
+  assert.match(ctx, /name: my-app/);
+  assert.match(ctx, /scripts: test, build/);
   await rm(dir, { recursive: true, force: true });
 });

@@ -16,9 +16,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 - `checkPiWardenMissing()` for first-run warning support.
 - `escalationThreshold` config key in `ActionGuardConfig` (default 0.85).
 - `toolRecommendation` config key in `ActionGuardConfig` (default true, recorded but not acted on until measured).
+- `/warden init` command: scaffolds a starter pi-warden.md with safety rules and project-type-specific rules.
+- `writeStarterRules()`, `generateStarterRules()`, `detectProjectType()`, `buildProjectContext()` in `src/init.ts`.
 - First-run warning when pi-warden.md is missing and a fallback is active.
-- `violation_judgments` questions sent to Jev: one choice question per violation on the same request.
-- `parseViolationJudgments()` for safe parsing of Jev responses with defaults for missing/malformed data.
+- `violation_judgment` noul questions sent to Jev as extra (recorded, not acted on until measured): one per violation on the same request, returning P(yes) as a confidence value. Escalation functions (`escalateBlastRadius`, `escalateRulesViolation`) are exported but not yet wired into the pipeline.
+- `parseViolationJudgments()` for safe parsing of Jev noul responses with defaults for missing/malformed data; supports legacy choice fallback.
 - Resolved rules file (`rules`, `rulesSource`) passed to Jev in the request state.
 - `matchPathRules` is now exported for use by conscience-loader.
 

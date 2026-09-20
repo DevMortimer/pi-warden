@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
 import * as tuiModule from "@earendil-works/pi-tui";
@@ -30,6 +32,7 @@ import type { SearchTool } from "./recall.js";
 import { redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
+import { writeStarterRules } from "./init.js";
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
@@ -1080,7 +1083,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     });
   }
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace"];
+  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init"];
   pi.registerCommand("warden", {
     description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, and a synthetic guard test",
     getArgumentCompletions(prefix) {
@@ -1222,6 +1225,23 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           }
           if (!ctx.hasUI || !lastUi) { report(`Edit ${userConfigPath()} directly. Use /warden config set <key> <value> for quick changes.`); return; }
           openConfigPanel(lastUi, config, { width: config.widget.panelWidth });
+          return;
+        }
+        if (action === "init") {
+          const targetPath = join(ctx.cwd, "pi-warden.md");
+          if (existsSync(targetPath)) {
+            if (ctx.hasUI) {
+              if (!await ctx.ui.confirm("pi-warden.md already exists. Overwrite with a fresh starter template?", `This replaces ${targetPath} with a generic starter. Your current rules will be lost.`)) {
+                report("Cancelled. Existing pi-warden.md unchanged.");
+                return;
+              }
+            } else {
+              report(`pi-warden.md already exists at ${targetPath}. Pass --force or confirm to overwrite.`, "warning");
+              return;
+            }
+          }
+          const result = writeStarterRules(ctx.cwd, true);
+          report(`Wrote ${result.path}. Edit it to add project-specific rules — every # heading is one rule Jev judges against. Run /warden status to verify pi-warden picks it up.`);
           return;
         }
         if (action === "test") {
