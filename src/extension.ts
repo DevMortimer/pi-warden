@@ -18,7 +18,7 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, formatVerdictTokens, higher, inertPathRules, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import { evaluateAction, formatVerdict, formatVerdictTokens, higher, inertPathRules, intentSteer, offTaskSteer, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
@@ -47,7 +47,7 @@ import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails,
 import type { GuardName, TraceEntry } from "./trace.js";
 import { DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, reason) for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request, including calls where the rules guard is disabled; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, reason) for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -718,6 +718,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       noteGuards.add("action");
       notes.push(offTaskSteer(verdict));
     }
+    if (verdict.shouldProceedSteer) {
+      noteGuards.add("action");
+      notes.push(shouldProceedMessage(verdict));
+    }
     if (verdict.slopSymptoms?.length && verdict.slopReasons) {
       stats.slop++;
       noteGuards.add("action");
@@ -764,7 +768,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (verdict.level === "warn") {
       stats.warned++;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
-      else if (!ctx.hasUI) warnSteer(verdict.reasons.join("; "));
+      else if (!ctx.hasUI) {
+        // Exclude should-proceed from the headless warn label: the shouldProceedSteer note is already delivered above.
+        const otherReasons = verdict.reasons.filter(r => !r.startsWith("should-proceed "));
+        if (otherReasons.length) warnSteer(otherReasons.join("; "));
+      }
       track(false);
       return undefined;
     }

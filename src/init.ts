@@ -1,6 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+/** Fallback rules files to read when scaffolding. Excludes pi-warden.md because that IS the file being generated. */
+const RULES_FALLBACK_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"];
+
 /** Paths to scan for project context when generating a starter rules file. */
 const CONTEXT_CANDIDATES = [
   "package.json",
@@ -67,6 +70,32 @@ export function buildProjectContext(cwd: string): string {
   return context.length > 8000 ? context.slice(0, 8000) + "\n...(truncated)" : context;
 }
 
+/** Read the first existing fallback rules file's content, or null if none exists. */
+function readExistingRules(cwd: string): string | null {
+  for (const file of RULES_FALLBACK_FILES) {
+    const fullPath = join(cwd, file);
+    if (existsSync(fullPath)) {
+      try {
+        return readFileSync(fullPath, "utf8");
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
+/** Read the existing pi-warden.md content, or null if it doesn't exist. */
+function readExistingPiWarden(cwd: string): string | null {
+  const fullPath = join(cwd, "pi-warden.md");
+  if (!existsSync(fullPath)) return null;
+  try {
+    return readFileSync(fullPath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 /** Standard safety rules that ship in every starter pi-warden.md. */
 const SAFETY_RULES = `# No hardcoded secrets
 Source code must not contain passwords, API keys, tokens, or connection URLs with credentials.
@@ -98,6 +127,7 @@ clean tree is needed, create a worktree instead or ask the user.
 export function generateStarterRules(cwd: string): string {
   const projectType = detectProjectType(cwd);
   const context = buildProjectContext(cwd);
+  const existingRules = readExistingRules(cwd);
   const lines = [
     "Copy this file to the root of your project as `pi-warden.md` and edit it.",
     "Every `#` heading below is one rule. The text under a heading is what Jev reads when it judges a write or an edit.",
@@ -106,6 +136,12 @@ export function generateStarterRules(cwd: string): string {
     "",
     SAFETY_RULES,
   ];
+  const existingPiWarden = readExistingPiWarden(cwd);
+  if (existingPiWarden) {
+    lines.push("", "## Existing pi-warden.md rules (preserved)", existingPiWarden, "");
+  } else if (existingRules) {
+    lines.push("", "## Existing project rules (preserved from fallback file)", existingRules, "");
+  }
 
   // Add type-specific rules.
   if (projectType === "typescript" || projectType === "javascript") {
@@ -138,6 +174,7 @@ export function generateStarterRules(cwd: string): string {
 export function buildInitPrompt(cwd: string): string {
   const context = buildProjectContext(cwd);
   const projectType = detectProjectType(cwd);
+  const existingRules = readExistingRules(cwd);
   const lines = [
     "Create a `pi-warden.md` file for this project. Every `#` heading is one rule; the text under it is what Jev judges against.",
     "",
@@ -147,6 +184,12 @@ export function buildInitPrompt(cwd: string): string {
     "## Rules to always include",
     SAFETY_RULES,
   ];
+  const existingPiWarden = readExistingPiWarden(cwd);
+  if (existingPiWarden) {
+    lines.push("", "## Existing pi-warden.md rules (preserve these)", existingPiWarden, "");
+  } else if (existingRules) {
+    lines.push("", "## Existing project rules (preserve these)", existingRules, "");
+  }
 
   if (projectType === "typescript" || projectType === "javascript") {
     lines.push(

@@ -176,6 +176,34 @@ after(async () => {
   if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 
+test("should-proceed steers reach interactive and headless agents without holding or duplicate delivery", async () => {
+  for (const hasUI of [true, false]) {
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, ...STACK_BAR }));
+    await sessionStart(context({ hasUI }));
+    sentMessages.length = 0;
+    notices.length = 0;
+    nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.01, should_proceed: 0.05 };
+    assert.equal(await toolCall("bash", { command: "npm test" }, context({ hasUI })), undefined);
+    assert.equal(sentMessages.length, 1, JSON.stringify(sentMessages.map(m => m.message.content.slice(0, 100))));
+    assert.match(sentMessages[0]!.message.content, /Pause.*approval before continuing/i);
+    assert.equal(notices.length, 0);
+  }
+});
+
+test("action rules context is disclosed and sent independently of the rules guard", async () => {
+  const rulesFile = join(temporary, "AGENTS.md");
+  await writeFile(rulesFile, "# Local policy\nUse the project logger.\n");
+  try {
+    await grantConsent();
+    await toolCall("bash", { command: "npm test" });
+    const action = requests.find(request => "irreversible" in request.questions);
+    assert.match(String(action?.state.rules), /project logger/);
+    const { disclosure } = await import("../src/extension.js");
+    assert.match(disclosure, /rules guard is disabled/i);
+    assert.match(disclosure, /rules guard is disabled/i);
+  } finally { await rm(rulesFile); }
+});
+
 test("scope keeps recent task context after a side comment without turning history into approval", async () => {
   await grantConsent();
   const ctx = context({ sessionManager: {
@@ -1349,9 +1377,10 @@ test("/warden init --force overwrites an existing pi-warden.md in headless mode"
   await runCommand("init --force", context({ hasUI: false }));
   const content = await readFile(targetPath, "utf8");
   assert.match(content, /No hardcoded secrets/, "starter rules replaced the old file");
-  assert.doesNotMatch(content, /Old rules/, "old content is gone");
+  assert.match(content, /Old rules/, "existing rules are preserved in the new starter");
   const msg = sentMessages.find(m => /Wrote/.test(m.message.content));
   assert.ok(msg, "reports the write via pi.sendMessage");
+  assert.match(msg.message.content, /Keep these\./, "tailoring context was read before overwriting the old rules");
 });
 
 test("/warden init without --force refuses to overwrite in headless mode", async () => {

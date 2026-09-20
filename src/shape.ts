@@ -67,6 +67,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.9 };
   if (typeof config.action.visibleMismatch !== "number") config.action = { ...config.action, visibleMismatch: 0.8 };
   if (typeof config.action.shouldProceed !== "object" || config.action.shouldProceed === null || typeof config.action.shouldProceed.hold !== "number") config.action = { ...config.action, shouldProceed: { hold: 0.6 } };
+  if (typeof config.action.escalationThreshold !== "number") config.action = { ...config.action, escalationThreshold: 0.85 };
   // The command rules were added inside the action section later than the section itself; an older config module leaves them undefined.
   if (!Array.isArray(config.action.commandRules)) config.action = { ...config.action, commandRules: [] };
   if (!Array.isArray(config.action.commandDenyRules)) config.action = { ...config.action, commandDenyRules: [] };

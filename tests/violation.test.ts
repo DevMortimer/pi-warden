@@ -86,9 +86,11 @@ test("scopeMatches: exact path match", () => {
   assert.equal(scopeMatches("delete something else", { paths: ["eval/reports/"] }), false);
 });
 
-test("scopeMatches: basename match", () => {
-  assert.equal(scopeMatches("delete reports", { paths: ["eval/reports/"] }), true);
-  assert.equal(scopeMatches("clean up reports directory", { paths: ["eval/reports/"] }), true);
+test("scopeMatches: directory path with or without trailing slash", () => {
+  assert.equal(scopeMatches("delete eval/reports", { paths: ["eval/reports/"] }), true, "trailing slash in path, omitted in prompt");
+  assert.equal(scopeMatches("delete eval/reports/", { paths: ["eval/reports/"] }), true, "exact path");
+  assert.equal(scopeMatches("delete reports", { paths: ["eval/reports/"] }), false, "generic word does not authorize specific path");
+  assert.equal(scopeMatches("clean up reports directory", { paths: ["eval/reports/"] }), false, "generic word in context does not authorize");
 });
 
 test("scopeMatches: no scope always matches", () => {
@@ -109,16 +111,15 @@ test("isAuthEligible: risky and destructive are eligible; deny and sensitive are
 // ---------------------------------------------------------------------------
 // patternHitsToViolations: convert PatternHit[] to Violation[].
 
-test("patternHitsToViolations: converts hits with scope", () => {
+test("patternHitsToViolations: converts rm hits to per-target violations and skips non-rm bash", () => {
   const hits = [
+    { id: "rm-rf", severity: "risky" as const, label: "rm -rf" },
     { id: "git-force-push", severity: "destructive" as const, label: "git force push" },
-    { id: "sensitive-path", severity: "sensitive" as const, label: "touches secrets" },
   ];
-  const violations = patternHitsToViolations(hits, "bash", { command: "git push --force" });
-  assert.equal(violations.length, 2);
-  assert.equal(violations[0]!.severity, "destructive");
-  assert.equal(violations[1]!.severity, "sensitive");
-  assert.equal(violations[0]!.scope?.command, "git push --force");
+  const violations = patternHitsToViolations(hits, "bash", { command: "rm -rf /tmp/x" });
+  assert.equal(violations.length, 1, "non-rm bash violations are skipped");
+  assert.equal(violations[0]!.id, "rm-rf");
+  assert.ok(violations[0]!.scope?.paths?.length, "rm violation has per-target path scope");
 });
 
 // ---------------------------------------------------------------------------
@@ -488,13 +489,13 @@ test("writeStarterRules: returns alreadyExists=true without writing when file ex
   await rm(dir, { recursive: true, force: true });
 });
 
-test("writeStarterRules: overwrite=true replaces existing file", async () => {
+test("writeStarterRules: overwrite=true replaces existing file but preserves old rules", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
   await writeFile(join(dir, "pi-warden.md"), "# Old rules\n");
   const result = writeStarterRules(dir, true);
   assert.equal(result.alreadyExists, true);
   assert.match(result.content, /No hardcoded secrets/);
-  assert.doesNotMatch(result.content, /Old rules/);
+  assert.match(result.content, /Old rules/, "existing rules are preserved in the new starter");
   await rm(dir, { recursive: true, force: true });
 });
 

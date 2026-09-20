@@ -60,7 +60,13 @@ export function resolveRulesFile(cwd: string): ResolvedRulesFile | null {
   for (const candidate of RULES_CANDIDATES) {
     const fullPath = join(cwd, candidate.path);
     if (existsSync(fullPath)) {
-      const raw = readFileSync(fullPath, "utf8");
+      let raw: string;
+      try {
+        raw = readFileSync(fullPath, "utf8");
+      } catch {
+        // Unreadable or non-file entries (e.g., directories matching a candidate name) are skipped.
+        continue;
+      }
       const content = raw.length > MAX_CHARS ? redact(extractRules(raw)) : redact(raw);
       return { path: fullPath, content, source: candidate.source };
     }
