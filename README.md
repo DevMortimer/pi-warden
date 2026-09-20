@@ -24,7 +24,7 @@ Works without any key (offline guards: pattern list, runaway stop, sensitive-pat
 
 | Guard | Watches | Does |
 | --- | --- | --- |
-| **Action** | `bash`, `write`, `edit` before run | Holds irreversible calls, steers off-task changes |
+| **Action** | `bash`, `write`, `edit` before run | Holds irreversible calls, records trace-only off-task findings |
 | **Rules** | every `write` and `edit` | Judges against project Markdown rules, quotes the broken rule |
 | **Slop** | code and replies | Names stubs, restating comments, dead code, hedging |
 | **Stuck** | tool results | Repeated failures using the same strategy |

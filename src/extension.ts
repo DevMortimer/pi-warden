@@ -18,7 +18,7 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdict, formatVerdictTokens, higher, inertPathRules, intentSteer, offTaskSteer, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import { evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, offTaskSteer, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
@@ -45,7 +45,7 @@ import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from ".
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName, TraceEntry } from "./trace.js";
-import { DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
+import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
 export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request, including calls where the rules guard is disabled; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, reason) for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
@@ -141,6 +141,22 @@ function activeMode(config: WardenConfig, hasUI: boolean): WardenMode {
   const env = process.env.PI_WARDEN_MODE?.trim();
   const mode = isMode(env) ? env : config.mode;
   return mode === "confirm" && !hasUI ? "steer" : mode;
+}
+
+/** Keep diagnostic reasons intact while removing the one structured trace-only item at the agent boundary. */
+function agentDeliveryReasons(verdict: Verdict): string[] {
+  const index = verdict.offTaskTraceOnly ? verdict.offTaskTraceOnlyReasonIndex : undefined;
+  if (index === undefined || index < 0 || index >= verdict.reasons.length) return verdict.reasons;
+  return verdict.reasons.filter((_reason, reasonIndex) => reasonIndex !== index);
+}
+
+/** Keep the full judgment while suppressing the trace-only off-task reason and steer flag. */
+function agentDeliveryVerdict(verdict: Verdict): Verdict {
+  const reasons = agentDeliveryReasons(verdict);
+  if (reasons === verdict.reasons) return verdict;
+  const deliveryVerdict: Verdict = { ...verdict, reasons };
+  delete deliveryVerdict.offTaskSteer;
+  return deliveryVerdict;
 }
 
 function clip(text: string): string {
@@ -654,6 +670,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       // Fix 6: armed hits on read-only commands still record a trace line (bypass the read-only source gate).
       if (verdict.source === "read-only") verdict.source = "pattern";
     }
+    const deliveryVerdict = agentDeliveryVerdict(verdict);
+    const deliveryReasons = deliveryVerdict.reasons;
     if (regretCandidates.length && verdict.judgment?.regretted !== undefined) {
       settleRegret(config, { regretted: regretsAt(verdict.judgment.regretted), target: verdict.judgment.regretTarget, probability: verdict.judgment.regretted, via: "jev" });
     }
@@ -677,7 +695,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         if (learningId) recordOutcome(learningId, "approved").catch(err => console.warn("pi-warden: recordOutcome failed:", err));
       }
     }
-    const told = verdict.level === "confirm" && mode === "steer" ? steerReason(verdict, { canApprove: judge !== undefined }) : undefined;
+    const told = verdict.level === "confirm" && mode === "steer" ? steerReason(deliveryVerdict, { canApprove: judge !== undefined }) : undefined;
     // SAFETY: verdict.source is a string union; the read-only → pattern rewrite above may have narrowed it in TS's view,
     // but the field is still one of the source values at runtime when no armed hits fired.
     const actionFmt = formatVerdictTokens(verdict, config.widget.action);
@@ -690,7 +708,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (verdict.plan) recordOpts.plan = verdict.plan;
       const ctxSummary = summarizeContext(recentTaskContext(ctx));
       if (ctxSummary) recordOpts.contextSummary = ctxSummary;
-      if (held) recordOpts.agentReason = steerReason(verdict, { canApprove: judge !== undefined });
+      if (held) recordOpts.agentReason = steerReason(deliveryVerdict, { canApprove: judge !== undefined });
       const item = holds.record(verdict, recordOpts);
       traceOf.set(item, entry);
       noteOutcomes(config, outcome ? [item] : []);
@@ -699,7 +717,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         recordHold(toHoldRecord(
           { at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores },
           ctx.cwd,
-          { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: steerReason(verdict, { canApprove: judge !== undefined }) },
+          { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: steerReason(deliveryVerdict, { canApprove: judge !== undefined }) },
         )).then(id => {
           learningIds.set(item.id, id);
           if (outcome) recordOutcome(id, outcome).catch(err => console.warn("pi-warden: recordOutcome failed:", err));
@@ -715,8 +733,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (verdict.offTaskSteer) {
       stats.offTask++;
-      noteGuards.add("action");
-      notes.push(offTaskSteer(verdict));
+      if (!verdict.offTaskTraceOnly) {
+        noteGuards.add("action");
+        notes.push(offTaskSteer(verdict));
+      }
     }
     if (verdict.shouldProceedSteer) {
       noteGuards.add("action");
@@ -764,14 +784,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       for (const traceNote of pathNoteTraces) traceNote(delivered);
       pathNoteTraces.length = 0;
     }
-    const warnSteer = (label: string) => steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${label}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`);
+    const warnSteer = (reasons: readonly string[]) => reasons.length > 0 && steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${reasons.join("; ")}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`);
     if (verdict.level === "warn") {
       stats.warned++;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
       else if (!ctx.hasUI) {
-        // Exclude should-proceed from the headless warn label: the shouldProceedSteer note is already delivered above.
-        const otherReasons = verdict.reasons.filter(r => !r.startsWith("should-proceed "));
-        if (otherReasons.length) warnSteer(otherReasons.join("; "));
+        const otherReasons = deliveryReasons.filter(r => !r.startsWith("should-proceed "));
+        warnSteer(otherReasons);
       }
       track(false);
       return undefined;
@@ -781,11 +800,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       track(true, "declined", "deny");
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · blocked ${event.toolName}: ${verdict.reasons.join("; ")}`, "error");
       notifyDesktop(ctx, config, `Blocked ${event.toolName}: ${verdict.reasons.join("; ")}. A deny rule matched; the call never ran.`);
-      return { block: true, reason: `pi-warden blocked this ${event.toolName} call (${verdict.reasons.join("; ")}). A deny rule matched; this command is not allowed to run. Ask the user if this is genuinely required.` };
+      return { block: true, reason: `pi-warden blocked this ${event.toolName} call (${deliveryReasons.join("; ")}). A deny rule matched; this command is not allowed to run. Ask the user if this is genuinely required.` };
     }
     if (verdict.level !== "confirm") { track(false); return undefined; }
 
     const reasons = verdict.reasons.join("; ");
+    const deliveredReasons = deliveryReasons.join("; ");
     // A user-defined confirm rule prompts the user in every mode, advise included: the operator wrote the rule to be
     // asked. Advise mode keeps Jev holds advisory; it does not soften a prompt the operator asked for by name.
     // The action defaults to dialog at parse time (the reason one writes such a rule); hold restores steer semantics.
@@ -796,12 +816,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (allowed) { track(true, "approved", "dialog"); return undefined; }
       stats.held++;
       track(true, "declined", "dialog");
-      return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${reasons}). Do not retry it unchanged; ask the user how to proceed.` };
+      return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${deliveredReasons}). Do not retry it unchanged; ask the user how to proceed.` };
     }
     if (mode === "advise") {
       stats.warned++;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
-      else if (!ctx.hasUI) warnSteer(reasons);
+      else if (!ctx.hasUI) warnSteer(deliveryReasons);
       track(false);
       return undefined;
     }
@@ -811,14 +831,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (allowed) { track(true, "approved", "dialog"); return undefined; }
       stats.held++;
       track(true, "declined", "dialog");
-      return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${reasons}). Do not retry it unchanged; ask the user how to proceed.` };
+      return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${deliveredReasons}). Do not retry it unchanged; ask the user how to proceed.` };
     }
     stats.held++;
     actionGuard.hold(task);
     track(true);
     if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
     notifyDesktop(ctx, config, `Held ${event.toolName}: ${reasons}. The agent will re-plan or ask you in chat.`);
-    return { block: true, reason: told ?? steerReason(verdict, { canApprove: judge !== undefined }) };
+    return { block: true, reason: told ?? steerReason(deliveryVerdict, { canApprove: judge !== undefined }) };
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -1264,16 +1284,24 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge },
           );
+          const deliveryVerdict = ctx.hasUI ? verdict : agentDeliveryVerdict(verdict);
+          const deliveryReasons = deliveryVerdict.reasons;
           const fmt = formatVerdictTokens(verdict, config.widget.action);
           record(ctx, config, "action", fmt.line, actionDetails(verdict, { mode: activeMode(config, ctx.hasUI) }), fmt.tokens);
-          report(`${formatVerdict(verdict)}${verdict.reasons.length ? ` — ${verdict.reasons.join("; ")}` : ""}${judge ? "" : " (pattern checks only: TypeSafe judgments are not enabled or no key is configured)"}${verdict.error ? ` — ${verdict.error}` : ""}`);
+          const deliveryTokens = actionTokens(deliveryVerdict);
+          if (!ctx.hasUI && verdict.offTaskTraceOnly) {
+            // Redact only off-task presentation tokens; retain the judgment for other consumers.
+            delete deliveryTokens.offTask;
+            delete deliveryTokens.scope;
+          }
+          report(`${renderTemplate(DEFAULT_TEMPLATES.action, deliveryTokens)}${deliveryReasons.length ? ` — ${deliveryReasons.join("; ")}` : ""}${judge ? "" : " (pattern checks only: TypeSafe judgments are not enabled or no key is configured)"}${verdict.error ? ` — ${verdict.error}` : ""}`);
           if (verdict.level === "confirm") {
             const mode = activeMode(config, ctx.hasUI);
             if (mode === "confirm" && ctx.hasUI) {
               const allowed = await ctx.ui.confirm("warden: allow this bash call? (demo)", `${confirmMessage(verdict)}\n\nThis is /warden test: nothing runs either way.`);
               report(allowed ? "Demo: you chose Yes, so a real call would have run." : "Demo: you chose No, so a real call would have been blocked and the agent told why.");
             } else {
-              report(`In ${mode} mode a real call would ${mode === "advise" ? "run with this warning shown to you" : "be held and the agent would read"}: "${steerReason(verdict, { canApprove: judge !== undefined })}"`);
+              report(`In ${mode} mode a real call would ${mode === "advise" ? "run with this warning shown to you" : "be held and the agent would read"}: "${steerReason(deliveryVerdict, { canApprove: judge !== undefined })}"`);
             }
           }
           return;

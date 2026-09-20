@@ -171,6 +171,8 @@ export interface Verdict {
   shouldProceedSteer?: boolean;
   /** Off-task steer is recorded in the trace but not delivered to the agent; the score has no reliable signal yet (AUC 0.51). */
   offTaskTraceOnly?: boolean;
+  /** Index of the trace-only off-task diagnostic; later reasons append, and any prepend must adjust this index. */
+  offTaskTraceOnlyReasonIndex?: number;
   /** Answers to the caller's own `questions`: P(yes) for a noul, the picked option for a choice, the level for a score. */
   extra?: Record<string, number | string>;
   /** Safe TypeSafe error message when the judge could not answer. */
@@ -1088,6 +1090,11 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   let offTaskWarned = false;
   let offTaskSteer = false;
   let offTaskTraceOnly = false;
+  let offTaskTraceOnlyReasonIndex: number | undefined;
+  const addTraceOnlyOffTaskReason = (reason: string) => {
+    offTaskTraceOnlyReasonIndex = reasons.length;
+    reasons.push(reason);
+  };
   if (judgment.scope === "expected_step") {
     // Scope says the call is a required step; the off-task score is noise. Do not warn.
   } else if (judgment.scope === "unrelated") {
@@ -1097,16 +1104,16 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     offTaskTraceOnly = true; // trace-only until AUC clears 0.51
     level = higher(level, "warn");
     if (canChange) {
-      reasons.push(`off-task ${percent(judgment.offTask)} (unrelated to the request; trace-only until AUC clears 0.51)`);
+      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (unrelated to the request; trace-only until AUC clears 0.51)`);
     } else {
-      reasons.push(`off-task ${percent(judgment.offTask)} (unrelated, but read-only; trace-only)`);
+      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (unrelated, but read-only; trace-only)`);
     }
   } else if (judgment.scope === "plausible_side_step") {
     // Reasonable supporting work whose necessity is not yet established; trace-only, no steer.
     offTaskWarned = true;
     offTaskTraceOnly = true;
     level = higher(level, "warn");
-    reasons.push(`off-task ${percent(judgment.offTask)} (plausible side step; trace-only)`);
+    addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (plausible side step; trace-only)`);
   } else if (judgment.scope === "unclear") {
     // Missing context is not itself off-task evidence; no warn.
   } else {
@@ -1116,12 +1123,12 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       offTaskSteer = canChange;
       offTaskTraceOnly = true;
       level = higher(level, "warn");
-      reasons.push(`off-task ${percent(judgment.offTask)} (trace-only until AUC clears 0.51)`);
+      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (trace-only until AUC clears 0.51)`);
     } else if (judgment.offTask >= config.offTask.warn) {
       offTaskWarned = true;
       offTaskTraceOnly = true;
       level = higher(level, "warn");
-      reasons.push(`off-task ${percent(judgment.offTask)} (trace-only)`);
+      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (trace-only)`);
     }
   }
   if (options.security?.enabled && typeof answers.security_risk?.noul === "number") {
@@ -1192,7 +1199,8 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     // Retain violation answers in extra for calibration.
     if (!verdict.extra) verdict.extra = {};
     Object.assign(verdict.extra, violationExtra);
-  }
+  }  if (offTaskTraceOnlyReasonIndex !== undefined) verdict.offTaskTraceOnlyReasonIndex = offTaskTraceOnlyReasonIndex;
+
   if (options.questions) {
     if (!verdict.extra) verdict.extra = {};
     for (const id of Object.keys(options.questions)) {
@@ -1214,6 +1222,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     verdict.level = "allow";
     verdict.approvedByUser = true;
     verdict.reasons = [`user approved in the latest message (${percent(judgment.approved)})`, ...reasons];
+    if (verdict.offTaskTraceOnlyReasonIndex !== undefined) verdict.offTaskTraceOnlyReasonIndex++;
   }
   return verdict;
 }

@@ -46,6 +46,7 @@ test("off-task never holds: an unrelated change warns but is trace-only; a read-
   assert.equal(changes.offTaskSteer, true);
   assert.equal(changes.offTaskTraceOnly, true, "steer is trace-only until AUC clears 0.51");
   assert.match(changes.reasons.join("; "), /off-task 0\.91 \(unrelated to the request; trace-only until AUC clears 0\.51\)/);
+  assert.equal(changes.offTaskTraceOnlyReasonIndex, changes.reasons.findIndex(reason => reason.startsWith("off-task 0.91")), "delivery metadata identifies only the generated diagnostic");
   assert.match(offTaskSteer(changes), /^pi-warden: this bash call looks unrelated to the user's request \(off-task 0\.91\)\. It ran\./);
   assert.match(formatVerdict(changes), /off task · warn$/);
   const unknown = await evaluateAction(inspect, { config, judge: judge(0.05, 0.91, "unrelated") });
