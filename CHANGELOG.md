@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- Trace-only off-task findings no longer reach the agent through dedicated steers, generic headless warnings, or the headless `/warden test` report. Independent warning and confirmation reasons on the same call still deliver normally.
 
 ## 0.29.2
 

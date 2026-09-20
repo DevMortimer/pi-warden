@@ -542,17 +542,18 @@ test("without consent, only pattern checks run: risky warns, destructive is held
   assert.equal(networkCalls, 0);
 });
 
-test("per-call warning notices are off by default; the agent is still told, and notices: true restores them", async () => {
+test("per-call warning notices are off by default; trace-only off-task stays silent and notices: true restores UI warnings", async () => {
   await writeFile(configPath(), JSON.stringify({  typesafe: true , ...STACK_BAR }));
   nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated" };
   assert.equal(await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" }), undefined);
   assert.equal(notices.length, 0, "no yellow warning in the transcript by default");
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+write · .*off task$/, "the widget still shows the event, as a warn chip");
-  assert.match(sentMessages.at(-1)?.message.content ?? "", /^pi-warden: this write call looks unrelated/, "the agent is still told");
+  assert.equal(sentMessages.length, 0, "the trace-only finding is not delivered to the agent");
 
   await writeFile(configPath(), JSON.stringify({  typesafe: true, notices: true , ...STACK_BAR }));
   await toolCall("write", { path: join(temporary, "poem2.txt"), content: "daisies" });
   assert.ok(notices.some(notice => /warden · write: /.test(notice.text)), "notices: true restores the warnings");
+  assert.equal(sentMessages.length, 0, "a user-facing notice does not make the trace-only reason model-visible");
 });
 
 test("a headless run tells the agent about warn-level calls; an interactive one keeps them in the UI", async () => {
@@ -568,6 +569,138 @@ test("a headless run tells the agent about warn-level calls; an interactive one 
   await toolCall("bash", { command: "npm run db:reset" });
   assert.equal(sentMessages.find(sent => sent.message.customType === "pi-warden-steer"), undefined, "interactively the user sees the warning; no extra steer");
   assert.match(notices.at(-1)!.text, /warden · bash: possibly irreversible 0\.55/);
+});
+
+test("trace-only unrelated off-task stays in the trace without an interactive agent steer", async () => {
+  await grantConsent();
+  prompt = "Fix the login redirect";
+  nextAnswers = { irreversible: 0.05, off_task: 0.95, scope: "unrelated", mutates: 0.95 };
+
+  const result = await toolCall("write", { path: join(temporary, "unrelated-note.txt"), content: "unrelated note" });
+
+  assert.equal(result, undefined, "trace-only off-task never blocks the write");
+  assert.equal(networkCalls, 1, "the real action request reached the mocked transport");
+  assert.ok("off_task" in requests[0]!.questions && "scope" in requests[0]!.questions, "the action was judged, not skipped");
+  assert.equal(requests[0]!.state.task, "Fix the login redirect");
+  assert.deepEqual(sentMessages.map(sent => sent.message.content), [], "trace-only off-task adds no model-visible message");
+
+  await runCommand("trace", context({ hasUI: false }));
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.match(trace, /jev: irreversible 0\.05 · off-task 0\.95 · unrelated/);
+  assert.match(trace, /why: off-task 0\.95 \(unrelated to the request; trace-only until AUC clears 0\.51\)/);
+});
+
+test("trace-only plausible side step does not leak through the headless generic warning", async () => {
+  await grantConsent();
+  prompt = "Fix the login redirect";
+  nextAnswers = { irreversible: 0.05, off_task: 0.75, scope: "plausible_side_step", mutates: 0.95 };
+
+  const result = await toolCall("write", { path: join(temporary, "side-step-note.txt"), content: "supporting note" }, context({ hasUI: false }));
+
+  assert.equal(result, undefined, "trace-only side steps remain advisory");
+  assert.equal(networkCalls, 1, "the real action request reached the mocked transport");
+  assert.ok("off_task" in requests[0]!.questions && "scope" in requests[0]!.questions, "the action was judged, not skipped");
+  assert.deepEqual(sentMessages.map(sent => sent.message.content), [], "the generic headless warning does not deliver a trace-only reason");
+
+  await runCommand("trace", context({ hasUI: false }));
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.match(trace, /jev: irreversible 0\.05 · off-task 0\.75 · plausible side step/);
+  assert.match(trace, /why: off-task 0\.75 \(plausible side step; trace-only\)/);
+});
+
+test("trace-only off-task is silent headless and leaves the steer budget for a real warning", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, steerBudget: 1, ...STACK_BAR }));
+  prompt = "Fix the login redirect";
+  const headless = context({ hasUI: false });
+
+  nextAnswers = { irreversible: 0.05, off_task: 0.95, scope: "unrelated", mutates: 0.95 };
+  assert.equal(await toolCall("write", { path: join(temporary, "headless-unrelated.txt"), content: "unrelated note" }, headless), undefined);
+  assert.equal(sentMessages.length, 0, "neither the dedicated nor generic path delivers unrelated trace-only output");
+
+  nextAnswers = { irreversible: 0.05, off_task: 0.95, scope: "expected_step", mutates: 0.95 };
+  assert.equal(await toolCall("write", { path: join(temporary, "expected-step.txt"), content: "expected step" }, headless), undefined);
+  nextAnswers = { irreversible: 0.05, off_task: 0.95, scope: "unclear", mutates: 0.95 };
+  assert.equal(await toolCall("write", { path: join(temporary, "unclear-step.txt"), content: "unclear step" }, headless), undefined);
+  assert.equal(sentMessages.length, 0, "expected and unclear scope do not create an off-task message");
+
+  nextAnswers = { irreversible: 0.55, off_task: 0.05, scope: "expected_step", mutates: 0.95 };
+  assert.equal(await toolCall("bash", { command: "npm run db:reset" }, headless), undefined);
+  assert.equal(sentMessages.length, 1, "trace-only calls did not spend the one-message budget");
+  assert.match(sentMessages[0]!.message.content, /ran with a warning \(possibly irreversible 0\.55\)/);
+
+  await runCommand("status", headless);
+  assert.match(sentMessages.at(-1)!.message.content, /Steers sent: 1 \(action 1\)\./, "trace-only findings are diagnostics, not skipped delivery attempts");
+  assert.equal(networkCalls, 4, "every synthetic action reached the mocked judgment transport");
+});
+
+test("trace-only off-task removes only its structured reason from mixed headless warnings", async () => {
+  await writeFile(configPath(), JSON.stringify({
+    typesafe: true,
+    action: { commandRules: [{ id: "audit-note", pattern: "\\bnpm\\s+run\\s+audit\\b", severity: "warn", message: "review the off-task audit before release" }] },
+    ...STACK_BAR,
+  }));
+  const headless = context({ hasUI: false });
+  nextAnswers = { irreversible: 0.55, off_task: 0.95, scope: "unrelated", mutates: 0.95 };
+
+  assert.equal(await toolCall("bash", { command: "npm run audit" }, headless), undefined);
+  const beforeDelivery = sentMessages.map(({ message }) => message.content).join("\n");
+  assert.match(beforeDelivery, /review the off-task audit before release/, "a user rule that mentions off-task is preserved");
+  assert.match(beforeDelivery, /possibly irreversible 0\.55/, "an independent reason before off-task is preserved");
+  assert.doesNotMatch(beforeDelivery, /off-task 0\.95 \(unrelated to the request/, "only the generated trace-only reason is removed");
+
+  await runCommand("trace", headless);
+  const mixedTrace = sentMessages.at(-1)!.message.content;
+  assert.match(mixedTrace, /possibly irreversible 0\.55/, "the trace keeps the independent warning");
+  assert.match(mixedTrace, /off-task 0\.95 \(unrelated to the request; trace-only until AUC clears 0\.51\)/, "the trace keeps the filtered diagnostic");
+
+  await sessionStart();
+  sentMessages.length = 0; requests.length = 0; networkCalls = 0;
+  nextAnswers = { irreversible: 0.05, off_task: 0.95, scope: "unrelated", mutates: 0.95, security_risk: 0.92 };
+  assert.equal(await toolCall("write", { path: join(temporary, "mixed-security.ts"), content: "export const safe = true;" }, headless), undefined);
+  const delivered = sentMessages.map(({ message }) => message.content).join("\n");
+  assert.match(delivered, /proposed write may introduce a security weakness/, "the dedicated security warning remains");
+  assert.match(delivered, /possible security weakness 0\.92 in written content/, "an independent reason after off-task is preserved");
+  assert.doesNotMatch(delivered, /off-task 0\.95 \(unrelated to the request/, "no mixed delivery carries the trace-only reason");
+});
+
+test("headless /warden test filters trace-only off-task delivery but keeps the full trace", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  const headless = context({ hasUI: false });
+  nextAnswers = { irreversible: 0.95, off_task: 0.95, scope: "unrelated", mutates: 0.95 };
+
+  await runCommand("test", headless);
+
+  const delivered = sentMessages.map(({ message }) => message.content).join("\n");
+  assert.ok(sentMessages.length >= 1, "filtering one reason does not silence the synthetic report");
+  assert.match(delivered, /irreversible 0\.95/, "the independent risk still reaches the agent");
+  assert.match(delivered, /warden · bash · irreversible 0\.95 ·/, "the formatted summary retains the independent judgment, not just its reason");
+  assert.doesNotMatch(delivered, /off[- ]task/i, "no trace-only off-task diagnostic reaches the agent-visible report");
+  assert.doesNotMatch(delivered, /trace-only/);
+  assert.doesNotMatch(delivered, /unrelated/, "the trace-only scope token is hidden too");
+
+  await runCommand("trace", headless);
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.match(trace, /irreversible 0\.95/, "the trace keeps the independent risk");
+  assert.match(trace, /off-task 0\.95 \(unrelated to the request; trace-only until AUC clears 0\.51\)/, "the trace keeps the off-task diagnostic");
+  assert.match(trace, /jev: irreversible 0\.95 · off-task 0\.95 · unrelated \(0\.80\).*jev-test/, "the trace retains the complete judgment");
+
+  await runCommand("test");
+  assert.ok(notices.some(notice => /warden · bash · irreversible 0\.95 · off-task 0\.95 · unrelated/.test(notice.text)), "interactive diagnostics still render the full judgment");
+});
+
+test("trace-only off-task does not soften an independent confirm decision", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, mode: "confirm", notices: true, ...STACK_BAR }));
+  confirmResult = false;
+  nextAnswers = { irreversible: 0.95, off_task: 0.95, scope: "unrelated", mutates: 0.95 };
+
+  const blocked = await toolCall("write", { path: join(temporary, "confirm-risk.txt"), content: "risky change" });
+
+  assert.equal(blocked?.block, true, "the independent irreversible risk still blocks after the user declines");
+  assert.equal(confirms.length, 1, "the normal confirmation dialog ran");
+  assert.match(confirms[0]!.message, /irreversible 0\.95/);
+  assert.match(confirms[0]!.message, /off-task 0\.95/, "the user-facing diagnostic view remains complete");
+  assert.match(blocked?.reason ?? "", /irreversible 0\.95/, "the agent receives the independent hold reason");
+  assert.doesNotMatch(blocked?.reason ?? "", /off-task 0\.95/, "the agent does not receive the trace-only reason");
 });
 
 test("the agent's plan comes from the message that makes the call, falls back to its latest text under the prompt, and a mismatch steers", async () => {
@@ -789,12 +922,12 @@ test("with consent, Jev judgments drive warn and hold, and a quiet verdict folds
   assert.match(held?.reason ?? "", /retry the same call and pi-warden will let it through/);
   assert.equal(networkCalls, 2);
 
-  // Off-task never holds: the unrelated write runs, the user sees a warning, the agent is steered back to the request.
+  // Off-task never holds: the unrelated write runs and remains visible to the user and trace, not the agent.
   nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated" };
   sentMessages.length = 0;
   assert.equal(await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" }), undefined);
   assert.match(notices.at(-1)!.text, /^warden · write: off-task 0\.95 \(unrelated to the request; trace-only until AUC clears 0\.51\)$/);
-  assert.match(sentMessages.at(-1)?.message.content ?? "", /^pi-warden: this write call looks unrelated to the user's request \(off-task 0\.95\)\. It ran\./);
+  assert.equal(sentMessages.length, 0, "trace-only off-task is not delivered to the agent");
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+write · .*off task$/, "the widget still shows the event, as a warn chip");
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /1 off task,/);
