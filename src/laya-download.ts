@@ -10,7 +10,7 @@
 import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 
 const HF_API = "https://huggingface.co";
 const MODEL_REPO = "aac6fef/laya-mlx";
@@ -240,6 +240,7 @@ export async function downloadLayaModel(onStatus?: (msg: string) => void): Promi
   for (const file of files) {
     const fileUrl = `${HF_API}/${MODEL_REPO}/resolve/main/${file.path}`;
     const dest = join(stagingDir, file.path);
+    mkdirSync(dirname(dest), { recursive: true });
     await downloadFile(fileUrl, dest, file.size, progress, onProgress);
     progress.filesDone++;
   }
