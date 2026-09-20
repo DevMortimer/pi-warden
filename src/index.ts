@@ -1,5 +1,5 @@
-export { evaluateAction, describeAction, describePlan, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, formatVerdictTokens, steerReason, intentSteer, offTaskSteer, steerFingerprint, SteerRepeatWindow, questions, intentQuestion, visibleQuestion, slopQuestions, approvalQuestion, securityQuestion, regretQuestions } from "./guard.js";
-export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, PreviousAction, ScannedCommand, ScopeLabel, Severity, Verdict } from "./guard.js";
+export { evaluateAction, describeAction, describePlan, matchPatterns, isReadOnlyCommand, stripDataText, buildRequest, formatVerdict, formatVerdictTokens, steerReason, intentSteer, offTaskSteer, steerFingerprint, SteerRepeatWindow, questions, intentQuestion, visibleQuestion, slopQuestions, approvalQuestion, securityQuestion, regretQuestions, authorize, isNegated, scopeMatches, isAuthEligible, patternHitsToViolations, escalateBlastRadius, escalateRulesViolation, aggregateLevel, removeAuthorized, scopeFromInput, matchPathRules } from "./guard.js";
+export type { ActionInput, ActionSummary, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, PreviousAction, ScannedCommand, ScopeLabel, Severity, Verdict, Violation, ViolationSource, ViolationScope, Authorization, EscalatedViolation } from "./guard.js";
 export { SLOP_SYMPTOMS, SLOP_LABELS } from "./guard.js";
 export { ActionGuard } from "./action-guard.js";
 export type { Conversation, InspectOptions, ToolCallRef } from "./action-guard.js";
@@ -38,5 +38,7 @@ export { Trace, actionDetails, stuckDetails, doneDetails, proseDetails, runawayD
 export type { TraceEntry, GuardName } from "./trace.js";
 export { parseRules, condense, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, describeRuleSet, describeTarget, buildRulesRequest, ruleQuestion, evaluateRules, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, AGGREGATE_QUESTION, LOCATOR_QUESTION } from "./rules.js";
 export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef } from "./rules.js";
+export { resolveRulesFile, extractRules, checkPiWardenMissing } from "./rules-file.js";
+export type { ResolvedRulesFile } from "./rules-file.js";
 export { initSchema, recordHold, recordOutcome as recordHoldOutcome, querySmartHistory, calculateSmartConfidence, shouldSkipHold, analyzeThresholds, analyzePatterns, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 export type { HoldRecord, HoldScores, HoldLevel, HoldOutcome, HoldContext, SmartHistory, ConfidenceResult, SkipResult, ThresholdAdjustment, PatternInsight, ContextRecommendation, SteerEffectivenessReport } from "./learning.js";

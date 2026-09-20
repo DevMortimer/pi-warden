@@ -6,7 +6,24 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+- Violation pipeline: deterministic per-violation authorization, escalation, and aggregation for pattern-detected and rules-guard violations.
+- `Violation`, `ViolationScope`, `Authorization`, `EscalatedViolation` types for the violation pipeline.
+- `authorize()`, `isNegated()`, `scopeMatches()`, `isAuthEligible()`, `patternHitsToViolations()` for deterministic authorization.
+- `escalateBlastRadius()` and `escalateRulesViolation()` for Jev-backed severity escalation.
+- `aggregateLevel()` for final tool-call level from remaining violations.
+- `resolveRulesFile()` and `extractRules()` for token-aware rules file resolution.
+- `checkPiWardenMissing()` for first-run warning support.
+- `escalationThreshold` config key in `ActionGuardConfig` (default 0.85).
+- First-run warning when pi-warden.md is missing and a fallback is active.
+- `ViolationScope` supports `labels` for deterministic semantic scope matching.
+- Hard-deny violations (`authEligible: false`) are not removable by user authorization.
+
+### Changed
+- `matchPathRules` is now exported for use by conscience-loader.
+
+### Tests
+- 35 new tests for authorization, escalation, aggregation, rules-file resolution, and first-run warning.
 
 ## 0.29.1
 

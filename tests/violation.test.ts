@@ -1,0 +1,363 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
+import { authorize, aggregateLevel, escalateBlastRadius, escalateRulesViolation, isAuthEligible, isNegated, patternHitsToViolations, removeAuthorized, scopeMatches } from "../src/guard.js";
+import type { Authorization, EscalatedViolation, Violation } from "../src/guard.js";
+import { checkPiWardenMissing, extractRules, resolveRulesFile } from "../src/rules-file.js";
+
+let cwd: string;
+before(async () => {
+  cwd = await mkdtemp(join(tmpdir(), "pi-warden-violation-"));
+});
+after(async () => { await rm(cwd, { recursive: true, force: true }); });
+
+// ---------------------------------------------------------------------------
+// Authorization: deterministic per-violation analysis.
+
+test("authorize: prompt matching the action verb and scope authorizes the violation", () => {
+  const violation: Violation = {
+    id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push",
+    patternFamily: "git-force-push", authEligible: true,
+    scope: { command: "git push --force origin main", tool: "bash" },
+  };
+  const result = authorize("push my branch", violation);
+  assert.equal(result.authorized, true);
+  assert.equal(result.actionMatched, true);
+  assert.equal(result.negated, false);
+});
+
+test("authorize: negation in the prompt prevents authorization", () => {
+  const violation: Violation = {
+    id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push",
+    patternFamily: "git-force-push", authEligible: true,
+    scope: { command: "git push --force origin main", tool: "bash" },
+  };
+  assert.equal(authorize("don't push", violation).authorized, false);
+  assert.equal(authorize("don't push", violation).negated, true);
+  assert.equal(authorize("never push", violation).negated, true);
+  assert.equal(authorize("do not push", violation).negated, true);
+  assert.equal(authorize("skip the push", violation).negated, true);
+});
+
+test("authorize: scope mismatch prevents authorization even when action matches", () => {
+  const violation: Violation = {
+    id: "rm-rf", severity: "destructive", source: "pattern", description: "rm -rf",
+    patternFamily: "rm-rf", authEligible: true,
+    scope: { paths: ["eval/reports/"], labels: ["eval results", "evaluation reports"], tool: "bash" },
+  };
+  // "delete tmp.txt" does not match the scope of "eval/reports/"
+  assert.equal(authorize("delete tmp.txt", violation).authorized, false);
+  assert.equal(authorize("delete tmp.txt", violation).scopeMatched, false);
+  // "delete eval results" matches via label
+  assert.equal(authorize("delete eval results", violation).authorized, true);
+  assert.equal(authorize("delete eval results", violation).scopeMatched, true);
+});
+
+test("authorize: hard-deny violations are not authorization-eligible", () => {
+  const denyViolation: Violation = {
+    id: "never-talos-reset", severity: "deny", source: "pattern", description: "blocked",
+    authEligible: false,
+  };
+  assert.equal(authorize("reset talos", denyViolation).authorized, false);
+  assert.equal(authorize("reset talos", denyViolation).actionMatched, false);
+});
+
+test("authorize: sensitive-path violations are not authorization-eligible", () => {
+  const sensitiveViolation: Violation = {
+    id: "sensitive-path", severity: "sensitive", source: "pattern", description: "touches secrets",
+    authEligible: false,
+  };
+  assert.equal(authorize("read the env", sensitiveViolation).authorized, false);
+});
+
+// ---------------------------------------------------------------------------
+// Scope matching.
+
+test("scopeMatches: exact path match", () => {
+  assert.equal(scopeMatches("delete eval/reports/", { paths: ["eval/reports/"] }), true);
+  assert.equal(scopeMatches("delete something else", { paths: ["eval/reports/"] }), false);
+});
+
+test("scopeMatches: basename match", () => {
+  assert.equal(scopeMatches("delete reports", { paths: ["eval/reports/"] }), true);
+  assert.equal(scopeMatches("clean up reports directory", { paths: ["eval/reports/"] }), true);
+});
+
+test("scopeMatches: label match for semantic inference", () => {
+  assert.equal(scopeMatches("delete eval results", { labels: ["eval results", "evaluation reports"] }), true);
+  assert.equal(scopeMatches("clean evaluation reports", { labels: ["eval results", "evaluation reports"] }), true);
+  assert.equal(scopeMatches("delete something unrelated", { labels: ["eval results"] }), false);
+});
+
+test("scopeMatches: no scope always matches", () => {
+  assert.equal(scopeMatches("do anything", {}), true);
+  assert.equal(scopeMatches("do anything", { paths: undefined, labels: undefined }), true);
+});
+
+// ---------------------------------------------------------------------------
+// Violation eligibility.
+
+test("isAuthEligible: risky and destructive are eligible; deny and sensitive are not", () => {
+  assert.equal(isAuthEligible({ id: "rm-rf", severity: "risky", label: "rm -rf" }), true);
+  assert.equal(isAuthEligible({ id: "rm-rf", severity: "destructive", label: "rm -rf" }), true);
+  assert.equal(isAuthEligible({ id: "never-rule", severity: "deny", label: "blocked" }), false);
+  assert.equal(isAuthEligible({ id: "sensitive-path", severity: "sensitive", label: "secrets" }), false);
+});
+
+// ---------------------------------------------------------------------------
+// patternHitsToViolations: convert PatternHit[] to Violation[].
+
+test("patternHitsToViolations: converts hits with scope and eligibility", () => {
+  const hits = [
+    { id: "git-force-push", severity: "destructive" as const, label: "git force push" },
+    { id: "sensitive-path", severity: "sensitive" as const, label: "touches secrets" },
+  ];
+  const violations = patternHitsToViolations(hits, "bash", { command: "git push --force" });
+  assert.equal(violations.length, 2);
+  assert.equal(violations[0]!.authEligible, true, "destructive is auth-eligible");
+  assert.equal(violations[1]!.authEligible, false, "sensitive is not auth-eligible");
+  assert.ok(violations[0]!.scope?.labels?.includes("git push"));
+});
+
+// ---------------------------------------------------------------------------
+// Escalation A: blast-radius.
+
+test("escalateBlastRadius: authorized violation keeps original severity", () => {
+  const violation: Violation = {
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true,
+  };
+  const authorized: Authorization = { authorized: true, actionMatched: true, scopeMatched: true, negated: false };
+  assert.equal(escalateBlastRadius(violation, authorized, { violated: true, confidence: 0.95 }, { escalationThreshold: 0.85 }), "risky");
+});
+
+test("escalateBlastRadius: unconfirmed violation keeps original severity", () => {
+  const violation: Violation = {
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true,
+  };
+  const notAuthorized: Authorization = { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
+  assert.equal(escalateBlastRadius(violation, notAuthorized, { violated: false, confidence: 0.5 }, { escalationThreshold: 0.85 }), "risky");
+});
+
+test("escalateBlastRadius: risky escalates to destructive when Jev confirms", () => {
+  const violation: Violation = {
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true,
+  };
+  const notAuthorized: Authorization = { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
+  assert.equal(escalateBlastRadius(violation, notAuthorized, { violated: true, confidence: 0.9 }, { escalationThreshold: 0.85 }), "destructive");
+});
+
+test("escalateBlastRadius: destructive escalates to deny when Jev confirms", () => {
+  const violation: Violation = {
+    id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push", authEligible: true,
+  };
+  const notAuthorized: Authorization = { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
+  assert.equal(escalateBlastRadius(violation, notAuthorized, { violated: true, confidence: 0.95 }, { escalationThreshold: 0.85 }), "deny");
+});
+
+// ---------------------------------------------------------------------------
+// Escalation B: rules guard.
+
+test("escalateRulesViolation: Jev confirms against matched rule escalates to destructive", () => {
+  const violation: Violation = {
+    id: "no-console", severity: "risky", source: "rules-guard", description: "no console",
+    matchedRule: "No console.log", authEligible: true,
+  };
+  assert.equal(escalateRulesViolation(violation, { violated: true, confidence: 0.9 }, { escalationThreshold: 0.85 }), "destructive");
+});
+
+test("escalateRulesViolation: Jev does not confirm keeps original severity", () => {
+  const violation: Violation = {
+    id: "no-console", severity: "risky", source: "rules-guard", description: "no console",
+    matchedRule: "No console.log", authEligible: true,
+  };
+  assert.equal(escalateRulesViolation(violation, { violated: false, confidence: 0.3 }, { escalationThreshold: 0.85 }), "risky");
+});
+
+test("escalateRulesViolation: no matchedRule keeps original severity", () => {
+  const violation: Violation = {
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true,
+  };
+  assert.equal(escalateRulesViolation(violation, { violated: true, confidence: 0.95 }, { escalationThreshold: 0.85 }), "risky");
+});
+
+// ---------------------------------------------------------------------------
+// Aggregation.
+
+test("aggregateLevel: no violations returns allow", () => {
+  assert.equal(aggregateLevel([]), "allow");
+});
+
+test("aggregateLevel: highest severity wins", () => {
+  const risky: EscalatedViolation = {
+    id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true, escalatedSeverity: "risky",
+  };
+  assert.equal(aggregateLevel([risky]), "warn");
+
+  const destructive: EscalatedViolation = {
+    id: "git-force-push", severity: "destructive", source: "pattern", description: "git force push", authEligible: true, escalatedSeverity: "destructive",
+  };
+  assert.equal(aggregateLevel([risky, destructive]), "confirm");
+
+  const deny: EscalatedViolation = {
+    id: "never-rule", severity: "deny", source: "pattern", description: "blocked", authEligible: false, escalatedSeverity: "deny",
+  };
+  assert.equal(aggregateLevel([risky, destructive, deny]), "deny");
+});
+
+test("aggregateLevel: mix of authorized (removed) and remaining violations", () => {
+  const remaining: EscalatedViolation = {
+    id: "secret-literal", severity: "risky", source: "pattern", description: "secret", authEligible: true, escalatedSeverity: "risky",
+  };
+  assert.equal(aggregateLevel([remaining]), "warn");
+});
+
+// ---------------------------------------------------------------------------
+// removeAuthorized: filter out authorized violations.
+
+test("removeAuthorized: removes only authorized violations", () => {
+  const v1: Violation = { id: "git-commit", severity: "risky", source: "pattern", description: "commit", authEligible: true };
+  const v2: Violation = { id: "secret-literal", severity: "risky", source: "pattern", description: "secret", authEligible: true };
+  const auth1: Authorization = { authorized: true, actionMatched: true, scopeMatched: true, negated: false };
+  const auth2: Authorization = { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
+  const remaining = removeAuthorized([v1, v2], [auth1, auth2]);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0]!.id, "secret-literal");
+});
+
+test("removeAuthorized: empty authorization array keeps all violations", () => {
+  const v1: Violation = { id: "rm-rf", severity: "risky", source: "pattern", description: "rm -rf", authEligible: true };
+  assert.equal(removeAuthorized([v1], []).length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Full pipeline: authorization → remove → escalate → aggregate.
+
+test("pipeline: authorized destructive action results in allow when no other violations", () => {
+  const violation: Violation = {
+    id: "rm-rf", severity: "destructive", source: "pattern", description: "rm -rf",
+    patternFamily: "rm-rf", authEligible: true,
+    scope: { paths: ["eval/reports/"], labels: ["eval results"], tool: "bash" },
+  };
+  // User says "delete these eval results"
+  const auth = authorize("delete these eval results", violation);
+  assert.equal(auth.authorized, true, "user explicitly authorized this action on this scope");
+  const remaining = removeAuthorized([violation], [auth]);
+  assert.equal(remaining.length, 0, "authorized violation removed");
+  assert.equal(aggregateLevel([]), "allow", "no remaining violations → allow");
+});
+
+test("pipeline: one authorized + one unauthorized violation", () => {
+  const gitCommit: Violation = {
+    id: "git-commit", severity: "risky", source: "pattern", description: "commit",
+    patternFamily: "git-commit", authEligible: true,
+    scope: { command: "git commit", tool: "bash" },
+  };
+  const secret: Violation = {
+    id: "secret-literal", severity: "risky", source: "pattern", description: "secret",
+    authEligible: true,
+  };
+  const authCommit = authorize("commit the changes", gitCommit);
+  const authSecret = authorize("commit the changes", secret);
+  assert.equal(authCommit.authorized, true);
+  assert.equal(authSecret.authorized, false, "commit does not authorize secret");
+  const remaining = removeAuthorized([gitCommit, secret], [authCommit, authSecret]);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0]!.id, "secret-literal");
+  const escalated: EscalatedViolation[] = remaining.map(v => ({ ...v, escalatedSeverity: v.severity }));
+  assert.equal(aggregateLevel(escalated), "warn");
+});
+
+test("pipeline: hard deny is never removable by authorization", () => {
+  const denyViolation: Violation = {
+    id: "never-deploy", severity: "deny", source: "pattern", description: "blocked",
+    authEligible: false,
+  };
+  const auth = authorize("deploy to production", denyViolation);
+  assert.equal(auth.authorized, false, "deny violations are not auth-eligible");
+  const remaining = removeAuthorized([denyViolation], [auth]);
+  assert.equal(remaining.length, 1, "deny violation remains");
+  const escalated: EscalatedViolation[] = remaining.map(v => ({ ...v, escalatedSeverity: v.severity }));
+  assert.equal(aggregateLevel(escalated), "deny");
+});
+
+// ---------------------------------------------------------------------------
+// Rules file resolution.
+
+test("resolveRulesFile: pi-warden.md wins over fallbacks", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\nAlways test.\n");
+  await writeFile(join(dir, "pi-warden.md"), "# Project Rules\nNo console.log.\n");
+  const resolved = resolveRulesFile(dir);
+  assert.equal(resolved?.source, "pi-warden.md");
+  assert.match(resolved?.content ?? "", /No console\.log/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("resolveRulesFile: AGENTS.md is used when pi-warden.md is missing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\nAlways test.\n");
+  const resolved = resolveRulesFile(dir);
+  assert.equal(resolved?.source, "AGENTS.md");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("resolveRulesFile: returns null when no rules file exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  assert.equal(resolveRulesFile(dir), null);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("resolveRulesFile: truncates large files using extractRules", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  const largeContent = "# Rule\n" + "x".repeat(20000);
+  await writeFile(join(dir, "pi-warden.md"), largeContent);
+  const resolved = resolveRulesFile(dir);
+  assert.ok(resolved!.content.length < largeContent.length, "content is truncated");
+  await rm(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// extractRules: token-aware truncation.
+
+test("extractRules: keeps headings and their paragraphs within budget", () => {
+  const content = "# Rule 1\nBody 1.\n\n# Rule 2\nBody 2.\n\n# Rule 3\n" + "x".repeat(20000);
+  const extracted = extractRules(content, 100);
+  assert.match(extracted, /# Rule 1/);
+  assert.match(extracted, /# Rule 2/);
+  // Rule 3 may be partially included or excluded based on budget
+});
+
+test("extractRules: short content passes through unchanged", () => {
+  const content = "# Short Rule\nBody.";
+  assert.equal(extractRules(content), content);
+});
+
+// ---------------------------------------------------------------------------
+// checkPiWardenMissing: first-run warning support.
+
+test("checkPiWardenMissing: returns missing=false when pi-warden.md exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
+  await writeFile(join(dir, "pi-warden.md"), "# Rules\n");
+  const result = checkPiWardenMissing(dir);
+  assert.equal(result.missing, false);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("checkPiWardenMissing: returns fallbackSource when pi-warden.md missing but AGENTS.md exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\n");
+  const result = checkPiWardenMissing(dir);
+  assert.equal(result.missing, true);
+  assert.equal(result.fallbackSource, "AGENTS.md");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("checkPiWardenMissing: returns no fallback when nothing exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
+  const result = checkPiWardenMissing(dir);
+  assert.equal(result.missing, true);
+  assert.equal(result.fallbackSource, undefined);
+  await rm(dir, { recursive: true, force: true });
+});

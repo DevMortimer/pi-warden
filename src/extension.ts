@@ -29,6 +29,7 @@ import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js
 import type { SearchTool } from "./recall.js";
 import { redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
+import { checkPiWardenMissing } from "./rules-file.js";
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
@@ -234,6 +235,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
   let warnedFallback = false;
+  let warnedMissingRules = false;
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
@@ -455,6 +457,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     client = undefined;
     budgetExhausted = false;
     warnedFallback = false;
+    warnedMissingRules = false;
     await initSchema(loadConfig().learning.retentionDays);
     stats = freshStats();
     widget.clear();
@@ -572,6 +575,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
+    // First-run warning: pi-warden.md missing with a fallback active, one time per session.
+    if (!warnedMissingRules && ctx.hasUI && config.rules.enabled) {
+      const { missing, fallbackSource } = checkPiWardenMissing(ctx.cwd);
+      if (missing && fallbackSource) {
+        warnedMissingRules = true;
+        ctx.ui.notify(`No pi-warden.md detected. Using ${fallbackSource} as active fallback rules. Run /warden init to create project-specific rules.`, "warning");
+      }
+    }
     // Arming: a write/edit to a protected path arms matching command patterns for a window. Bash redirect/tee
     // targets that match a when.edited glob also arm. This is session state, not a per-call verdict — it runs
     // before the action guard so the armed check on a later command sees the preparation.
