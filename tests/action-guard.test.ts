@@ -6,7 +6,7 @@ import { defaultConfig } from "../src/config.js";
 import type { Judge } from "pi-typesafe";
 
 interface Request { state: { action: { command?: string; path?: string } }; questions: Record<string, unknown> }
-interface Answers { irreversible: number; offTask?: number; scope?: string; mutates?: number; approved?: number }
+interface Answers { irreversible: number; offTask?: number; scope?: string; mutates?: number; approved?: number; shouldProceed?: number }
 
 /**
  * A judge whose next answers are set by the test. `open` keeps requests pending until the test releases them, which is
@@ -30,6 +30,7 @@ function stubJudge(): Judge & { requests: Request[]; next: Answers; release: () 
           off_task: { type: "noul", noul: answers.offTask ?? 0.1 },
           scope: { type: "choice", choice: answers.scope ?? "expected_step", confidence: 0.9, probabilities: { [answers.scope ?? "expected_step"]: 0.9 } },
           mutates: { type: "noul", noul: answers.mutates ?? 0.9 },
+          should_proceed: { type: "noul", noul: answers.shouldProceed ?? 1.0 },
           ...((request as Request).questions.approved ? { approved: { type: "noul", noul: answers.approved ?? 0 } } : {}),
         },
       } as never;
@@ -117,11 +118,11 @@ test("without a judge, a reply that reads as approval stands in for the question
   guard.hold("hmm, why is that needed?");
   assert.equal((await guard.inspect(bash("c4", "git push --force"), under("no, don't do that"), options())).level, "confirm", "a refusal with a yes-word is not approval");
   guard.hold("no, don't do that");
-  const approved = await guard.inspect(bash("c5", "git push --force"), under("yes, go ahead and force push"), options());
+  const approved = await guard.inspect(bash("c5", "git push --force"), under("yes, that's fine"), options());
   assert.equal(approved.level, "allow");
   assert.equal(approved.approvedByUser, true);
   assert.equal(approved.reasons[0], "user approved in the latest message");
-  assert.equal((await guard.inspect(bash("c6", "git push --force"), under("yes, go ahead and force push"), options())).level, "confirm", "approval is consumed by the call it released");
+  assert.equal((await guard.inspect(bash("c6", "git push --force"), under("yes, that's fine"), options())).level, "confirm", "approval is consumed by the call it released");
 });
 
 test("siblings of one assistant message are judged together, each once, only for the input they were judged with", async () => {

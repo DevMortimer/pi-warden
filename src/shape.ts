@@ -39,7 +39,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     steerVisible: source.steerVisible ?? false,
     notices: source.notices ?? false,
     steerBudget: typeof source.steerBudget === "number" && source.steerBudget >= 0 ? source.steerBudget : 3,
-    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [] }),
+    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, shouldProceed: { hold: 0.6 }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85 }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false }),
     done: section("done", { ...off, claimsDone: 1, nudge: false }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
@@ -66,6 +66,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };
   if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.9 };
   if (typeof config.action.visibleMismatch !== "number") config.action = { ...config.action, visibleMismatch: 0.8 };
+  if (typeof config.action.shouldProceed !== "object" || config.action.shouldProceed === null || typeof config.action.shouldProceed.hold !== "number") config.action = { ...config.action, shouldProceed: { hold: 0.6 } };
+  if (typeof config.action.escalationThreshold !== "number") config.action = { ...config.action, escalationThreshold: 0.85 };
   // The command rules were added inside the action section later than the section itself; an older config module leaves them undefined.
   if (!Array.isArray(config.action.commandRules)) config.action = { ...config.action, commandRules: [] };
   if (!Array.isArray(config.action.commandDenyRules)) config.action = { ...config.action, commandDenyRules: [] };

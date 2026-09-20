@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
 import * as tuiModule from "@earendil-works/pi-tui";
@@ -16,7 +18,7 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, offTaskSteer, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import { evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, offTaskSteer, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
@@ -29,6 +31,8 @@ import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js
 import type { SearchTool } from "./recall.js";
 import { redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
+import { checkPiWardenMissing } from "./rules-file.js";
+import { writeStarterRules, buildInitPrompt } from "./init.js";
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
@@ -43,7 +47,7 @@ import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails,
 import type { GuardName, TraceEntry } from "./trace.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, reason) for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request, including calls where the rules guard is disabled; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, reason) for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -250,6 +254,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
   let warnedFallback = false;
+  let warnedMissingRules = false;
+  /** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
+  let initRunning = false;
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
@@ -471,6 +478,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     client = undefined;
     budgetExhausted = false;
     warnedFallback = false;
+    warnedMissingRules = false;
+    initRunning = false;
     await initSchema(loadConfig().learning.retentionDays);
     stats = freshStats();
     widget.clear();
@@ -588,6 +597,17 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
+    // First-run warning: pi-warden.md missing, one time per session.
+    if (!warnedMissingRules && config.rules.enabled) {
+      const { missing, fallbackSource } = checkPiWardenMissing(ctx.cwd);
+      if (missing && ctx.hasUI) {
+        warnedMissingRules = true;
+        const msg = fallbackSource
+          ? `No pi-warden.md detected. Using ${fallbackSource} as active fallback rules. Run /warden init to create project-specific rules.`
+          : `No rules file detected (pi-warden.md, README.md, CLAUDE.md, or AGENTS.md). Run /warden init to create project-specific rules.`;
+        ctx.ui.notify(msg, "warning");
+      }
+    }
     // Arming: a write/edit to a protected path arms matching command patterns for a window. Bash redirect/tee
     // targets that match a when.edited glob also arm. This is session state, not a per-call verdict — it runs
     // before the action guard so the armed check on a later command sees the preparation.
@@ -721,6 +741,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         notes.push(offTaskSteer(verdict));
       }
     }
+    if (verdict.shouldProceedSteer) {
+      noteGuards.add("action");
+      notes.push(shouldProceedMessage(verdict));
+    }
     if (verdict.slopSymptoms?.length && verdict.slopReasons) {
       stats.slop++;
       noteGuards.add("action");
@@ -767,7 +791,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (verdict.level === "warn") {
       stats.warned++;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
-      else if (!ctx.hasUI) warnSteer(deliveryReasons);
+      else if (!ctx.hasUI) {
+        const otherReasons = deliveryReasons.filter(r => !r.startsWith("should-proceed "));
+        warnSteer(otherReasons);
+      }
       track(false);
       return undefined;
     }
@@ -1010,6 +1037,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     await checkSubagentReports(ctx, configFor(ctx));
   });
 
+  // Block new user messages while /warden init is generating pi-warden.md.
+  pi.on("input", async (event, ctx) => {
+    if (initRunning) {
+      ctx.ui.notify("pi-warden is generating rules. Please wait...", "warning");
+      return { action: "handled" };
+    }
+  });
+
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
@@ -1090,7 +1125,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     });
   }
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace"];
+  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init"];
   pi.registerCommand("warden", {
     description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, and a synthetic guard test",
     getArgumentCompletions(prefix) {
@@ -1234,11 +1269,47 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           openConfigPanel(lastUi, config, { width: config.widget.panelWidth });
           return;
         }
+        if (action === "init") {
+          const targetPath = join(ctx.cwd, "pi-warden.md");
+          const force = argument === "--force";
+          if (existsSync(targetPath)) {
+            if (ctx.hasUI && !force) {
+              if (!await ctx.ui.confirm("pi-warden.md already exists. Overwrite with a fresh starter template?", `This replaces ${targetPath} with a generic starter. Your current rules will be lost.`)) {
+                report("Cancelled. Existing pi-warden.md unchanged.");
+                return;
+              }
+            } else if (!force) {
+              report(`pi-warden.md already exists at ${targetPath}. Pass --force to overwrite.`, "warning");
+              return;
+            }
+          }
+          const prompt = buildInitPrompt(ctx.cwd);
+          initRunning = true;
+          if (ctx.hasUI) ctx.ui.notify("pi-warden: Generating rules file...", "info");
+          try {
+            // sendUserMessage throws when the agent is not idle. Brief wait so a
+            // just-closing confirm dialog does not cause a race.
+            for (let attempt = 0; attempt < 40; attempt++) {
+              if (ctx.isIdle()) break;
+              await new Promise(resolve => setTimeout(resolve, 250));
+            }
+            pi.sendUserMessage(prompt);
+            await ctx.waitForIdle();
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            report(`pi-warden init failed: ${detail}. Try creating pi-warden.md manually.`, "error");
+          } finally {
+            initRunning = false;
+          }
+          const wardenExists = existsSync(join(ctx.cwd, "pi-warden.md"));
+          report(wardenExists ? "pi-warden.md created. Review the rules and edit as needed." : "Agent did not create pi-warden.md. Create it manually or try /warden init again.");
+          return;
+        }
         if (action === "test") {
           const judge = judgeFor(config);
-          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Clean up the demo directory") goes to ${backendHost(config.typesafeBackend)} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
+          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${backendHost(config.typesafeBackend)} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
           const verdict = await evaluateAction(
-            { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Clean up the demo directory" },
+            { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge },
           );
           const deliveryVerdict = ctx.hasUI ? verdict : agentDeliveryVerdict(verdict);

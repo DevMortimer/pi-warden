@@ -34,7 +34,7 @@ export interface RuleSet {
 }
 
 export const RULES_FILE = "pi-warden.md";
-export const FALLBACK_FILES = ["README.md", "CLAUDE.md", "AGENTS.md"];
+export const FALLBACK_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"];
 /** TypeSafe answers at most 32 questions per request; one is kept for the edit locator. */
 export const MAX_RULES = 31;
 const CONTENT_LIMIT = 6000;

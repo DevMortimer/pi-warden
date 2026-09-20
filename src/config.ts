@@ -51,6 +51,8 @@ export interface ActionGuardConfig {
   intentMismatch: number;
   /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
   visibleMismatch: number;
+  /** P(should_proceed) at or below this asks the user before the tool runs. Inverted: low score = hold. Unified gate covering rule violations, unrequested scope, explicit constraint breaches, and material user decisions. Calibrated: AUC 0.26 against regret, 0.58 against rejected turns (100 targeted sessions, 2026-09-20). */
+  shouldProceed: { hold: number };
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
   feedbackLog: boolean;
   /** User-defined command rules (user file only; project files cannot set severity above warn). */
@@ -63,6 +65,8 @@ export interface ActionGuardConfig {
   pathRules: PathRule[];
   /** User-defined arming rules: editing files matching globs arms a command pattern for a window (user file only). */
   armingRules: ArmingRule[];
+  /** Jev confidence at or above this escalates a violation's severity in the blast-radius and rules-guard escalation paths. */
+  escalationThreshold: number;
 }
 
 /** A user-defined path rule: which paths, which side of the access is held, which tools, what happens on a hit. */
@@ -319,12 +323,14 @@ export function defaultConfig(): WardenConfig {
       offTask: { warn: 0.6, steer: 0.85 },
       intentMismatch: 0.9,
       visibleMismatch: 0.8,
+      shouldProceed: { hold: 0.6 },
       feedbackLog: true,
       commandRules: [],
       commandDenyRules: [],
       exemptRules: [],
       pathRules: [],
       armingRules: [],
+      escalationThreshold: 0.85,
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
@@ -540,6 +546,7 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     offTask: offTaskThreshold(raw.offTask, base.offTask),
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
     visibleMismatch: Math.min(probability(raw.visibleMismatch, base.visibleMismatch), probability(raw.intentMismatch, base.intentMismatch)),
+    shouldProceed: { hold: probability((raw.shouldProceed as { hold?: number } | undefined)?.hold, base.shouldProceed.hold) },
     feedbackLog: boolean(raw.feedbackLog, base.feedbackLog),
     // Only the user file declares these; a project file cannot add, edit, or remove them. The base (already the
     // user's rules when a project file layers on top) is carried through, so a project "action" block cannot wipe them.
@@ -550,6 +557,7 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     pathRules: source === "user" ? parsePathRules(raw.pathRules) : base.pathRules,
     // Arming rules are user-declared security policy: same gate.
     armingRules: source === "user" ? parseArmingRules(raw.armingRules) : base.armingRules,
+    escalationThreshold: probability(raw.escalationThreshold, base.escalationThreshold),
   };
 }
 
