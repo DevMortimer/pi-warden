@@ -99,7 +99,7 @@ const readLog = async (path: string, lines: number, settled = true): Promise<Rec
   throw new Error(`log at ${path} did not reach ${lines} labelled lines`);
 };
 const STACK_BAR = { widget: { barMode: "stack" } };
-const grantConsent = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, ...STACK_BAR }));
+const grantConsent = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
 
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), "pi-warden-ext-"));
@@ -341,7 +341,7 @@ test("fixture-shaped credentials from a test file are traced once and never stee
 });
 
 test("status counts steers per guard, so a noisy guard has a name", async () => {
-  await grantConsent();
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   try {
     await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
@@ -524,7 +524,7 @@ test("read-only tools and read-only shell commands pass without network or dialo
 });
 
 test("without consent, only pattern checks run: risky warns, destructive is held with a steer reason", async () => {
-  await writeFile(configPath(), JSON.stringify({  notices: true , ...STACK_BAR }));
+  await writeFile(configPath(), JSON.stringify({  notices: true, rules: { enabled: false }, ...STACK_BAR }));
   assert.equal(await toolCall("bash", { command: "rm -rf dist" }), undefined);
   assert.equal(networkCalls, 0);
   assert.equal(notices.length, 1);
@@ -543,14 +543,14 @@ test("without consent, only pattern checks run: risky warns, destructive is held
 });
 
 test("per-call warning notices are off by default; the agent is still told, and notices: true restores them", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true , ...STACK_BAR }));
+  await writeFile(configPath(), JSON.stringify({  typesafe: true, rules: { enabled: false }, ...STACK_BAR }));
   nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated" };
   assert.equal(await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" }), undefined);
   assert.equal(notices.length, 0, "no yellow warning in the transcript by default");
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+write · .*off task$/, "the widget still shows the event, as a warn chip");
   assert.match(sentMessages.at(-1)?.message.content ?? "", /^pi-warden: this write call looks unrelated/, "the agent is still told");
 
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, notices: true , ...STACK_BAR }));
+  await writeFile(configPath(), JSON.stringify({  typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("write", { path: join(temporary, "poem2.txt"), content: "daisies" });
   assert.ok(notices.some(notice => /warden · write: /.test(notice.text)), "notices: true restores the warnings");
 });
@@ -839,7 +839,7 @@ test("slop symptoms steer the agent after the write without holding it; steers a
 });
 
 test("rules: a write in a project with pi-warden.md gets its own request beside the action request; violations steer in one message with slop; fallbacks and sensitive paths", async () => {
-  await grantConsent();
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   const readme = join(temporary, "README.md");
   try {
@@ -1340,6 +1340,29 @@ test("/warden status, enable, disable, and test report and persist consent", asy
 
   await runCommand("bogus");
   assert.match(notices.at(-1)!.text, /Unknown action/);
+});
+
+test("/warden init --force overwrites an existing pi-warden.md in headless mode", async () => {
+  const targetPath = join(temporary, "pi-warden.md");
+  await writeFile(targetPath, "# Old rules\nKeep these.\n");
+  sentMessages.length = 0;
+  await runCommand("init --force", context({ hasUI: false }));
+  const content = await readFile(targetPath, "utf8");
+  assert.match(content, /No hardcoded secrets/, "starter rules replaced the old file");
+  assert.doesNotMatch(content, /Old rules/, "old content is gone");
+  const msg = sentMessages.find(m => /Wrote/.test(m.message.content));
+  assert.ok(msg, "reports the write via pi.sendMessage");
+});
+
+test("/warden init without --force refuses to overwrite in headless mode", async () => {
+  const targetPath = join(temporary, "pi-warden.md");
+  await writeFile(targetPath, "# Existing rules\nKeep these.\n");
+  sentMessages.length = 0;
+  await runCommand("init", context({ hasUI: false }));
+  const content = await readFile(targetPath, "utf8");
+  assert.match(content, /Existing rules/, "file unchanged");
+  const msg = sentMessages.find(m => /Pass --force to overwrite/.test(m.message.content));
+  assert.ok(msg, "refuses with --force hint");
 });
 
 test("/warden enable with an existing key does not prompt for one", async () => {

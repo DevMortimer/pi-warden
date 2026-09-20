@@ -505,3 +505,26 @@ test("buildInitPrompt: generic project omits type-specific rules", async () => {
   assert.match(prompt, /No hardcoded secrets/);
   await rm(dir, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// Redaction: resolveRulesFile content must be safe to send off-machine.
+
+test("resolveRulesFile: content is redacted before leaving the machine", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-redact-"));
+  await writeFile(join(dir, "pi-warden.md"), "# Rule\napi_key=sk-live-1234567890abcdef\npassword: hunter2\n");
+  const resolved = resolveRulesFile(dir);
+  assert.ok(resolved, "resolved a rules file");
+  assert.ok(!resolved.content.includes("sk-live-1234567890abcdef"), "API key is redacted");
+  assert.ok(!resolved.content.includes("hunter2"), "password is redacted");
+  assert.match(resolved.content, /\[redacted\]/, "redacted marker present");
+  await rm(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// extractRules edge case: first block exceeding budget must not return empty.
+
+test("extractRules: large first block still returns non-empty output", () => {
+  const largeFirst = "# Rule One\n" + "x".repeat(20000);
+  const extracted = extractRules(largeFirst, 100);
+  assert.ok(extracted.length > 0, "extractRules does not collapse to empty when the first block exceeds budget");
+});

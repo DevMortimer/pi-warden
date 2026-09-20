@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { redact } from "./redact.js";
 
 /**
  * Resolved active rules file for escalation and context.
@@ -41,21 +42,26 @@ export function extractRules(content: string, maxTokens = 4000): string {
 
   const result: string[] = [];
   let charCount = 0;
+  const budget = maxTokens * 4;
   for (const block of ruleBlocks) {
-    if (charCount + block.length > maxTokens * 4) break;
+    if (charCount + block.length > budget) {
+      // Include a partial block so the result is never empty when rules exist.
+      if (!result.length && budget > 0) result.push(block.slice(0, budget));
+      break;
+    }
     result.push(block);
     charCount += block.length;
   }
   return result.join("\n\n");
 }
 
-/** Resolve the active rules file. Returns the first existing file, or null. */
+/** Resolve the active rules file. Returns the first existing file, or null. Content is redacted before it leaves this machine. */
 export function resolveRulesFile(cwd: string): ResolvedRulesFile | null {
   for (const candidate of RULES_CANDIDATES) {
     const fullPath = join(cwd, candidate.path);
     if (existsSync(fullPath)) {
       const raw = readFileSync(fullPath, "utf8");
-      const content = raw.length > MAX_CHARS ? extractRules(raw) : raw;
+      const content = raw.length > MAX_CHARS ? redact(extractRules(raw)) : redact(raw);
       return { path: fullPath, content, source: candidate.source };
     }
   }

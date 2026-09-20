@@ -578,12 +578,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
-    // First-run warning: pi-warden.md missing with a fallback active, one time per session.
+    // First-run warning: pi-warden.md missing, one time per session.
     if (!warnedMissingRules && ctx.hasUI && config.rules.enabled) {
       const { missing, fallbackSource } = checkPiWardenMissing(ctx.cwd);
-      if (missing && fallbackSource) {
+      if (missing) {
         warnedMissingRules = true;
-        ctx.ui.notify(`No pi-warden.md detected. Using ${fallbackSource} as active fallback rules. Run /warden init to create project-specific rules.`, "warning");
+        const msg = fallbackSource
+          ? `No pi-warden.md detected. Using ${fallbackSource} as active fallback rules. Run /warden init to create project-specific rules.`
+          : `No rules file detected (pi-warden.md, README.md, CLAUDE.md, or AGENTS.md). Run /warden init to create project-specific rules.`;
+        ctx.ui.notify(msg, "warning");
       }
     }
     // Arming: a write/edit to a protected path arms matching command patterns for a window. Bash redirect/tee
@@ -1229,14 +1232,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }
         if (action === "init") {
           const targetPath = join(ctx.cwd, "pi-warden.md");
+          const force = argument === "--force";
           if (existsSync(targetPath)) {
-            if (ctx.hasUI) {
+            if (ctx.hasUI && !force) {
               if (!await ctx.ui.confirm("pi-warden.md already exists. Overwrite with a fresh starter template?", `This replaces ${targetPath} with a generic starter. Your current rules will be lost.`)) {
                 report("Cancelled. Existing pi-warden.md unchanged.");
                 return;
               }
-            } else {
-              report(`pi-warden.md already exists at ${targetPath}. Pass --force or confirm to overwrite.`, "warning");
+            } else if (!force) {
+              report(`pi-warden.md already exists at ${targetPath}. Pass --force to overwrite.`, "warning");
               return;
             }
           }
