@@ -29,7 +29,7 @@
 import { parseArgs } from "node:util";
 import { spawn, execFileSync } from "node:child_process";
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,29 +119,46 @@ async function prepareRunDir(task) {
 
 /**
  * Cell isolation: each run gets its own PI_CODING_AGENT_DIR seeded with the
- * user's provider credentials and ONE package (the model provider). The warden
- * is never in settings — the warden cell loads it explicitly with `-e`, so the
- * two cells differ by exactly one extension.
+ * user's provider credentials, extensions, and packages. The warden is never
+ * in settings — the warden cell loads it explicitly with `-e`, so the two
+ * cells differ by exactly one extension.
  */
 const GLOBAL_AGENT = join(homedir(), ".pi", "agent");
+
+/** Read the user's real settings to mirror provider, model, thinking, and packages. */
+function userSettings() {
+  const p = join(GLOBAL_AGENT, "settings.json");
+  try { return JSON.parse(readFileSync(p, "utf8")); } catch { return {}; }
+}
 
 async function prepareAgentDir(base) {
   const agentDir = join(base, "agent-dir");
   await mkdir(join(agentDir, "pi-warden"), { recursive: true });
   await mkdir(join(agentDir, "pi-typesafe"), { recursive: true });
   await symlink(join(GLOBAL_AGENT, "npm"), join(agentDir, "npm"), "dir");
-  for (const f of ["auth.json", "commandcode-models.json", "models.json", "models-store.json"]) {
+  // Copy user extensions so custom providers (e.g. cheapestinference) are available.
+  const srcExtDir = join(GLOBAL_AGENT, "extensions");
+  const dstExtDir = join(agentDir, "extensions");
+  if (existsSync(srcExtDir)) await cp(srcExtDir, dstExtDir, { recursive: true });
+  // Copy auth and model-store files (provider-agnostic).
+  for (const f of ["auth.json", "models.json", "models-store.json"]) {
+    if (existsSync(join(GLOBAL_AGENT, f))) await cp(join(GLOBAL_AGENT, f), join(agentDir, f));
+  }
+  // Copy any provider-specific model files (e.g. commandcode-models.json).
+  const agentFiles = readdirSync(GLOBAL_AGENT).filter(f => f.endsWith("-models.json") && f !== "models.json");
+  for (const f of agentFiles) {
     if (existsSync(join(GLOBAL_AGENT, f))) await cp(join(GLOBAL_AGENT, f), join(agentDir, f));
   }
   // pi-typesafe stores its key in <agentDir>/pi-typesafe/auth.json — copy without logging.
   if (existsSync(join(GLOBAL_AGENT, "pi-typesafe", "auth.json"))) {
     await cp(join(GLOBAL_AGENT, "pi-typesafe", "auth.json"), join(agentDir, "pi-typesafe", "auth.json"));
   }
+  const real = userSettings();
   const settings = {
-    defaultProvider: values.provider ?? "commandcode",
-    defaultModel: values.model ?? "z-ai/glm-5.3-flash",
-    defaultThinkingLevel: values.thinking ?? "high",
-    packages: ["npm:pi-commandcode-provider"],
+    defaultProvider: values.provider ?? real.defaultProvider ?? "openrouter",
+    defaultModel: values.model ?? real.defaultModel ?? "openai/gpt-4o",
+    defaultThinkingLevel: values.thinking ?? real.defaultThinkingLevel ?? "high",
+    packages: real.packages ?? [],
   };
   await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
   await writeFile(join(agentDir, "pi-warden", "config.json"), JSON.stringify({ typesafe: true }));
