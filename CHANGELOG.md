@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 0.30.0
+
 ### Added
 - Violation pipeline: deterministic per-violation authorization, escalation, and aggregation for pattern-detected and rules-guard violations.
 - `Violation`, `ViolationScope`, `Authorization`, `EscalatedViolation` types for the violation pipeline.

@@ -1188,9 +1188,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       // through escalation here.
       // Sensitive violations never escalate: they stay advisory. Only risky and destructive violations
       // participate in escalation; sensitive violations participate in aggregation at their original severity.
-      const escalatedSeverity = v.source === "rules-guard"
-          ? escalateRulesViolation(v, jev, { escalationThreshold: config.escalationThreshold })
-          : escalateBlastRadius(v, auth, jev, { escalationThreshold: config.escalationThreshold });
+      const escalatedSeverity = escalateBlastRadius(v, auth, jev, { escalationThreshold: config.escalationThreshold });
       return { ...v, escalatedSeverity };
     });
     const pipelineLevel = aggregateLevel(escalated);
@@ -1199,7 +1197,8 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     // Retain violation answers in extra for calibration.
     if (!verdict.extra) verdict.extra = {};
     Object.assign(verdict.extra, violationExtra);
-  }  if (offTaskTraceOnlyReasonIndex !== undefined) verdict.offTaskTraceOnlyReasonIndex = offTaskTraceOnlyReasonIndex;
+  }
+  if (offTaskTraceOnlyReasonIndex !== undefined) verdict.offTaskTraceOnlyReasonIndex = offTaskTraceOnlyReasonIndex;
 
   if (options.questions) {
     if (!verdict.extra) verdict.extra = {};

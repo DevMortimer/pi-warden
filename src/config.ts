@@ -51,7 +51,7 @@ export interface ActionGuardConfig {
   intentMismatch: number;
   /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
   visibleMismatch: number;
-  /** P(should_proceed) at or below this asks the user before the tool runs. Inverted: low score = hold. Unified gate covering rule violations, unrequested scope, explicit constraint breaches, and material user decisions. Calibrated: AUC 0.07 (inverted) against regret, 0.64 against rejected turns (100 targeted sessions, 2026-09-20). */
+  /** P(should_proceed) at or below this asks the user before the tool runs. Inverted: low score = hold. Unified gate covering rule violations, unrequested scope, explicit constraint breaches, and material user decisions. Calibrated: AUC 0.26 against regret, 0.58 against rejected turns (100 targeted sessions, 2026-09-20). */
   shouldProceed: { hold: number };
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
   feedbackLog: boolean;

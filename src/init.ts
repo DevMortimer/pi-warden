@@ -1,8 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
-/** Fallback rules files to read when scaffolding. Excludes pi-warden.md because that IS the file being generated. */
-const RULES_FALLBACK_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"];
+import { FALLBACK_FILES } from "./rules.js";
 
 /** Paths to scan for project context when generating a starter rules file. */
 const CONTEXT_CANDIDATES = [
@@ -73,7 +71,7 @@ export function buildProjectContext(cwd: string): string {
 
 /** Read the first existing fallback rules file's content, or null if none exists. */
 function readExistingRules(cwd: string): string | null {
-  for (const file of RULES_FALLBACK_FILES) {
+  for (const file of FALLBACK_FILES) {
     const fullPath = join(cwd, file);
     if (existsSync(fullPath)) {
       try {

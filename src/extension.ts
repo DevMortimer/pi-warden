@@ -58,9 +58,6 @@ export type SteerGuard = "action" | "rules" | "security" | "stuck" | "done" | "p
 interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number; restatements: number }
 const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, steers: 0, steersSkipped: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0, restatements: 0 });
 
-/** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
-let initRunning = false;
-
 /**
  * One steer message can carry notes from more than one guard, so the per-guard numbers may add up to more than the
  * message count; the line says so instead of hiding it. Worst offender first: that is the number worth acting on.
@@ -258,6 +255,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let doneNudged = false;
   let warnedFallback = false;
   let warnedMissingRules = false;
+  /** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
+  let initRunning = false;
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
@@ -480,6 +479,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     budgetExhausted = false;
     warnedFallback = false;
     warnedMissingRules = false;
+    initRunning = false;
     await initSchema(loadConfig().learning.retentionDays);
     stats = freshStats();
     widget.clear();
