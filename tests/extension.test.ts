@@ -622,11 +622,11 @@ test("the agent's plan comes from the message that makes the call, falls back to
 });
 
 test("hold feedback offline: approval, re-plan, and a stop reply label the calls, the trace, the status line, and the session log", async () => {
-  prompt = "push my branch";
+  prompt = "fix the bug";
   assert.equal((await toolCall("bash", { command: "git push --force origin main" }))?.block, true);
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 awaiting your reply; precision not yet measurable; 0 allowed/);
-  await newPrompt("yes, go ahead and force push");
+  await newPrompt("yes, go ahead");
   assert.equal(await toolCall("bash", { command: "git push --force origin main" }), undefined, "the reply releases the hold");
   await runCommand("status");
   const line = notices.at(-1)!.text.match(/Holds: (.*?)\. Log: (.+?\.jsonl)\./);
@@ -638,7 +638,7 @@ test("hold feedback offline: approval, re-plan, and a stop reply label the calls
   assert.match(sentMessages.at(-1)!.message.content, /outcome: approved by the user \(released on retry\); the hold was a false positive/, "the hold's trace entry carries its outcome");
 
   // A hold nobody approves: the user redirects, the agent does something else, and the prompt after that lands the label.
-  await newPrompt("now reset the repo");
+  await newPrompt("fix the bug");
   assert.equal((await toolCall("bash", { command: "git reset --hard HEAD~3" }))?.block, true);
   await newPrompt("leave it, run the tests instead");
   assert.equal(await toolCall("bash", { command: "npm test" }), undefined);
@@ -668,7 +668,7 @@ test("hold feedback offline: approval, re-plan, and a stop reply label the calls
   await writeFile(configPath(), JSON.stringify({  action: { feedbackLog: false } , ...STACK_BAR }));
   await sessionStart();
   await rm(logPath, { force: true });
-  prompt = "push";
+  prompt = "fix the bug";
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 awaiting your reply; precision not yet measurable; 0 allowed \(0 regretted by you, 0 accepted\)\. Rules:/);
@@ -722,19 +722,19 @@ test("hold feedback in confirm mode: the dialog's answer labels the hold at once
 test("the Action guard is wired to the session: the prompt is the task, siblings come from the branch, session_start resets", async () => {
   await writeFile(configPath(), JSON.stringify({ ...STACK_BAR }));
   // Holds, approval, and sibling prejudging are tested at the guard's interface in tests/action-guard.test.ts.
-  prompt = "push my branch";
+  prompt = "fix the bug";
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
-  prompt = "yes, go ahead and force push";
+  prompt = "yes, go ahead";
   assert.equal(await toolCall("bash", { command: "git push --force" }), undefined, "the reply reaches the guard as the task and releases the hold");
   assert.match(widgets.at(-1)![0]!, /^ALLOW\s+action\s+bash · patterns: git-force-push · user approved$/, "an approval is a caveat: the allow keeps its own line");
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /1 held, 1 approved on retry/, "the hook counts the hold and the approval");
 
   await sessionStart();
-  prompt = "push my branch";
+  prompt = "fix the bug";
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
   await sessionStart();
-  prompt = "yes, go ahead and force push";
+  prompt = "yes, go ahead";
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true, "a new session carries no hold to approve");
 
   await grantConsent();

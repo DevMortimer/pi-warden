@@ -579,14 +579,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
     // First-run warning: pi-warden.md missing, one time per session.
-    if (!warnedMissingRules && ctx.hasUI && config.rules.enabled) {
+    if (!warnedMissingRules && config.rules.enabled) {
       const { missing, fallbackSource } = checkPiWardenMissing(ctx.cwd);
       if (missing) {
         warnedMissingRules = true;
         const msg = fallbackSource
           ? `No pi-warden.md detected. Using ${fallbackSource} as active fallback rules. Run /warden init to create project-specific rules.`
           : `No rules file detected (pi-warden.md, README.md, CLAUDE.md, or AGENTS.md). Run /warden init to create project-specific rules.`;
-        ctx.ui.notify(msg, "warning");
+        if (ctx.hasUI) ctx.ui.notify(msg, "warning");
       }
     }
     // Arming: a write/edit to a protected path arms matching command patterns for a window. Bash redirect/tee
@@ -1251,9 +1251,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }
         if (action === "test") {
           const judge = judgeFor(config);
-          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Clean up the demo directory") goes to ${backendHost(config.typesafeBackend)} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
+          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${backendHost(config.typesafeBackend)} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
           const verdict = await evaluateAction(
-            { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Clean up the demo directory" },
+            { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge },
           );
           const fmt = formatVerdictTokens(verdict, config.widget.action);

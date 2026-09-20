@@ -75,14 +75,14 @@ Pattern-detected hits are converted to `Violation` objects with deterministic au
 
 Authorization checks three conditions against the user's prompt: (1) the prompt contains an action verb from the violation's family (e.g., "push" for `git-force-push`), (2) the scope matches (file paths or the command text appear in the prompt), and (3) no negation precedes the verb ("don't push", "never deploy"). All three must pass for authorization.
 
-After authorization removal, Jev receives the remaining violations as noul questions (`violation_<id>`) on the same request. Each asks whether the violation is genuine, returning P(yes) as a confidence value. The questions are currently **extra** (recorded in `verdict.extra`, not acted on until measured — see `scripts/action-candidates.mjs`). Missing or malformed answers default to `violated: true, confidence: 0.5` (safe direction).
+After authorization removal, Jev receives the remaining violations as noul questions (`violation_<id>`) on the same request. Each asks whether the violation is genuine, returning P(yes) as a confidence value. Per-violation answers are retained in `verdict.extra` for calibration. Missing or malformed answers default to `violated: true, confidence: 0.5` (safe direction). The `violation_judgment` candidate question is in `scripts/action-candidates.mjs` as `extra`; it needs a calibration run before being promoted to an acting rule.
 
-### Escalation (exported, not yet wired)
+### Escalation
 
-Escalation functions (`escalateBlastRadius`, `escalateRulesViolation`) are exported for use by extension authors but are not called by the action guard yet. Once the `violation_judgment` question is measured, they will be wired into the pipeline:
+After Jev returns, each remaining violation's severity may be escalated. Escalation fires when Jev confidence **strictly exceeds** `action.escalationThreshold` (default 0.85); setting the threshold to 1 effectively disables escalation since noul confidence cannot exceed 1.
 
-- **Escalation A (blast-radius):** For pattern-detected violations on destructive/deny actions. If the user explicitly authorized the action and scope, no escalation. If Jev confirms the violation at or above `action.escalationThreshold` (0.85), severity rises: `risky` → `destructive`, `destructive` → `deny`.
-- **Escalation B (rules guard):** For violations from the rules guard with a `matchedRule`. If Jev confirms the violation against the explicit rule at or above the threshold, severity rises to `destructive` (holds writes).
+- **Escalation A (blast-radius):** For pattern-detected violations on destructive/deny actions. If the user explicitly authorized the action and scope, no escalation. If Jev confirms the violation above the threshold, severity rises: `risky` → `destructive`, `destructive` → `deny`.
+- **Escalation B (rules guard):** For violations from the rules guard with a `matchedRule`. If Jev confirms the violation against the explicit rule above the threshold, severity rises to `destructive` (holds writes).
 
 The final tool-call level is the highest severity among all non-authorized violations after escalation: `deny` → `deny`, `destructive`/`sensitive` → `confirm`, `risky` → `warn`, none → `allow`.
 

@@ -111,9 +111,9 @@ test("RuleStore: root pi-warden.md wins, then configured files, then the first f
   await writeFile(join(cwd, "AGENTS.md"), "# Agents\n\nAlways write tests.\n");
   await writeFile(join(cwd, "README.md"), "# Readme\n\nInstall with npm.\n");
   let set = store.load(cwd, rulesConfig());
-  assert.deepEqual(set?.sources, ["README.md"], "README is the first fallback");
+  assert.deepEqual(set?.sources, ["AGENTS.md"], "AGENTS is the first fallback");
   assert.equal(set?.rules.length, 0);
-  assert.match(set?.aggregate ?? "", /Install with npm/);
+  assert.match(set?.aggregate ?? "", /Always write tests/);
   assert.equal(store.load(cwd, rulesConfig({ fallback: false })), undefined, "fallback can be turned off");
 
   await writeFile(join(cwd, "docs-rules.md"), "# Use const\nPrefer const over let.\n");

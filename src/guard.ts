@@ -968,12 +968,25 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   const plan = describePlan(action.plan);
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
   const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules });
+  // Violation pipeline: authorize per-violation, remove authorized from level computation and Jev questions.
+  const allViolations = patternHitsToViolations(patterns, action.tool, action.input);
+  const allAuthorizations = allViolations.map(v => authorize(action.task ?? "", v));
+  const remainingViolations: Violation[] = [];
+  const remainingAuthorizations: Authorization[] = [];
+  for (let i = 0; i < allViolations.length; i++) {
+    if (!allAuthorizations[i]!.authorized) {
+      remainingViolations.push(allViolations[i]!);
+      remainingAuthorizations.push(allAuthorizations[i]!);
+    }
+  }
+  const authorizedIds = new Set(allViolations.filter((_, i) => allAuthorizations[i]!.authorized).map(v => v.id));
+  const activePatterns = patterns.filter(p => !authorizedIds.has(p.id));
   const reasons: string[] = [];
   let level: Level = "allow";
   // A shell command that merely mentions a secrets file (grep for key names, cat .env.example) is decided after Jev
   // says whether it can write; write/edit on such a path, and offline runs, keep the immediate warning.
   const deferSensitive = judge !== undefined && (action.tool !== "write" && action.tool !== "edit");
-  for (const hit of patterns) {
+  for (const hit of activePatterns) {
     if (hit.severity === "deny") { level = "deny"; reasons.push(hit.message ?? hit.label); continue; }
     if (hit.severity === "sensitive" && deferSensitive) continue;
     level = higher(level, hit.severity === "destructive" ? "confirm" : "warn");
@@ -998,8 +1011,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
 
   // Resolve the rules file once per call for the Jev request state.
   const resolved = resolveRulesFile(action.cwd);
-  const violations = patternHitsToViolations(patterns, action.tool, action.input);
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: resolved?.content, rulesSource: resolved?.source, violations });
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: resolved?.content, rulesSource: resolved?.source, violations: remainingViolations });
   const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {
     if (!config.failOpen) {
@@ -1108,15 +1120,40 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   if (mismatch) verdict.intentMismatch = true;
   if (offTaskSteer) verdict.offTaskSteer = true;
   if (offTaskTraceOnly) verdict.offTaskTraceOnly = true;
+  // Violation pipeline: parse per-violation Jev judgments, apply escalation, aggregate.
+  if (remainingViolations.length) {
+    // Build extra from violation answers for parsing and calibration retention.
+    const violationExtra: Record<string, number | string> = {};
+    for (const v of remainingViolations) {
+      const id = `violation_${v.id}`;
+      const answer = (answers as Record<string, { noul?: number; choice?: string } | undefined>)[id];
+      if (typeof answer?.noul === "number") violationExtra[id] = answer.noul;
+      else if (typeof answer?.choice === "string") violationExtra[id] = answer.choice;
+    }
+    const violationAnswers = parseViolationJudgments(remainingViolations, violationExtra);
+    const escalated: EscalatedViolation[] = remainingViolations.map((v, i) => {
+      const jev = violationAnswers[i]!;
+      const auth = remainingAuthorizations[i]!;
+      const escalatedSeverity = v.source === "rules-guard"
+        ? escalateRulesViolation(v, jev, { escalationThreshold: config.escalationThreshold })
+        : escalateBlastRadius(v, auth, jev, { escalationThreshold: config.escalationThreshold });
+      return { ...v, escalatedSeverity };
+    });
+    const pipelineLevel = aggregateLevel(escalated);
+    level = higher(level, pipelineLevel);
+    verdict.level = level;
+    // Retain violation answers in extra for calibration.
+    if (!verdict.extra) verdict.extra = {};
+    Object.assign(verdict.extra, violationExtra);
+  }
   if (options.questions) {
-    const extra: Record<string, number | string> = {};
+    if (!verdict.extra) verdict.extra = {};
     for (const id of Object.keys(options.questions)) {
       const answer = (answers as Record<string, { noul?: number; choice?: string; score?: number } | undefined>)[id];
-      if (typeof answer?.noul === "number") extra[id] = answer.noul;
-      else if (typeof answer?.choice === "string") extra[id] = answer.choice;
-      else if (typeof answer?.score === "number") extra[id] = answer.score;
+      if (typeof answer?.noul === "number") verdict.extra[id] = answer.noul;
+      else if (typeof answer?.choice === "string") verdict.extra[id] = answer.choice;
+      else if (typeof answer?.score === "number") verdict.extra[id] = answer.score;
     }
-    verdict.extra = extra;
   }
   if (options.slop?.enabled && SLOP_SYMPTOMS.every(symptom => typeof answers[`slop_${symptom}`]?.noul === "number")) {
     verdict.slop = { stub: answers.slop_stub!.noul!, comments: answers.slop_comments!.noul!, dead: answers.slop_dead!.noul!, hedging: answers.slop_hedging!.noul! };
@@ -1281,7 +1318,7 @@ export function escalateBlastRadius(
   // Explicitly authorized: no escalation, keep original severity.
   if (authorization.authorized) return violation.severity;
   // Jev does not confirm the violation: no escalation.
-  if (!jevJudgment.violated || jevJudgment.confidence < config.escalationThreshold) return violation.severity;
+  if (!jevJudgment.violated || jevJudgment.confidence <= config.escalationThreshold) return violation.severity;
   // Escalate: risky → destructive, destructive → deny.
   if (violation.severity === "risky") return "destructive";
   if (violation.severity === "destructive") return "deny";
@@ -1296,7 +1333,7 @@ export function escalateRulesViolation(
 ): Severity {
   if (!violation.matchedRule) return violation.severity;
   // Jev does not confirm the violation: no escalation.
-  if (!jevJudgment.violated || jevJudgment.confidence < config.escalationThreshold) return violation.severity;
+  if (!jevJudgment.violated || jevJudgment.confidence <= config.escalationThreshold) return violation.severity;
   // Jev confirms the violation against an explicit rule: escalate to destructive (holds write).
   return "destructive";
 }
