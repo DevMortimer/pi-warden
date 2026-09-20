@@ -7,10 +7,11 @@ import * as tuiModule from "@earendil-works/pi-tui";
 type MouseRegionConstructor = new (child: ReturnType<typeof statusWidget>, onMouse: (event: { type: string; button: string }) => { handled: boolean } | undefined) => import("@earendil-works/pi-tui").Component;
 const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ MouseRegion: MouseRegionConstructor }>).MouseRegion;
 import { authState, createTypeSafe, describeAuth } from "pi-typesafe";
-import type { TypeSafe } from "pi-typesafe";
+import type { Judge, TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
-import { backendHost, disclosureFor, judgeOptions, keyAvailable, resolveBackend } from "./backend.js";
+import { backendHost, disclosureFor, isLocalBackend, judgeOptions, keyAvailable, resolveBackend } from "./backend.js";
 import { ActionGuard } from "./action-guard.js";
+import type { LayaJudge as LayaJudgeType } from "./laya-judge.js";
 import type { ToolCallRef } from "./action-guard.js";
 import { ArmingTracker, unparseableArmingRules } from "./arming.js";
 import * as configModule from "./config.js";
@@ -219,6 +220,7 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
 /** Native Pi registration; importing the root library does not load this module. */
 export default function wardenExtension(pi: ExtensionAPI): void {
   let client: TypeSafe | undefined;
+  let layaJudge: LayaJudgeType | undefined;
   let budgetExhausted = false;
   let stats = freshStats();
   const widget = new Map<GuardName, string>();
@@ -314,10 +316,30 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     arming.updateRules(config.action.armingRules);
     return config;
   };
-  const consentGiven = (config: WardenConfig) => config.typesafe || process.env.PI_WARDEN_ENABLED === "1";
+  const consentGiven = (config: WardenConfig) => config.typesafe || process.env.PI_WARDEN_ENABLED === "1" || isLocalBackend(config.typesafeBackend);
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
+  /** Lazy-init promise for LayaJudge; resolves once when the bridge is ready, then reused. */
+  let layaJudgeInit: Promise<void> | undefined;
+  function ensureLayaJudge(config: WardenConfig): void {
+    if (layaJudge || layaJudgeInit) return;
+    layaJudgeInit = (async () => {
+      const { LayaJudge } = await import("./laya-judge.js");
+      layaJudge = await LayaJudge.create(msg => {
+        if (config.widget.enabled) pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: msg, display: true });
+      });
+    })().catch(err => {
+      console.error("pi-warden: failed to start laya-mlx:", err);
+      layaJudgeInit = undefined; // allow retry
+    });
+  }
   /** A consent flag is not proof that judgments happen; check the key state for the chosen backend. */
-  const judgeFor = (config: WardenConfig): TypeSafe | undefined => {
+  const judgeFor = (config: WardenConfig): Judge | undefined => {
+    // Laya runs locally: bypass consent, API key, and TypeSafe entirely.
+    if (isLocalBackend(config.typesafeBackend)) {
+      if (budgetExhausted) return undefined;
+      ensureLayaJudge(config);
+      return layaJudge; // may be undefined while the bridge is starting up
+    }
     if (!consentGiven(config) || budgetExhausted) return undefined;
     if (!keyAvailable(config.typesafeBackend, process.env, () => authState().usable)) return undefined;
     return client ??= createTypeSafe(judgeOptions(config));

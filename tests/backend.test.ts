@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { backendHost, disclosureFor, judgeOptions, keyAvailable, resolveBackend } from "../src/backend.js";
+import { backendHost, disclosureFor, isLocalBackend, judgeOptions, keyAvailable, resolveBackend } from "../src/backend.js";
 
 test("resolveBackend: valid values pass through, junk falls back to typesafe", () => {
   assert.equal(resolveBackend("typesafe"), "typesafe");
   assert.equal(resolveBackend("openrouter"), "openrouter");
+  assert.equal(resolveBackend("laya"), "laya");
   assert.equal(resolveBackend(undefined), "typesafe");
   assert.equal(resolveBackend(null), "typesafe");
   assert.equal(resolveBackend(""), "typesafe");
@@ -60,4 +61,21 @@ test("judgeOptions: openrouter includes the backend field", () => {
   assert.equal(opts.maxRequests, 10);
   assert.equal(opts.timeoutMs, 3000);
   assert.equal((opts as Record<string, unknown>).backend, "openrouter");
+});
+
+test("isLocalBackend: true for laya, false for others", () => {
+  assert.equal(isLocalBackend("laya"), true);
+  assert.equal(isLocalBackend("typesafe"), false);
+  assert.equal(isLocalBackend("openrouter"), false);
+});
+
+test("keyAvailable: laya always returns true (no credential needed)", () => {
+  assert.equal(keyAvailable("laya", {}, () => false), true, "laya needs no key");
+  assert.equal(keyAvailable("laya", {}, () => true), true);
+});
+
+test("disclosureFor: laya returns local-only disclosure", () => {
+  const result = disclosureFor("laya", "pi-warden sends to api.typesafe.ai: foo");
+  assert.match(result, /machine/);
+  assert.doesNotMatch(result, /typesafe\.ai/);
 });

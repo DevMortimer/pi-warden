@@ -40,6 +40,7 @@
     "dist",
     "extensions",
     "examples",
+    "python",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
