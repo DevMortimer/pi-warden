@@ -21,7 +21,7 @@ const confirms: Array<{ title: string; message: string }> = [];
 let confirmResult = true;
 let editorText: string | undefined;
 let networkCalls = 0;
-let nextAnswers: Record<string, number | string> = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
+let nextAnswers: Record<string, number | string> = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
 let failNetwork = false;
 const sentMessages: Array<{ message: { customType: string; content: string }; options?: Record<string, unknown> }> = [];
 const requests: Array<{ state: Record<string, unknown>; questions: Record<string, { type: string }> }> = [];
@@ -121,7 +121,7 @@ before(async () => {
     const answers: Record<string, unknown> = {};
     for (const [id, question] of Object.entries(body.questions)) {
       const value = nextAnswers[id];
-      if (question.type === "noul") answers[id] = { type: "noul", noul: typeof value === "number" ? value : 0.1 };
+      if (question.type === "noul") answers[id] = { type: "noul", noul: typeof value === "number" ? value : (id === "should_proceed" ? 1.0 : 0.1) };
       else if (question.type === "choice") {
         const keys = Object.keys(question.criteria as Record<string, unknown>);
         const pick = typeof value === "string" ? value : keys[0]!;
@@ -607,7 +607,7 @@ test("the agent's plan comes from the message that makes the call, falls back to
 
   // No assistant text since the prompt: no plan, no question.
   const silent = branch({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm run clean" } }] } });
-  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
   assert.equal(await toolCall("bash", { command: "npm run clean" }, silent), undefined);
   assert.ok(!("plan" in requests.at(-1)!.state));
   assert.ok(!("intent_mismatch" in requests.at(-1)!.questions));
@@ -811,7 +811,7 @@ test("slop symptoms steer the agent after the write without holding it; steers a
   await grantConsent();
   nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_stub: 0.92, slop_hedging: 0.75, slop_comments: 0.1, slop_dead: 0.1 };
   assert.equal(await toolCall("write", { path: join(temporary, "src", "a.ts"), content: "// TODO: implement\nexport const a = () => null;" }), undefined);
-  assert.deepEqual(Object.keys(requests.at(-1)!.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "security_risk", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
+  assert.deepEqual(Object.keys(requests.at(-1)!.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "security_risk", "should_proceed", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0]!.message.customType, "pi-warden-steer");
   assert.equal((sentMessages[0]!.message as { display?: boolean }).display, false, "hidden from the transcript by default");
@@ -1237,7 +1237,7 @@ test("the request carries the latest user prompt and a redacted action summary",
   const body = requests.at(-1) as { state: { task: string; action: Record<string, unknown> }; questions: Record<string, unknown> } | undefined;
   assert.ok(body);
   assert.equal(body.state.task, "Deploy the thing with TOKEN=[redacted] please", "redaction covers both the task and action");
-  assert.deepEqual(Object.keys(body.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "visible"]);
+  assert.deepEqual(Object.keys(body.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "visible"]);
   assert.equal(body.state.action.tool, "bash");
   assert.ok(!String(body.state.action.command).includes("abc.def.ghi"));
   assert.ok(String(body.state.action.command).includes("[redacted]"));

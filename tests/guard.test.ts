@@ -314,7 +314,7 @@ test("evaluateAction sends named state fields and the base questions; `visible` 
   const j = judge(0.2, 0.1);
   await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests and fix failures" }, { config: defaultConfig().action, judge: j });
   const request = j.calls[0] as { state: Record<string, unknown>; questions: Record<string, { type: string }> };
-  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "visible"]);
+  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "visible"]);
   await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "x" }, cwd, task: "t" }, { config: defaultConfig().action, judge: j });
   assert.ok(!("visible" in (j.calls[1] as { questions: object }).questions), "a write is never visible outside the working tree");
   assert.equal(request.questions.irreversible?.type, "noul");
@@ -416,7 +416,7 @@ test("slop questions join the write/edit request only, score per symptom, and ne
   const config = defaultConfig();
   const j = withSlop(0.1, 0.1, { stub: 0.95, hedging: 0.8, comments: 0.2 });
   const write = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "// TODO implement\nexport function a() { return null as any; }" }, cwd, task: "implement a()" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
+  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
   assert.equal(write.level, "allow", "slop never blocks");
   assert.deepEqual(write.slop, { stub: 0.95, comments: 0.2, dead: 0.05, hedging: 0.8 });
   assert.deepEqual(write.slopSymptoms, ["stub", "hedging"], "strongest first");
@@ -424,7 +424,7 @@ test("slop questions join the write/edit request only, score per symptom, and ne
   assert.match(formatVerdict(write), /slop: stub 0\.95, hedging 0\.80/);
 
   const bash = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "visible"], "no slop questions for bash");
+  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "visible"], "no slop questions for bash");
   assert.equal(bash.slop, undefined);
 
   const clean = await evaluateAction({ tool: "edit", input: { path: join(cwd, "a.ts"), edits: [{ oldText: "a", newText: "b" }] }, cwd, task: "rename" }, { config: config.action, judge: withSlop(0.1, 0.1, {}), slop: config.slop });
@@ -496,7 +496,7 @@ test("the regret question rides the request with last turn's allowed calls; a lo
   assert.equal(verdict.level, "allow", "regret labels earlier calls; it never changes this verdict");
   assert.equal(verdict.judgment?.regretted, 0.9);
   assert.equal(verdict.judgment?.regretTarget, "a2");
-  assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "regret_target", "regretted", "scope", "visible"]);
+  assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "regret_target", "regretted", "scope", "should_proceed", "visible"]);
 });
 
 test("the agent's plan travels with the request and is judged for intent mismatch; an empty plan asks nothing", async () => {

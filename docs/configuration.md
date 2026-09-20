@@ -23,6 +23,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "offTask": { "warn": 0.6, "steer": 0.85 },
     "intentMismatch": 0.9,
     "visibleMismatch": 0.8,
+    "shouldProceed": { "hold": 0.6 },
     "feedbackLog": true,
     "commandRules": [],
     "commandDenyRules": [],
@@ -73,6 +74,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `action.offTask` | `warn` and `steer` thresholds on P(off-task). Off-task never holds. |
 | `action.intentMismatch` | P(call differs from the agent's stated plan) that warns and tells the agent, on calls that can change something. |
 | `action.visibleMismatch` | Lower mismatch threshold for commands whose effect is visible outside the working tree (commit, push, publish, install, launch). |
+| `action.shouldProceed` | `{ hold }` threshold. When P(should_proceed) drops below `hold` (default 0.6), the agent is steered to pause and ask the user. Steers never holds. Calibrated: AUC 0.07 (inverted) against regret, 0.64 against rejected turns. |
 | `action.feedbackLog` | Write each judged call and its outcome to `~/.pi/agent/pi-warden/holds/`; never the command. |
 | `action.commandRules` | User-defined command rules: `{ id, pattern, severity: "warn" \| "confirm" \| "deny", action?, message?, caseSensitive? }`. Patterns match the data-text-stripped command, so heredoc bodies and commit messages do not fire them. `confirm` defaults to `action: "dialog"` (a prompt for you, in every mode); `action: "hold"` restores steer semantics. Patterns are JavaScript regexes matched against full commands, so a pattern with nested quantifiers can be slow on long commands — a pathological one is self-inflicted. User file only. |
 | `action.commandDenyRules` | The same shape, shorthand for `severity: "deny"`: the call is blocked with no dialog and no TypeSafe request. User file only. |

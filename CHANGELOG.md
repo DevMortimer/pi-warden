@@ -21,6 +21,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 - `violation_judgment` noul questions sent to Jev as extra (recorded, not acted on until measured): one per violation on the same request, returning P(yes) as a confidence value. Escalation functions (`escalateBlastRadius`, `escalateRulesViolation`) are exported but not yet wired into the pipeline.
 - `parseViolationJudgments()` for safe parsing of Jev noul responses with defaults for missing/malformed data; supports legacy choice fallback.
 - Resolved rules file (`rules`, `rulesSource`) passed to Jev in the request state.
+- `should_proceed` noul question on every action request: unified gate covering rule violations, unrequested scope, explicit constraint breaches, and material user decisions. Inverted: low P(yes) steers (never holds). Calibrated: AUC 0.07 (inverted) against regret, 0.64 against rejected turns (100 targeted sessions, 2026-09-20).
+- `action.shouldProceed` config key `{ hold: number }` (default 0.6): steer threshold for `should_proceed`.
+- `shouldProceedQuestion` exported from `src/guard.ts`.
+- `Verdict.shouldProceedSteer` flag for the unified gate steer.
+- `Judgment.shouldProceed` field for traceability.
 - `matchPathRules` is now exported for use by conscience-loader.
 
 ### Changed

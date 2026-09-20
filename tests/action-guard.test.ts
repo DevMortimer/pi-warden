@@ -6,7 +6,7 @@ import { defaultConfig } from "../src/config.js";
 import type { Judge } from "pi-typesafe";
 
 interface Request { state: { action: { command?: string; path?: string } }; questions: Record<string, unknown> }
-interface Answers { irreversible: number; offTask?: number; scope?: string; mutates?: number; approved?: number }
+interface Answers { irreversible: number; offTask?: number; scope?: string; mutates?: number; approved?: number; shouldProceed?: number }
 
 /**
  * A judge whose next answers are set by the test. `open` keeps requests pending until the test releases them, which is
@@ -30,6 +30,7 @@ function stubJudge(): Judge & { requests: Request[]; next: Answers; release: () 
           off_task: { type: "noul", noul: answers.offTask ?? 0.1 },
           scope: { type: "choice", choice: answers.scope ?? "expected_step", confidence: 0.9, probabilities: { [answers.scope ?? "expected_step"]: 0.9 } },
           mutates: { type: "noul", noul: answers.mutates ?? 0.9 },
+          should_proceed: { type: "noul", noul: answers.shouldProceed ?? 1.0 },
           ...((request as Request).questions.approved ? { approved: { type: "noul", noul: answers.approved ?? 0 } } : {}),
         },
       } as never;
