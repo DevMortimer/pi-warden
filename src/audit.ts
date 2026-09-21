@@ -2,7 +2,11 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ask, noul } from "pi-typesafe";
 import { redact } from "./redact.js";
+import { detectProjectType } from "./init.js";
 import type { Judge } from "./guard.js";
+
+/** Minimum confidence score for a test to count as passing. */
+const PASS_THRESHOLD = 0.5;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +36,11 @@ export interface AuditFinding {
   frequency: string;
   costImpact: string;
   testResult?: TestResult | undefined;
+}
+
+export interface AuditResult {
+  findings: AuditFinding[];
+  skipped: { project: string; reason: string }[];
 }
 
 interface ProjectInfo {
@@ -89,7 +98,7 @@ function listSourceFiles(dir: string, max = 50): string[] {
 
 function readProjectInfo(projectPath: string, workspaceRoot: string): ProjectInfo {
   const name = projectPath === workspaceRoot ? workspaceRoot.split("/").pop() ?? "workspace" : projectPath.split("/").pop() ?? "unknown";
-  const type = detectType(projectPath);
+  const type = detectProjectType(projectPath);
 
   const readme = readFileSafe(join(projectPath, "README.md"), 2000);
 
@@ -117,14 +126,7 @@ function readProjectInfo(projectPath: string, workspaceRoot: string): ProjectInf
   };
 }
 
-function detectType(projectPath: string): string {
-  if (existsSync(join(projectPath, "tsconfig.json"))) return "typescript";
-  if (existsSync(join(projectPath, "Cargo.toml"))) return "rust";
-  if (existsSync(join(projectPath, "pyproject.toml"))) return "python";
-  if (existsSync(join(projectPath, "go.mod"))) return "go";
-  if (existsSync(join(projectPath, "package.json"))) return "javascript";
-  return "generic";
-}
+
 
 // ─── Prompt ───────────────────────────────────────────────────────────────────
 
@@ -192,12 +194,24 @@ Return ONLY the JSON array. No other text.`;
 
 // ─── Main audit ───────────────────────────────────────────────────────────────
 
-export async function auditWorkspace(cwd: string, judge: Judge): Promise<AuditFinding[]> {
+export async function auditWorkspace(cwd: string, judge: Judge): Promise<AuditResult> {
   const projectPaths = findProjects(cwd);
   const findings: AuditFinding[] = [];
+  const skipped: { project: string; reason: string }[] = [];
 
   for (const projectPath of projectPaths) {
-    const info = readProjectInfo(projectPath, cwd);
+    let info: ProjectInfo;
+    try {
+      info = readProjectInfo(projectPath, cwd);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      skipped.push({ project: projectPath.split("/").pop() ?? projectPath, reason });
+      continue;
+    }
+    if (!info.files.length && !info.readme && !info.manifest) {
+      skipped.push({ project: info.name, reason: "no readable source files or manifest found" });
+      continue;
+    }
 
     try {
       const prompt = buildAuditPrompt(info);
@@ -227,22 +241,22 @@ export async function auditWorkspace(cwd: string, judge: Judge): Promise<AuditFi
       const parsed = parseFindings(result.answers.audit as unknown as string, info);
       findings.push(...parsed);
     } catch (err) {
-      console.warn(`audit: Jev evaluation failed for ${info.name}: ${err instanceof Error ? err.message : err}`);
+      skipped.push({ project: info.name, reason: err instanceof Error ? err.message : String(err) });
     }
   }
 
   // Sort by priority, then test each finding against Jev.
   findings.sort((a, b) => priorityOrder(a.priority) - priorityOrder(b.priority));
-  await testFindings(findings, judge);
+  await testFindings(findings, judge, cwd);
 
-  return findings;
+  return { findings, skipped };
 }
 
 // ─── Testing phase ────────────────────────────────────────────────────────────
 
-async function testFindings(findings: AuditFinding[], judge: Judge): Promise<void> {
+async function testFindings(findings: AuditFinding[], judge: Judge, projectPath: string): Promise<void> {
   for (const finding of findings) {
-    const test = await buildAndRunTest(finding, judge);
+    const test = await buildAndRunTest(finding, judge, projectPath);
     finding.testResult = test;
   }
 }
@@ -251,11 +265,11 @@ async function testFindings(findings: AuditFinding[], judge: Judge): Promise<voi
  * Build a concrete test question from a finding's real project code, send it to
  * Jev, and measure the response.
  */
-async function buildAndRunTest(finding: AuditFinding, judge: Judge): Promise<TestResult> {
-  const testQuestion = await buildTestQuestion(finding);
+async function buildAndRunTest(finding: AuditFinding, judge: Judge, projectPath: string): Promise<TestResult> {
+  const testQuestion = await buildTestQuestion(finding, projectPath);
   const safeState = {
     project: finding.project,
-    files: finding.files,
+    files: finding.files.map(f => f.split("/").pop() ?? f),  // redact to basenames
     task: finding.task,
     question: testQuestion,
   };
@@ -278,8 +292,8 @@ async function buildAndRunTest(finding: AuditFinding, judge: Judge): Promise<Tes
     }
 
     const answer = result.answers.test;
-    const confidence = typeof answer === "object" && answer !== null && "noul" in answer ? (answer as { noul: number }).noul : 0.5;
-    const passed = confidence > 0.5;
+    const confidence = typeof answer === "object" && answer !== null && "noul" in answer ? (answer as { noul: number }).noul : PASS_THRESHOLD;
+    const passed = confidence > PASS_THRESHOLD;
 
     return {
       questionAsked: testQuestion,
@@ -305,9 +319,9 @@ async function buildAndRunTest(finding: AuditFinding, judge: Judge): Promise<Tes
  * real test question. Falls back to the finding's generic question if file
  * content is unavailable.
  */
-async function buildTestQuestion(finding: AuditFinding): Promise<string> {
+async function buildTestQuestion(finding: AuditFinding, projectPath: string): Promise<string> {
   for (const file of finding.files) {
-    const content = readFileSafe(join(file), 8000);
+    const content = readFileSafe(join(projectPath, file), 8000);
     if (!content) continue;
 
     // Extract a concrete identifier, path, or value from the file.
@@ -399,7 +413,10 @@ function priorityOrder(p: string): number {
 
 // ─── HTML generation ──────────────────────────────────────────────────────────
 
-export function generateAuditHTML(findings: AuditFinding[], cwd: string): string {
+const fmtUnknown = (val: string) => val === "unknown" ? `<span style="color:var(--text-secondary);font-style:italic">unknown</span>` : esc(val);
+
+export function generateAuditHTML(result: AuditResult, cwd: string): string {
+  const { findings, skipped } = result;
   const projectName = cwd.split("/").pop() ?? "workspace";
   const high = findings.filter(f => f.priority === "high").length;
   const medium = findings.filter(f => f.priority === "medium").length;
@@ -531,14 +548,26 @@ footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--bord
 ${findings.map(f => {
   const conf = f.testResult ? `${(f.testResult.confidence * 100).toFixed(0)}%` : "—";
   const resp = f.testResult ? `${f.testResult.responseTimeMs.toFixed(0)}ms` : "—";
-  return `        <tr><td>${esc(f.task)}</td><td>${esc(f.project)}</td><td><span class="badge badge-${f.priority}">${f.priority}</span></td><td>${esc(f.setupEffort)}</td><td>${esc(f.testingEase)}</td><td>${esc(f.frequency)}</td><td>${conf}</td><td>${resp}</td></tr>`;
+  return `        <tr><td>${esc(f.task)}</td><td>${esc(f.project)}</td><td><span class="badge badge-${f.priority}">${f.priority}</span></td><td>${esc(f.setupEffort)}</td><td>${esc(f.testingEase)}</td><td>${fmtUnknown(f.frequency)}</td><td>${conf}</td><td>${resp}</td></tr>`;
 }).join("\n")}
       </tbody>
     </table>
   </section>
 
+  ${skipped.length > 0 ? `
+  <section>
+    <h2>Skipped Projects</h2>
+    <table>
+      <thead><tr><th>Project</th><th>Reason</th></tr></thead>
+      <tbody>
+${skipped.map(s => `        <tr><td>${esc(s.project)}</td><td>${esc(s.reason)}</td></tr>`).join("\n")}
+      </tbody>
+    </table>
+  </section>
+` : ""}
+
   <footer>
-    <p>Generated by pi-warden audit &middot; ${findings.length} findings across ${new Set(findings.map(f => f.project)).size} project(s) &middot; ${tested.length} Jev tests &middot; ${timestamp}</p>
+    <p>pi-warden audit &middot; ${findings.length} findings across ${new Set(findings.map(f => f.project)).size} project(s) &middot; ${tested.length} Jev tests &middot; ${timestamp}</p>
   </footer>
 </div>
 <script>
@@ -585,8 +614,8 @@ function card(f: AuditFinding, i: number): string {
         <div class="meta">
           <span class="badge badge-effort">effort: ${esc(f.setupEffort)}</span>
           <span class="badge badge-effort">testing: ${esc(f.testingEase)}</span>
-          <span class="badge badge-effort">frequency: ${esc(f.frequency)}</span>
-          <span class="badge badge-effort">cost: ${esc(f.costImpact)}</span>
+          <span class="badge badge-effort">frequency: ${fmtUnknown(f.frequency)}</span>
+          <span class="badge badge-effort">cost: ${fmtUnknown(f.costImpact)}</span>
         </div>
       </div>
     </div>`;

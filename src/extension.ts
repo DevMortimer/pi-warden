@@ -1310,16 +1310,16 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           if (!ctx.hasUI) { report("Audit needs an interactive session to generate the HTML report.", "warning"); return; }
           const judge = judgeFor(config);
           if (!judge) { report("TypeSafe is not configured. Run /warden enable first — the audit needs Jev to test opportunities.", "warning"); return; }
-          if (!await ctx.ui.confirm("Run workspace audit?", `This scans projects in ${ctx.cwd} and uses TypeSafe to evaluate Jev opportunities. No files will be changed.`)) return;
+          if (!await ctx.ui.confirm("Run workspace audit?", `This scans projects in ${redact(ctx.cwd)} and uses TypeSafe to evaluate Jev opportunities. Each finding sends one test request to ${backendHost(config.typesafeBackend)}. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
           if (ctx.hasUI) ctx.ui.notify("pi-warden: Auditing workspace...", "info");
           try {
-            const findings = await auditWorkspace(ctx.cwd, judge);
-            const html = generateAuditHTML(findings, ctx.cwd);
+            const result = await auditWorkspace(ctx.cwd, judge);
+            const html = generateAuditHTML(result, ctx.cwd);
             const outDir = join(ctx.cwd, ".pi-warden");
             if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
             const outPath = join(outDir, "audit-report.html");
             writeFileSync(outPath, html, "utf8");
-            report(`Audit complete: ${findings.length} findings. Report: ${outPath}`);
+            report(`Audit complete: ${result.findings.length} findings, ${result.skipped.length} skipped. Report: ${outPath}`);
           } catch (error) {
             report(`Audit failed: ${error instanceof Error ? error.message : String(error)}`, "error");
           }
