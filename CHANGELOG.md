@@ -6,6 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Tests
+- Live smoke suite cap raised from 60 to 100 requests; summary line now reports budget-error misses.
+
 <!-- Empty. Next release starts here. -->
 
 ## 0.32.0

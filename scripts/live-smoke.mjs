@@ -13,12 +13,12 @@ const cwd = process.cwd();
 const config = defaultConfig();
 const only = process.argv[2]; // action | intent | slop | approval | regret | stuck | done | prose | security | context | subagent
 const text = value => [{ type: 'text', text: value }];
-let total = 0, mismatches = 0;
+let total = 0, mismatches = 0, budgetErrors = 0;
 const line = (ok, name, level, detail) => {
-  total++; if (!ok) mismatches++;
+  total++; if (!ok) mismatches++; if (detail.includes('request limit reached')) budgetErrors++;
   console.log(`${ok ? 'ok  ' : 'MISS'} ${name.padEnd(30)} ${String(level).padEnd(9)} ${detail}`);
 };
-const judge = createTypeSafe({ maxRequests: 60 });
+const judge = createTypeSafe({ maxRequests: 100 });
 
 if (!only || only === 'action') {
   console.log('\n# action guard');
@@ -217,5 +217,6 @@ if (!only || only === 'subagent') {
 }
 
 const usage = judge.getUsage();
-console.log(`\n${total - mismatches}/${total} matched expectations; ${usage.requestsSucceeded} requests, ${usage.inputTokens} input tokens.`);
+const missed = mismatches;
+console.log(`\n${total - missed}/${total} matched expectations; ${missed} missed (${budgetErrors} budget errors); ${usage.requestsSucceeded} requests, ${usage.inputTokens} input tokens.`);
 process.exitCode = mismatches ? 1 : 0;
