@@ -8,6 +8,16 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.33.3
+
+### Tests
+- Live smoke stuck suite now exercises the Jev-judged path: two new cases reach `source: "typesafe"` and print real scores; the existing offline-repeat case prints `offline repeat` instead of three `undefined` values.
+
+## 0.33.2
+
+### Fixed
+- Tests and eval runs now write to an isolated database via `PI_WARDEN_DB` instead of polluting the user's `holds.db`.
+
 ## 0.33.1
 
 ### Tests

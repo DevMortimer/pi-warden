@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -186,6 +186,13 @@ after(async () => {
   if (savedMode === undefined) delete process.env.PI_WARDEN_MODE; else process.env.PI_WARDEN_MODE = savedMode;
   if (savedDb === undefined) delete process.env.PI_WARDEN_DB; else process.env.PI_WARDEN_DB = savedDb;
   if (temporary) await rm(temporary, { recursive: true, force: true });
+});
+
+test("PI_WARDEN_DB is set and not under the real home directory", () => {
+  const dbPath = process.env.PI_WARDEN_DB;
+  assert.ok(dbPath, "PI_WARDEN_DB must be set before extension tests run");
+  const home = homedir();
+  assert.ok(!dbPath.startsWith(home), `PI_WARDEN_DB (${dbPath}) must not be under the real home directory (${home})`);
 });
 
 test("should-proceed defaults to trace-only for interactive and headless agents", async () => {

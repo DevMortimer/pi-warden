@@ -250,6 +250,7 @@ async function score({ project, sessions, agentDir, baseline, run, checks, dropp
 async function runOnce(task, cell, repeat) {
   const { base, project, agentDir, sessions, baseline } = await prepareRunDir(task);
   const env = filterEnv(process.env, { agentDir });
+  env.PI_WARDEN_DB = join(base, "holds.db");
   const dropped = filteredNames(process.env, { agentDir });
   const checks = task.checks ?? ["test"];
   try {
@@ -268,6 +269,7 @@ async function runOnce(task, cell, repeat) {
 async function runArc(task, cell, repeat) {
   const { base, project, agentDir, sessions, baseline } = await prepareRunDir(task);
   const env = filterEnv(process.env, { agentDir });
+  env.PI_WARDEN_DB = join(base, "holds.db");
   const dropped = filteredNames(process.env, { agentDir });
   const checks = task.checks ?? ["test"];
   const turns = [];
