@@ -9,6 +9,29 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Added
 - Conscience coach (trace-only, no live Jev questions shipped): configuration layer (`conscience` section in `WardenConfig`), shape fallback, and the `assess()` module with fake-judge tests. Thresholds default to 1.0; no selections are delivered until calibration. The `before_agent_start` hook wires the initial assessment and traces every attempt. Load mode reads skill files from disk with path-rule checks, size bounds, frontmatter validation, and credential canary detection. Activation gate ties delivery to a measured policy record (`{ questionHash, model, thresholds }`).
 
+## 0.37.1
+
+### Docs
+- CONTRIBUTING.md: reflecting the evidence floor for destructive patterns; version bump is optional for outside PRs. docs/guards.md: same stale wording fixed.
+
+## 0.37.0
+
+### Added
+- Compaction evidence appendix (`context.compactAppendix`, default true): after compaction succeeds, the extension sends a deterministic summary of session evidence — saved outputs, last checks, held actions, stuck state, and the active task — as one custom message so the agent can prefer saved paths over re-running commands. All strings are redacted. Does not spend a steer unit.
+
+## 0.36.0
+
+### Changed
+- The resolved rules file content no longer rides the action request when the rules guard is off. `rules.enabled: false` now means no rules file content leaves the machine at all; with the guard on, the request is unchanged. `EvaluateOptions.rules` and `InspectOptions.rules` carry the switch, and a library caller that omits it keeps the earlier behaviour. The disclosure and `docs/data-handling.md` say so.
+
+### Docs
+- `docs/configuration.md`: `Recipe: security work` — what each guard sends off the machine and what `/warden disable` leaves behind, a local-only user profile, a lab/CTF project profile with the exemptions security work needs, and an out-of-scope deny rule. README privacy paragraph points to it.
+
+## 0.35.0
+
+### Added
+- Stuck-loop diff: when the stuck detector marks a repeated failed attempt, the agent sees a short unified line diff against the previous output instead of the full repeated output again. Byte-identical outputs get a one-line note. The diff note never grows the result. Config keys `stuck.diffLimit` (3000) and `stuck.tailLimit` (1000) control the diff and tail caps.
+
 ## 0.34.1
 
 ### Fixed

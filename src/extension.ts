@@ -37,7 +37,7 @@ import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from ".
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
-import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
+import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
 import { assess } from "./conscience.js";
 import { loadSkillBody, buildLoadMessage, policyMatches, getActivePolicy, recordFileIdentity, clearFileIdentityCache } from "./load.js";
 import type { ConsciencePolicy } from "./load.js";
@@ -62,13 +62,14 @@ import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
+import { buildCompactSnapshot, compactAppendix, type CompactSnapshot } from "./compact.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName, TraceEntry } from "./trace.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request, including calls where the rules guard is disabled; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name and description only; full skill instructions never go to Jev). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name and description only; full skill instructions never go to Jev). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -276,6 +277,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
   let regretCandidates: PreviousAction[] = [];
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
+  /** Full output text and saved path keyed by attempt call key, for stuck-loop diffs. */
+  let fullOutputs = new Map<string, { text: string; path?: string }>();
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
   let warnedFallback = false;
@@ -602,6 +605,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
     const config = configFor(ctx);
     attempts = new AttemptWindow(config.stuck.window);
+    fullOutputs = new Map();
     doneNudged = false;
     steersThisRun = 0;
     finals.reset();
@@ -939,7 +943,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx) },
-      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, previousActions: regretCandidates.length ? regretCandidates : undefined },
+      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined },
     );
     if (verdict.source === "skipped") return;
     // Arming check: if any armed rule's command regex matches this call, inject a hit into the verdict.
@@ -1338,10 +1342,47 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         `output sample: ${redact(text).slice(0, 300)}`, delivered ? `agent told: ${notice}` : `steer recorded, not delivered (a repeat or the per-run budget): ${notice}`,
       ]);
     }
+    // Stuck-loop diff: when the verdict is stuck on a failed result and a previous failed output
+    // for the same call is available, replace the tool result with a short diff note. Compute
+    // bytesSaved against the current content (after duplicate detection and compression), so the
+    // diff never grows the result.
+    const verdict = await stuckCheck;
+    if (verdict && verdict.stuck && failed && !verdict.successRepeat && !verdict.churn && text.length > 0) {
+      const currentKey = attempts.attempts.at(-1)?.key;
+      const prevEntry = currentKey ? fullOutputs.get(currentKey) : undefined;
+      if (currentKey && prevEntry && prevEntry.text !== text) {
+        // Differing outputs: save the current output and diff against the previous one.
+        try {
+          const saved = await saveOutput(text);
+          const diffNote = stuckDiff(prevEntry.text, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: saved });
+          const currentLen = Buffer.byteLength(content.map(part => part.type === "text" ? part.text : "").join("\n"));
+          if (Buffer.byteLength(diffNote) < currentLen) {
+            content = [{ type: "text", text: diffNote }, ...content.filter(part => part.type !== "text")];
+          }
+          fullOutputs.set(currentKey, { text, path: saved });
+        } catch {
+          noteError(ctx, "Could not store full output for stuck diff; keeping it unchanged.", undefined);
+          fullOutputs.set(currentKey, { text });
+        }
+      } else if (currentKey && prevEntry && prevEntry.text === text && prevEntry.path) {
+        // Byte-identical outputs: one-line note reusing the existing saved path.
+        const diffNote = stuckDiff(text, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: prevEntry.path });
+        const currentLen = Buffer.byteLength(content.map(part => part.type === "text" ? part.text : "").join("\n"));
+        if (Buffer.byteLength(diffNote) < currentLen) {
+          content = [{ type: "text", text: diffNote }, ...content.filter(part => part.type !== "text")];
+        }
+      } else if (currentKey) {
+        // First failed output for this call, or no previous entry yet: store for future diffs.
+        fullOutputs.set(currentKey, { text });
+      }
+    } else if (failed && text.length > 0) {
+      // Not stuck (or no verdict yet): store the output so a future repeat can diff against it.
+      const currentKey = attempts.attempts.at(-1)?.key;
+      if (currentKey) fullOutputs.set(currentKey, { text });
+    }
     const patch = content === event.content ? undefined : { content };
     // Checks use the original result, not the excerpts or security banner.
     if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
-    const verdict = await stuckCheck;
     if (!verdict) return patch;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     if (verdict.source === "repeat" && !verdict.stuck) return patch;
@@ -1349,7 +1390,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
     if (!verdict.stuck) return patch;
     stats.stuck++;
-    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
+    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
     if (nudge) steer(config, "stuck", nudge);
     return patch;
   });
@@ -1362,6 +1403,50 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (config.enabled && config.conscience.enabled && selectedCapability) {
       const status = triggerConsumed ? "consumed" : reminderSent ? "reminded" : "unresolved";
       record(ctx, config, "conscience", `settled: ${status} (${selectedCapability.kind}:${selectedCapability.id})`, ["trigger: agent_settled", `assessments: ${assessmentsThisPrompt}`, `nudges: ${nudgesThisPrompt}`, `instructions: ${instructionState}`]);
+    }
+  });
+
+  // Compaction evidence appendix: after compaction succeeds, send the evidence warden holds as one
+  // custom message so the agent can prefer saved paths over re-running commands. This is not a steer
+  // and does not spend a steer unit; it is one message per compaction, the same path steers use.
+  pi.on("session_compact", async (_event, ctx) => {
+    const config = configFor(ctx);
+    if (!config.enabled || !config.context.compactAppendix) return;
+    try {
+      const checkRecords = evidence.checks.map((check, index) => ({
+        command: check.call,
+        passed: check.passed,
+        runIndex: 1,
+        indexInRun: index,
+      }));
+      const holdRecords = holds.records().filter(r => r.held).map(r => ({
+        tool: r.tool,
+        preview: r.callExcerpt ?? "",
+        outcome: r.outcome,
+      }));
+      const stuckFailures = attempts.failures();
+      const latestAttempt = attempts.attempts.at(-1);
+      const stuck: CompactSnapshot["stuck"] = stuckFailures > 0 ? {
+        failures: stuckFailures,
+        sameStrategyScore: undefined,
+        currentCallFamily: latestAttempt?.tool,
+      } : undefined;
+      const task = latestUserPrompt(ctx);
+      const snapshot = buildCompactSnapshot({
+        savedOutputs: ledger.storedPaths().map(p => ({ tool: "unknown", path: p, bytes: 0 })),
+        checks: checkRecords,
+        holds: holdRecords,
+        stuck,
+        activeTask: task,
+        runs: 1,
+      });
+      const appendix = compactAppendix(snapshot);
+      if (!appendix) return;
+      // Not a steer; one message per compaction; do not spend a steer unit.
+      pi.sendMessage({ customType: `${PACKAGE_NAME}-compact-evidence`, content: appendix, display: config.steerVisible });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      record(ctx, config, "action", "compact-appendix error", [`compactAppendix failed: ${message}`]);
     }
   });
 
@@ -1705,7 +1790,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${backendHost(config.typesafeBackend)} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
           const verdict = await evaluateAction(
             { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
-            { config: { ...config.action, enabled: true, tools: ["bash"] }, judge },
+            { config: { ...config.action, enabled: true, tools: ["bash"] }, judge, rules: config.rules },
           );
           const deliveryVerdict = ctx.hasUI ? verdict : agentDeliveryVerdict(verdict);
           const deliveryReasons = deliveryVerdict.reasons;

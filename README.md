@@ -82,7 +82,7 @@ These are project-maintained benchmarks, not universal claims. Raw reports and r
 
 ## Privacy
 
-Depending on the configured judgment backend, Warden sends to your provider: a redacted summary of each guarded call, the agent's plan, up to eight redacted prior messages, and redacted tool-output samples. Secrets are stripped before anything leaves the machine. [Full details.](docs/data-handling.md)
+Depending on the configured judgment backend, Warden sends to your provider: a redacted summary of each guarded call, the agent's plan, up to eight redacted prior messages, and redacted tool-output samples. Secrets are stripped before anything leaves the machine. [Full details.](docs/data-handling.md) Security work — pentesting, incident response, CTF — has its own configuration recipe for keeping samples local and for the friction that credentials and lab setups cause: [Recipe: security work](docs/configuration.md#recipe-security-work).
 
 ## Documentation
 

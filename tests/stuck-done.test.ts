@@ -4,7 +4,7 @@ import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
 import { buildDoneRequest, classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, freshChecks, needsDoneCheck, recordOutcome } from "../src/done.js";
 import type { Judge } from "../src/guard.js";
-import { AttemptWindow, buildStuckRequest, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "../src/stuck.js";
+import { AttemptWindow, buildStuckRequest, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "../src/stuck.js";
 
 const text = (value: string) => [{ type: "text", text: value }];
 const stuckJudge = (sameStrategy: number, approachChange: number, progress: number) => {
@@ -354,4 +354,58 @@ test("evaluateDone flags unverified completion claims and false verification cla
   const request = buildDoneRequest("fix it", "Done. TOKEN=sk-live-0123456789abcdef", evidence);
   assert.ok(!request.state.final_message.includes("sk-live"));
   assert.deepEqual(request.state.run, { file_changes: 2, checks_run: [] });
+});
+
+test("stuckDiff shows a unified diff for outputs differing in one line", () => {
+  const previous = "line1\nline2-old\nline3";
+  const current = "line1\nline2-new\nline3";
+  const result = stuckDiff(previous, current, { diffLimit: 3000, tailLimit: 1000, fullPath: "/tmp/output.txt" });
+  assert.match(result, /stuck-loop diff/);
+  assert.match(result, /- line2-old/);
+  assert.match(result, /\+ line2-new/);
+  assert.match(result, /Full output: \/tmp\/output\.txt/);
+});
+
+test("stuckDiff says outputs are identical when byte-identical", () => {
+  const same = "same output\nline2";
+  const result = stuckDiff(same, same, { diffLimit: 3000, tailLimit: 1000, fullPath: "/tmp/out.txt" });
+  assert.match(result, /byte-identical/);
+  assert.match(result, /see the full output at \/tmp\/out\.txt/);
+  assert.ok(!result.includes("Full output:"), "one-line form does not use the multi-line footer");
+});
+
+test("stuckDiff truncates a diff exceeding the cap", () => {
+  const lines = Array.from({ length: 200 }, (_, i) => `prev-${i}`);
+  const linesNew = Array.from({ length: 200 }, (_, i) => `curr-${i}`);
+  const previous = lines.join("\n");
+  const current = linesNew.join("\n");
+  const result = stuckDiff(previous, current, { diffLimit: 500, tailLimit: 200, fullPath: "/tmp/out.txt" });
+  assert.match(result, /\u2026 \[diff truncated\]/);
+  assert.match(result, /Full output: \/tmp\/out\.txt/);
+  assert.ok(result.length < 2000, `note should be compact; got ${result.length}`);
+});
+
+test("lineDiff emits one hunk with context for a single-line difference in 60-line outputs", () => {
+  const prev = Array.from({ length: 60 }, (_, i) => `line-${i}`).join("\n");
+  const curr = Array.from({ length: 60 }, (_, i) => i === 30 ? "CHANGED" : `line-${i}`).join("\n");
+  const result = stuckDiff(prev, curr, { diffLimit: 3000, tailLimit: 1000, fullPath: "/tmp/out.txt" });
+  // One hunk header.
+  assert.equal((result.match(/^@@ /gm) ?? []).length, 1, "exactly one hunk header");
+  // The changed line is present.
+  assert.match(result, /- line-30/);
+  assert.match(result, /\+ CHANGED/);
+  // At most 8 body lines in the hunk: 3 context before + 1 delete + 1 add + 3 context after.
+  const hunkBody = result.split("\n").filter(line => line.startsWith(" ") || line.startsWith("-") || line.startsWith("+"));
+  assert.ok(hunkBody.length <= 8, `hunk body has ${hunkBody.length} lines, expected at most 8`);
+});
+
+test("lineDiff emits two hunks for differences at line 5 and line 50", () => {
+  const prev = Array.from({ length: 60 }, (_, i) => `line-${i}`).join("\n");
+  const curr = Array.from({ length: 60 }, (_, i) => i === 5 ? "FIRST-CHANGE" : i === 50 ? "SECOND-CHANGE" : `line-${i}`).join("\n");
+  const result = stuckDiff(prev, curr, { diffLimit: 3000, tailLimit: 1000, fullPath: "/tmp/out.txt" });
+  assert.equal((result.match(/^@@ /gm) ?? []).length, 2, "exactly two hunk headers");
+  assert.match(result, /- line-5/);
+  assert.match(result, /\+ FIRST-CHANGE/);
+  assert.match(result, /- line-50/);
+  assert.match(result, /\+ SECOND-CHANGE/);
 });

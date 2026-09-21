@@ -222,17 +222,25 @@ test("should-proceed opt-in steers reach interactive and headless agents without
   }
 });
 
-test("action rules context is disclosed and sent independently of the rules guard", async () => {
+test("action rules context is disclosed, rides the request with the rules guard on, and stays home with it off", async () => {
   const rulesFile = join(temporary, "AGENTS.md");
   await writeFile(rulesFile, "# Local policy\nUse the project logger.\n");
   try {
-    await grantConsent();
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
     await toolCall("bash", { command: "npm test" });
-    const action = requests.find(request => "irreversible" in request.questions);
-    assert.match(String(action?.state.rules), /project logger/);
+    const on = requests.find(request => "irreversible" in request.questions);
+    assert.match(String(on?.state.rules), /project logger/);
+    assert.equal(on?.state.rulesSource, "AGENTS.md");
+
+    requests.length = 0;
+    await grantConsent(); // writes rules: { enabled: false }
+    await toolCall("bash", { command: "npm test" });
+    const off = requests.find(request => "irreversible" in request.questions);
+    assert.equal(off?.state.rules, undefined, "the rules guard's switch keeps the rules file off the wire");
+    assert.equal(off?.state.rulesSource, undefined);
+
     const { disclosure } = await import("../src/extension.js");
-    assert.match(disclosure, /rules guard is disabled/i);
-    assert.match(disclosure, /rules guard is disabled/i);
+    assert.match(disclosure, /unless the rules guard is off/i);
   } finally { await rm(rulesFile); }
 });
 
@@ -2618,4 +2626,145 @@ test("conscience: warden steer does not invalidate conscience assessment", async
   const traceText = sentMessages.at(-1)!.message.content;
   // Should NOT contain "stale" — the assessment should still be valid
   assert.ok(!traceText.includes("stale"), `conscience should not be stale after warden steer, trace: ${traceText.slice(0, 200)}`);
+});
+
+test("stuck-loop diff: third identical failure is not larger than the duplicate note", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
+  await newPrompt("Run the test suite");
+  const full = "FAIL tests/a.test.ts\n  Expected true, got false\n" + "x".repeat(20_000);
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "first result stays");
+  const second = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  assert.match(second.content[0]!.text, /duplicate/, "second identical result is a duplicate note");
+  const secondLen = Buffer.byteLength(second.content[0]!.text);
+  const third = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  const thirdText = third.content.find(part => part.type === "text")?.text ?? "";
+  assert.ok(Buffer.byteLength(thirdText) <= secondLen, `third (${Buffer.byteLength(thirdText)} bytes) is not larger than second (${secondLen} bytes)`);
+});
+
+test("stuck-loop diff: three failures with differing outputs carry a diff note", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 5000, tailLimit: 1000 } }));
+  await newPrompt("Run the test suite");
+  nextAnswers = { same_strategy: 0.9, approach_change: 0.1, progress: 0.1, irreversible: 0.1, off_task: 0.1 };
+  const pad = Array.from({ length: 50 }, (_, i) => `context-line-${String(i).padStart(2, "0")}: ` + "y".repeat(30)).join("\n");
+  const base = "FAIL tests/a.test.ts\n  Expected true, got false\n" + pad;
+  assert.equal(await toolResult("bash", { command: "npm test" }, base + "\noutcome-A", true), undefined, "first stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, base + "\noutcome-B", true), undefined, "second stays");
+  const third = await toolResult("bash", { command: "npm test" }, base + "\noutcome-C", true) as { content: Array<{ type: string; text: string }> };
+  const text = third.content.find(part => part.type === "text")?.text ?? "";
+  assert.match(text, /stuck-loop diff/);
+  assert.match(text, /outcome-C/);
+  const pathMatch = text.match(/Full output: (.+)/);
+  assert.ok(pathMatch, "the note names the full-output file");
+  assert.ok(text.length < Buffer.byteLength(base + "\noutcome-C"), "diff note is smaller than the original");
+});
+
+test("stuck-loop diff: three byte-identical failures do not grow the result", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
+  await newPrompt("Run the test suite");
+  const full = "FAIL tests/a.test.ts\n  Expected true, got false\n" + "x".repeat(20_000);
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "first stays");
+  const second = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  assert.match(second.content[0]!.text, /duplicate/, "second is a duplicate note");
+  const secondLen = Buffer.byteLength(second.content[0]!.text);
+  const third = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  const thirdText = third.content.find(part => part.type === "text")?.text ?? "";
+  assert.ok(Buffer.byteLength(thirdText) <= secondLen, `third (${Buffer.byteLength(thirdText)} bytes) is not larger than second (${secondLen} bytes)`);
+});
+
+test("stuck-loop diff: three identical successes are not replaced", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
+  await newPrompt("Run the test suite");
+  const full = "all 42 tests passed\n";
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "first stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "second stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "third stays: successful repeats are not replaced");
+});
+
+test("stuck-loop diff: two failures then a success leave the success unchanged", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
+  await newPrompt("Run the test suite");
+  const fail = "FAIL tests/a.test.ts\n  Expected true, got false";
+  const ok = "all 42 tests passed";
+  assert.equal(await toolResult("bash", { command: "npm test" }, fail, true), undefined, "first failure stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, fail, true), undefined, "second failure stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, ok, false), undefined, "success is not replaced");
+});
+
+test("stuck-loop diff: stuck.enabled: false prevents any replacement", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false } }));
+  await newPrompt("Run the test suite");
+  const full = "FAIL tests/a.test.ts\n  Expected true, got false" + "x".repeat(5000);
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "stays");
+  const second = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  assert.match(second.content[0]!.text, /duplicate/, "second identical result is a duplicate note");
+  const third = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  assert.match(third.content[0]!.text, /duplicate/, "still a duplicate note, not a diff");
+  assert.ok(!third.content[0]!.text.includes("stuck-loop diff"), "no diff when stuck is disabled");
+});
+
+test("session_compact: appendix includes saved output, failed check, and held action", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  sentMessages.length = 0;
+  nextAnswers = { retention: "summary_only" };
+  const full = "progress complete\n".repeat(2000);
+  const compResult = await toolResult("bash", { command: "npm test" }, full, false) as { content: Array<{ text: string }> };
+  const savedPath = compResult.content[0]!.text.match(/Full output: (.+)/)![1]!;
+  try {
+    // A failed check.
+    await toolResult("bash", { command: "npm run lint" }, "lint error", true);
+    // A held write: high irreversible score keeps it pending.
+    nextAnswers = { irreversible: 0.95, off_task: 0.05, scope: "expected_step" };
+    await toolCall("write", { path: join(temporary, "src/a.ts"), content: "export const a = 1;" });
+    // Fire session_compact.
+    const compactHandlers = extension.handlers.get("session_compact") ?? [];
+    assert.equal(compactHandlers.length, 1, "one session_compact handler");
+    await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, context()]);
+    const msg = sentMessages.find(m => m.message.customType === "pi-warden-compact-evidence");
+    assert.ok(msg, "one sendMessage with pi-warden-compact-evidence");
+    assert.match(msg.message.content, /=== PI-WARDEN COMPACT EVIDENCE ===/);
+    assert.match(msg.message.content, /npm run lint/, "failed check command appears in the message");
+    assert.match(msg.message.content, /write/, "held tool appears in the message");
+    assert.match(msg.message.content, /pending|approved|replanned/, "hold outcome appears in the message");
+    assert.match(msg.message.content, /=== END PI-WARDEN COMPACT EVIDENCE ===/);
+  } finally { await rm(join(savedPath, ".."), { recursive: true, force: true }); }
+});
+
+test("session_compact: compactAppendix: false sends nothing", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, context: { compactAppendix: false }, ...STACK_BAR }));
+  sentMessages.length = 0;
+  const compactHandlers = extension.handlers.get("session_compact") ?? [];
+  assert.equal(compactHandlers.length, 1);
+  await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, context()]);
+  assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-compact-evidence").length, 0, "no message sent when compactAppendix is false");
+});
+
+test("session_compact: empty session sends nothing", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  sentMessages.length = 0;
+  const emptyBranch = context({ sessionManager: { getBranch: () => [] } });
+  const compactHandlers = extension.handlers.get("session_compact") ?? [];
+  assert.equal(compactHandlers.length, 1);
+  await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, emptyBranch]);
+  assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-compact-evidence").length, 0, "no message for an empty session");
+});
+
+test("session_compact: two compactions send two messages, each from the memory at that time", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  sentMessages.length = 0;
+  nextAnswers = { retention: "summary_only" };
+  // First compaction: one saved output.
+  await toolResult("bash", { command: "npm test" }, "output A\n".repeat(2000), false);
+  const compactHandlers = extension.handlers.get("session_compact") ?? [];
+  await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, context()]);
+  const first = sentMessages.filter(m => m.message.customType === "pi-warden-compact-evidence");
+  assert.equal(first.length, 1, "first compaction sends one message");
+  assert.match(first[0]!.message.content, /Last checks/);
+  // Second compaction: add a failed check, fire again.
+  await toolResult("bash", { command: "npm run lint" }, "lint error", true);
+  sentMessages.length = 0;
+  await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, context()]);
+  const second = sentMessages.filter(m => m.message.customType === "pi-warden-compact-evidence");
+  assert.equal(second.length, 1, "second compaction sends one message");
+  assert.match(second[0]!.message.content, /npm run lint/, "second message includes the new failed check");
+
 });

@@ -18,7 +18,7 @@ Thank you. Complaints are as useful as code: a steer that annoyed you is calibra
 ## Rules the code keeps
 
 - **A new Jev question ships with a measurement.** Add it to `scripts/action-candidates.mjs` (or the guard's `*-cases.mjs` set), run it, and put the numbers in the PR and the Calibration section of `docs/guards.md`. An unmeasured question can be merged as `extra` (recorded, never acted on), not as a rule. See `docs/guards.md` → Calibration for the method.
-- **Steers never hold.** Three things block a call: a destructive pattern, a `deny` command rule (blocked outright, no dialog), or `irreversible` at 0.7 or above. Off-task, plan mismatch, slop, rules, and security notices tell the agent and let the call run.
+- **Steers never hold.** A `deny` command rule blocks outright with no dialog; `irreversible` at or above `action.irreversible.confirm` (0.7) holds; a built-in destructive pattern holds only when no judge answers, or when `action.floor` is `"level"`. Off-task, plan mismatch, slop, rules, and security notices tell the agent and let the call run.
 - **Approval comes from the user's message only.** Assistant text explains a call; it cannot approve one.
 - **Nothing that leaves the machine or lands in the trace carries a command, a path the user did not show, or a secret.** `redact()` before sending; reasons name patterns and scores. `docs/data-handling.md` must stay true after your change.
 - **Fail open, say so.** A TypeSafe error allows the call with a warning (`failOpen`); it never crashes a hook.
@@ -28,7 +28,7 @@ Thank you. Complaints are as useful as code: a steer that annoyed you is calibra
 
 - One change per commit, with a message that says what changed and why. No tool or AI attribution lines.
 - Keep a PR to one topic. Update the README or the matching `docs/` file in the same PR when behaviour or config changes.
-- The last commit on every PR is a version bump. It changes only `package.json` and `CHANGELOG.md`: move the release notes under the new version heading and leave `## Unreleased` at the top. Use `chore: version bump to X.Y.Z` as the commit message.
+- The last commit on every PR is a version bump. It changes only `package.json` and `CHANGELOG.md`: move the release notes under the new version heading and leave `## Unreleased` at the top. Use `chore: version bump to X.Y.Z` as the commit message. If you are unsure which version to use, leave the bump out and say so in the PR; the maintainer adds the bump commit before merging.
 - GitHub Actions runs the offline gate and package checks. Version tags prepare a draft GitHub release; npm publishing stays manual. See [CI and continuous delivery](docs/ci-cd.md) for checks and maintainer steps.
 
 ## Where to ask
