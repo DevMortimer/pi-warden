@@ -42,6 +42,7 @@ import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
+import { buildCompactSnapshot, compactAppendix, type CompactSnapshot } from "./compact.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
@@ -1096,6 +1097,48 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // The agent has caught up and Pi will not continue on its own: the one moment a wake costs the user nothing.
   pi.on("agent_settled", async (_event, ctx) => {
     await checkSubagentReports(ctx, configFor(ctx));
+  });
+
+  // Compaction evidence appendix: deterministically build a summary of what the session holds so the
+  // summarizer keeps it. On any error, the event is returned unchanged and one trace entry is recorded.
+  pi.on("session_before_compact", async (event, ctx) => {
+    const config = configFor(ctx);
+    if (!config.enabled || !config.context.compactAppendix) return;
+    try {
+      const checkRecords = evidence.checks.map((check, index) => ({
+        command: check.call,
+        passed: check.passed,
+        runIndex: 1,
+        indexInRun: index,
+      }));
+      const holdRecords = holds.records().filter(r => r.held).map(r => ({
+        tool: r.tool,
+        preview: r.callExcerpt ?? "",
+        outcome: r.outcome,
+      }));
+      const stuckFailures = attempts.failures();
+      const latestAttempt = attempts.attempts.at(-1);
+      const stuck: CompactSnapshot["stuck"] = stuckFailures > 0 ? {
+        failures: stuckFailures,
+        sameStrategyScore: undefined,
+        currentCallFamily: latestAttempt?.tool,
+      } : undefined;
+      const task = latestUserPrompt(ctx);
+      const snapshot = buildCompactSnapshot({
+        savedOutputs: ledger.storedPaths().map(p => ({ tool: "unknown", path: p, bytes: 0 })),
+        checks: checkRecords,
+        holds: holdRecords,
+        stuck,
+        activeTask: task,
+        runs: 1,
+      });
+      const appendix = compactAppendix(snapshot);
+      if (!appendix) return;
+      event.customInstructions = event.customInstructions ? `${event.customInstructions}\n\n${appendix}` : appendix;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      record(ctx, config, "action", "compact-appendix error", [`compactAppendix failed: ${message}`]);
+    }
   });
 
   // Block new user messages while /warden init or /warden audit is running.

@@ -2015,3 +2015,92 @@ test("stuck-loop diff: stuck.enabled: false prevents any replacement", async () 
   assert.match(third.content[0]!.text, /duplicate/, "still a duplicate note, not a diff");
   assert.ok(!third.content[0]!.text.includes("stuck-loop diff"), "no diff when stuck is disabled");
 });
+
+const compactPrep = { firstKeptEntryId: "", messagesToSummarize: [] as never[], turnPrefixMessages: [] as never[], isSplitTurn: false, tokensBefore: 100000, fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() }, settings: { enabled: true, reserveTokens: 0, keepRecentTokens: 0 } };
+
+test("session_before_compact: appendix includes saved output, failed check, and approved hold", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  nextAnswers = { retention: "summary_only" };
+  const full = "progress complete\n".repeat(2000);
+  const compResult = await toolResult("bash", { command: "npm test" }, full, false) as { content: Array<{ text: string }> };
+  const savedPath = compResult.content[0]!.text.match(/Full output: (.+)/)![1]!;
+  try {
+    // A failed check.
+    await toolResult("bash", { command: "npm run lint" }, "lint error", true);
+    // A held write: high irreversible score keeps it pending (no approval in this turn).
+    nextAnswers = { irreversible: 0.95, off_task: 0.05, scope: "expected_step" };
+    await toolCall("write", { path: join(temporary, "src/a.ts"), content: "export const a = 1;" });
+    // Fire session_before_compact.
+    const event: import("@earendil-works/pi-coding-agent").SessionBeforeCompactEvent = {
+      type: "session_before_compact",
+      preparation: { firstKeptEntryId: "", messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false, tokensBefore: 100000, fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() }, settings: { enabled: true, reserveTokens: 0, keepRecentTokens: 0 } },
+      branchEntries: [],
+      reason: "manual",
+      willRetry: false,
+      signal: AbortSignal.timeout(5000),
+    };
+    const compactHandlers = extension.handlers.get("session_before_compact") ?? [];
+    assert.equal(compactHandlers.length, 1, "one session_before_compact handler");
+    await Reflect.apply(compactHandlers[0]!, undefined, [event, context()]);
+    assert.ok(event.customInstructions, "customInstructions was set");
+    assert.match(event.customInstructions!, /=== PI-WARDEN COMPACT EVIDENCE ===/);
+    assert.match(event.customInstructions!, /npm run lint/, "failed check command appears in the appendix");
+    assert.match(event.customInstructions!, /write/, "held tool appears in the appendix");
+    assert.match(event.customInstructions!, /pending|approved|replanned/, "hold outcome appears in the appendix");
+    assert.match(event.customInstructions!, /=== END PI-WARDEN COMPACT EVIDENCE ===/);
+  } finally { await rm(join(savedPath, ".."), { recursive: true, force: true }); }
+});
+
+test("session_before_compact: compactAppendix: false returns the event unchanged", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, context: { compactAppendix: false }, ...STACK_BAR }));
+  const event: import("@earendil-works/pi-coding-agent").SessionBeforeCompactEvent = {
+    type: "session_before_compact",
+    preparation: compactPrep,
+    branchEntries: [],
+    reason: "manual",
+    willRetry: false,
+    signal: AbortSignal.timeout(5000),
+  };
+  const compactHandlers = extension.handlers.get("session_before_compact") ?? [];
+  assert.equal(compactHandlers.length, 1);
+  await Reflect.apply(compactHandlers[0]!, undefined, [event, context()]);
+  assert.equal(event.customInstructions, undefined, "event unchanged when compactAppendix is false");
+});
+
+test("session_before_compact: existing customInstructions is preserved ahead of the appendix", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  nextAnswers = { retention: "summary_only" };
+  const full = "output\n".repeat(2000);
+  await toolResult("bash", { command: "npm test" }, full, false);
+  const event = {
+    type: "session_before_compact" as const,
+    preparation: compactPrep,
+    branchEntries: [],
+    reason: "manual" as const,
+    willRetry: false,
+    signal: AbortSignal.timeout(5000),
+    customInstructions: "focus on the API changes",
+  };
+  const compactHandlers = extension.handlers.get("session_before_compact") ?? [];
+  assert.equal(compactHandlers.length, 1);
+  await Reflect.apply(compactHandlers[0]!, undefined, [event, context()]);
+  assert.ok(event.customInstructions, "customInstructions was set");
+  assert.match(event.customInstructions!, /^focus on the API changes\n\n=== PI-WARDEN COMPACT EVIDENCE ===/s, "existing instructions are preserved ahead of the appendix");
+});
+
+test("session_before_compact: empty session returns the event unchanged", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  const emptyBranch = context({ sessionManager: { getBranch: () => [] } });
+  const event: import("@earendil-works/pi-coding-agent").SessionBeforeCompactEvent = {
+    type: "session_before_compact",
+    preparation: compactPrep,
+    branchEntries: [],
+    reason: "manual",
+    willRetry: false,
+    signal: AbortSignal.timeout(5000),
+  };
+  const compactHandlers = extension.handlers.get("session_before_compact") ?? [];
+  assert.equal(compactHandlers.length, 1);
+  await Reflect.apply(compactHandlers[0]!, undefined, [event, emptyBranch]);
+  assert.equal(event.customInstructions, undefined, "no appendix for an empty session");
+});
