@@ -76,7 +76,7 @@ These are project-maintained benchmarks, not universal claims. Raw reports and r
 
 ### Measurement on real use
 
-As of 2025-07-11, `scripts/hold-stats.mjs` reports on this machine's data: 55 held calls, of which 11 carry a label and all 11 are approved-on-retry (precision 0/11); 161 allowed calls, 114 accepted, 47 unlabeled, 0 regretted. The built-in floor became evidence-based in 0.33.0 specifically because 11 of 11 labeled holds had been released on retry — the floor was holding calls that the judge would have let through. Numbers come from `scripts/hold-stats.mjs` and are reproducible with `PI_WARDEN_DB` pointing at the database.
+As of 2026-09-21, `scripts/hold-stats.mjs` reports on this machine: 57 held calls, 13 labeled (precision 2/13, 15%), 11 approved on retry; 365 allowed calls (317 accepted, 0 regretted). On 315 recorded sessions at 0.33.3, the hold fired on 48 of 18,075 guarded calls and caught none of the 27 the user regretted ([calibration](eval/reports/2026-09-21-calibration-0.33.3/)). Holds target rare hard-to-undo actions — about 3 per thousand calls — not the common case of work that turns out wrong; that is the job of the rules guard, the done-check, and the regret label. Numbers are a snapshot; rerun the script to refresh.
 
 [See the evals ->](eval/reports/)
 

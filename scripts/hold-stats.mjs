@@ -108,6 +108,7 @@ function formatRow(name, s) {
     precision: precStr,
     approved_retry: s.approved,
     allowed: s.allowed,
+    accepted: s.accepted,
     regretted: s.regretted,
     date_range: `${formatDate(s.oldest)} – ${formatDate(s.newest)}`,
   };
@@ -134,11 +135,11 @@ if (JSON_MODE) {
   for (const [root, s] of sorted) {
     const p = formatRow(redactPath(root), s);
     console.log(`  ${p.project}`);
-    console.log(`    held: ${p.held}  labeled: ${p.labeled}  precision: ${p.precision}  approved on retry: ${p.approved_retry}  allowed: ${p.allowed} (${p.regretted} regretted)  range: ${p.date_range}`);
+    console.log(`    held: ${p.held}  labeled: ${p.labeled}  precision: ${p.precision}  approved on retry: ${p.approved_retry}  allowed: ${p.allowed} (${p.accepted} accepted, ${p.regretted} regretted)  range: ${p.date_range}`);
   }
 
   console.log("");
   const tp = formatRow("(total)", total);
   console.log(`  TOTAL`);
-  console.log(`    held: ${tp.held}  labeled: ${tp.labeled}  precision: ${tp.precision}  approved on retry: ${tp.approved_retry}  allowed: ${tp.allowed} (${tp.regretted} regretted)  range: ${tp.date_range}`);
+  console.log(`    held: ${tp.held}  labeled: ${tp.labeled}  precision: ${tp.precision}  approved on retry: ${tp.approved_retry}  allowed: ${tp.allowed} (${tp.accepted} accepted, ${tp.regretted} regretted)  range: ${tp.date_range}`);
 }
