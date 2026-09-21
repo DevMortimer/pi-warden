@@ -137,6 +137,10 @@ export interface StuckGuardConfig {
   churnThreshold: number;
   /** Also steer the agent with a short message, not only the user. */
   nudge: boolean;
+  /** Maximum characters of the unified line diff in a stuck-loop diff note. */
+  diffLimit: number;
+  /** Characters of the current output tail shown after the diff in a stuck-loop diff note. */
+  tailLimit: number;
 }
 
 export interface DoneGuardConfig {
@@ -336,7 +340,7 @@ export function defaultConfig(): WardenConfig {
       escalationThreshold: 0.85,
       floor: "evidence",
     },
-    stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true },
+    stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true, diffLimit: 3000, tailLimit: 1000 },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7 },
@@ -580,6 +584,8 @@ function applyStuck(base: StuckGuardConfig, raw: unknown): StuckGuardConfig {
     sameStrategy: probability(raw.sameStrategy, base.sameStrategy),
     churnThreshold: Math.min(window, positiveInteger(raw.churnThreshold, base.churnThreshold)),
     nudge: boolean(raw.nudge, base.nudge),
+    diffLimit: positiveInteger(raw.diffLimit, base.diffLimit),
+    tailLimit: positiveInteger(raw.tailLimit, base.tailLimit),
   };
 }
 

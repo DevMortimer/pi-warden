@@ -37,7 +37,7 @@ import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from ".
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
-import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
+import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
 import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
@@ -256,6 +256,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
   let regretCandidates: PreviousAction[] = [];
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
+  /** Full output text and saved path keyed by attempt call key, for stuck-loop diffs. */
+  let fullOutputs = new Map<string, { text: string; path?: string }>();
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
   let warnedFallback = false;
@@ -553,6 +555,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
     const config = configFor(ctx);
     attempts = new AttemptWindow(config.stuck.window);
+    fullOutputs = new Map();
     doneNudged = false;
     steersThisRun = 0;
     finals.reset();
@@ -1037,10 +1040,47 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         `output sample: ${redact(text).slice(0, 300)}`, delivered ? `agent told: ${notice}` : `steer recorded, not delivered (a repeat or the per-run budget): ${notice}`,
       ]);
     }
+    // Stuck-loop diff: when the verdict is stuck on a failed result and a previous failed output
+    // for the same call is available, replace the tool result with a short diff note. Compute
+    // bytesSaved against the current content (after duplicate detection and compression), so the
+    // diff never grows the result.
+    const verdict = await stuckCheck;
+    if (verdict && verdict.stuck && failed && !verdict.successRepeat && !verdict.churn && text.length > 0) {
+      const currentKey = attempts.attempts.at(-1)?.key;
+      const prevEntry = currentKey ? fullOutputs.get(currentKey) : undefined;
+      if (currentKey && prevEntry && prevEntry.text !== text) {
+        // Differing outputs: save the current output and diff against the previous one.
+        try {
+          const saved = await saveOutput(text);
+          const diffNote = stuckDiff(prevEntry.text, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: saved });
+          const currentLen = Buffer.byteLength(content.map(part => part.type === "text" ? part.text : "").join("\n"));
+          if (Buffer.byteLength(diffNote) < currentLen) {
+            content = [{ type: "text", text: diffNote }, ...content.filter(part => part.type !== "text")];
+          }
+          fullOutputs.set(currentKey, { text, path: saved });
+        } catch {
+          noteError(ctx, "Could not store full output for stuck diff; keeping it unchanged.", undefined);
+          fullOutputs.set(currentKey, { text });
+        }
+      } else if (currentKey && prevEntry && prevEntry.text === text && prevEntry.path) {
+        // Byte-identical outputs: one-line note reusing the existing saved path.
+        const diffNote = stuckDiff(text, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: prevEntry.path });
+        const currentLen = Buffer.byteLength(content.map(part => part.type === "text" ? part.text : "").join("\n"));
+        if (Buffer.byteLength(diffNote) < currentLen) {
+          content = [{ type: "text", text: diffNote }, ...content.filter(part => part.type !== "text")];
+        }
+      } else if (currentKey) {
+        // First failed output for this call, or no previous entry yet: store for future diffs.
+        fullOutputs.set(currentKey, { text });
+      }
+    } else if (failed && text.length > 0) {
+      // Not stuck (or no verdict yet): store the output so a future repeat can diff against it.
+      const currentKey = attempts.attempts.at(-1)?.key;
+      if (currentKey) fullOutputs.set(currentKey, { text });
+    }
     const patch = content === event.content ? undefined : { content };
     // Checks use the original result, not the excerpts or security banner.
     if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
-    const verdict = await stuckCheck;
     if (!verdict) return patch;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     if (verdict.source === "repeat" && !verdict.stuck) return patch;
@@ -1048,7 +1088,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
     if (!verdict.stuck) return patch;
     stats.stuck++;
-    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
+    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
     if (nudge) steer(config, "stuck", nudge);
     return patch;
   });
