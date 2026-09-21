@@ -1336,7 +1336,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             auditRunning = false;
           }
           const postExists = existsSync(reportPath);
-          const postNew = !preExisting || (postExists && statSync(reportPath).mtimeMs > preMtime);
+          const postNew = postExists && (!preExisting || statSync(reportPath).mtimeMs > preMtime);
           report(postNew ? `Audit report written to ${reportPath}` : postExists ? "Audit finished but the report file was not updated — the agent may have reported findings in chat instead." : "Agent did not write an audit report. The model may have reported findings in chat instead.");
           return;
         }

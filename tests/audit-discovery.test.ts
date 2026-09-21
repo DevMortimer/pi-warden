@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, stat } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -182,4 +183,19 @@ test("buildAuditPrompt: returns a string containing project names and instructio
   assert.ok(prompt.includes("file:line"), "should ask for file:line citations");
   assert.ok(prompt.includes(".pi-warden/audit-report.html"), "should name the report path");
   assert.ok(prompt.includes("unmeasured"), "should mention unmeasured findings");
+});
+
+// ─── audit report mtime check ───────────────────────────────────────────────
+
+test("audit report success check: no report before and no report after is not success", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-audit-mtime-"));
+  const reportPath = join(dir, ".pi-warden", "audit-report.html");
+  // Simulate the extension's pre-run check
+  const preExisting = existsSync(reportPath);
+  const preMtime = preExisting ? statSync(reportPath).mtimeMs : 0;
+  // Simulate: agent wrote nothing
+  const postExists = existsSync(reportPath);
+  const postNew = postExists && (!preExisting || statSync(reportPath).mtimeMs > preMtime);
+  assert.equal(postNew, false, "should not report success when no report exists before or after");
+  await rm(dir, { recursive: true, force: true });
 });
