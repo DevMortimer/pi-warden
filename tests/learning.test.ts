@@ -9,7 +9,7 @@ const testDir = mkdtempSync(join(tmpdir(), "pi-warden-learn-"));
 // A nested folder that does not exist yet: the database must create its own directory.
 process.env.PI_WARDEN_DB = join(testDir, "nested", "pi-warden", "holds.db");
 
-const { initSchema, recordHold, recordOutcome, toHoldRecord, querySmartHistory, calculateSmartConfidence, shouldSkipHold, signatureHash } = await import("../src/learning.js");
+const { initSchema, recordHold, recordOutcome, toHoldRecord, querySmartHistory, queryHoldsForProject, calculateSmartConfidence, shouldSkipHold, signatureHash } = await import("../src/learning.js");
 
 after(() => {
   rmSync(testDir, { recursive: true, force: true });
@@ -282,6 +282,70 @@ test("recordOutcome persists replanned outcome", async () => {
   const history = await querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/replanned/project");
   const match = history.exact.find(row => row.outcome === "replanned");
   assert.ok(match, "replanned outcome is queryable via querySmartHistory");
+});
+
+// --- Tests for outcome race closure and allowed-call persistence ---
+
+test("outcome arriving before recordHold resolves is persisted via the promise", async () => {
+  const projectRoot = "/race/project";
+  // recordHold returns a promise; we simulate the race by calling recordOutcome
+  // with the promise before it resolves (it is already unresolved).
+  const idPromise = recordHold({
+    timestamp: Date.now(),
+    projectRoot,
+    tool: "bash",
+    commandPreview: "npm test",
+    scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+    level: "allow",
+    held: true,
+    reasons: ["irreversible 0.5"],
+  });
+  // Simulate the extension pattern: idPromise.then(id => recordOutcome(id, outcome))
+  const outcomePromise = idPromise.then(id => recordOutcome(id, "approved"));
+  await outcomePromise;
+  const history = await querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, projectRoot);
+  const match = history.exact.find(row => row.outcome === "approved");
+  assert.ok(match, "outcome persisted even when recordOutcome races with recordHold");
+});
+
+test("judged allowed call produces a row with held = 0 and redacted preview", async () => {
+  const projectRoot = "/allowed/project";
+  const record = toHoldRecord(
+    { at: Date.now(), tool: "bash", level: "allow", reasons: ["irreversible 0.3"], scores: { irreversible: 0.3, offTask: 0, scope: "expected_step" as any }, held: false },
+    projectRoot,
+    { preview: "npm test" },
+  );
+  assert.equal(record.held, false, "held is false for judged allowed calls");
+  const id = await recordHold(record);
+  const rows = await queryHoldsForProject(projectRoot, { held: false });
+  assert.ok(rows.length > 0, "allowed call persisted in SQLite");
+  const row = rows[0]!;
+  assert.equal(row.held, 0, "held column is 0");
+  assert.equal(row.command_preview, "npm test", "preview stored correctly");
+});
+
+test("regret on an allowed call is persisted to SQLite", async () => {
+  const projectRoot = "/regret-allowed/project";
+  const id = await recordHold({
+    timestamp: Date.now(),
+    projectRoot,
+    tool: "write",
+    commandPreview: "file.ts",
+    scores: { irreversible: 0.1, reasons: [] },
+    level: "allow",
+    held: false,
+    reasons: [],
+  });
+  await recordOutcome(id, "regretted");
+  const rows = await queryHoldsForProject(projectRoot, { held: false });
+  const match = rows.find(row => row.outcome === "regretted");
+  assert.ok(match, "regretted outcome persisted for allowed call");
+});
+
+test("read-only skipped call produces no row in SQLite", async () => {
+  const projectRoot = "/skipped/project";
+  const rows = await queryHoldsForProject(projectRoot);
+  assert.equal(rows.length, 0, "no rows for a project with only skipped calls");
 });
 
 

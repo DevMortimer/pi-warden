@@ -169,7 +169,7 @@ function scoreRows(rows: Record<string, unknown>[], weight: number): { score: nu
 
 /** Build HoldRecord from held call data. Centralizes the field mapping. */
 export function toHoldRecord(
-  item: { at: number; tool: string; level: string; reasons: string[]; scores?: CallScores | undefined },
+  item: { at: number; tool: string; level: string; reasons: string[]; scores?: CallScores | undefined; held?: boolean | undefined },
   projectRoot: string,
   ctx?: HoldContext,
 ): HoldRecord {
@@ -181,7 +181,7 @@ export function toHoldRecord(
     commandPreview: redact(ctx?.preview ?? item.tool).slice(0, 200),
     scores: { irreversible: raw?.irreversible ?? 0, reasons: item.reasons },
     level: item.level as HoldLevel,
-    held: true,
+    held: item.held ?? true,
     reasons: item.reasons,
   };
   if (ctx?.task) result.task = ctx.task;
@@ -221,6 +221,15 @@ export async function recordOutcome(id: number, outcome: string): Promise<void> 
 }
 
 // --- Querying ---
+
+/** Query holds by project and held value. Used by tests and future analytics. */
+export async function queryHoldsForProject(projectRoot: string, options?: { held?: boolean }): Promise<Record<string, unknown>[]> {
+  const d = await getDb();
+  if (options?.held !== undefined) {
+    return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? AND held = ? ORDER BY timestamp").all(projectRoot, options.held ? 1 : 0) as Record<string, unknown>[];
+  }
+  return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? ORDER BY timestamp").all(projectRoot) as Record<string, unknown>[];
+}
 
 export async function querySmartHistory(tool: string, scores: HoldScores, projectRoot: string): Promise<SmartHistory> {
   const d = await getDb();

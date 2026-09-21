@@ -47,7 +47,7 @@ import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails,
 import type { GuardName, TraceEntry } from "./trace.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request, including calls where the rules guard is disabled; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, reason) for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request, including calls where the rules guard is disabled; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -235,7 +235,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const rulesGuard = new RulesGuard();
   // Hold feedback: what the user did after each judged call, the trace entry each label lands on, and the per-session log.
   const holds = new HoldLedger();
-  const learningIds = new Map<number, number>(); // holds.id -> learning.id
+  const learningIds = new Map<number, Promise<number>>(); // holds.id -> promise of learning.id
   // Prune learningIds when it grows large to prevent memory leaks
   function pruneLearningIds(): void {
     if (learningIds.size > 1000) {
@@ -405,9 +405,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const entry = traceOf.get(item);
       if (entry) trace.amend(entry, outcomeNote(item));
       // Persist every non-pending outcome to SQLite so replanned, regretted, and accepted labels are queryable.
-      const learningId = learningIds.get(item.id);
-      if (learningId && item.outcome !== "pending") {
-        recordOutcome(learningId, item.outcome).catch(err => console.warn("pi-warden: recordOutcome failed:", err));
+      const idPromise = learningIds.get(item.id);
+      if (idPromise && item.outcome !== "pending") {
+        idPromise.then(id => recordOutcome(id, item.outcome)).catch(err => console.warn("pi-warden: recordOutcome failed:", err));
       }
     }
     if (config.action.feedbackLog && holds.records().length) void holdLog?.save(holds.records());
@@ -716,8 +716,6 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const released = holds.approved(event.toolName);
       if (released) {
         noteOutcomes(config, [released]);
-        const learningId = learningIds.get(released.id);
-        if (learningId) recordOutcome(learningId, "approved").catch(err => console.warn("pi-warden: recordOutcome failed:", err));
       }
     }
     const told = verdict.level === "confirm" && mode === "steer" ? steerReason(deliveryVerdict, { canApprove: judge !== undefined }) : undefined;
@@ -737,18 +735,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const item = holds.record(verdict, recordOpts);
       traceOf.set(item, entry);
       noteOutcomes(config, outcome ? [item] : []);
-      // Record to SQLite for learning
-      if (held) {
-        recordHold(toHoldRecord(
-          { at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores },
-          ctx.cwd,
-          { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: steerReason(deliveryVerdict, { canApprove: judge !== undefined }), preview: redact(verdict.summary.command ?? verdict.summary.path ?? "") },
-        )).then(id => {
-          learningIds.set(item.id, id);
-          // Outcome is now persisted centrally in noteOutcomes; skip the per-call path here.
-        }).catch(err => console.warn("pi-warden: recordHold failed:", err));
-        pruneLearningIds();
-      }
+      // Record to SQLite for learning (held and judged-allowed calls)
+      const preview = redact(verdict.summary.command ?? verdict.summary.path ?? "");
+      const holdPromise = recordHold(toHoldRecord(
+        { at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores, held },
+        ctx.cwd,
+        { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: held ? steerReason(deliveryVerdict, { canApprove: judge !== undefined }) : undefined, preview },
+      )).catch(err => { console.warn("pi-warden: recordHold failed:", err); return -1; });
+      learningIds.set(item.id, holdPromise);
+      pruneLearningIds();
     };
     // The warn notice below names the mismatch to the user; the agent gets the steer with the other notes.
     if (verdict.intentMismatch) {
