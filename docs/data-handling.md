@@ -18,7 +18,8 @@ With consent, requests go to `https://api.typesafe.ai` (default) or `https://ope
 
 ## What stays on this machine
 
-- The hold feedback log under `~/.pi/agent/pi-warden/holds/`, owner-only: one JSON line per judged call with tool, pattern ids, scores, level, mode, outcome, and the length of the agent's stated plan; never the command, path, prompt, or plan text. `"action": { "feedbackLog": false }` turns the file off.
+- The hold feedback log under `~/.pi/agent/pi-warden/holds/`, owner-only: one JSON line per judged call with tool, pattern ids, scores, level, mode, outcome, and the length of the agent's stated plan; never the command, prompt, or plan text. A redacted tool+path excerpt is included for auditing off-task and intent-mismatch. `"action": { "feedbackLog": false }` turns the file off.
+- An owner-only SQLite database under `~/.pi/agent/pi-warden/holds.db` stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls (`held = 1` and `held = 0`), for learning and retention (configurable, default 365 days). Calls the guard skipped as read-only are not stored.
 - Full copies of compressed tool output, owner-only, in the OS temporary directory. They can contain secrets and stay there until removed.
 - Your API key in `~/.pi/agent/pi-typesafe/auth.json` (owner-only, shared with pi-typesafe). `TYPESAFE_API_KEY` in the environment takes precedence and is never written to disk.
 - Consent and settings in `~/.pi/agent/pi-warden/config.json`.

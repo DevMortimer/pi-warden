@@ -5,6 +5,7 @@ import { createHash } from "crypto";
 import { mkdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { redact } from "./redact.js";
 import type { CallScores } from "./holds.js";
 
 let db: import("node:sqlite").DatabaseSync | undefined;
@@ -55,6 +56,7 @@ async function getDb(): Promise<import("node:sqlite").DatabaseSync> {
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
     db = new DatabaseSync(dbPath);
     db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA busy_timeout = 10000");
     return db;
   } catch (err) {
     sqliteAvailable = false;
@@ -72,10 +74,13 @@ export async function initSchema(retentionDays = 365): Promise<void> {
     // Prune old records if retention is enabled.
     if (retentionDays > 0) {
       const cutoff = Date.now() - retentionDays * 86_400_000;
-      d.prepare("DELETE FROM holds WHERE timestamp < ?").run(cutoff);
-      d.exec("VACUUM");
+      const { changes } = d.prepare("DELETE FROM holds WHERE timestamp < ?").run(cutoff);
+      if (changes > 0) d.exec("VACUUM");
     }
-  } catch (err) { console.warn("pi-warden: hold retention prune failed:", err); }
+  } catch (err: unknown) {
+    const code = err && typeof err === "object" && "errcode" in err ? ` (errcode ${String((err as { errcode: number }).errcode)})` : "";
+    console.warn(`pi-warden: hold retention prune failed:${code}`, err);
+  }
 }
 
 // --- Types ---
@@ -97,6 +102,8 @@ export interface HoldContext {
   contextSummary?: string | undefined;
   precedingActions?: string | undefined;
   agentReason?: string | undefined;
+  /** Redacted command or path, capped at 200 chars. Stored as command_preview instead of the bare tool name. */
+  preview?: string | undefined;
 }
 
 export interface HoldRecord {
@@ -166,7 +173,7 @@ function scoreRows(rows: Record<string, unknown>[], weight: number): { score: nu
 
 /** Build HoldRecord from held call data. Centralizes the field mapping. */
 export function toHoldRecord(
-  item: { at: number; tool: string; level: string; reasons: string[]; scores?: CallScores | undefined },
+  item: { at: number; tool: string; level: string; reasons: string[]; scores?: CallScores | undefined; held?: boolean | undefined },
   projectRoot: string,
   ctx?: HoldContext,
 ): HoldRecord {
@@ -175,10 +182,10 @@ export function toHoldRecord(
     timestamp: item.at,
     projectRoot,
     tool: item.tool,
-    commandPreview: item.tool,
+    commandPreview: redact(ctx?.preview ?? item.tool).slice(0, 200),
     scores: { irreversible: raw?.irreversible ?? 0, reasons: item.reasons },
     level: item.level as HoldLevel,
-    held: true,
+    held: item.held ?? true,
     reasons: item.reasons,
   };
   if (ctx?.task) result.task = ctx.task;
@@ -218,6 +225,15 @@ export async function recordOutcome(id: number, outcome: string): Promise<void> 
 }
 
 // --- Querying ---
+
+/** Query holds by project and held value. Used by tests and future analytics. */
+export async function queryHoldsForProject(projectRoot: string, options?: { held?: boolean }): Promise<Record<string, unknown>[]> {
+  const d = await getDb();
+  if (options?.held !== undefined) {
+    return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? AND held = ? ORDER BY timestamp").all(projectRoot, options.held ? 1 : 0) as Record<string, unknown>[];
+  }
+  return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? ORDER BY timestamp").all(projectRoot) as Record<string, unknown>[];
+}
 
 export async function querySmartHistory(tool: string, scores: HoldScores, projectRoot: string): Promise<SmartHistory> {
   const d = await getDb();
