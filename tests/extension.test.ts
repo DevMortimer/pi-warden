@@ -178,13 +178,26 @@ after(async () => {
   if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 
-test("should-proceed steers reach interactive and headless agents without holding or duplicate delivery", async () => {
+test("should-proceed defaults to trace-only for interactive and headless agents", async () => {
   for (const hasUI of [true, false]) {
     await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, ...STACK_BAR }));
     await sessionStart(context({ hasUI }));
     sentMessages.length = 0;
+    nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.9, should_proceed: 0.3 };
+    assert.equal(await toolCall("write", { path: "tests/example.ts", content: "export const n = 1;" }, context({ hasUI })), undefined);
+    assert.equal(sentMessages.length, 0);
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /should-proceed 0\.30 \(trace-only until calibrated\)/);
+  }
+});
+
+test("should-proceed opt-in steers reach interactive and headless agents without holding or duplicate delivery", async () => {
+  for (const hasUI of [true, false]) {
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, shouldProceed: { steer: true } }, ...STACK_BAR }));
+    await sessionStart(context({ hasUI }));
+    sentMessages.length = 0;
     notices.length = 0;
-    nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.01, should_proceed: 0.05 };
+    nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.01, should_proceed: 0.3 };
     assert.equal(await toolCall("bash", { command: "npm test" }, context({ hasUI })), undefined);
     assert.equal(sentMessages.length, 1, JSON.stringify(sentMessages.map(m => m.message.content.slice(0, 100))));
     assert.match(sentMessages[0]!.message.content, /Pause.*approval before continuing/i);

@@ -169,6 +169,8 @@ export interface Verdict {
   offTaskSteer?: boolean;
   /** True when should_proceed is below the hold threshold; the agent is told to pause and ask. */
   shouldProceedSteer?: boolean;
+  shouldProceedTraceOnly?: boolean;
+  shouldProceedTraceOnlyReasonIndex?: number;
   /** Off-task steer is recorded in the trace but not delivered to the agent; the score has no reliable signal yet (AUC 0.51). */
   offTaskTraceOnly?: boolean;
   /** Index of the trace-only off-task diagnostic; later reasons append, and any prepend must adjust this index. */
@@ -1149,14 +1151,16 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       ? `intent mismatch ${percent(judgment.intentMismatch!)} on a visible action (${percent(judgment.visible!)}; a commit, push, merge, publish, or launch the plan did not describe)`
       : `intent mismatch ${percent(judgment.intentMismatch!)} (the call differs from the agent's stated plan)`);
   }
-  // Unified gate: should_proceed steers but never holds. Low score = the agent should pause and ask.
+  // Poor calibration makes this diagnostic-only unless the user opts into steers.
   let shouldProceedSteer = false;
+  let shouldProceedTraceOnlyReasonIndex: number | undefined;
   if (typeof answers.should_proceed?.noul === "number") {
     judgment.shouldProceed = answers.should_proceed.noul;
     if (judgment.shouldProceed <= config.shouldProceed.hold) {
       shouldProceedSteer = true;
       level = higher(level, "warn");
-      reasons.push(`should-proceed ${percent(judgment.shouldProceed)} (may need user input before continuing)`);
+      if (!config.shouldProceed.steer) shouldProceedTraceOnlyReasonIndex = reasons.length;
+      reasons.push(`should-proceed ${percent(judgment.shouldProceed)} (${config.shouldProceed.steer ? "may need user input before continuing" : "trace-only until calibrated"})`);
     }
   }
   const verdict: Verdict = withPlan({ level, source: "typesafe", summary, patterns, reasons, judgment });
@@ -1164,6 +1168,10 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   if (offTaskSteer) verdict.offTaskSteer = true;
   if (offTaskTraceOnly) verdict.offTaskTraceOnly = true;
   if (shouldProceedSteer) verdict.shouldProceedSteer = true;
+  if (shouldProceedTraceOnlyReasonIndex !== undefined) {
+    verdict.shouldProceedTraceOnly = true;
+    verdict.shouldProceedTraceOnlyReasonIndex = shouldProceedTraceOnlyReasonIndex;
+  }
   // Violation pipeline: parse per-violation Jev judgments, apply escalation, aggregate.
   // Answers are keyed by violation index (not ID) so two violations with the same ID
   // but different scopes each get their own Jev question and result.
@@ -1222,6 +1230,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     verdict.approvedByUser = true;
     verdict.reasons = [`user approved in the latest message (${percent(judgment.approved)})`, ...reasons];
     if (verdict.offTaskTraceOnlyReasonIndex !== undefined) verdict.offTaskTraceOnlyReasonIndex++;
+    if (verdict.shouldProceedTraceOnlyReasonIndex !== undefined) verdict.shouldProceedTraceOnlyReasonIndex++;
   }
   return verdict;
 }

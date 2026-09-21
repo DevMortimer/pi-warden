@@ -44,6 +44,22 @@ const options = (judge?: Judge): InspectOptions => ({ config: defaultConfig().ac
 const under = (task: string, siblings?: ToolCallRef[]): Conversation => ({ task, siblings });
 const askedApproval = (judge: { requests: Request[] }) => "approved" in judge.requests.at(-1)!.questions;
 
+test("should-proceed records low scores as trace-only by default and supports steer opt-in", async () => {
+  const judge = stubJudge();
+  judge.next = { irreversible: 0.1, shouldProceed: 0.3 };
+  for (const steer of [false, true]) {
+    const opts = options(judge);
+    opts.config.shouldProceed.steer = steer;
+    const verdict = await new ActionGuard().inspect(bash("quiet", "npm test"), under("run tests"), opts);
+    assert.equal(verdict.level, "warn");
+    assert.equal(verdict.judgment?.shouldProceed, 0.3);
+    assert.equal(verdict.shouldProceedSteer, true);
+    assert.equal(verdict.shouldProceedTraceOnly, steer ? undefined : true);
+    assert.ok(verdict.reasons.includes(`should-proceed 0.30 (${steer ? "may need user input before continuing" : "trace-only until calibrated"})`));
+    if (!steer) assert.equal(verdict.reasons[verdict.shouldProceedTraceOnlyReasonIndex!], "should-proceed 0.30 (trace-only until calibrated)");
+  }
+});
+
 test("a hold is released by a reply Jev reads as approval; the same prompt, a question, or a low score keep it held", async () => {
   const guard = new ActionGuard();
   const judge = stubJudge();
