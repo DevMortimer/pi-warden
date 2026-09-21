@@ -1,9 +1,11 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ask, noul } from "pi-typesafe";
 import { redact } from "./redact.js";
 import { detectProjectType } from "./init.js";
 import type { Judge } from "./guard.js";
+import { discoverSourceFiles, findProjects } from "./discover.js";
+export { discoverSourceFiles, findProjects } from "./discover.js";
 
 /** Minimum confidence score for a test to count as passing. */
 const PASS_THRESHOLD = 0.5;
@@ -57,44 +59,13 @@ interface ProjectInfo {
   hasRules: boolean;
 }
 
-// ─── Workspace scanning ──────────────────────────────────────────────────────
 
-function findProjects(cwd: string): string[] {
-  const projects: string[] = [];
-  const manifests = ["package.json", "Cargo.toml", "pyproject.toml", "go.mod"];
-
-  for (const m of manifests) {
-    if (existsSync(join(cwd, m))) { projects.push(cwd); break; }
-  }
-
-  let entries: string[];
-  try { entries = readdirSync(cwd); } catch (err) { console.warn(`audit: could not read workspace ${cwd}: ${err instanceof Error ? err.message : err}`); return projects; }
-
-  for (const entry of entries) {
-    if (entry === "node_modules" || entry.startsWith(".")) continue;
-    const sub = join(cwd, entry);
-    try { if (!existsSync(join(sub, "package.json")) && !existsSync(join(sub, "Cargo.toml")) && !existsSync(join(sub, "pyproject.toml")) && !existsSync(join(sub, "go.mod"))) continue; } catch (err) { console.warn(`audit: could not check ${sub}: ${err instanceof Error ? err.message : err}`); continue; }
-    if (!projects.includes(sub)) projects.push(sub);
-  }
-
-  return projects;
-}
 
 function readFileSafe(path: string, maxChars = 4000): string | null {
   try { const raw = readFileSync(path, "utf8"); return raw.length > maxChars ? raw.slice(0, maxChars) + "\n... (truncated)" : raw; } catch (err) { console.warn(`audit: could not read ${path}: ${err instanceof Error ? err.message : err}`); return null; }
 }
 
-function listSourceFiles(dir: string, max = 50): string[] {
-  const files: string[] = [];
-  try {
-    for (const entry of readdirSync(dir, { recursive: true })) {
-      if (typeof entry !== "string") continue;
-      if (/\.(ts|tsx|js|jsx|rs|py|go|vue|svelte)$/.test(entry)) files.push(entry);
-      if (files.length >= max) break;
-    }
-  } catch (err) { console.warn(`audit: could not list ${dir}: ${err instanceof Error ? err.message : err}`); }
-  return files;
-}
+
 
 function readProjectInfo(projectPath: string, workspaceRoot: string): ProjectInfo {
   const name = projectPath === workspaceRoot ? workspaceRoot.split("/").pop() ?? "workspace" : projectPath.split("/").pop() ?? "unknown";
@@ -109,12 +80,7 @@ function readProjectInfo(projectPath: string, workspaceRoot: string): ProjectInf
     if (existsSync(p)) { manifest = readFileSafe(p, 3000); break; }
   }
 
-  const srcFiles = [
-    ...listSourceFiles(join(projectPath, "src")),
-    ...listSourceFiles(join(projectPath, "lib")),
-    ...listSourceFiles(join(projectPath, "app")),
-    ...listSourceFiles(join(projectPath, "internal")),
-  ];
+  const srcFiles = discoverSourceFiles(projectPath);
 
   return {
     name, path: projectPath, type, files: srcFiles, readme, manifest,
