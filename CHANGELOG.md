@@ -6,6 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Changed
+- Verified against Pi 0.87.0; dev dependency updated.
+
 ## 0.37.1
 
 ### Docs
