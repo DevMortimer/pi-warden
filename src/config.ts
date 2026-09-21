@@ -67,6 +67,9 @@ export interface ActionGuardConfig {
   armingRules: ArmingRule[];
   /** Jev confidence at or above this escalates a violation's severity in the blast-radius and rules-guard escalation paths. */
   escalationThreshold: number;
+  /** When a judge answers: "evidence" (default) lets the judge decide the level from irreversible score alone, using built-in pattern hits as context; "level" restores the legacy behaviour where the floor sets the level before the judge.
+   *  User-declared rules keep their declared action in both modes. */
+  floor: "evidence" | "level";
 }
 
 /** A user-defined path rule: which paths, which side of the access is held, which tools, what happens on a hit. */
@@ -331,6 +334,7 @@ export function defaultConfig(): WardenConfig {
       pathRules: [],
       armingRules: [],
       escalationThreshold: 0.85,
+      floor: "evidence",
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
@@ -558,6 +562,7 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     // Arming rules are user-declared security policy: same gate.
     armingRules: source === "user" ? parseArmingRules(raw.armingRules) : base.armingRules,
     escalationThreshold: probability(raw.escalationThreshold, base.escalationThreshold),
+    floor: raw.floor === "level" ? "level" : "evidence",
   };
 }
 
