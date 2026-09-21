@@ -154,9 +154,11 @@ It is not cheap: the two full runs above made about 32,000 requests and 80M inpu
 
 First measurement of the conscience guard's `recommend` skill/tool selection on recorded sessions. n = 609 turns across 4 projects (111 sessions), 1302 requests, about 6.0M input tokens.
 
-Headline: tool recommendation 84% precision (260/308), skill recommendation 0% precision (0/86). Disposition accuracy 63%. P(advance) AUC 0.62. No threshold meets the 95% precision gate; closest is `usefulness ≥ 0.95` at 91% precision, 12% recall. Repeat instability low: 100% disposition agreement, 93% candidate agreement, 100% usefulness agreement (30 prompts × 3 runs).
+Headline: tool recommendation 84% precision (260/308 of tool-recommended turns used any tool first), skill recommendation unmeasured pending human labels (see below). Disposition accuracy 63%. P(advance) AUC 0.62. No threshold meets the 95% precision gate; closest is `usefulness ≥ 0.95` at 91% precision, 12% recall. Repeat instability low: 100% disposition agreement, 93% candidate agreement, 100% usefulness agreement (30 prompts × 3 runs).
 
-Policy record: `{ questionHash: "1ee518cb4a54b980", model: "jev-latest", recommendThreshold: 0.95, loadThreshold: 1.0 }`. The policy activates only when hash and model match; `loadThreshold` stays at 1.0 (trace-only) until the authored 240-scenario held-out set is measured per spec §7. Full tables: `eval/reports/2026-09-22-conscience-recommend/`.
+**Skill precision is unmeasured, not zero.** The label is "the agent used a skill first on its own, with no recommendation delivered". A skill the agent would have used anyway is not what a recommendation exists for; a skill it did not reach for is the target case, and this label scores every such case as a false positive. The 0% number therefore means the label cannot distinguish helpful from unhelpful skill selections; human labelling is required before skill precision can be stated.
+
+Candidate policy (not active): `{ questionHash: "1ee518cb4a54b980", model: "jev-1.13.0", recommendThreshold: 0.95, loadThreshold: 1.0 }`. No threshold met the gate; the guard stays disabled by default and trace-only. This is the candidate the next measurement will test, not an active policy. `loadThreshold` stays at 1.0 (trace-only) until the authored 240-scenario held-out set is measured per spec §7. Full tables: `eval/reports/2026-09-22-conscience-recommend/`.
 
 ### Path rules
 

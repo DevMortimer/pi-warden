@@ -85,6 +85,20 @@ advance vs no\_gap against any-tool label: 383/609 (63%).
 | usefulness vs any-tool | 0.60 | 609 |
 | usefulness vs skill-used-first | 0.28 | 609 |
 
+## Skill and tool precision definitions
+
+**Tool precision** answers: when the conscience recommends a tool, did the agent use *any*
+tool first after the prompt? 260 of 308 tool-recommended turns had a tool call first
+(84%). A stricter measure — whether the *specific* recommended tool was used first — is
+not computed here; the broader definition is the one the headline uses.
+
+**Skill precision is unmeasured, not zero.** The label is "the agent used a skill first on
+its own, with no recommendation delivered". A skill the agent would have used anyway is
+not what a recommendation exists for; a skill it did not reach for is the target case, and
+this label scores every such case as a false positive. The 0% number therefore means the
+label cannot distinguish helpful from unhelpful skill selections; human labelling of
+whether each selection was useful is required before skill precision can be stated.
+
 ## Per-project
 
 | project | turns | selected | tools | precision |
@@ -98,7 +112,7 @@ advance vs no\_gap against any-tool label: 383/609 (63%).
 
 | kind | selected | matched | precision |
 | --- | --- | --- | --- |
-| skill | 86 | 0 | 0% |
+| skill | 86 | 0 | unmeasured (see above) |
 | tool | 308 | 260 | 84% |
 
 ## Repeat instability (30 prompts × 3 runs)
@@ -109,24 +123,27 @@ advance vs no\_gap against any-tool label: 383/609 (63%).
 | selected candidate | 28/30 (93%) |
 | usefulness (1dp) | 30/30 (100%) |
 
-## Policy record
+## Candidate policy (not active)
+
+No threshold meets the 95% precision gate on this corpus. The guard stays disabled by
+default and trace-only. The record below is the candidate the next measurement will test;
+it is not an active policy.
 
 ```json
 {
   "questionHash": "1ee518cb4a54b980",
-  "model": "jev-latest",
+  "model": "jev-1.13.0",
   "recommendThreshold": 0.95,
   "loadThreshold": 1.0
 }
 ```
 
-No threshold met the 95% precision gate. `recommendThreshold` is set to 0.95 (the
-closest) with the understanding that measured precision is 91% on this corpus. The
-policy activates only when the question hash and model match; prompts that produce a
-different hash remain trace-only. `loadThreshold` stays at 1.0 (trace-only) until the
-authored 240-scenario held-out set is measured per spec §7.
+`recommendThreshold` is the closest candidate: measured precision is 91% on this corpus,
+recalls 12%. The policy activates only when the question hash and model match; prompts
+that produce a different hash remain trace-only. `loadThreshold` stays at 1.0 (trace-only)
+until the authored 240-scenario held-out set is measured per spec §7.
 
-The policy file is at `.local/calibration/conscience-policy.json`.
+The draft file is at `.local/calibration/conscience-policy.json` (owner-only, not committed).
 
 ## Limitations
 
