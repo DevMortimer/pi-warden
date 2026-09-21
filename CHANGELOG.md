@@ -9,6 +9,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Added
 - Compaction evidence appendix (`context.compactAppendix`, default true): after compaction succeeds, the extension sends a deterministic summary of session evidence — saved outputs, last checks, held actions, stuck state, and the active task — as one custom message so the agent can prefer saved paths over re-running commands. All strings are redacted. Does not spend a steer unit.
 
+## 0.36.0
+
+### Changed
+- The resolved rules file content no longer rides the action request when the rules guard is off. `rules.enabled: false` now means no rules file content leaves the machine at all; with the guard on, the request is unchanged. `EvaluateOptions.rules` and `InspectOptions.rules` carry the switch, and a library caller that omits it keeps the earlier behaviour. The disclosure and `docs/data-handling.md` say so.
+
+### Docs
+- `docs/configuration.md`: `Recipe: security work` — what each guard sends off the machine and what `/warden disable` leaves behind, a local-only user profile, a lab/CTF project profile with the exemptions security work needs, and an out-of-scope deny rule. README privacy paragraph points to it.
+
 ## 0.35.0
 
 ### Added
