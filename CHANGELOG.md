@@ -12,6 +12,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Docs
 - `docs/configuration.md`: `Recipe: security work` — what each guard sends off the machine and what `/warden disable` leaves behind, a local-only user profile, a lab/CTF project profile with the exemptions security work needs, and an out-of-scope deny rule. README privacy paragraph points to it.
 
+## 0.35.0
+
+### Added
+- Stuck-loop diff: when the stuck detector marks a repeated failed attempt, the agent sees a short unified line diff against the previous output instead of the full repeated output again. Byte-identical outputs get a one-line note. The diff note never grows the result. Config keys `stuck.diffLimit` (3000) and `stuck.tailLimit` (1000) control the diff and tail caps.
+
 ## 0.34.1
 
 ### Fixed
