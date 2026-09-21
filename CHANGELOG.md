@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 0.34.0
+
 ### Added
 - `scripts/hold-stats.mjs`: read-only script reporting per-project and total hold statistics from the SQLite database, with `--json` output and `PI_WARDEN_DB` support.
 - `/warden status` now shows a lifetime hold sentence for the current project root (e.g. "Lifetime here: 55 holds, 11 labeled, 0 stood (0/11), 114 allowed accepted, 0 regretted.").
