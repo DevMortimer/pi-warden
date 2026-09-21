@@ -85,6 +85,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `action.armingRules` | User-defined arming rules: `{ id, when: { edited, regex?, tools? }, arms: { command, for?, caseSensitive? }, action, message? }`. Editing a file matching a `when.edited` glob arms the rule's `arms.command` regex for `arms.for` (default `"10m"`; accepts `"30s"`, `"2h"`, or ms). While armed, commands matching the regex fire the rule's `action`: `confirm` (dialog), `hold` (steer), `block` (deny). State lives for the rule's window within a session, refreshed on each matching edit, cleared on `session_start`, and shown in `/warden status`. Approving the dialog approves that call, not the window; the dialog re-fires for each matching command while the rule is armed. User file only. |
 | `action.exemptRules` | Built-in or user rule ids to exempt, e.g. `["infra-destroy"]` for a workflow whose `kubectl delete` is routine; also `rm-recursive` / `rm-rf` / `rm-recursive-dangerous-target` (the `rm` classifier) and `sensitive-path`. An id naming nothing is inert and reported once at startup. Exempting `sensitive-path` removes the only deterministic credential-touch signal, Jev questions aside. User file only. |
 | `action.escalationThreshold` | Jev confidence above which a violation's severity is escalated in the blast-radius and rules-guard escalation paths. Default `0.85`. Escalation fires when confidence strictly exceeds this threshold; setting it to `1` effectively disables escalation since noul confidence cannot exceed 1. |
+| `rules.enabled` | The rules guard, and whether the resolved rules file content rides action requests at all. `false` keeps that content on this machine. |
 | `rules.*` | Rules source, threshold, path globs, sensitive-path notes. See [guards.md → Rules](guards.md#rules). |
 | `slop.*` | Code slop threshold and reply (prose) checks. `prose.audience` is `technical`, `plain`, or free text. |
 | `security.threshold` | Written-code risk and tool-output injection threshold. |
@@ -128,7 +129,7 @@ A wince-style setup for a backend repo (the full version is [`examples/pi-warden
 
 ### What leaves the machine
 
-For penetration testing, incident response, vulnerability research, CTF, and hardening work, where the day touches credentials, scanners, and hostile samples. Nothing leaves until `/warden enable`. After that, each guarded call sends a redacted, truncated summary of the call (tool, command or path, the agent's stated plan), your latest request with up to eight earlier messages as task context, and the resolved rules file content — `pi-warden.md`, or the `AGENTS.md` / `CLAUDE.md` / `README.md` fallback — which rides every action request even when the rules guard is off. A `write` or `edit` adds a sample of the written code; the security and context guards add redacted tool-output samples; stuck sends recent commands and output tails; the done-check sends the final message. Redaction (`src/redact.ts`) replaces credential shapes — `Authorization`, `TOKEN=`, `sk-`, `ghp_`, `AKIA`, JWTs, PEM blocks, URL passwords — and nothing else: it is not a path scrubber, so hostnames, IP addresses, and file paths travel as written. [data-handling.md](data-handling.md) lists every field per guard.
+For penetration testing, incident response, vulnerability research, CTF, and hardening work, where the day touches credentials, scanners, and hostile samples. Nothing leaves until `/warden enable`. After that, each guarded call sends a redacted, truncated summary of the call (tool, command or path, the agent's stated plan), your latest request with up to eight earlier messages as task context, and the resolved rules file content — `pi-warden.md`, or the `AGENTS.md` / `CLAUDE.md` / `README.md` fallback — which rides every action request while the rules guard is on. A `write` or `edit` adds a sample of the written code; the security and context guards add redacted tool-output samples; stuck sends recent commands and output tails; the done-check sends the final message. Redaction (`src/redact.ts`) replaces credential shapes — `Authorization`, `TOKEN=`, `sk-`, `ghp_`, `AKIA`, JWTs, PEM blocks, URL passwords — and nothing else: it is not a path scrubber, so hostnames, IP addresses, and file paths travel as written. [data-handling.md](data-handling.md) lists every field per guard.
 
 For nothing at all, `/warden disable`: the offline layer keeps working: built-in patterns, your own `commandRules` and `pathRules`, `rules.sensitivePaths` notes, duplicate detection, and the runaway guard. Everything that needs a judgment stops with it, including the done-check.
 
@@ -148,13 +149,13 @@ Keeps the pattern floor and the done-check; sends no written code, no tool-outpu
 ```
 
 - `action.tools` — only bash is inspected, so no `write` or `edit` content sample is ever built; file writes lose the action guard too.
-- `rules.enabled` — no rules-guard request, so no exploit or tooling source is judged against a README.
+- `rules.enabled` — no rules-guard request, so no exploit or tooling source is judged against a README, and no rules file content rides the action requests either.
 - `slop.enabled` — drops the slop questions, which carry written code.
 - `security.enabled` — no tool-output or written-code sample for the weakness check.
 - `context.enabled` — large tool output is never sampled for compression; long scanner output stays in the transcript whole.
 - `subagent.enabled` — child reports are never sampled, and never wake the agent.
 
-One residue: a judged bash call still sends its redacted summary, the task context, and the rules file content. Only `action.enabled: false` (which also removes the pattern checks) or `/warden disable` stops that.
+One residue: a judged bash call still sends its redacted summary and the task context. Only `action.enabled: false` (which also removes the pattern checks) or `/warden disable` stops that.
 
 ### Lab profile
 

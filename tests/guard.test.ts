@@ -896,3 +896,30 @@ test("pathRules: inertPathRules detects access:write with only write tools and r
   const notInert = [{ id: "repo", paths: ["deploy.yaml"], access: "read" as const, tools: ["write", "edit"] as string[], action: "confirm" as const }];
   assert.equal(inertPathRules(notInert, ["bash", "write", "edit"]).length, 0, "access:read with write tools is not inert");
 });
+
+// The active rules file rides every judged action request. The rules guard's own switch decides whether it leaves at all.
+test("rules.enabled false keeps the rules file out of the action request; true and omitted send it as before", async () => {
+  const project = await mkdtemp(join(tmpdir(), "pi-warden-rules-off-"));
+  await writeFile(join(project, "pi-warden.md"), "# Rules\n\n- Never commit secrets.\n");
+  const config = defaultConfig().action;
+  const action = { tool: "bash", input: { command: "npm test" }, cwd: project, task: "run the tests" };
+  const state = async (rules?: { enabled: boolean }) => {
+    const spy = judge(0.1, 0.1);
+    await evaluateAction(action, { config, judge: spy, ...(rules ? { rules } : {}) });
+    return (spy.calls[0] as { state: Record<string, unknown> }).state;
+  };
+
+  const off = await state({ enabled: false });
+  assert.equal("rules" in off, false, "no rules content is sent when the rules guard is off");
+  assert.equal("rulesSource" in off, false, "and no rulesSource names the file it came from");
+
+  const on = await state({ enabled: true });
+  assert.match(on.rules as string, /Never commit secrets/, "the rules content is sent when the rules guard is on");
+  assert.equal(on.rulesSource, "pi-warden.md");
+
+  const unset = await state();
+  assert.equal(unset.rules, on.rules, "a library caller that passes no rules config keeps the earlier behaviour");
+  assert.equal(unset.rulesSource, "pi-warden.md");
+
+  await rm(project, { recursive: true, force: true });
+});
