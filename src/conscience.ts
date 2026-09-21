@@ -44,6 +44,8 @@ export interface AssessmentResult {
   elapsedMs: number;
   /** Why no selection was made, if applicable. */
   skipReason?: SkipReason | undefined;
+  /** Error category when skipReason is "error": timeout, network, configuration, auth, or other. */
+  errorCategory?: string | undefined;
   /** Number of judge requests issued for this assessment. */
   requestCount: number;
 }
@@ -268,6 +270,23 @@ function capDescription(candidate: Candidate): { candidate: Candidate; overLimit
   return { candidate: { ...candidate, description: truncated + "..." }, overLimit: true };
 }
 
+/* ─── Error classification ──────────────────────────────────────────── */
+
+/** Classify an assessment error into a safe category (spec §6: never exception bodies). */
+function classifyError(err: unknown): string {
+  if (err && typeof err === "object" && "code" in err) {
+    const code = String((err as { code: unknown }).code);
+    if (code === "timeout") return "timeout";
+    if (code === "http" || code === "connection" || code === "response" || code === "network") return "network";
+    if (code === "configuration" || code === "validation") return "configuration";
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/timeout|timed out/i.test(msg)) return "timeout";
+  if (/auth|key|credential|401|403/i.test(msg)) return "auth";
+  if (/network|fetch|connect|ECONNREFUSED|ENOTFOUND/i.test(msg)) return "network";
+  return "other";
+}
+
 /* ─── Conscience module ─────────────────────────────────────────────── */
 
 export interface Judge {
@@ -407,8 +426,8 @@ export async function assess(
         ]);
         answers = result.answers;
         requestCount++;
-      } catch {
-        return { disposition: "unclear", selected: null, usefulness: 0, pAdvance: 0, questionHash: hash, elapsedMs: (deps.now?.() ?? Date.now()) - start, requestCount, skipReason: "error" };
+      } catch (err) {
+        return { disposition: "unclear", selected: null, usefulness: 0, pAdvance: 0, questionHash: hash, elapsedMs: (deps.now?.() ?? Date.now()) - start, requestCount, skipReason: "error", errorCategory: classifyError(err) };
       }
 
       // Parse disposition (only from first batch that returns it)
