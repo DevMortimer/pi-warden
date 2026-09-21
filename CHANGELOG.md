@@ -6,7 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Docs
+- `docs/configuration.md`: `Recipe: security work` — what each guard sends off the machine and what `/warden disable` leaves behind, a local-only user profile, a lab/CTF project profile with the exemptions security work needs, and an out-of-scope deny rule. README privacy paragraph points to it.
 
 ## 0.34.1
 
