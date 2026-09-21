@@ -8,6 +8,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.32.0
+
+### Fixed
+- `replanned` outcomes now persist to SQLite, closing the gap where re-plan labels were set in memory but never written to the database.
+- `command_preview` stores the redacted command or path (capped at 200 chars) instead of the bare tool name.
+- Outcome known at record time (dialog-approved/declined) is no longer lost to a race between `noteOutcomes` and `learningIds.set`.
+
+### Changed
+- Judged allowed calls (`held = 0`) are now stored in SQLite alongside held calls, enabling precision and false-negative rate computation.
+- Disclosure and `docs/data-handling.md` updated to reflect that judged allowed calls are stored with `held = 0`.
+
 ## 0.31.0
 
 ### Added
