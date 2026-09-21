@@ -69,7 +69,7 @@ AUC against regret: 0.26 — non-regretted calls score higher (correct direction
 | `should_proceed` | 0.26 | 0.58 |
 | `pause_requested` | 0.27 | 0.51 |
 
-The question is trace-only by default until calibrated: AUC against regret is 0.26 and the default threshold of 0.6 flags 44% of non-read-only calls. The score and reason remain in the trace, but no steer reaches the agent. Set `action.shouldProceed.steer: true` to restore the pause-and-ask steer; `hold` remains the threshold. This question never holds a call, consistent with the existing rule that only destructive patterns, deny rules, and `irreversible >= 0.7` hold.
+The question is trace-only by default until calibrated: AUC against regret is 0.26 and the default threshold of 0.6 flags 44% of non-read-only calls. The score and reason remain in the trace, but no steer reaches the agent. Set `action.shouldProceed.steer: true` to restore the pause-and-ask steer; `hold` remains the threshold. This question never holds a call, consistent with the existing rule that only deny rules and `irreversible >= 0.7` hold; a built-in destructive pattern holds only when no judge answers or when `action.floor` is `"level"`.
 
 ### violation_judgment calibration (2026-09-20)
 

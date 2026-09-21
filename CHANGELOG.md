@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+## 0.37.1
+
+### Docs
+- CONTRIBUTING.md: reflecting the evidence floor for destructive patterns; version bump is optional for outside PRs. docs/guards.md: same stale wording fixed.
 
 ## 0.37.0
 
