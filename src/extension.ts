@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -33,7 +33,7 @@ import { redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
-import { buildAuditPrompt, findProjects } from "./audit.js";
+import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from "./audit.js";
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
@@ -1331,12 +1331,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }
         if (action === "audit") {
           if (!ctx.hasUI) { report("Audit needs an interactive session to run.", "warning"); return; }
-          if (!await ctx.ui.confirm("Run workspace audit?", `This runs an agent-driven audit of ${redact(ctx.cwd)}. It uses the session model, reads source code, and writes a report. It may take several minutes and use real tokens.`)) return;
+          if (!await ctx.ui.confirm("Run workspace audit?", `This runs an agent-driven audit of ${redact(ctx.cwd)}. It uses the session model, reads source code, and writes a report. It may take several minutes and use real tokens. Measured comparisons need the agent's TypeSafe tool, which is enabled per session with \`/typesafe enable\`; without it findings will be marked unmeasured.`)) return;
           const projects = findProjects(ctx.cwd);
           const prompt = buildAuditPrompt(ctx.cwd, projects);
           const reportPath = join(ctx.cwd, ".pi-warden", "audit-report.html");
-          const preExisting = existsSync(reportPath);
-          const preMtime = preExisting ? statSync(reportPath).mtimeMs : 0;
+          const preSnapshot = snapshotReport(reportPath);
           auditRunning = true;
           if (ctx.hasUI) ctx.ui.notify("pi-warden: Running workspace audit...", "info");
           try {
@@ -1352,9 +1351,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           } finally {
             auditRunning = false;
           }
-          const postExists = existsSync(reportPath);
-          const postNew = postExists && (!preExisting || statSync(reportPath).mtimeMs > preMtime);
-          report(postNew ? `Audit report written to ${reportPath}` : postExists ? "Audit finished but the report file was not updated — the agent may have reported findings in chat instead." : "Agent did not write an audit report. The model may have reported findings in chat instead.");
+          const outcome = reportOutcome(preSnapshot, snapshotReport(reportPath));
+          switch (outcome) {
+            case "written": report(`Audit report written to ${reportPath}`); break;
+            case "stale": report("Audit finished but the report file was not updated — the agent may have reported findings in chat instead."); break;
+            case "missing": report("Agent did not write an audit report. The model may have reported findings in chat instead."); break;
+          }
           return;
         }
         if (action === "test") {

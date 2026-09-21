@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile, stat } from "node:fs/promises";
-import { existsSync, statSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { discoverSourceFiles, findProjects, SKIP_DIRS, SOURCE_RE } from "../src/discover.js";
-import { buildAuditPrompt } from "../src/audit.js";
+import { buildAuditPrompt, snapshotReport, reportOutcome } from "../src/audit.js";
 
 let temporary: string;
 
@@ -187,15 +186,44 @@ test("buildAuditPrompt: returns a string containing project names and instructio
 
 // ─── audit report mtime check ───────────────────────────────────────────────
 
-test("audit report success check: no report before and no report after is not success", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-warden-audit-mtime-"));
-  const reportPath = join(dir, ".pi-warden", "audit-report.html");
-  // Simulate the extension's pre-run check
-  const preExisting = existsSync(reportPath);
-  const preMtime = preExisting ? statSync(reportPath).mtimeMs : 0;
-  // Simulate: agent wrote nothing
-  const postExists = existsSync(reportPath);
-  const postNew = postExists && (!preExisting || statSync(reportPath).mtimeMs > preMtime);
-  assert.equal(postNew, false, "should not report success when no report exists before or after");
+// ─── reportOutcome ──────────────────────────────────────────────────────────
+
+test("reportOutcome: missing when file does not exist after", () => {
+  const snap = { exists: false, mtimeMs: 0 };
+  assert.equal(reportOutcome(snap, snap), "missing");
+});
+
+test("reportOutcome: written when file exists after and did not exist before", () => {
+  assert.equal(reportOutcome({ exists: false, mtimeMs: 0 }, { exists: true, mtimeMs: 100 }), "written");
+});
+
+test("reportOutcome: written when mtime advanced", () => {
+  assert.equal(reportOutcome({ exists: true, mtimeMs: 100 }, { exists: true, mtimeMs: 200 }), "written");
+});
+
+test("reportOutcome: stale when file exists but mtime unchanged", () => {
+  assert.equal(reportOutcome({ exists: true, mtimeMs: 100 }, { exists: true, mtimeMs: 100 }), "stale");
+});
+
+// ─── snapshotReport ─────────────────────────────────────────────────────────
+
+test("snapshotReport: captures mtime of existing file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-audit-snap-"));
+  const reportPath = join(dir, "report.html");
+  await writeFile(reportPath, "<html>");
+  const snap = snapshotReport(reportPath);
+  assert.equal(snap.exists, true, "file should exist");
+  assert.ok(snap.mtimeMs > 0, "mtime should be positive");
+  // Touch with a later mtime
+  await new Promise(r => setTimeout(r, 50));
+  await writeFile(reportPath, "<html>updated</html>");
+  const snap2 = snapshotReport(reportPath);
+  assert.ok(snap2.mtimeMs > snap.mtimeMs, "mtime should advance after rewrite");
   await rm(dir, { recursive: true, force: true });
+});
+
+test("snapshotReport: returns missing for nonexistent file", () => {
+  const snap = snapshotReport("/nonexistent/path/to/report.html");
+  assert.equal(snap.exists, false);
+  assert.equal(snap.mtimeMs, 0);
 });

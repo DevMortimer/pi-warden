@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { redact } from "./redact.js";
 import { discoverSourceFiles, findProjects } from "./discover.js";
@@ -66,7 +66,7 @@ export function buildAuditPrompt(cwd: string, projects: string[]): string {
     "   - Count the branches, keyword entries, or cases the current code handles",
     "   - Count cases it misses (e.g. grep for keywords it does not cover, list known false positives from comments or issues)",
     "   - Run the existing test suite and count pass/fail relevant to this code path",
-    "   - Write a throwaway script under the OS temp directory that feeds sample inputs through both the current code and a Jev question (using `typesafe_evaluate` when available in the session)",
+    "   - Write a throwaway script under the OS temp directory that feeds sample inputs through both the current code and a Jev question (using `typesafe_evaluate` when available in the session; this tool requires the operator to run `/typesafe enable` once per session — if a call fails with \"TypeSafe is disabled\", ask the operator once, and if it remains disabled, continue with the other evidence and mark those findings unmeasured)",
     "",
     "   A finding without measurable comparison data must be marked **\"unmeasured\"** — do not dress it up.",
     "",
@@ -84,4 +84,32 @@ export function buildAuditPrompt(cwd: string, projects: string[]): string {
     "- Prefer fewer, well-evidenced findings over many thin ones.",
     "- If no replacement opportunities exist in a project, say so briefly and move on.",
   ].join("\n");
+}
+
+// ─── Report snapshot helpers ─────────────────────────────────────────────────
+
+export interface ReportSnapshot { exists: boolean; mtimeMs: number }
+
+/**
+ * Take a point-in-time snapshot of the audit report file.  Call before
+ * sending the prompt and again after the agent finishes.
+ */
+export function snapshotReport(reportPath: string): ReportSnapshot {
+  if (!existsSync(reportPath)) return { exists: false, mtimeMs: 0 };
+  try {
+    const s = statSync(reportPath);
+    return { exists: true, mtimeMs: s.mtimeMs };
+  } catch (err) {
+    console.warn(`audit: could not stat report: ${err instanceof Error ? err.message : err}`);
+    return { exists: false, mtimeMs: 0 };
+  }
+}
+
+/**
+ * Determine whether the audit produced a new or updated report.
+ */
+export function reportOutcome(before: ReportSnapshot, after: ReportSnapshot): "written" | "stale" | "missing" {
+  if (!after.exists) return "missing";
+  if (!before.exists || after.mtimeMs > before.mtimeMs) return "written";
+  return "stale";
 }
