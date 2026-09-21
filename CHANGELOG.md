@@ -9,6 +9,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Fixed
 - Tests and eval runs now write to an isolated database via `PI_WARDEN_DB` instead of polluting the user's `holds.db`.
 
+<!-- Empty. Next release starts here. -->
+
+## 0.33.1
+
+### Tests
+- Live smoke suite cap raised from 60 to 100 requests; summary line now reports budget-error misses.
+
 ## 0.33.0
 
 ### Changed
