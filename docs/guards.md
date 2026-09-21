@@ -26,11 +26,11 @@ The action guard receives your latest message plus up to eight earlier user and 
 
 **User command rules.** The built-in pattern list is not the whole floor: `action.commandRules` in the user config declares your own. `{ id, pattern, severity, action?, message?, caseSensitive? }` — `warn` notices and continues, `confirm` holds, `deny` blocks outright with no dialog and no TypeSafe request. A `confirm` rule defaults to `action: "dialog"`: a prompt for you, in every mode (advise included), because asking for a dialog on a named command is the reason to write such a rule; `action: "hold"` restores steer semantics. Patterns see the same data-text-stripped command the built-ins read, so a heredoc body or a commit message that mentions your pattern does not fire it. `action.exemptRules` silences a built-in by id (`["infra-destroy"]` for a workflow whose `kubectl delete` is routine), including the ids the `rm` classifier derives (`rm-recursive`, `rm-rf`, `rm-recursive-dangerous-target`) and `sensitive-path`; an id that names neither a built-in, a classifier id, nor one of your own rules is inert and is reported once. User rules share the built-ins' id namespace, so an exempt id can also silence your own rule. Project files cannot set any of the three keys: a checked-out repo cannot ship itself a hold-free floor or a prompt farm.
 
-**What evidence mode releases.** When the task asks for a publish, a deploy, or a history rewrite, the judge scores the action below the hold line and warden warns instead of holding. For example, `git reset --hard HEAD~1` with "undo commit" scores irreversible 0.68 — warn, not hold. `npm publish` with "publish package" scores 0.56 — warn. To make one of these a confirm-level hold again, add a user command rule with `severity: "destructive"`:
+**What evidence mode releases.** When the task asks for a publish, a deploy, or a history rewrite, the judge scores the action below the hold line and warden warns instead of holding. For example, `git reset --hard HEAD~1` with "undo commit" scores irreversible 0.68 — warn, not hold. `npm publish` with "publish package" scores 0.56 — warn. To make one of these a confirm-level hold again, add a user command rule with `severity: "confirm"`:
 
 ```json
 "commandRules": [
-  { "id": "no-publish", "pattern": "\\b(?:npm|pnpm|yarn)\\s+publish\\b", "severity": "destructive" }
+  { "id": "no-publish", "pattern": "\\b(?:npm|pnpm|yarn)\\s+publish\\b", "severity": "confirm" }
 ]
 ```
 
