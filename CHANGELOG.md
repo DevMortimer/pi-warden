@@ -6,6 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Changed
+- Made `should_proceed` trace-only by default until calibrated, so low scores no longer ask the agent to pause. Set `action.shouldProceed.steer: true` to restore the existing steer; the `hold` threshold is unchanged.
+
 ## 0.30.1
 
 ### Fixed

@@ -143,19 +143,23 @@ function activeMode(config: WardenConfig, hasUI: boolean): WardenMode {
   return mode === "confirm" && !hasUI ? "steer" : mode;
 }
 
-/** Keep diagnostic reasons intact while removing the one structured trace-only item at the agent boundary. */
+/** Keep diagnostics intact while removing structured trace-only items at the agent boundary. */
 function agentDeliveryReasons(verdict: Verdict): string[] {
-  const index = verdict.offTaskTraceOnly ? verdict.offTaskTraceOnlyReasonIndex : undefined;
-  if (index === undefined || index < 0 || index >= verdict.reasons.length) return verdict.reasons;
-  return verdict.reasons.filter((_reason, reasonIndex) => reasonIndex !== index);
+  const indexes = [
+    verdict.offTaskTraceOnly ? verdict.offTaskTraceOnlyReasonIndex : undefined,
+    verdict.shouldProceedTraceOnly ? verdict.shouldProceedTraceOnlyReasonIndex : undefined,
+  ].filter((index): index is number => index !== undefined && index >= 0 && index < verdict.reasons.length);
+  if (!indexes.length) return verdict.reasons;
+  return verdict.reasons.filter((_reason, reasonIndex) => !indexes.includes(reasonIndex));
 }
 
-/** Keep the full judgment while suppressing the trace-only off-task reason and steer flag. */
+/** Keep the full judgment while suppressing trace-only reasons and steer flags. */
 function agentDeliveryVerdict(verdict: Verdict): Verdict {
   const reasons = agentDeliveryReasons(verdict);
   if (reasons === verdict.reasons) return verdict;
   const deliveryVerdict: Verdict = { ...verdict, reasons };
-  delete deliveryVerdict.offTaskSteer;
+  if (verdict.offTaskTraceOnly) delete deliveryVerdict.offTaskSteer;
+  if (verdict.shouldProceedTraceOnly) delete deliveryVerdict.shouldProceedSteer;
   return deliveryVerdict;
 }
 
@@ -741,7 +745,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         notes.push(offTaskSteer(verdict));
       }
     }
-    if (verdict.shouldProceedSteer) {
+    if (verdict.shouldProceedSteer && !verdict.shouldProceedTraceOnly) {
       noteGuards.add("action");
       notes.push(shouldProceedMessage(verdict));
     }
