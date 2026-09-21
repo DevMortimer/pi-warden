@@ -38,6 +38,7 @@ import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
+import { assess } from "./conscience.js";
 import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
@@ -48,7 +49,7 @@ import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails,
 import type { GuardName, TraceEntry } from "./trace.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request, including calls where the rules guard is disabled; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request, including calls where the rules guard is disabled; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name and description only; full skill instructions never go to Jev). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -424,19 +425,29 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   /** Guards whose notices gate the run itself; they deliver even when the per-run steer budget is spent. */
   const CRITICAL_STEER_GUARDS: ReadonlySet<SteerGuard> = new Set(["stuck", "done", "runaway", "subagent"]);
   let steersThisRun = 0;
+  /** Session generation counter for conscience invalidation. Incremented on steer, abort, reload, switch, or config change. */
+  let conscienceGeneration = 0;
   /** The final messages of the current run, for restatement measurement. */
   const finals = new RestatementWindow();
   /** Returns true when the message was delivered; false means it was recorded in the trace only. */
+  /**
+   * Check whether a non-critical message can be delivered within the per-run steer budget.
+   * Returns true when the budget allows delivery; false means record-only. Conscience uses this
+   * to gate pre-response delivery without going through the steer path.
+   */
+  const budgetAvailable = (config: WardenConfig): boolean => config.steerBudget > 0 && steersThisRun < config.steerBudget;
+  /** Reserve one budget unit. Call only when budgetAvailable returned true. */
+  const spendBudgetUnit = (): void => { steersThisRun++; };
   const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean }): boolean => {
     const names = typeof guard === "string" ? [guard] : [...guard];
     for (const name of names) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
     const critical = names.every(name => CRITICAL_STEER_GUARDS.has(name));
-    const overBudget = config.steerBudget > 0 && steersThisRun >= config.steerBudget;
     // A notice delivered once is already in the agent's context. Sending the repeat again costs the accounting turn it
     // forbids, so repeats are recorded only. The same goes for notices past the per-run steer budget: every delivered
     // steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the
     // final status. A notice skipped for the budget keeps its fingerprint, so the same notice can deliver next run.
     // Critical guards (stuck, done, runaway recovery, subagent wake) always deliver: their message starts the turn.
+    const overBudget = config.steerBudget > 0 && steersThisRun >= config.steerBudget;
     const deliver = critical || (!overBudget && !steerRepeats.seen(content));
     if (!deliver) {
       stats.steersSkipped++;
@@ -444,6 +455,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     stats.steers++;
     steersThisRun++;
+    conscienceGeneration++;
     const { display, ...delivery } = options ?? { deliverAs: "steer" as const };
     pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: display ?? config.steerVisible }, delivery);
     return true;
@@ -499,6 +511,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
+    if (_event.reason === "reload" || _event.reason === "new") conscienceGeneration++;
     client = undefined;
     budgetExhausted = false;
     warnedFallback = false;
@@ -530,6 +543,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     wakePolicy.reset();
     steerRepeats.reset();
     steersThisRun = 0;
+    conscienceGeneration = 0;
     finals.reset();
     runaway.reset();
     runawayStops = 0;
@@ -565,6 +579,90 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     noteOutcomes(config, holds.promptArrived());
     regretCandidates = holds.candidates();
     if (regretCandidates.length && !judgeFor(config)) settleRegret(config, { regretted: textRegrets(event.prompt), via: "text" });
+
+    // ── Conscience: initial assessment on normal operator prompts ──
+    if (config.enabled && config.conscience.enabled) {
+      const myGeneration = conscienceGeneration;
+      const judge = judgeFor(config);
+      // Get the resolved skill catalog from the event's system prompt options (spec §3 rule 1)
+      const skills = event.systemPromptOptions?.skills ?? [];
+      let toolInfos: Array<{ name: string; description: string }> = [];
+      try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
+      // Detect explicit /skill:name invocation (spec §3 rule 5)
+      const explicitSkillMatch = event.prompt.match(/\/skill:([\w-]+)/);
+      if (explicitSkillMatch) {
+        record(ctx, config, "conscience", `explicit skill invocation: ${explicitSkillMatch[1]}`, ["trigger: input", `explicit_skill: ${explicitSkillMatch[1]}`]);
+      } else {
+        // Redact and truncate prompt to 2000 chars (spec §6 payload limit)
+        const redactedPrompt = redact(event.prompt).slice(0, 2000);
+        const truncationRecorded = event.prompt.length > 2000 ? [`prompt truncated from ${event.prompt.length} to 2000 chars`] : [];
+        // Build recent context from session branch (up to 4 messages, 500 chars each)
+        const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
+        const recentMessages: Array<{ role: string; text: string }> = [];
+        for (const entry of branch.slice(-6)) {
+          if (recentMessages.length >= 4) break;
+          const msg = entry.type === "message" ? entry.message : undefined;
+          if (msg && (msg.role === "user" || msg.role === "assistant") && typeof msg.content === "string") {
+            recentMessages.push({ role: msg.role, text: redact(msg.content).slice(0, 500) });
+          } else if (msg && (msg.role === "user" || msg.role === "assistant") && Array.isArray(msg.content)) {
+            const textPart = msg.content.find((c): c is { type: "text"; text: string } => c.type === "text" && "text" in c && typeof (c as { text?: unknown }).text === "string");
+            if (textPart) {
+              recentMessages.push({ role: msg.role, text: redact(textPart.text).slice(0, 500) });
+            }
+          }
+        }
+        const recentContext = recentMessages.map(m => `${m.role}: ${m.text}`).join("\n");
+        // Active and supplied skills
+        const activeSkills = skills.map(s => s.name);
+        const suppliedSkills: string[] = [];
+        // Deadline: smaller of conscience.timeoutMs and shared timeoutMs
+        const effectiveTimeout = Math.min(config.conscience.timeoutMs, config.timeoutMs);
+        // AbortController for deadline (spec: when ctx.signal is absent)
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), effectiveTimeout);
+        // Link to host signal if available
+        const hostSignal = ctx.signal ?? undefined;
+        if (hostSignal) {
+          hostSignal.addEventListener("abort", () => ac.abort(), { once: true });
+        }
+        try {
+          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+          const result = await assess(
+            redactedPrompt, recentContext, skills, toolInfos, activeSkills, suppliedSkills,
+            { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() },
+          );
+          // Check generation after await
+          if (conscienceGeneration !== myGeneration) {
+            record(ctx, config, "conscience", "stale: generation changed during assessment", ["trigger: before_agent_start", `generation: ${myGeneration} → ${conscienceGeneration}`, `skipReason: stale`]);
+            return;
+          }
+          // Trace entry
+          const selectedName = result.selected ? `${result.selected.kind}:${result.selected.id}` : "none";
+          const skipInfo = result.skipReason ? [`skipReason: ${result.skipReason}`] : [];
+          const truncInfo = truncationRecorded.length ? truncationRecorded : [];
+          record(ctx, config, "conscience",
+            `assessed ${skills.length} skills + ${toolInfos.length} tools → ${selectedName} (P(useful)=${result.usefulness.toFixed(2)}, P(advance)=${result.pAdvance.toFixed(2)}, ${result.elapsedMs}ms)`,
+            ["trigger: before_agent_start", `eligible: ${skills.length} skills, ${toolInfos.length} tools`, `requests: ${result.requestCount}`, `questionHash: ${result.questionHash}`, ...skipInfo, ...truncInfo],
+          );
+          // Delivery: only when selected and thresholds pass (budget gate)
+          if (result.selected && budgetAvailable(config)) {
+            spendBudgetUnit();
+            const msgContent = result.selected.kind === "skill"
+              ? `Consider using the \"${result.selected.id}\" skill: ${result.selected.description}`
+              : `Consider using the \"${result.selected.id}\" tool: ${result.selected.description}`;
+            return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msgContent, display: config.steerVisible } };
+          } else if (result.selected && !budgetAvailable(config)) {
+            record(ctx, config, "conscience", "selected but budget exhausted", ["trigger: before_agent_start", `skipReason: budget`]);
+          }
+        } catch (err) {
+          // Errors fail open: one operational warning per prompt, trace only
+          const msg = err instanceof Error ? err.message : String(err);
+          record(ctx, config, "conscience", `error: ${msg.slice(0, 200)}`, ["trigger: before_agent_start", `skipReason: error`]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    }
   });
 
   // Each assistant message is judged on its own; Pi does not forward the stream's own "start" event, so this is the reset.
@@ -589,6 +687,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) ctx.ui.notify(`warden · runaway: the same ${verdict.kind} block repeated ${verdict.count} times in ${verdict.chars} chars; run stopped${recover ? " (agent gets one follow-up turn)" : " (not restarted: second time for this prompt)"}`, "error");
     notifyDesktop(ctx, config, `Runaway stopped: the same ${verdict.kind} block repeated ${verdict.count} times. ${recover ? "The agent gets one recovery turn." : "Second time for this prompt; the agent is waiting for you."}`);
     // Interactive Pi restores the user's queued messages to the editor before aborting; the follow-up is queued in agent_end, after that.
+    conscienceGeneration++;
     ctx.abort();
   });
 

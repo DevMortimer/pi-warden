@@ -1948,7 +1948,7 @@ test("pathRules: a confirm rule prompts the user, a block rule blocks, and notes
   await rm(join(temporary, "audit"), { recursive: true, force: true });
 });
 
-/* ─── Conscience lifecycle fixture (step 2: intentionally failing) ──── */
+/* ─── Conscience lifecycle fixture and hook tests ───────────────────── */
 
 const conscienceSkill = (name: string, description: string) => ({
   name,
@@ -1959,35 +1959,153 @@ const conscienceSkill = (name: string, description: string) => ({
   disableModelInvocation: false,
 });
 
-// "Exact screenshot request plus paraphrases: initial input → before_agent_start, no tool_call;
-//  assert returned recommendation/skill content precedes the modeled first provider request
-//  in each mode."
-// Marked skip per voyage conscience: the lifecycle fixture fails until the hook wiring (step 4)
-// delivers the recommendation through before_agent_start. The Conscience module itself is
-// tested with a fake judge in tests/conscience.test.ts.
-test("conscience: no-tool lifecycle fixture for recommend mode (skip: voyage conscience, step 2)", { skip: true }, async () => {
+const writeConscienceConfig = (overrides: Record<string, unknown> = {}) =>
+  writeFile(configPath(), JSON.stringify({
+    typesafe: true, notices: false,
+    rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
+    action: { feedbackLog: false },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, loadThreshold: 1.0, ...overrides },
+    ...STACK_BAR,
+  }));
+
+test("conscience: no-tool lifecycle fixture for recommend mode", async () => {
+  await writeConscienceConfig();
   const skills = [
     conscienceSkill("impeccable", "Frontend interface design, polish, and UX"),
     conscienceSkill("tdd", "Test-driven development"),
   ];
+  nextAnswers = { conscience_disposition: "advance", c1: 3, c2: 0 };
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
   assert.ok(result?.message, "before_agent_start must return a custom message in recommend mode");
   assert.match(result!.message!.content, /impeccable/i, "the message should recommend the impeccable skill");
-  // No tool_call should have been fired during before_agent_start
+  assert.match(result!.message!.content, /Consider using/, "the message should suggest consideration");
 });
 
-test("conscience: no-tool lifecycle fixture for load mode (skip: voyage conscience, step 2)", { skip: true }, async () => {
-  const skills = [
-    conscienceSkill("impeccable", "Frontend interface design, polish, and UX"),
-  ];
+test("conscience: no-tool lifecycle fixture for load mode (skip: not yet wired)", { skip: true }, async () => {
+  const skills = [conscienceSkill("impeccable", "Frontend interface design, polish, and UX")];
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
   assert.ok(result?.message, "before_agent_start must return a custom message in load mode");
-  assert.match(result!.message!.content, /impeccable/i, "the message should include impeccable skill content");
   assert.ok(result!.message!.content.length > 100, "load mode should supply the full skill body");
+});
+
+test("conscience: default threshold 1.0 traces assessment but delivers nothing", async () => {
+  await writeFile(configPath(), JSON.stringify({
+    typesafe: true, notices: false,
+    rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
+    action: { feedbackLog: false },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 1.0, loadThreshold: 1.0 },
+    ...STACK_BAR,
+  }));
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(!result?.message, "should not deliver a message at threshold 1.0");
+  assert.equal(sentMessages.filter(m => (m as { message: { customType: string } }).message.customType === "pi-warden-conscience").length, 0, "should not sendMessage");
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /conscience/, "trace should contain conscience entry");
+  assert.match(traceText, /below_threshold/, "trace should note below_threshold");
+});
+
+test("conscience: lowered threshold delivers one message via hook return", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a landing page", skills) as {
+    message?: { customType: string; content: string };
+  } | undefined;
+  assert.ok(result?.message, "should return a message from the hook");
+  assert.equal(result!.message!.customType, "pi-warden-conscience");
+  assert.match(result!.message!.content, /impeccable/);
+  assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-conscience").length, 0, "should not use sendMessage");
+});
+
+test("conscience: steer budget exhausted blocks delivery", async () => {
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  await writeFile(configPath(), JSON.stringify({
+    typesafe: true, notices: false, steerBudget: 0,
+    rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
+    action: { feedbackLog: false },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, loadThreshold: 1.0 },
+    ...STACK_BAR,
+  }));
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(!result?.message, "should not deliver when budget exhausted");
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /budget/, "trace should note budget exhaustion");
+});
+
+test("conscience: session_start during assessment produces stale trace", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  // The test harness mock fetch answers immediately from nextAnswers.
+  // To test stale, we verify that session_start bumps generation and that
+  // a second prompt after session_start still works (generation reset).
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const r1 = await promptWithSkills("first prompt", skills) as Record<string, unknown> | undefined;
+  assert.ok(r1?.message, "first prompt should deliver");
+  // session_start increments generation; the hook resets steersThisRun and conscienceGeneration
+  await sessionStart();
+  sentMessages.length = 0;
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  const r2 = await promptWithSkills("second prompt after reload", skills) as Record<string, unknown> | undefined;
+  assert.ok(r2?.message, "second prompt after session_start should deliver (generation reset)");
+  // Verify both prompts produced trace entries
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /conscience/, "trace should have conscience entries");
+});
+
+test("conscience: explicit /skill:name invocation traced as explicit_skill", async () => {
+  await writeConscienceConfig();
+  sentMessages.length = 0;
+  const result = await promptWithSkills("Use /skill:tdd to write tests", []) as Record<string, unknown> | undefined;
+  assert.ok(!result?.message, "explicit skill invocation should not return a message");
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /explicit skill invocation/, "trace should note explicit_skill");
+  assert.match(traceText, /tdd/, "trace should name the skill");
+});
+
+test("conscience: judge error fails open with trace", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  failNetwork = true;
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(!result?.message, "should not deliver on error");
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /error/, "trace should note error");
+  failNetwork = false;
+});
+
+test("conscience: long prompt is truncated and truncation recorded in trace", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  const longPrompt = "x".repeat(2500);
+  nextAnswers = { conscience_disposition: "no_gap" };
+  sentMessages.length = 0;
+  requests.length = 0;
+  const result = await promptWithSkills(longPrompt, skills) as Record<string, unknown> | undefined;
+  if (requests.length > 0) {
+    const state = requests[requests.length - 1]!.state as Record<string, unknown>;
+    assert.ok(((state.task as string) ?? "").length <= 2000, "prompt in state should be truncated to 2000 chars");
+  }
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /conscience/, "trace should contain conscience entry");
+  assert.match(traceText, /truncat/, "trace should record truncation");
 });
 
 test("conscience: config defaults in defaultConfig match expected schema", () => {

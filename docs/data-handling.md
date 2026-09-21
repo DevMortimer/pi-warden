@@ -13,6 +13,7 @@ With consent, requests go to `https://api.typesafe.ai` (default) or `https://ope
 | **Stuck** | The last 12 tool calls (300 characters each) with 400-character output tails. |
 | **Done-check and prose** | The agent's final message (2000 and 2500 characters), the run's check commands, the audience description. |
 | **Output checks** | A redacted head/tail sample up to 6000 characters plus size, line counts, and tool name. |
+| **Conscience** (recommend mode) | Your current request (2000 redacted characters), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name and description only). Full skill instructions never go to Jev. Sent only when TypeSafe consent is given and the conscience module is enabled. |
 | **Subagent triage** | Only for a child report that names a failure, a stop, a timeout, or a question (an incremental progress line or a clean completion is answered in code and sends nothing): a redacted 1500-character head plus 500-character tail of the report, the notification type, whether it is an incremental notify, its length, and your latest prompt (1000 characters). |
 | **Nothing** | Duplicate detection, the runaway guard, sensitive-path notes, the offline part of subagent triage, and pattern checks run entirely in code. |
 

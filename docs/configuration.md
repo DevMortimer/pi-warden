@@ -101,6 +101,18 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `learning.adaptiveThresholds` | Learn from hold outcomes and suggest threshold adjustments via `/warden recommend`. | 
 | `learning.patternAnalysis` | Analyze hold patterns and generate recommendations. |
 | `learning.retentionDays` | Days to keep hold records in SQLite before pruning. Records older than this are deleted on startup. `0` disables pruning. Default: `365`. |
+| `conscience.enabled` | Master switch for the conscience coach. Default `true`. |
+| `conscience.skills.mode` | `"off"` (no skill selection), `"recommend"` (name a skill and ask the agent to load it), or `"load"` (supply instructions directly). Default `"recommend"`. A project cannot upgrade from `recommend` to `load` when the user permits only `recommend`. |
+| `conscience.skills.exclude` | Case-sensitive skill names to exclude; `*` is the only wildcard. Default `[]`. |
+| `conscience.tools.enabled` | Suggest tools including evidence/research tools; never execute or enable them directly. Default `true`. |
+| `conscience.tools.exclude` | Case-sensitive tool names to exclude; `*` is the only wildcard. Default `[]`. |
+| `conscience.timeoutMs` | Total wall-clock deadline for one assessment (ms). Effective deadline is `min(conscience.timeoutMs, timeoutMs)`. Range 100–10000. Default `1500`. |
+| `conscience.maxAssessments` | Max assessments per admitted operator prompt, including the initial. Range 1–10. Default `3`. |
+| `conscience.maxNudges` | Max new guidance deliveries per admitted operator prompt. Range 1–5. Default `2`. |
+| `conscience.maxSkillBytes` | Max UTF-8 bytes per skill file for automatic loading. Range 1024–131072. Default `32768`. |
+| `conscience.maxLoadedBytes` | Max cumulative automatic loading bytes per admitted prompt. Range 1024–262144. Default `65536`. |
+| `conscience.recommendThreshold` | `P(useful now)` must reach this to select a candidate for recommendation. Default `1.0` (trace-only until calibrated per spec §7). |
+| `conscience.loadThreshold` | `P(useful now)` must reach this to auto-load. Must be ≥ `recommendThreshold`. Default `1.0` (trace-only until calibrated). |
 | `steerVisible` | Show steer messages in the transcript instead of only in the trace panel. |
 | `notices` | Print the per-call warning notices (`warden · …`) in the transcript. Off by default; the widget, the trace panel, and `/warden trace` always show every event. |
 | `steerBudget` | Steers delivered to the agent per run before further non-critical ones are recorded in the trace only. Every delivered steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the final status. `0` disables the budget. Critical guards (stuck, done, runaway recovery, subagent wake) always deliver. |

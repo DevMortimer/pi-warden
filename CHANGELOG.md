@@ -6,7 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+- Conscience coach (trace-only, no live Jev questions shipped): configuration layer (`conscience` section in `WardenConfig`), shape fallback, and the `assess()` module with fake-judge tests. Thresholds default to 1.0; no selections are delivered until calibration. The `before_agent_start` hook wires the initial assessment and traces every attempt.
 
 ## 0.33.3
 
