@@ -8,6 +8,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.33.4
+
+### Fixed
+- Rules guard no longer judges prose-only fallback documents (README.md, CLAUDE.md, AGENTS.md) as one rule; a fallback with no rule-shaped sections is skipped.
+
 ## 0.33.3
 
 ### Tests
