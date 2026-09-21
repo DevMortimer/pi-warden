@@ -1959,13 +1959,14 @@ test("stuck-loop diff: three failures with differing outputs carry a diff note",
   await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 5000, tailLimit: 1000 } }));
   await newPrompt("Run the test suite");
   nextAnswers = { same_strategy: 0.9, approach_change: 0.1, progress: 0.1, irreversible: 0.1, off_task: 0.1 };
-  const pad = "y".repeat(15_000);
+  const pad = Array.from({ length: 50 }, (_, i) => `context-line-${String(i).padStart(2, "0")}: ` + "y".repeat(30)).join("\n");
   const base = "FAIL tests/a.test.ts\n  Expected true, got false\n" + pad;
   assert.equal(await toolResult("bash", { command: "npm test" }, base + "\noutcome-A", true), undefined, "first stays");
   assert.equal(await toolResult("bash", { command: "npm test" }, base + "\noutcome-B", true), undefined, "second stays");
   const third = await toolResult("bash", { command: "npm test" }, base + "\noutcome-C", true) as { content: Array<{ type: string; text: string }> };
   const text = third.content.find(part => part.type === "text")?.text ?? "";
   assert.match(text, /stuck-loop diff/);
+  assert.match(text, /outcome-C/);
   const pathMatch = text.match(/Full output: (.+)/);
   assert.ok(pathMatch, "the note names the full-output file");
   assert.ok(text.length < Buffer.byteLength(base + "\noutcome-C"), "diff note is smaller than the original");

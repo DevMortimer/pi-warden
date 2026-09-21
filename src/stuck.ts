@@ -243,7 +243,6 @@ function lineDiff(previous: string, current: string, diffLimit: number): string 
     }
   }
   // Backtrack to build unified diff.
-  const diff: string[] = [];
   let i = m;
   let j = n;
   const ops: Array<[string, string]> = [];
@@ -261,8 +260,48 @@ function lineDiff(previous: string, current: string, diffLimit: number): string 
     }
   }
   ops.reverse();
-  for (const [op, line] of ops) diff.push(`${op} ${line}`);
-  const text = diff.join("\n");
+  // Identify indices of changed ops (+ or -).
+  const changedIndices: number[] = [];
+  for (let k = 0; k < ops.length; k++) {
+    if (ops[k]![0] !== " ") changedIndices.push(k);
+  }
+  if (changedIndices.length === 0) return "";
+  // Merge nearby changes: expand each changed index by 3 lines of context on each side,
+  // then merge overlapping ranges.
+  const CONTEXT = 3;
+  const ranges: Array<[number, number]> = [];
+  for (const idx of changedIndices) {
+    const start = Math.max(0, idx - CONTEXT);
+    const end = Math.min(ops.length - 1, idx + CONTEXT);
+    if (ranges.length > 0 && start <= ranges[ranges.length - 1]![1]! + 1) {
+      ranges[ranges.length - 1]![1] = end;
+    } else {
+      ranges.push([start, end]);
+    }
+  }
+  // Emit hunks.
+  const hunks: string[] = [];
+  for (const [rangeStart, rangeEnd] of ranges) {
+    let prevPos = 0;
+    for (let k = 0; k < rangeStart; k++) {
+      const op = ops[k]![0];
+      if (op === " " || op === "-") prevPos++;
+    }
+    // Count lines in the range for each file.
+    let prevCount = 0;
+    let currCount = 0;
+    const lines: string[] = [];
+    for (let k = rangeStart; k <= rangeEnd; k++) {
+      const [op, line] = ops[k]!;
+      lines.push(`${op} ${line}`);
+      if (op === " ") { prevCount++; currCount++; }
+      else if (op === "-") { prevCount++; }
+      else { currCount++; }
+    }
+    hunks.push(`@@ -${prevPos + 1},${prevCount} +${prevPos + 1},${currCount} @@`);
+    hunks.push(...lines);
+  }
+  const text = hunks.join("\n");
   return text.length <= diffLimit ? text : `${text.slice(0, diffLimit)}\n… [diff truncated]`;
 }
 

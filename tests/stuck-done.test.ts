@@ -384,3 +384,28 @@ test("stuckDiff truncates a diff exceeding the cap", () => {
   assert.match(result, /Full output: \/tmp\/out\.txt/);
   assert.ok(result.length < 2000, `note should be compact; got ${result.length}`);
 });
+
+test("lineDiff emits one hunk with context for a single-line difference in 60-line outputs", () => {
+  const prev = Array.from({ length: 60 }, (_, i) => `line-${i}`).join("\n");
+  const curr = Array.from({ length: 60 }, (_, i) => i === 30 ? "CHANGED" : `line-${i}`).join("\n");
+  const result = stuckDiff(prev, curr, { diffLimit: 3000, tailLimit: 1000, fullPath: "/tmp/out.txt" });
+  // One hunk header.
+  assert.equal((result.match(/^@@ /gm) ?? []).length, 1, "exactly one hunk header");
+  // The changed line is present.
+  assert.match(result, /- line-30/);
+  assert.match(result, /\+ CHANGED/);
+  // At most 8 body lines in the hunk: 3 context before + 1 delete + 1 add + 3 context after.
+  const hunkBody = result.split("\n").filter(line => line.startsWith(" ") || line.startsWith("-") || line.startsWith("+"));
+  assert.ok(hunkBody.length <= 8, `hunk body has ${hunkBody.length} lines, expected at most 8`);
+});
+
+test("lineDiff emits two hunks for differences at line 5 and line 50", () => {
+  const prev = Array.from({ length: 60 }, (_, i) => `line-${i}`).join("\n");
+  const curr = Array.from({ length: 60 }, (_, i) => i === 5 ? "FIRST-CHANGE" : i === 50 ? "SECOND-CHANGE" : `line-${i}`).join("\n");
+  const result = stuckDiff(prev, curr, { diffLimit: 3000, tailLimit: 1000, fullPath: "/tmp/out.txt" });
+  assert.equal((result.match(/^@@ /gm) ?? []).length, 2, "exactly two hunk headers");
+  assert.match(result, /- line-5/);
+  assert.match(result, /\+ FIRST-CHANGE/);
+  assert.match(result, /- line-50/);
+  assert.match(result, /\+ SECOND-CHANGE/);
+});
