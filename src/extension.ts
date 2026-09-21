@@ -39,6 +39,8 @@ import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { assess } from "./conscience.js";
+import { loadSkillBody, buildLoadMessage, policyMatches, getActivePolicy } from "./load.js";
+import type { ConsciencePolicy } from "./load.js";
 import type { IntegrationErrorCode } from "pi-typesafe";
 
 /** Classify a conscience assessment error into a safe category (spec §6: never exception bodies). */
@@ -455,6 +457,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let reminderSent = false;
   let lastAssessmentHash = "";
   let cachedSkills: Array<{ name: string; description: string }> = [];
+  let loadedBytes = 0;
+  let instructionsSupplied = false;
+  let loadedSkillNames = new Set<string>();
   let needsReassessment = false;
   /** The final messages of the current run, for restatement measurement. */
   const finals = new RestatementWindow();
@@ -621,6 +626,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       reminderSent = false;
       lastAssessmentHash = "";
       needsReassessment = false;
+      loadedBytes = 0;
+      instructionsSupplied = false;
+      loadedSkillNames = new Set();
       const judge = judgeFor(config);
       // Get the resolved skill catalog from the event's system prompt options (spec §3 rule 1)
       const skills = event.systemPromptOptions?.skills ?? [];
@@ -656,6 +664,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         const suppliedSkills: string[] = [];
         // Deadline: smaller of conscience.timeoutMs and shared timeoutMs
         const effectiveTimeout = Math.min(config.conscience.timeoutMs, config.timeoutMs);
+        const start = Date.now();
         // AbortController for deadline (spec: when ctx.signal is absent)
         const ac = new AbortController();
         const timer = setTimeout(() => ac.abort(), effectiveTimeout);
@@ -697,13 +706,48 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             pendingCapability = { kind: result.selected.kind, id: result.selected.id };
             triggerConsumed = false;
           }
-          // Delivery: only when selected and thresholds pass (budget gate)
+          // Delivery: only when selected, thresholds pass, and activation gate clears
           if (result.selected && budgetAvailable(config)) {
-            spendBudgetUnit();
-            const msgContent = result.selected.kind === "skill"
-              ? `Consider using the \"${result.selected.id}\" skill: ${result.selected.description}`
-              : `Consider using the \"${result.selected.id}\" tool: ${result.selected.description}`;
-            return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msgContent, display: config.steerVisible } };
+            // Activation gate (spec §7): policy must match hash and model when a policy exists
+            const policyActive = getActivePolicy() !== null;
+            if (policyActive && !policyMatches(result.questionHash, "jev-latest")) {
+              record(ctx, config, "conscience", "no policy for current hash/model", ["trigger: before_agent_start", "skipReason: no_policy"]);
+            } else {
+              spendBudgetUnit();
+              // Load mode: try to read the skill body from disk
+              if (result.selected.kind === "skill" && config.conscience.skills.mode === "load" && !loadedSkillNames.has(result.selected.id)) {
+                const skill = cachedSkills.find(s => s.name === result.selected!.id);
+                if (skill) {
+                  const loadResult = loadSkillBody(skill as unknown as import("@earendil-works/pi-coding-agent").Skill, config.conscience, {
+                    pathRules: config.action.pathRules,
+                    exemptRules: config.action.exemptRules,
+                    loadedBytes,
+                    remainingMs: effectiveTimeout - (Date.now() - start),
+                    consentGiven: config.typesafe,
+                    projectTrusted: ctx.isProjectTrusted(),
+                    catalogName: skill.name,
+                    catalogDescription: skill.description,
+                    userInvoked: false,
+                  });
+                  if (loadResult.body) {
+                    loadedBytes += loadResult.bytesLoaded;
+                    loadedSkillNames.add(result.selected.id);
+                    instructionsSupplied = true;
+                    const msg = buildLoadMessage(loadResult);
+                    record(ctx, config, "conscience", `loaded: ${result.selected.id} (${loadResult.bytesLoaded} bytes)`, ["trigger: before_agent_start", `skipReason: none`, `delivery: instructions_supplied`]);
+                    return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msg, display: config.steerVisible } };
+                  } else {
+                    record(ctx, config, "conscience", `load failed: ${result.selected.id}`, ["trigger: before_agent_start", `skipReason: ${loadResult.skipReason}`]);
+                    // Fall through to recommend mode
+                  }
+                }
+              }
+              // Recommend mode or load fallback
+              const msgContent = result.selected.kind === "skill"
+                ? `Consider using the \"${result.selected.id}\" skill: ${result.selected.description}`
+                : `Consider using the \"${result.selected.id}\" tool: ${result.selected.description}`;
+              return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msgContent, display: config.steerVisible } };
+            }
           } else if (result.selected && !budgetAvailable(config)) {
             record(ctx, config, "conscience", "selected but budget exhausted", ["trigger: before_agent_start", `skipReason: budget`]);
           }
