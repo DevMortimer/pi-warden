@@ -29,7 +29,10 @@ import { candidates } from './action-candidates.mjs';
  *
  * Billable and explicit: run it on purpose. A full run over a machine's sessions is large: the 2026-09-17 run over 321
  * sessions made about 16k requests and 40M input tokens (each replay carries task, context, plan, action, and the
- * questions). --dry-run prints the estimate; a run above --max-requests (default 2000) needs --yes.
+ * questions). --dry-run prints the estimate; a run above 2000 requests needs --yes, and --yes then spends what the
+ * corpus needs. --max-requests N is an explicit cap that --yes does not lift: the run stops at N, says how many replays
+ * it skipped, and writes report-latest-partial.md instead of report-latest.md, so a report over truncated data never
+ * looks complete. Continue such a run with --resume FILE.
  * Output is owner-only under .local/calibration/ and never committed.
  *
  *   node scripts/calibrate-action.mjs --dry-run                 # counts and request estimate, no requests
@@ -53,7 +56,11 @@ const MAX_CANDIDATES = 40;
 const MAX_HELD = 8;
 const sessionsRoot = join(homedir(), '.pi', 'agent', 'sessions');
 const concurrency = Number(value('concurrency', 6));
-const maxRequests = Number(value('max-requests', 2000));
+/** --max-requests N caps the run at N even with --yes; --yes alone spends what the corpus needs; neither means the 2000-request confirmation gate. */
+const budgetOf = argv => (argv.includes('--max-requests')
+  ? { cap: Number(argv[argv.indexOf('--max-requests') + 1]), explicit: true }
+  : { cap: argv.includes('--yes') ? Number.POSITIVE_INFINITY : 2000, explicit: false });
+const { cap: maxRequests, explicit: explicitCap } = budgetOf(args);
 /** Input tokens per request, measured on the 2026-09-17 runs (about 88M tokens over 33k requests). */
 const TOKENS_PER_REQUEST = 2700;
 const USD_PER_MTOK = DEFAULT_USD_PER_MTOK;
@@ -238,6 +245,7 @@ async function run() {
     console.log(`That is more than --max-requests ${maxRequests}. Add --yes to spend it, or --max-requests N to stop after N, or --project DIR to narrow the corpus.`);
     return;
   }
+  if (explicitCap && planned > maxRequests) console.log(`--max-requests ${maxRequests} is below the ${planned} requests this corpus needs: the run stops early and its report is marked partial.`);
 
   mkdirSync(outDir, { recursive: true, mode: 0o700 });
   if (!existsSync(outFile)) writeFileSync(outFile, '', { mode: 0o600 });
@@ -245,12 +253,13 @@ async function run() {
   const append = record => appendFileSync(outFile, `${JSON.stringify(record)}\n`);
   const judge = createTypeSafe({ maxRequests: Number.MAX_SAFE_INTEGER, timeoutMs });
   let requests = 0;
+  let skipped = 0;
   const budgetLeft = () => requests < maxRequests;
 
   console.log('# labels (one request per turn)');
   const pendingTurns = turns.filter(turn => !doneKeys.has(turnKey(turn)));
   await pool(pendingTurns, concurrency, async turn => {
-    if (!budgetLeft()) return;
+    if (!budgetLeft()) { skipped++; return; }
     const built = labelRequest(turn);
     if (!built) return;
     requests++;
@@ -271,7 +280,7 @@ async function run() {
   const config = { ...defaultConfig().action, tools: [...TOOLS] };
   const pendingCalls = calls.filter(({ turn, call }) => !doneKeys.has(callKey(turn, call)));
   await pool(pendingCalls, concurrency, async ({ turn, call }) => {
-    if (!budgetLeft()) return;
+    if (!budgetLeft() && !isReadOnlyLike(call)) { skipped++; return; }
     const summary = describeAction(call.tool, call.input, turn.cwd);
     const base = { kind: 'call', key: callKey(turn, call), session: turn.session, turn: turn.index, id: `${call.held || call.declined ? 'h' : 'a'}${call.n}`, callId: call.id, tool: call.tool, command: summary.command !== undefined ? clip(summary.command, 200) : undefined, path: summary.path, location: summary.location, heldInRecording: call.held, declinedInRecording: call.declined, planChars: call.plan ? Math.min(call.plan.length, 500) : 0 };
     if (isReadOnlyLike(call)) { append({ ...base, source: 'read-only', level: 'allow', patterns: [] }); return; }
@@ -281,8 +290,9 @@ async function run() {
     append({ ...base, source: verdict.source, level: verdict.level, patterns: verdict.patterns.map(hit => `${hit.id}:${hit.severity}`), reasons: verdict.reasons, error: verdict.error, ...(j ? { irreversible: j.irreversible, offTask: j.offTask, scope: j.scope, scopeConfidence: j.scopeConfidence, mutates: j.mutates, intentMismatch: j.intentMismatch, visible: j.visible, model: j.model, ms: j.elapsedMs } : {}), ...(verdict.extra ? { extra: verdict.extra } : {}) });
   });
   const spend = judge.getSpend();
+  if (skipped) console.log(`!! PARTIAL RUN: the --max-requests ${maxRequests} budget stopped this run with ${skipped} replays never made. Every number below covers truncated data. Continue with --resume ${outFile}.`);
   console.log(`${requests} requests this run. Session: ${spend.session.requestsStarted} started, ${spend.session.requestsSucceeded} ok, ${spend.session.requestsFailed} failed, ${spend.session.inputTokens} input tokens, about $${spend.session.estimatedUsd.toFixed(2)} at $${spend.usdPerMTok}/MTok. Today: ${spend.today.requestsStarted} requests, ${spend.today.inputTokens} input tokens, about $${spend.today.estimatedUsd.toFixed(2)}${spend.blocked ? `; blocked by ${spend.blocked.cap} (${spend.blocked.used}/${spend.blocked.limit})` : ''}.`);
-  report(readFileSync(outFile, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)));
+  report(readFileSync(outFile, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)), skipped);
 }
 
 /** The guard's own skip rule: a shell command with no pattern hit that only reads is never sent to Jev. */
@@ -297,7 +307,7 @@ function isReadOnlyLike(call) {
 const pct = v => `${(v * 100).toFixed(0)}%`;
 const fixed = v => (v === undefined ? '-' : v.toFixed(2));
 
-function report(records) {
+function report(records, skipped = 0) {
   const turns = new Map(records.filter(r => r.kind === 'turn').map(r => [r.key, r]));
   const calls = records.filter(r => r.kind === 'call');
   const labelled = calls.map(call => {
@@ -318,6 +328,7 @@ function report(records) {
   const lines = [];
   const out = line => { lines.push(line); console.log(line); };
   out(`\n# Action guard calibration on recorded sessions`);
+  if (skipped) out(`!! PARTIAL: the request budget stopped the run with ${skipped} replays never made. Every count below covers truncated data.`);
   out(`${turns.size} labelled turns (${[...turns.values()].filter(t => t.error).length} label errors), ${calls.length} guarded calls: ${ran.length} ran (${judged.length} judged by Jev, ${ran.filter(c => c.source === 'read-only').length} read-only, ${ran.filter(c => c.source === 'error').length} errors), ${labelled.filter(c => c.kind === 'held').length} held in the recording, ${labelled.filter(c => c.kind === 'declined').length} declined.`);
   const regretTurns = [...turns.values()].filter(t => (t.regretted ?? 0) >= REGRET_THRESHOLD);
   out(`Turns whose next message regrets a call: ${regretTurns.length} (${pct(regretTurns.length / Math.max(1, turns.size))}); reception: ${JSON.stringify(Object.fromEntries(['continues', 'corrects', 'rejects', 'unrelated'].map(k => [k, [...turns.values()].filter(t => t.satisfied === k).length])))}.`);
@@ -417,7 +428,7 @@ function report(records) {
     out(`\n## Holds under the current defaults that the user did not regret (${fps.length}; first 25)`);
     for (const c of fps.slice(0, 25)) out(`  ${c.tool.padEnd(6)} irr ${fixed(c.irreversible)} off ${fixed(c.offTask)} ${(c.scope ?? '').padEnd(19)} ${(c.patterns ?? []).join(',').padEnd(24)} ${c.command ?? c.path ?? ''}`.slice(0, 200));
   }
-  const reportPath = join(outDir, 'report-latest.md');
+  const reportPath = join(outDir, skipped ? 'report-latest-partial.md' : 'report-latest.md');
   mkdirSync(outDir, { recursive: true, mode: 0o700 });
   writeFileSync(reportPath, `${lines.join('\n')}\n`, { mode: 0o600 });
   console.log(`\nReport written to ${reportPath}`);
