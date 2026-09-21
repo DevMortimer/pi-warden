@@ -8,6 +8,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.31.0
+
+### Added
+- `/warden audit` command: agent-driven workspace audit that sends a prompt to the session model. The model reads source, finds concrete Jev opportunities, produces measurable evidence, and writes an HTML report to `.pi-warden/audit-report.html`.
+
+### Changed
+- Bumped pi-typesafe dependency to ^0.6.1.
+
 ## 0.30.4
 
 ### Changed

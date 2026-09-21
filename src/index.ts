@@ -44,3 +44,5 @@ export { writeStarterRules, generateStarterRules, detectProjectType, buildProjec
 export type { InitResult } from "./init.js";
 export { initSchema, recordHold, recordOutcome as recordHoldOutcome, querySmartHistory, calculateSmartConfidence, shouldSkipHold, analyzeThresholds, analyzePatterns, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 export type { HoldRecord, HoldScores, HoldLevel, HoldOutcome, HoldContext, SmartHistory, ConfidenceResult, SkipResult, ThresholdAdjustment, PatternInsight, ContextRecommendation, SteerEffectivenessReport } from "./learning.js";
+export { buildAuditPrompt, snapshotReport, reportOutcome } from "./audit.js";
+export type { ReportSnapshot } from "./audit.js";
