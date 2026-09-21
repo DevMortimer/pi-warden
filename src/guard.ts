@@ -229,7 +229,7 @@ function sample(text: string, limit: number): string {
 
 interface Rule { id: string; severity: Severity; label: string; test: RegExp }
 
-const SHELL_RULES: Rule[] = [
+export const SHELL_RULES: Rule[] = [
   { id: "git-force-push", severity: "destructive", label: "git force push", test: /\bgit\s+push\b[^\n;&|]*\s(?:-f|--force)(?![-\w])/ },
   { id: "git-force-with-lease", severity: "risky", label: "git push --force-with-lease", test: /\bgit\s+push\b[^\n;&|]*--force-with-lease/ },
   { id: "git-reset-hard", severity: "destructive", label: "git reset --hard", test: /\bgit\s+reset\b[^\n;&|]*--hard/ },
@@ -416,6 +416,10 @@ export const EXEMPTABLE_IDS: readonly string[] = [
   "rm-recursive-dangerous-target",
   "sensitive-path",
 ];
+
+/** Built-in pattern IDs whose hits become evidence (not level-setters) in evidence mode.
+ *  User-declared rules are never in this set. */
+export const BUILT_IN_IDS: ReadonlySet<string> = new Set(EXEMPTABLE_IDS);
 
 /** Exempt ids that name neither a built-in, a classifier id, nor one of the user's own rules: inert, but
  * almost certainly not what the user meant. */
@@ -1015,11 +1019,11 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   // A shell command that merely mentions a secrets file (grep for key names, cat .env.example) is decided after Jev
   // says whether it can write; write/edit on such a path, and offline runs, keep the immediate warning.
   const deferSensitive = judge !== undefined && (action.tool !== "write" && action.tool !== "edit");
-  // Built-in IDs whose hits become evidence (not level-setters) when a judge answers and action.floor is "evidence".
-  const BUILT_IN_IDS = new Set([
-    ...SHELL_RULES.map(rule => rule.id), "rm-recursive", "rm-rf", "rm-recursive-dangerous-target", "sensitive-path",
-  ]);
   const builtInHits: string[] = [];
+  let hasBuiltInDestructive = false;
+  let hasBuiltInOther = false;
+  let hasOutsideProject = false;
+  let outsideProjectExisting = false;
   const evidenceMode = config.floor === "evidence" && judge !== undefined;
   for (const hit of activePatterns) {
     if (hit.severity === "deny") { level = "deny"; reasons.push(hit.message ?? hit.label); continue; }
@@ -1029,6 +1033,8 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       // Built-in pattern hits become evidence: listed in the request for the judge and traced, but not level-setters.
       builtInHits.push(`${hit.label} [${hit.severity}]`);
       reasons.push(`${hit.severity}: ${hit.label} (evidence)`);
+      if (hit.severity === "destructive") hasBuiltInDestructive = true;
+      else hasBuiltInOther = true;
     } else {
       level = higher(level, hit.severity === "destructive" ? "confirm" : "warn");
       reasons.push(`${hit.severity}: ${hit.label}`);
@@ -1041,6 +1047,8 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
         : `creates a file outside the project ${summary.path ?? ""}`;
       builtInHits.push(pathNote);
       reasons.push(`outside project: ${pathNote} (evidence)`);
+      hasOutsideProject = true;
+      if (action.tool === "write" && summary.exists) outsideProjectExisting = true;
     } else {
       if (action.tool === "write" && summary.exists) {
         level = higher(level, "confirm");
@@ -1068,6 +1076,11 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     if (!config.failOpen) {
       level = higher(level, "confirm");
       reasons.push("TypeSafe unavailable and failOpen is false");
+    } else if (evidenceMode && (hasBuiltInDestructive || hasBuiltInOther || hasOutsideProject)) {
+      // Judge failed in evidence mode: re-apply the floor from built-in hits as if level mode.
+      if (hasBuiltInDestructive || outsideProjectExisting) level = higher(level, "confirm");
+      else if (hasBuiltInOther || hasOutsideProject) level = higher(level, "warn");
+      reasons.push("TypeSafe unavailable; built-in patterns decide");
     } else {
       reasons.push("TypeSafe unavailable; allowed by failOpen");
     }

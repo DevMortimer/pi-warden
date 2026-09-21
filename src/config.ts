@@ -562,7 +562,7 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     // Arming rules are user-declared security policy: same gate.
     armingRules: source === "user" ? parseArmingRules(raw.armingRules) : base.armingRules,
     escalationThreshold: probability(raw.escalationThreshold, base.escalationThreshold),
-    floor: raw.floor === "level" ? "level" : "evidence",
+    floor: source === "user" && (raw.floor === "level" || raw.floor === "evidence") ? raw.floor : base.floor,
   };
 }
 

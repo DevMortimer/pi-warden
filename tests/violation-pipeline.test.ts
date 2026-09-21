@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { Judge, Questions } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { aggregateLevel, authorize, buildRequest, evaluateAction, scopeMatches } from "../src/guard.js";
+import { aggregateLevel, authorize, buildRequest, evaluateAction, scopeMatches, SHELL_RULES, BUILT_IN_IDS } from "../src/guard.js";
 import type { Violation } from "../src/guard.js";
 import { buildInitPrompt, writeStarterRules } from "../src/init.js";
 import { resolveRulesFile } from "../src/rules-file.js";
@@ -182,4 +182,27 @@ test("(f) floor:level restores (a) to confirm", async () => {
   const j = fakeJudge({ irreversible: 0.18 });
   const verdict = await evaluateAction({ tool: "bash", input: { command: "git reset --hard HEAD~1" }, cwd, task: "undo last commit" }, { config, judge: j });
   assert.equal(verdict.level, "confirm");
+});
+
+test("(h) judge failure in evidence mode falls back to floor for built-in hits", async () => {
+  const failingJudge: Judge & { requests: unknown[] } = {
+    requests: [],
+    async evaluate(request) {
+      this.requests.push(request);
+      throw new Error("simulated timeout");
+    },
+  };
+  const config = defaultConfig().action;
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push" }, { config, judge: failingJudge });
+  assert.equal(verdict.level, "confirm", "destructive built-in hit holds when judge fails");
+  assert.ok(verdict.reasons.some(r => /built-in patterns decide/.test(r)));
+});
+
+test("(i) built-in ID coverage: every SHELL_RULES, rm classifier, and sensitive-path id is in BUILT_IN_IDS", () => {
+  const shellIds = SHELL_RULES.map(r => r.id);
+  const rmIds = ["rm-recursive", "rm-rf", "rm-recursive-dangerous-target"];
+  const allBuiltin = [...shellIds, ...rmIds, "sensitive-path"];
+  for (const id of allBuiltin) {
+    assert.ok(BUILT_IN_IDS.has(id), `${id} must be in BUILT_IN_IDS`);
+  }
 });
