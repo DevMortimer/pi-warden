@@ -216,17 +216,25 @@ test("should-proceed opt-in steers reach interactive and headless agents without
   }
 });
 
-test("action rules context is disclosed and sent independently of the rules guard", async () => {
+test("action rules context is disclosed, rides the request with the rules guard on, and stays home with it off", async () => {
   const rulesFile = join(temporary, "AGENTS.md");
   await writeFile(rulesFile, "# Local policy\nUse the project logger.\n");
   try {
-    await grantConsent();
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
     await toolCall("bash", { command: "npm test" });
-    const action = requests.find(request => "irreversible" in request.questions);
-    assert.match(String(action?.state.rules), /project logger/);
+    const on = requests.find(request => "irreversible" in request.questions);
+    assert.match(String(on?.state.rules), /project logger/);
+    assert.equal(on?.state.rulesSource, "AGENTS.md");
+
+    requests.length = 0;
+    await grantConsent(); // writes rules: { enabled: false }
+    await toolCall("bash", { command: "npm test" });
+    const off = requests.find(request => "irreversible" in request.questions);
+    assert.equal(off?.state.rules, undefined, "the rules guard's switch keeps the rules file off the wire");
+    assert.equal(off?.state.rulesSource, undefined);
+
     const { disclosure } = await import("../src/extension.js");
-    assert.match(disclosure, /rules guard is disabled/i);
-    assert.match(disclosure, /rules guard is disabled/i);
+    assert.match(disclosure, /unless the rules guard is off/i);
   } finally { await rm(rulesFile); }
 });
 

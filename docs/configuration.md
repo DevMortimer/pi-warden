@@ -2,7 +2,7 @@
 
 Every key, its default, what a project file may change, the status line templates, and the update note. The [README](../README.md) covers the common cases; [guards.md](guards.md) explains what each threshold does.
 
-Contents: [User config](#user-config) · [Project config](#project-config) · [Environment](#environment) · [Status line and trace sidebar](#status-line-and-trace-sidebar) · [After updating the package](#after-updating-the-package)
+Contents: [User config](#user-config) · [Project config](#project-config) · [Recipe: security work](#recipe-security-work) · [Environment](#environment) · [Status line and trace sidebar](#status-line-and-trace-sidebar) · [After updating the package](#after-updating-the-package)
 
 ## User config
 
@@ -85,6 +85,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `action.armingRules` | User-defined arming rules: `{ id, when: { edited, regex?, tools? }, arms: { command, for?, caseSensitive? }, action, message? }`. Editing a file matching a `when.edited` glob arms the rule's `arms.command` regex for `arms.for` (default `"10m"`; accepts `"30s"`, `"2h"`, or ms). While armed, commands matching the regex fire the rule's `action`: `confirm` (dialog), `hold` (steer), `block` (deny). State lives for the rule's window within a session, refreshed on each matching edit, cleared on `session_start`, and shown in `/warden status`. Approving the dialog approves that call, not the window; the dialog re-fires for each matching command while the rule is armed. User file only. |
 | `action.exemptRules` | Built-in or user rule ids to exempt, e.g. `["infra-destroy"]` for a workflow whose `kubectl delete` is routine; also `rm-recursive` / `rm-rf` / `rm-recursive-dangerous-target` (the `rm` classifier) and `sensitive-path`. An id naming nothing is inert and reported once at startup. Exempting `sensitive-path` removes the only deterministic credential-touch signal, Jev questions aside. User file only. |
 | `action.escalationThreshold` | Jev confidence above which a violation's severity is escalated in the blast-radius and rules-guard escalation paths. Default `0.85`. Escalation fires when confidence strictly exceeds this threshold; setting it to `1` effectively disables escalation since noul confidence cannot exceed 1. |
+| `rules.enabled` | The rules guard, and whether the resolved rules file content rides action requests at all. `false` keeps that content on this machine. |
 | `rules.*` | Rules source, threshold, path globs, sensitive-path notes. See [guards.md → Rules](guards.md#rules). |
 | `slop.*` | Code slop threshold and reply (prose) checks. `prose.audience` is `technical`, `plain`, or free text. |
 | `security.threshold` | Written-code risk and tool-output injection threshold. |
@@ -123,6 +124,76 @@ A wince-style setup for a backend repo (the full version is [`examples/pi-warden
   }
 }
 ```
+
+## Recipe: security work
+
+### What leaves the machine
+
+For penetration testing, incident response, vulnerability research, CTF, and hardening work, where the day touches credentials, scanners, and hostile samples. Nothing leaves until `/warden enable`. After that, each guarded call sends a redacted, truncated summary of the call (tool, command or path, the agent's stated plan), your latest request with up to eight earlier messages as task context, and the resolved rules file content — `pi-warden.md`, or the `AGENTS.md` / `CLAUDE.md` / `README.md` fallback — which rides every action request while the rules guard is on. A `write` or `edit` adds a sample of the written code; the security and context guards add redacted tool-output samples; stuck sends recent commands and output tails; the done-check sends the final message. Redaction (`src/redact.ts`) replaces credential shapes — `Authorization`, `TOKEN=`, `sk-`, `ghp_`, `AKIA`, JWTs, PEM blocks, URL passwords — and nothing else: it is not a path scrubber, so hostnames, IP addresses, and file paths travel as written. [data-handling.md](data-handling.md) lists every field per guard.
+
+For nothing at all, `/warden disable`: the offline layer keeps working: built-in patterns, your own `commandRules` and `pathRules`, `rules.sensitivePaths` notes, duplicate detection, and the runaway guard. Everything that needs a judgment stops with it, including the done-check.
+
+### Local-only profile
+
+Keeps the pattern floor and the done-check; sends no written code, no tool-output samples, and no subagent reports. User file `~/.pi/agent/pi-warden/config.json`:
+
+```json
+{
+  "action": { "tools": ["bash"] },
+  "rules": { "enabled": false },
+  "slop": { "enabled": false },
+  "security": { "enabled": false },
+  "context": { "enabled": false },
+  "subagent": { "enabled": false }
+}
+```
+
+- `action.tools` — only bash is inspected, so no `write` or `edit` content sample is ever built; file writes lose the action guard too.
+- `rules.enabled` — no rules-guard request, so no exploit or tooling source is judged against a README, and no rules file content rides the action requests either.
+- `slop.enabled` — drops the slop questions, which carry written code.
+- `security.enabled` — no tool-output or written-code sample for the weakness check.
+- `context.enabled` — large tool output is never sampled for compression; long scanner output stays in the transcript whole.
+- `subagent.enabled` — child reports are never sampled, and never wake the agent.
+
+One residue: a judged bash call still sends its redacted summary and the task context. Only `action.enabled: false` (which also removes the pattern checks) or `/warden disable` stops that.
+
+### Lab profile
+
+Project file `.pi/pi-warden.json` in the lab or CTF repo (a project file is read only when Pi trusts the project):
+
+```json
+{
+  "security": { "enabled": false },
+  "rules": { "exclude": ["exploits/**", "samples/**", "**/*.pcap"] }
+}
+```
+
+- `security.enabled` — fixtures that are supposed to hold a hardcoded secret or a disabled TLS check stop firing. The switch is per project, not per directory, so the rest of the repo loses the check as well.
+- `rules.exclude` — those paths are never sent to Jev at all; `rules.skip` is the weaker form (still local, rules just do not apply).
+
+The exemptions belong in the user file — `action.exemptRules`, `commandRules`, `commandDenyRules`, `pathRules`, `armingRules`, and `action.floor` are user-only keys, silently ignored in a project file, so a checked-out repo cannot ship itself a hold-free floor:
+
+```json
+{ "action": { "exemptRules": ["sensitive-path", "remote-script-exec", "chmod-777"] } }
+```
+
+- `sensitive-path` — stops the hold on every `cat .env`, ssh config, `auth.json`, keystore, and fake-secret fixture. It is the only deterministic credential-touch signal, so real credential reads go unflagged too, Jev's questions aside.
+- `remote-script-exec` — lets a lab setup pipe a remote script into a shell without a hold; a hostile URL in that shape is no longer caught offline.
+- `chmod-777` — lets the lab's broad permissions pass; the same command on a production path passes too.
+
+### Engagement hard stop and measuring your own rate
+
+A deny rule blocks a call outright: no dialog, no TypeSafe request. Command rules are matched in code and never sent, and a match travels only as its id, so the hosts you name stay on this machine. Replace the placeholders below with the out-of-scope hosts from your own scope document (user file):
+
+```json
+{
+  "action": { "commandRules": [
+    { "id": "out-of-scope-target", "pattern": "\\b(?:out-of-scope\\.example|other-tenant\\.example)\\b", "severity": "deny", "message": "Not in the signed engagement scope — check the scope document first." }
+  ] }
+}
+```
+
+It is a backstop for sanctioned work, not a boundary anyone hostile respects: keep the pattern short and update it when the scope changes. After a week on these settings, run `node scripts/hold-stats.mjs` for your own hold rate and the ids behind it, then exempt or re-enable from your own numbers — the rates in the README come from the maintainer's corpus, and security work fires a different mix of patterns.
 
 ## Environment
 

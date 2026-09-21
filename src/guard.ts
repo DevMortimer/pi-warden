@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
-import type { ActionGuardConfig, ArmingRule, CommandRule, PathRule, SecurityConfig, SlopGuardConfig } from "./config.js";
+import type { ActionGuardConfig, ArmingRule, CommandRule, PathRule, RulesConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { globToRegExp } from "./rules.js";
 import { resolveRulesFile } from "./rules-file.js";
@@ -192,6 +192,12 @@ export interface EvaluateOptions {
   /** Adds quality questions for write/edit content to the same request. */
   slop?: SlopGuardConfig | undefined;
   security?: SecurityConfig | undefined;
+  /**
+   * The rules guard's switch. The active rules file rides every judged action request, so `enabled: false` is what keeps
+   * that content on this machine. Omitted, the file is sent as before, so a library caller that passes no rules config
+   * keeps today's behaviour.
+   */
+  rules?: Pick<RulesConfig, "enabled"> | undefined;
   /** This exact call was held earlier and the user has replied since: ask whether the reply approves it. */
   retryAfterHold?: boolean | undefined;
   /** Calls allowed in the previous turn: ask whether the user's latest message regrets one of them (rides this request). */
@@ -1073,8 +1079,9 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   if (!judge) return withPlan({ level, source: "pattern", summary, patterns, reasons });
 
-  // Resolve the rules file once per call for the Jev request state.
-  const resolved = resolveRulesFile(action.cwd);
+  // Resolve the rules file once per call for the Jev request state. With the rules guard off, no rules content leaves
+  // the machine at all: no question names the field, so an absent one costs nothing.
+  const resolved = options.rules?.enabled === false ? null : resolveRulesFile(action.cwd);
   const floorHits = builtInHits.length ? builtInHits.join("; ") : "none";
   const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: resolved?.content, rulesSource: resolved?.source, violations: remainingViolations, floorHits });
   const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
