@@ -407,7 +407,6 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     for (const item of records) {
       const entry = traceOf.get(item);
       if (entry) trace.amend(entry, outcomeNote(item));
-      // Persist every non-pending outcome to SQLite so replanned, regretted, and accepted labels are queryable.
       const idPromise = learningIds.get(item.id);
       if (idPromise && item.outcome !== "pending") {
         idPromise.then(id => recordOutcome(id, item.outcome)).catch(err => console.warn("pi-warden: recordOutcome failed:", err));
@@ -737,8 +736,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (held) recordOpts.agentReason = steerReason(deliveryVerdict, { canApprove: judge !== undefined });
       const item = holds.record(verdict, recordOpts);
       traceOf.set(item, entry);
-      noteOutcomes(config, outcome ? [item] : []);
-      // Record to SQLite for learning (held and judged-allowed calls)
+      // Record to SQLite for learning (held and judged-allowed calls).
+      // The promise and map entry must exist before noteOutcomes so that an outcome
+      // known at record time (e.g. dialog-approved) is not lost to the race.
       const preview = redact(verdict.summary.command ?? verdict.summary.path ?? "");
       const holdPromise = recordHold(toHoldRecord(
         { at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores, held },
@@ -747,6 +747,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       )).catch(err => { console.warn("pi-warden: recordHold failed:", err); return -1; });
       learningIds.set(item.id, holdPromise);
       pruneLearningIds();
+      noteOutcomes(config, outcome ? [item] : []);
     };
     // The warn notice below names the mismatch to the user; the agent gets the steer with the other notes.
     if (verdict.intentMismatch) {
