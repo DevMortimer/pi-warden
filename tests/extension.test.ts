@@ -6,6 +6,7 @@ import { after, before, beforeEach, test } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
+import { defaultConfig } from "../src/config.js";
 
 let temporary: string;
 let extension: Extension;
@@ -89,6 +90,11 @@ const toolResult = (toolName: string, input: Record<string, unknown>, output: st
   fire("tool_result", { toolName, toolCallId: "call-1", input, content: [{ type: "text", text: output }], isError: failed, details: toolName === "bash" ? { exitCode: failed ? 1 : 0 } : undefined }, ctx);
 const agentEnd = (finalText: string, ctx = context()) => fire("agent_end", { messages: [{ role: "user", content: prompt ?? "" }, { role: "assistant", content: [{ type: "text", text: finalText }], stopReason: "stop" }] }, ctx);
 const newPrompt = (text: string, ctx = context()) => { prompt = text; return fire("before_agent_start", { prompt: text }, ctx).then(() => fire("agent_start", {}, ctx)); };
+/** Fire before_agent_start with skills in systemPromptOptions and return its result. */
+const promptWithSkills = (text: string, skills: Array<{ name: string; description: string; filePath: string; baseDir: string; sourceInfo: { path: string; source: string; scope: string; origin: string }; disableModelInvocation: boolean }>, ctx = context()) => {
+  prompt = text;
+  return fire("before_agent_start", { prompt: text, systemPromptOptions: { cwd: temporary, skills } }, ctx);
+};
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
 /** The hold log is written without blocking the hook; a test that reads it waits for the expected number of lines. */
@@ -1933,4 +1939,57 @@ test("pathRules: a confirm rule prompts the user, a block rule blocks, and notes
   assert.equal(flows, undefined, "a read of the read-flow path passes without a prompt");
   await rm(join(temporary, "deploy.yaml"), { force: true });
   await rm(join(temporary, "audit"), { recursive: true, force: true });
+});
+
+/* ─── Conscience lifecycle fixture (step 2: intentionally failing) ──── */
+
+const conscienceSkill = (name: string, description: string) => ({
+  name,
+  description,
+  filePath: `/skills/${name}/SKILL.md`,
+  baseDir: `/skills/${name}`,
+  sourceInfo: { path: `/skills/${name}/SKILL.md`, source: "local", scope: "user" as const, origin: "top-level" as const },
+  disableModelInvocation: false,
+});
+
+// "Exact screenshot request plus paraphrases: initial input → before_agent_start, no tool_call;
+//  assert returned recommendation/skill content precedes the modeled first provider request
+//  in each mode."
+// Marked skip per voyage conscience: the lifecycle fixture fails until the hook wiring (step 4)
+// delivers the recommendation through before_agent_start. The Conscience module itself is
+// tested with a fake judge in tests/conscience.test.ts.
+test("conscience: no-tool lifecycle fixture for recommend mode (skip: voyage conscience, step 2)", { skip: true }, async () => {
+  const skills = [
+    conscienceSkill("impeccable", "Frontend interface design, polish, and UX"),
+    conscienceSkill("tdd", "Test-driven development"),
+  ];
+  const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
+    message?: { customType: string; content: string };
+  } | undefined;
+  assert.ok(result?.message, "before_agent_start must return a custom message in recommend mode");
+  assert.match(result!.message!.content, /impeccable/i, "the message should recommend the impeccable skill");
+  // No tool_call should have been fired during before_agent_start
+});
+
+test("conscience: no-tool lifecycle fixture for load mode (skip: voyage conscience, step 2)", { skip: true }, async () => {
+  const skills = [
+    conscienceSkill("impeccable", "Frontend interface design, polish, and UX"),
+  ];
+  const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
+    message?: { customType: string; content: string };
+  } | undefined;
+  assert.ok(result?.message, "before_agent_start must return a custom message in load mode");
+  assert.match(result!.message!.content, /impeccable/i, "the message should include impeccable skill content");
+  assert.ok(result!.message!.content.length > 100, "load mode should supply the full skill body");
+});
+
+test("conscience: config defaults in defaultConfig match expected schema", () => {
+  const config = defaultConfig();
+  assert.ok(config.conscience, "defaultConfig must include conscience");
+  assert.equal(config.conscience.enabled, true);
+  assert.equal(config.conscience.skills.mode, "recommend");
+  assert.equal(config.conscience.tools.enabled, true);
+  assert.equal(config.conscience.timeoutMs, 1500);
+  assert.equal(config.conscience.maxAssessments, 3);
+  assert.equal(config.conscience.maxNudges, 2);
 });
