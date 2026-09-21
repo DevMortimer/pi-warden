@@ -9,6 +9,18 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Changed
 - Built-in pattern floor is now evidence when a judge answers (`action.floor: "evidence"`, default). Built-in hits (shell rules, rm classifier, sensitive-path, outside-project) are fed to the judge as `floor_hits` in the request state and traced as `(evidence)`, but they no longer override the judge's `irreversible` score. User-declared rules keep their declared action. `action.floor: "level"` restores the legacy behaviour. Replay on 52 real holds: evidence mode drops held count from 52 to 28; level mode preserves 44 confirm + 8 warn.
 
+## 0.32.0
+
+### Fixed
+- `replanned` outcomes now persist to SQLite, closing the gap where re-plan labels were set in memory but never written to the database.
+- `command_preview` stores the redacted command or path (capped at 200 chars) instead of the bare tool name.
+- Outcome known at record time (dialog-approved/declined) is no longer lost to a race between `noteOutcomes` and `learningIds.set`.
+- Set `PRAGMA busy_timeout` on the SQLite connection and skip VACUUM when no rows are pruned, preventing SQLITE_BUSY on startup with concurrent sessions. Fixes #36.
+
+### Changed
+- Judged allowed calls (`held = 0`) are now stored in SQLite alongside held calls, enabling precision and false-negative rate computation.
+- Disclosure and `docs/data-handling.md` updated to reflect that judged allowed calls are stored with `held = 0`.
+
 ## 0.31.0
 
 ### Added

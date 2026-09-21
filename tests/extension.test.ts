@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, RegisteredCommand } from "@earendil-works/pi-coding-agent";
+import { initSchema, queryHoldsForProject } from "../src/learning.js";
 
 let temporary: string;
 let extension: Extension;
@@ -13,6 +14,7 @@ const savedKey = process.env.TYPESAFE_API_KEY;
 const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
 const savedEnabled = process.env.PI_WARDEN_ENABLED;
 const savedMode = process.env.PI_WARDEN_MODE;
+const savedDb = process.env.PI_WARDEN_DB;
 const originalFetch = globalThis.fetch;
 
 const notices: Array<{ text: string; level: string }> = [];
@@ -107,6 +109,7 @@ before(async () => {
   await mkdir(join(temporary, "agent", "pi-warden"), { recursive: true });
   process.env.PI_CODING_AGENT_DIR = join(temporary, "agent");
   process.env.TYPESAFE_API_KEY = "offline-test-key";
+  process.env.PI_WARDEN_DB = join(temporary, "agent", "pi-warden", "holds.db");
   delete process.env.PI_WARDEN_ENABLED;
   delete process.env.PI_WARDEN_MODE;
   globalThis.fetch = async (input, init) => {
@@ -175,6 +178,7 @@ after(async () => {
   if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
   if (savedEnabled === undefined) delete process.env.PI_WARDEN_ENABLED; else process.env.PI_WARDEN_ENABLED = savedEnabled;
   if (savedMode === undefined) delete process.env.PI_WARDEN_MODE; else process.env.PI_WARDEN_MODE = savedMode;
+  if (savedDb === undefined) delete process.env.PI_WARDEN_DB; else process.env.PI_WARDEN_DB = savedDb;
   if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 
@@ -850,6 +854,28 @@ test("hold feedback offline: approval, re-plan, and a stop reply label the calls
   assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 awaiting your reply; precision not yet measurable; 0 allowed \(0 regretted by you, 0 accepted\)\. Rules:/);
   assert.ok(!notices.at(-1)!.text.includes("Log:"));
   await assert.rejects(readFile(logPath), "nothing is written with feedbackLog off");
+});
+
+test("hold outcome known at record time is persisted to SQLite via the promise (ordering fix)", async () => {
+  // The confirm-dialog path sets outcome at record time via track(true, "approved", "dialog").
+  // Before the ordering fix, noteOutcomes ran before learningIds.set, so the label was lost.
+  await initSchema(0);
+  await writeFile(configPath(), JSON.stringify({ mode: "confirm", notices: true, rules: { enabled: false }, ...STACK_BAR }));
+  await sessionStart();
+  prompt = "deploy the change";
+  confirmResult = false;
+  assert.equal((await toolCall("bash", { command: "git push --force origin main" }))?.block, true, "first call held via dialog");
+  await new Promise(resolve => setTimeout(resolve, 100));
+  let rows = await queryHoldsForProject(temporary, { held: true });
+  assert.ok(rows.some(row => row.outcome === "declined"), `declined outcome persisted (known at record time); rows: ${JSON.stringify(rows)}`);
+  confirmResult = true;
+  assert.equal(await toolCall("bash", { command: "git push --force origin main" }), undefined, "approved via dialog");
+  await new Promise(resolve => setTimeout(resolve, 100));
+  rows = await queryHoldsForProject(temporary, { held: true });
+  assert.ok(rows.some(row => row.outcome === "approved"), `approved outcome persisted (known at record time); rows: ${JSON.stringify(rows)}`);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  rows = await queryHoldsForProject(temporary, { held: true });
+  assert.ok(rows.some(row => row.outcome === "approved"), "approved outcome persisted (known at record time)");
 });
 
 test("hold feedback with Jev: the regret question rides the first action request after the reply and labels the located call", async () => {
