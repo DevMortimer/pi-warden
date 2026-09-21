@@ -256,8 +256,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
   let regretCandidates: PreviousAction[] = [];
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
-  /** Full output text keyed by attempt index, for stuck-loop diffs. */
-  let fullOutputs = new Map<number, string>();
+  /** Full output text and saved path keyed by attempt call key, for stuck-loop diffs. */
+  let fullOutputs = new Map<string, { text: string; path?: string }>();
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
   let warnedFallback = false;
@@ -875,11 +875,6 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const text = textBlocks.map(part => part.text).join("\n");
     // Repeat detection uses the original result, so its request goes out together with the output check.
     const failed = resultFailed(event.isError, event.details, event.content);
-    // Save the full text for stuck-loop diffs before any compression or duplicate detection.
-    if (config.stuck.enabled && failed && text.length > 0) {
-      const attemptIndex = attempts.attempts.length;
-      fullOutputs.set(attemptIndex, text);
-    }
     const stuckCheck = (() => {
       if (!config.stuck.enabled) return undefined;
       attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
@@ -1045,29 +1040,47 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         `output sample: ${redact(text).slice(0, 300)}`, delivered ? `agent told: ${notice}` : `steer recorded, not delivered (a repeat or the per-run budget): ${notice}`,
       ]);
     }
-    // Stuck-loop diff: when a repeat failure has been detected and the previous full output
-    // is available, replace the tool result with a short diff note before the patch is computed,
-    // so the diff overrides any duplicate or compression note.
-    if (config.stuck.enabled && failed && text.length > 0 && attempts.attempts.length >= 2) {
-      const prevIndex = attempts.attempts.length - 2;
-      const prevFull = prevIndex >= 0 ? fullOutputs.get(prevIndex) : undefined;
-      if (prevFull !== undefined && attempts.exactRepeats() >= config.stuck.minFailures) {
+    // Stuck-loop diff: when the verdict is stuck on a failed result and a previous failed output
+    // for the same call is available, replace the tool result with a short diff note. Compute
+    // bytesSaved against the current content (after duplicate detection and compression), so the
+    // diff never grows the result.
+    const verdict = await stuckCheck;
+    if (verdict && verdict.stuck && failed && !verdict.successRepeat && !verdict.churn && text.length > 0) {
+      const currentKey = attempts.attempts.at(-1)?.key;
+      const prevEntry = currentKey ? fullOutputs.get(currentKey) : undefined;
+      if (currentKey && prevEntry && prevEntry.text !== text) {
+        // Differing outputs: save the current output and diff against the previous one.
         try {
-          const savedPath = await saveOutput(text);
-          const diffNote = stuckDiff(prevFull, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: savedPath });
-          const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(diffNote);
-          if (bytesSaved > 0) {
+          const saved = await saveOutput(text);
+          const diffNote = stuckDiff(prevEntry.text, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: saved });
+          const currentLen = Buffer.byteLength(content.map(part => part.type === "text" ? part.text : "").join("\n"));
+          if (Buffer.byteLength(diffNote) < currentLen) {
             content = [{ type: "text", text: diffNote }, ...content.filter(part => part.type !== "text")];
           }
+          fullOutputs.set(currentKey, { text, path: saved });
         } catch {
           noteError(ctx, "Could not store full output for stuck diff; keeping it unchanged.", undefined);
+          fullOutputs.set(currentKey, { text });
         }
+      } else if (currentKey && prevEntry && prevEntry.text === text && prevEntry.path) {
+        // Byte-identical outputs: one-line note reusing the existing saved path.
+        const diffNote = stuckDiff(text, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: prevEntry.path });
+        const currentLen = Buffer.byteLength(content.map(part => part.type === "text" ? part.text : "").join("\n"));
+        if (Buffer.byteLength(diffNote) < currentLen) {
+          content = [{ type: "text", text: diffNote }, ...content.filter(part => part.type !== "text")];
+        }
+      } else if (currentKey) {
+        // First failed output for this call, or no previous entry yet: store for future diffs.
+        fullOutputs.set(currentKey, { text });
       }
+    } else if (failed && text.length > 0) {
+      // Not stuck (or no verdict yet): store the output so a future repeat can diff against it.
+      const currentKey = attempts.attempts.at(-1)?.key;
+      if (currentKey) fullOutputs.set(currentKey, { text });
     }
     const patch = content === event.content ? undefined : { content };
     // Checks use the original result, not the excerpts or security banner.
     if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
-    const verdict = await stuckCheck;
     if (!verdict) return patch;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     if (verdict.source === "repeat" && !verdict.stuck) return patch;

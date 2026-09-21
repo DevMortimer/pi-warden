@@ -272,11 +272,11 @@ function lineDiff(previous: string, current: string, diffLimit: number): string 
  */
 export function stuckDiff(previous: string, current: string, options: { diffLimit: number; tailLimit: number; fullPath: string }): string {
   const header = `pi-warden: stuck-loop diff; this output repeated a failure (previous: ${previous.length} chars, current: ${current.length} chars).`;
-  const tail = current.length <= options.tailLimit ? current : `… [${current.length - options.tailLimit} earlier chars omitted]\n${current.slice(-options.tailLimit)}`;
   if (previous === current) {
-    return `${header}\nOutputs are byte-identical; no diff.\n${tail}\n\nFull output: ${options.fullPath}`;
+    return `${header}\nOutputs are byte-identical; see the full output at ${options.fullPath}.`;
   }
   const diff = lineDiff(previous, current, options.diffLimit);
+  const tail = current.length <= options.tailLimit ? current : `… [${current.length - options.tailLimit} earlier chars omitted]\n${current.slice(-options.tailLimit)}`;
   return `${header}\n${diff}\n${tail}\n\nFull output: ${options.fullPath}`;
 }
 

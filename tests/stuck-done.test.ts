@@ -370,8 +370,8 @@ test("stuckDiff says outputs are identical when byte-identical", () => {
   const same = "same output\nline2";
   const result = stuckDiff(same, same, { diffLimit: 3000, tailLimit: 1000, fullPath: "/tmp/out.txt" });
   assert.match(result, /byte-identical/);
-  assert.match(result, /no diff/i);
-  assert.match(result, /Full output: \/tmp\/out\.txt/);
+  assert.match(result, /see the full output at \/tmp\/out\.txt/);
+  assert.ok(!result.includes("Full output:"), "one-line form does not use the multi-line footer");
 });
 
 test("stuckDiff truncates a diff exceeding the cap", () => {

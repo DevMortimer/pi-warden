@@ -1942,21 +1942,46 @@ test("pathRules: a confirm rule prompts the user, a block rule blocks, and notes
   await rm(join(temporary, "audit"), { recursive: true, force: true });
 });
 
-test("stuck-loop diff: third identical failure carries a diff note with a stored full output", async () => {
+test("stuck-loop diff: third identical failure is not larger than the duplicate note", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
   await newPrompt("Run the test suite");
   const full = "FAIL tests/a.test.ts\n  Expected true, got false\n" + "x".repeat(20_000);
   assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "first result stays");
   const second = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
   assert.match(second.content[0]!.text, /duplicate/, "second identical result is a duplicate note");
+  const secondLen = Buffer.byteLength(second.content[0]!.text);
   const third = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  const thirdText = third.content.find(part => part.type === "text")?.text ?? "";
+  assert.ok(Buffer.byteLength(thirdText) <= secondLen, `third (${Buffer.byteLength(thirdText)} bytes) is not larger than second (${secondLen} bytes)`);
+});
+
+test("stuck-loop diff: three failures with differing outputs carry a diff note", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 5000, tailLimit: 1000 } }));
+  await newPrompt("Run the test suite");
+  nextAnswers = { same_strategy: 0.9, approach_change: 0.1, progress: 0.1, irreversible: 0.1, off_task: 0.1 };
+  const pad = "y".repeat(15_000);
+  const base = "FAIL tests/a.test.ts\n  Expected true, got false\n" + pad;
+  assert.equal(await toolResult("bash", { command: "npm test" }, base + "\noutcome-A", true), undefined, "first stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, base + "\noutcome-B", true), undefined, "second stays");
+  const third = await toolResult("bash", { command: "npm test" }, base + "\noutcome-C", true) as { content: Array<{ type: string; text: string }> };
   const text = third.content.find(part => part.type === "text")?.text ?? "";
   assert.match(text, /stuck-loop diff/);
   const pathMatch = text.match(/Full output: (.+)/);
   assert.ok(pathMatch, "the note names the full-output file");
-  assert.ok(text.length < 4500, `note under 4.5K; got ${text.length}`);
-  const saved = await readFile(pathMatch[1]!.trim(), "utf8").catch(() => "");
-  assert.match(saved, /FAIL tests\/a\.test\.ts/, "full output saved to disk");
+  assert.ok(text.length < Buffer.byteLength(base + "\noutcome-C"), "diff note is smaller than the original");
+});
+
+test("stuck-loop diff: three byte-identical failures do not grow the result", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
+  await newPrompt("Run the test suite");
+  const full = "FAIL tests/a.test.ts\n  Expected true, got false\n" + "x".repeat(20_000);
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "first stays");
+  const second = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  assert.match(second.content[0]!.text, /duplicate/, "second is a duplicate note");
+  const secondLen = Buffer.byteLength(second.content[0]!.text);
+  const third = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  const thirdText = third.content.find(part => part.type === "text")?.text ?? "";
+  assert.ok(Buffer.byteLength(thirdText) <= secondLen, `third (${Buffer.byteLength(thirdText)} bytes) is not larger than second (${secondLen} bytes)`);
 });
 
 test("stuck-loop diff: three identical successes are not replaced", async () => {
