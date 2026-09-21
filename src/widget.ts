@@ -84,11 +84,13 @@ export const SENTENCE_TEMPLATES = {
     warn_irreversible: "warden warned about {tool} action — high irreversibility ({irreversible})",
     warn_intent: "warden warned about {tool} action — differs from stated plan",
     warn_slop: "warden warned about {tool} action — code slop detected ({slop})",
-    warn_patterns: "warden warned about {tool} action — security patterns matched ({patterns})",
+    warn_patterns: "warden warned about {tool} action — patterns matched ({patterns})",
+    warn_reason: "warden warned about {tool} action — {reasons}",
     warn_visible: "warden warned about {tool} action — visible outside working tree",
     // HOLD variants
     hold_irreversible: "warden held {tool} action — irreversibility {irreversible} exceeds threshold",
     hold_dangerous: "warden held {tool} action — destructive pattern detected ({patterns})",
+    hold_reason: "warden held {tool} action — {reasons}",
     hold_deny: "warden blocked {tool} action — deny rule matched ({patterns})",
     // Fallback
     default: "warden {level}ed {tool} action",
@@ -191,19 +193,21 @@ export function pickSentenceTemplate(guard: string, tokens: Tokens): string {
       if (tokens.scope) return variants.allow_with_context!;
       return variants.allow_default!;
     }
+    // These reasons are emitted only when the configured irreversible threshold is met.
+    const irreversibleWarning = /(?:^|; )possibly irreversible \d+%/.test(tokens.reasons ?? "");
+    const irreversibleHold = /(?:^|; )irreversible \d+%/.test(tokens.reasons ?? "");
     if (level === "warn") {
-      if (has("slop") && tokens.slop !== "none") return variants.warn_slop!;
+      if (irreversibleWarning) return variants.warn_irreversible!;
+      if (has("reasons")) return variants.warn_reason!;
       if (has("patterns")) return variants.warn_patterns!;
-      if (tokens.intent && Number(tokens.intent) > 0.5) return variants.warn_intent!;
-      if (tokens.visible && Number(tokens.visible) > 0.5) return variants.warn_visible!;
-      if (tokens.offTask && Number(tokens.offTask) > 0.5) return variants.warn_off_task!;
-      if (tokens.irreversible && Number(tokens.irreversible) > 0.5) return variants.warn_irreversible!;
-      return variants.warn_irreversible!;
+      return variants.warn_reason!;
     }
     if (level === "confirm" || level === "deny") {
       if (level === "deny") return variants.hold_deny!;
+      if (irreversibleHold) return variants.hold_irreversible!;
+      if (has("reasons")) return variants.hold_reason!;
       if (has("patterns")) return variants.hold_dangerous!;
-      return variants.hold_irreversible!;
+      return variants.hold_reason!;
     }
     return variants.default!;
   }

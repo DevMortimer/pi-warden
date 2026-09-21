@@ -1001,6 +1001,29 @@ test("slop symptoms steer the agent after the write without holding it; steers a
   assert.equal((sentMessages[3]!.message as { display?: boolean }).display, true);
 });
 
+for (const barMode of ["live", "stack"]) {
+  test(`${barMode} widget records action, rules, action in recency order and shows tokenless rules`, async () => {
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, widget: { barMode } }));
+    const rulesFile = join(temporary, "pi-warden.md");
+    try {
+      await writeFile(rulesFile, "# No console statements\nCode must not contain console.log.\n");
+      await toolCall("write", { path: join(temporary, "src", "recent.ts"), content: "export const recent = 1;" });
+      assert.match(widgets.at(-1)!.at(-1)!, /OK\s+rules/);
+      await toolCall("bash", { command: "npm test" });
+      assert.match(widgets.at(-1)!.at(-1)!, /ALLOW\s+action/);
+      if (barMode === "stack") assert.match(widgets.at(-1)![0]!, /OK\s+rules/);
+      await mkdir(join(temporary, "src"), { recursive: true });
+      await writeFile(join(temporary, "src", "recent.ts"), "export const recent = 1;");
+      await toolCall("edit", { path: join(temporary, "src", "recent.ts"), edits: [{ oldText: "export const recent = 1;", newText: "export const recent = 2;" }] });
+      assert.match(widgets.at(-1)!.at(-1)!, /OK\s+rules/);
+      if (barMode === "live") assert.equal(widgets.at(-1)!.length, 1);
+    } finally {
+      await rm(rulesFile, { force: true });
+      await rm(join(temporary, "src", "recent.ts"), { force: true });
+    }
+  });
+}
+
 test("rules: a write in a project with pi-warden.md gets its own request beside the action request; violations steer in one message with slop; fallbacks and sensitive paths", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
