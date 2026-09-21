@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.34.1
+
 ### Fixed
 - `scripts/calibrate-action.mjs`: `--yes` now spends what the corpus needs instead of stopping at the 2000-request default; `--max-requests N` is an explicit cap that `--yes` does not lift, and a run it stops early says how many replays it skipped and writes `report-latest-partial.md`.
 
