@@ -1,9 +1,9 @@
 /**
  * Compaction evidence appendix. Deterministic, pure, no Jev request.
  *
- * When Pi fires `session_before_compact`, the extension builds a snapshot from session memory and passes it to
- * `compactAppendix`. The returned text is appended to `customInstructions` so the summarizer carries the evidence
- * verbatim into the compressed summary.
+ * After Pi fires `session_compact`, the extension builds a snapshot from session memory and passes it to
+ * `compactAppendix`. The returned text is sent as one custom message so the agent can prefer saved paths
+ * over re-running commands.
  */
 import { redact } from "./redact.js";
 
@@ -87,7 +87,7 @@ export function compactAppendix(snapshot: CompactSnapshot): string {
   const body = sections.join("\n\n");
   const appendix = [
     "=== PI-WARDEN COMPACT EVIDENCE ===",
-    "Instruct the summarizer: carry this section into the summary unchanged.",
+    "Evidence warden kept across compaction. Prefer the saved-output paths below over re-running commands that produced them.",
     "",
     body,
     "=== END PI-WARDEN COMPACT EVIDENCE ===",

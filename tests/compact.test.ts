@@ -28,6 +28,7 @@ test("full snapshot produces a bounded appendix with all sections", () => {
   assert.ok(text.length <= 2000, `under 2000 chars (got ${text.length})`);
   assert.match(text, /=== PI-WARDEN COMPACT EVIDENCE ===/);
   assert.match(text, /=== END PI-WARDEN COMPACT EVIDENCE ===/);
+  assert.match(text, /Evidence warden kept across compaction/);
   assert.match(text, /### Saved full outputs/);
   assert.match(text, /### Last checks/);
   assert.match(text, /### Held actions/);

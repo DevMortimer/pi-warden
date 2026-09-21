@@ -7,7 +7,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 ## Unreleased
 
 ### Added
-- Compaction evidence appendix (`context.compactAppendix`, default true): when Pi fires `session_before_compact`, the extension builds a deterministic summary of session evidence — saved outputs, last checks, held actions, stuck state, and the active task — and appends it to `customInstructions` so the summarizer carries it verbatim into the compressed summary. All strings are redacted. No Jev request.
+- Compaction evidence appendix (`context.compactAppendix`, default true): after compaction succeeds, the extension sends a deterministic summary of session evidence — saved outputs, last checks, held actions, stuck state, and the active task — as one custom message so the agent can prefer saved paths over re-running commands. All strings are redacted. Does not spend a steer unit.
 
 ## 0.35.0
 

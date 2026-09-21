@@ -1099,9 +1099,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     await checkSubagentReports(ctx, configFor(ctx));
   });
 
-  // Compaction evidence appendix: deterministically build a summary of what the session holds so the
-  // summarizer keeps it. On any error, the event is returned unchanged and one trace entry is recorded.
-  pi.on("session_before_compact", async (event, ctx) => {
+  // Compaction evidence appendix: after compaction succeeds, send the evidence warden holds as one
+  // custom message so the agent can prefer saved paths over re-running commands. This is not a steer
+  // and does not spend a steer unit; it is one message per compaction, the same path steers use.
+  pi.on("session_compact", async (_event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled || !config.context.compactAppendix) return;
     try {
@@ -1134,7 +1135,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       });
       const appendix = compactAppendix(snapshot);
       if (!appendix) return;
-      event.customInstructions = event.customInstructions ? `${event.customInstructions}\n\n${appendix}` : appendix;
+      // Not a steer; one message per compaction; do not spend a steer unit.
+      pi.sendMessage({ customType: `${PACKAGE_NAME}-compact-evidence`, content: appendix, display: config.steerVisible });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       record(ctx, config, "action", "compact-appendix error", [`compactAppendix failed: ${message}`]);
