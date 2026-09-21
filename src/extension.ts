@@ -355,7 +355,19 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const color = LEVEL_COLOR[chip ?? ""] ?? "text";
           const chipText = chip ? `${theme.bold(theme.fg(color as "text", chip.toUpperCase()))}  ` : "";
           const guardText = theme.fg("muted", lastEntry.guard + " ");
-          const body = { render: (width: number) => [chipText + guardText + sentence], invalidate: () => {} };
+          // Like widgetLines: the head width is tracked, the body wraps to what remains, and a line wider than
+          // the pane trips pi's render-width guard, which aborts the session.
+          const chipWidth = chip ? chip.length + 2 : 0;
+          const headWidth = chipWidth + lastEntry.guard.length + 1;
+          const head = chipText + guardText;
+          const body = {
+            render: (width: number) => {
+              if (!width) return [head + sentence];
+              const wrapped = tuiModule.wrapTextWithAnsi(sentence, Math.max(10, width - headWidth));
+              return [head + (wrapped[0] ?? ""), ...wrapped.slice(1).map(rest => " ".repeat(headWidth) + rest)];
+            },
+            invalidate: () => {},
+          };
           return MouseRegion ? new MouseRegion(body, event => {
             if (event.type !== "click" || event.button !== "left") return undefined;
             togglePanel(lastUi, config);
@@ -364,7 +376,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }, { placement: config.widget.placement });
         return;
       }
-      entries = [entries.at(-1)!];
+      entries = [lastEntry ?? entries.at(-1)!];
     }
     // A custom component so the lines wrap to the pane and a click (fullscreen mode) opens the trace panel.
     // When the host TUI lacks MouseRegion (e.g. omp 18.2.5), the extension still loads — the widget
@@ -380,6 +392,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }, { placement: config.widget.placement });
   };
   const record = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig, guard: GuardName, line: string, details: string[], tokens?: Record<string, string | undefined>): TraceEntry => {
+    widget.delete(guard);
     widget.set(guard, line);
     const entry: TraceEntry = { at: Date.now(), guard, line, details, tokens };
     trace.push(entry);

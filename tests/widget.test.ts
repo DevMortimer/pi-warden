@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { LEVEL_COLOR, parseVerdictLine, widgetLines } from "../src/widget.js";
+import { LEVEL_COLOR, parseVerdictLine, pickSentenceTemplate, renderTemplate, SENTENCE_TEMPLATES, widgetLines } from "../src/widget.js";
 import type { ThemeLike } from "../src/widget.js";
 
 /** A theme that marks every tone in the text, so an assertion can check the hierarchy and not only the words. */
@@ -9,6 +9,22 @@ const theme: ThemeLike = { fg: (color: string, text: string) => `<${marks[color]
 const plain = (lines: readonly string[]) => lines.map(line => line.replace(/<\/?[A-Za-z]*>/g, ""));
 
 const allow = { guard: "action", line: "warden · bash · irreversible 0.20 · off-task 0.10 · expected step · allow" };
+
+test("an outside-project floor warning does not claim high irreversibility", () => {
+  const tokens = { tool: "write", level: "warn", irreversible: "0.11", reasons: "creates a file outside the project", slop: "stub 0.90", offTask: "0.90" };
+  const sentence = renderTemplate(pickSentenceTemplate("action", tokens), tokens);
+  assert.match(sentence, /creates a file outside the project/);
+  assert.doesNotMatch(sentence, /high irreversibility|slop|off-task/);
+});
+
+test("irreversibility sentences require a threshold reason, not just a score or level", () => {
+  for (const level of ["warn", "confirm"]) {
+    const tokens = { tool: "write", level, irreversible: "0.90", reasons: "changes a file outside the project" };
+    assert.doesNotMatch(renderTemplate(pickSentenceTemplate("action", tokens), tokens), /irreversibility/);
+  }
+  assert.equal(pickSentenceTemplate("action", { level: "warn", irreversible: "0.20", reasons: "possibly irreversible 20%" }), SENTENCE_TEMPLATES.action.warn_irreversible);
+  assert.equal(pickSentenceTemplate("action", { level: "confirm", irreversible: "0.60", reasons: "irreversible 60%" }), SENTENCE_TEMPLATES.action.hold_irreversible);
+});
 
 test("the verdict leads the status line as a chip and the warden prefix is gone", () => {
   const lines = widgetLines([allow], theme);
