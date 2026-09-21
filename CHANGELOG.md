@@ -6,6 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Tests
+- Live smoke stuck suite now exercises the Jev-judged path: two new cases reach `source: "typesafe"` and print real scores; the existing offline-repeat case prints `offline repeat` instead of three `undefined` values.
+
 <!-- Empty. Next release starts here. -->
 
 ## 0.33.1

@@ -154,12 +154,28 @@ if (!only || only === 'stuck') {
       ['bash', { command: 'npm test -- --verbose' }, 'FAIL tests/parser.test.ts\n  ● parses ISO dates\n    TypeError: Cannot read properties of undefined (reading "split")', true],
       ['bash', { command: 'npx jest tests/parser.test.ts --runInBand' }, 'FAIL tests/parser.test.ts\n  ● parses ISO dates\n    TypeError: Cannot read properties of undefined (reading "split")', true],
     ] },
-    { name: 'flailing edits, same error', task: 'Fix the type error in build', expect: true, attempts: [
+    { name: 'flailing edits, same error (offline repeat)', task: 'Fix the type error in build', expect: true, attempts: [
       ['bash', { command: 'npx tsc --noEmit' }, 'src/a.ts(12,5): error TS2322: Type string is not assignable to type number.', true],
       ['edit', { path: 'src/a.ts', edits: [{ oldText: 'const n = value;', newText: 'const n = value as any;' }] }, 'ok', false],
       ['bash', { command: 'npx tsc --noEmit' }, 'src/a.ts(12,5): error TS2322: Type string is not assignable to type number.', true],
       ['edit', { path: 'src/a.ts', edits: [{ oldText: 'const n = value as any;', newText: 'const n: number = value as any;' }] }, 'ok', false],
       ['bash', { command: 'npx tsc --noEmit' }, 'src/a.ts(12,5): error TS2322: Type string is not assignable to type number.', true],
+    ] },
+    { name: 'flailing edits, same error (judged)', task: 'Fix the type error in build', expect: true, attempts: [
+      ['edit', { path: 'src/a.ts', edits: [{ oldText: 'const n = value;', newText: 'const n = value as unknown as number;' }] }, 'ok', false],
+      ['bash', { command: 'npx tsc --noEmit 2>&1 | head -5' }, 'src/a.ts(12,5): error TS2322: Type string is not assignable to type number.', true],
+      ['edit', { path: 'src/a.ts', edits: [{ oldText: 'const n = value as unknown as number;', newText: 'const n: number = value as unknown as number;' }] }, 'ok', false],
+      ['bash', { command: 'npx tsc --noEmit 2>&1 | head -10' }, 'src/a.ts(12,5): error TS2322: Type string is not assignable to type number\nsrc/b.ts(3,1): note: expected by this parameter', true],
+      ['edit', { path: 'src/a.ts', edits: [{ oldText: 'const n: number = value as unknown as number;', newText: 'const n = Number(value);' }] }, 'ok', false],
+      ['bash', { command: 'npx tsc --noEmit 2>&1' }, 'src/a.ts(12,5): error TS2322: Type string is not assignable to type number.', true],
+    ] },
+    { name: 'flailing edits, same error (progress)', task: 'Fix the type error in build', expect: false, attempts: [
+      ['bash', { command: 'npx tsc --noEmit' }, 'src/a.ts(12,5): error TS2322: Type string is not assignable to type number.', true],
+      ['read', { path: 'src/a.ts' }, 'export function process(input: string): number { const n = value; return n; }', false],
+      ['edit', { path: 'src/a.ts', edits: [{ oldText: 'const n = value;', newText: 'const n = Number(value);' }] }, 'ok', false],
+      ['bash', { command: 'npx tsc --noEmit' }, 'src/a.ts(12,5): error TS2345: Argument of type \'string\' is not assignable to parameter of type \'string \| number\'.', true],
+      ['edit', { path: 'src/a.ts', edits: [{ oldText: 'const n = Number(value);', newText: 'const n = parseFloat(value) || 0;' }] }, 'ok', false],
+      ['bash', { command: 'npx tsc --noEmit' }, 'src/a.ts(12,5): warning TS6133: \'n\' is declared but its value is never read.', false],
     ] },
     { name: 'investigating between failures', task: 'Make the tests pass', expect: false, attempts: [
       ['bash', { command: 'npm test' }, 'FAIL tests/parser.test.ts ● parses ISO dates TypeError: Cannot read properties of undefined (reading "split")', true],
@@ -176,7 +192,8 @@ if (!only || only === 'stuck') {
     for (const [tool, input, output, failed] of item.attempts) window.push(makeAttempt(tool, input, text(output), failed));
     const verdict = await evaluateStuck(window, item.task, { config: config.stuck, judge, timeoutMs: 5000 });
     const j = verdict.judgment;
-    line(verdict.stuck === item.expect, item.name, verdict.stuck ? 'stuck' : 'ok', `same=${j?.sameStrategy.toFixed(2)} change=${j?.approachChange.toFixed(2)} progress=${j?.progress.toFixed(2)} (${j?.elapsedMs} ms)${verdict.error ? ' ' + verdict.error : ''}`);
+    const detail = j ? `same=${j.sameStrategy.toFixed(2)} change=${j.approachChange.toFixed(2)} progress=${j.progress.toFixed(2)} (${j.elapsedMs} ms)` : 'offline repeat';
+    line(verdict.stuck === item.expect, item.name, verdict.stuck ? 'stuck' : 'ok', `${detail}${verdict.error ? ' ' + verdict.error : ''}`);
   }
 }
 
