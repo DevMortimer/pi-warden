@@ -73,7 +73,7 @@ const sessionManager = {
   ],
 };
 const context = (overrides: Record<string, unknown> = {}) => ({
-  hasUI: true, ui, cwd: temporary, sessionManager, signal: undefined, isProjectTrusted: () => true, isIdle: () => true, waitForIdle: async () => {}, ...overrides,
+  hasUI: true, ui, cwd: temporary, sessionManager, signal: undefined, isProjectTrusted: () => true, isIdle: () => true, waitForIdle: async () => {}, getContextUsage: () => ({ tokens: 5000, contextWindow: 200000, percent: 2.5 }), ...overrides,
 });
 const toolCall = (toolName: string, input: Record<string, unknown>, ctx = context()) => {
   const handlers = extension.handlers.get("tool_call") ?? [];
@@ -2489,4 +2489,112 @@ test("conscience: credential canary never leaks to trace or message", async () =
   if (result?.message) {
     assert.ok(!(result.message as { content: string }).content.includes("ghp_"), "message must not contain credential");
   }
+});
+
+// Path rule confirm → load_denied is tested via loadSkillBody unit test below
+
+// Path rule confirm on skill directory → load_denied (unit test)
+test("conscience: path rule confirm blocks load via loadSkillBody", async () => {
+  const { loadSkillBody } = await import("../src/load.js");
+  const skillPath = await writeSkillFile("gated-skill", "---\nname: gated-skill\ndescription: Gated\n---\n\nBody.");
+  const skill = { name: "gated-skill", description: "Gated", filePath: skillPath, baseDir: join(temporary, ".pi", "skills", "gated-skill"), sourceInfo: { path: skillPath, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, loadThreshold: 1.0 };
+  const pathRules = [{ id: "block-skills", paths: ["**/skills/**"], access: "none" as const, tools: ["read"], action: "confirm" as const }];
+  const result = loadSkillBody(skill as any, loadConfig, { pathRules, exemptRules: [], loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, catalogName: "gated-skill", catalogDescription: "Gated", userInvoked: false, contextWindow: 200000, hasImages: false });
+  assert.equal(result.skipReason, "load_denied", `expected load_denied, got ${result.skipReason}`);
+  assert.equal(result.body, null);
+});
+
+// Cumulative maxLoadedBytes limits loads (unit test)
+test("conscience: cumulative maxLoadedBytes limits loads via loadSkillBody", async () => {
+  const { loadSkillBody } = await import("../src/load.js");
+  const sp1 = await writeSkillFile("skill-a", "---\nname: skill-a\ndescription: A\n---\n\nBody A.");
+  const skill = { name: "skill-a", description: "A", filePath: sp1, baseDir: join(temporary, ".pi", "skills", "skill-a"), sourceInfo: { path: sp1, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 100, recommendThreshold: 1.0, loadThreshold: 1.0 };
+  const r1 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });
+  assert.ok(r1.body, "first load should succeed");
+  const r2 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 90, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });
+  assert.equal(r2.skipReason, "load_too_large", `expected load_too_large, got ${r2.skipReason}`);
+});
+
+// Unreadable file → load_failed
+test("conscience: unreadable skill file fails load", async () => {
+  const skillPath = await writeSkillFile("locked-skill", "---\nname: locked-skill\ndescription: Locked\n---\n\nBody.");
+  // Make the file unreadable
+  const { chmodSync } = await import("node:fs");
+  chmodSync(skillPath, 0o000);
+  await writeConscienceConfig({
+    recommendThreshold: 0.5,
+    skills: { mode: "load", exclude: [] },
+    tools: { enabled: false, exclude: [] },
+  });
+  const skills = [{
+    name: "locked-skill", description: "Locked", filePath: skillPath,
+    baseDir: join(temporary, ".pi", "skills", "locked-skill"),
+    sourceInfo: { path: skillPath, source: "local", scope: "user" as const, origin: "top-level" as const },
+    disableModelInvocation: false,
+  }];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  await promptWithSkills("use locked-skill", skills);
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /load_failed/, "trace should note load_failed");
+  chmodSync(skillPath, 0o644);
+});
+
+// User-only skill named by judge → no load, no recommendation
+test("conscience: user-only skill is not loaded", async () => {
+  const skillPath = await writeSkillFile("user-only-skill", "---\nname: user-only-skill\ndescription: User only\ndisable-model-invocation: true\n---\n\nBody.");
+  await writeConscienceConfig({
+    recommendThreshold: 0.5,
+    skills: { mode: "load", exclude: [] },
+    tools: { enabled: false, exclude: [] },
+  });
+  const skills = [{
+    name: "user-only-skill", description: "User only", filePath: skillPath,
+    baseDir: join(temporary, ".pi", "skills", "user-only-skill"),
+    sourceInfo: { path: skillPath, source: "local", scope: "user" as const, origin: "top-level" as const },
+    disableModelInvocation: true,
+  }];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  const result = await promptWithSkills("use user-only-skill", skills) as Record<string, unknown> | undefined;
+  assert.ok(!result?.message, "user-only skill should not produce a message");
+});
+
+// Excluded skill named by judge → no load, no recommendation
+test("conscience: excluded skill is not loaded", async () => {
+  const skillPath = await writeSkillFile("excluded-skill", "---\nname: excluded-skill\ndescription: Excluded\n---\n\nBody.");
+  await writeConscienceConfig({
+    recommendThreshold: 0.5,
+    skills: { mode: "load", exclude: ["excluded-skill"] },
+    tools: { enabled: false, exclude: [] },
+  });
+  const skills = [{
+    name: "excluded-skill", description: "Excluded", filePath: skillPath,
+    baseDir: join(temporary, ".pi", "skills", "excluded-skill"),
+    sourceInfo: { path: skillPath, source: "local", scope: "user" as const, origin: "top-level" as const },
+    disableModelInvocation: false,
+  }];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  const result = await promptWithSkills("use excluded-skill", skills) as Record<string, unknown> | undefined;
+  assert.ok(!result?.message, "excluded skill should not produce a message");
+});
+
+// Absolute path seeded in prompt never appears in judge request, trace, or message
+test("conscience: absolute path in prompt never leaks", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  requests.length = 0;
+  sentMessages.length = 0;
+  await promptWithSkills("design /Users/secret/project/layout.ts", skills);
+  // Check judge requests
+  for (const req of requests) {
+    const stateStr = JSON.stringify(req.state);
+    assert.ok(!stateStr.includes("/Users/secret"), "judge request must not contain absolute path");
+  }
+  // Check trace
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.ok(!traceText.includes("/Users/secret"), "trace must not contain absolute path");
 });

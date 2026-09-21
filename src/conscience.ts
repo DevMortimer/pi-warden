@@ -169,8 +169,8 @@ export function buildState(
     };
   }
   return {
-    task,
-    context: recentContext,
+    task: sanitizeDescription(task),
+    context: sanitizeDescription(recentContext),
     active_skills: activeSkills,
     supplied_skills: suppliedSkills,
     candidates,

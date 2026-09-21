@@ -458,8 +458,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let lastAssessmentHash = "";
   let cachedSkills: Array<{ name: string; description: string }> = [];
   let loadedBytes = 0;
-  let instructionsSupplied = false;
+  let instructionState: "none" | "queued" | "instructions_supplied" = "none";
   let loadedSkillNames = new Set<string>();
+  let queuedRevision = 0;
+  let beforeAgentStartFired = false;
   let needsReassessment = false;
   /** The final messages of the current run, for restatement measurement. */
   const finals = new RestatementWindow();
@@ -615,6 +617,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (regretCandidates.length && !judgeFor(config)) settleRegret(config, { regretted: textRegrets(event.prompt), via: "text" });
 
     // ── Conscience: initial assessment on normal operator prompts ──
+    beforeAgentStartFired = true;
     if (config.enabled && config.conscience.enabled) {
       const myGeneration = conscienceGeneration;
       warnedErrorCategories = new Set();
@@ -627,8 +630,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       lastAssessmentHash = "";
       needsReassessment = false;
       loadedBytes = 0;
-      instructionsSupplied = false;
+      instructionState = "none";
       loadedSkillNames = new Set();
+      queuedRevision++;
       const judge = judgeFor(config);
       // Get the resolved skill catalog from the event's system prompt options (spec §3 rule 1)
       const skills = event.systemPromptOptions?.skills ?? [];
@@ -718,6 +722,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
               if (result.selected.kind === "skill" && config.conscience.skills.mode === "load" && !loadedSkillNames.has(result.selected.id)) {
                 const skill = cachedSkills.find(s => s.name === result.selected!.id);
                 if (skill) {
+                  const ctxUsage = ctx.getContextUsage?.();
                   const loadResult = loadSkillBody(skill as unknown as import("@earendil-works/pi-coding-agent").Skill, config.conscience, {
                     pathRules: config.action.pathRules,
                     exemptRules: config.action.exemptRules,
@@ -728,11 +733,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
                     catalogName: skill.name,
                     catalogDescription: skill.description,
                     userInvoked: false,
+                    contextWindow: ctxUsage?.contextWindow ?? null,
+                    hasImages: !!(event as unknown as Record<string, unknown>).images,
                   });
                   if (loadResult.body) {
                     loadedBytes += loadResult.bytesLoaded;
                     loadedSkillNames.add(result.selected.id);
-                    instructionsSupplied = true;
+                    instructionState = "queued";
                     const msg = buildLoadMessage(loadResult);
                     record(ctx, config, "conscience", `loaded: ${result.selected.id} (${loadResult.bytesLoaded} bytes)`, ["trigger: before_agent_start", `skipReason: none`, `delivery: instructions_supplied`]);
                     return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msg, display: config.steerVisible } };
@@ -766,8 +773,43 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   });
 
   // Each assistant message is judged on its own; Pi does not forward the stream's own "start" event, so this is the reset.
-  pi.on("message_start", async event => {
+  pi.on("message_start", async (event, ctx) => {
     if (event.message.role === "assistant") runaway.reset();
+    // ── Conscience: Rule 10 — delivery observed ──
+    // When a custom message with our type is emitted, mark instructions_supplied.
+    if (event.message.role === "assistant" && instructionState === "queued" && (event.message as unknown as Record<string, unknown>).customType === `${PACKAGE_NAME}-conscience`) {
+      const config = configFor(ctx);
+      if (config.enabled && config.conscience.enabled) {
+        instructionState = "instructions_supplied";
+        record(ctx, config, "conscience", `instructions_supplied: delivery observed`, ["trigger: message_start", `revision: ${queuedRevision}`]);
+      }
+    }
+    // ── Part B: queued-prompt admission ──
+    // A user message without a prior before_agent_start is a queued prompt.
+    if (event.message.role === "user") {
+      const config = configFor(ctx);
+      if (config.enabled && config.conscience.enabled && !beforeAgentStartFired) {
+        // This is a queued prompt admitted at message_start without before_agent_start.
+        // Assess against the last valid skill snapshot plus current tools.
+        const judge = judgeFor(config);
+        if (judge && cachedSkills.length > 0) {
+          const myGeneration = conscienceGeneration;
+          const redactedText = redact(typeof event.message.content === "string" ? event.message.content : "").slice(0, 2000);
+          let toolInfos: Array<{ name: string; description: string }> = [];
+          try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
+          const activeSkills = cachedSkills.map(s => s.name);
+          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+          try {
+            const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
+            if (conscienceGeneration !== myGeneration) return;
+            record(ctx, config, "conscience", `queued prompt assessed → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"}`, ["trigger: message_start", `origin: queued`, `skipReason: ${result.skipReason ?? "none"}`]);
+          } catch (err) { const cat = classifyConscienceError(err); if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
+        } else {
+          record(ctx, config, "conscience", `queued prompt: no judge or no skills`, ["trigger: message_start", `origin: queued`, "skipReason: catalog_unavailable"]);
+        }
+      }
+      beforeAgentStartFired = false;
+    }
   });
 
   // Per token this only appends to a buffer; every 256 characters the buffer is checked for identical blocks, with code only.
@@ -1314,7 +1356,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const config = configFor(ctx);
     if (config.enabled && config.conscience.enabled && selectedCapability) {
       const status = triggerConsumed ? "consumed" : reminderSent ? "reminded" : "unresolved";
-      record(ctx, config, "conscience", `settled: ${status} (${selectedCapability.kind}:${selectedCapability.id})`, ["trigger: agent_settled", `assessments: ${assessmentsThisPrompt}`, `nudges: ${nudgesThisPrompt}`]);
+      record(ctx, config, "conscience", `settled: ${status} (${selectedCapability.kind}:${selectedCapability.id})`, ["trigger: agent_settled", `assessments: ${assessmentsThisPrompt}`, `nudges: ${nudgesThisPrompt}`, `instructions: ${instructionState}`]);
     }
   });
 
