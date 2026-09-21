@@ -11,6 +11,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.33.2
+
+### Fixed
+- Tests and eval runs now write to an isolated database via `PI_WARDEN_DB` instead of polluting the user's `holds.db`.
+
 ## 0.33.1
 
 ### Tests
