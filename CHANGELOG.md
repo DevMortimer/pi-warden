@@ -6,6 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Fixed
+- The live widget bar wraps its sentence to the pane width; one over-wide line tripped pi's render-width guard and aborted the session. Fixes #29.
+
 ## 0.30.1
 
 ### Fixed
