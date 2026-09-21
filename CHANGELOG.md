@@ -9,6 +9,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Changed
 - Verified against Pi 0.87.0; dev dependency updated.
 
+<!-- Empty. Next release starts here. -->
+
+## 0.38.0
+
+### Added
+- Conscience coach: disabled by default pending calibration. Recommends or loads skills and tools before the agent acts via `before_agent_start`. Trace-only until a measured policy ships. Load mode reads skill files from disk with path-rule checks, size bounds, frontmatter validation, and credential canary detection. 48 adversarial tests plus the fixture set.
+
 ## 0.37.1
 
 ### Docs

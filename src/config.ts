@@ -268,6 +268,46 @@ export interface LearningConfig {
   retentionDays: number;
 }
 
+export type ConscienceSkillMode = "off" | "recommend" | "load";
+
+export interface ConscienceSkillConfig {
+  /** off: no automatic skill selection; recommend: name a skill and ask the agent to load it; load: supply instructions directly. */
+  mode: ConscienceSkillMode;
+  /** Case-sensitive skill names to exclude; * is the only wildcard. */
+  exclude: string[];
+}
+
+export interface ConscienceToolConfig {
+  /** Suggest tools including evidence/research tools; never execute or enable them directly. */
+  enabled: boolean;
+  /** Case-sensitive tool names to exclude; * is the only wildcard. */
+  exclude: string[];
+}
+
+export interface ConscienceConfig {
+  /** Master switch for the conscience module. */
+  enabled: boolean;
+  /** Skill selection settings. */
+  skills: ConscienceSkillConfig;
+  /** Tool suggestion settings. */
+  tools: ConscienceToolConfig;
+  /** Total wall-clock deadline for one assessment (ms). Effective deadline is min(this, shared timeoutMs). */
+  timeoutMs: number;
+  /** Max assessments per admitted operator prompt, including the initial. */
+  maxAssessments: number;
+  /** Max new guidance deliveries per admitted operator prompt. */
+  maxNudges: number;
+  /** Max UTF-8 bytes per skill file for automatic loading. */
+  maxSkillBytes: number;
+  /** Max cumulative automatic loading bytes per admitted prompt. */
+  maxLoadedBytes: number;
+  /** P(useful now) must reach this to select a candidate for recommendation. Default 1.0 (trace-only until calibrated per spec §7). */
+  recommendThreshold: number;
+  /** P(useful now) must reach this to auto-load. Must be >= recommendThreshold. Default 1.0 (trace-only until calibrated). */
+  loadThreshold: number;
+}
+
+
 export interface WardenConfig {
   /** Master switch. false disables every guard, including offline pattern checks. */
   enabled: boolean;
@@ -308,11 +348,13 @@ export interface WardenConfig {
   steerBudget: number;
   /** Learning and adaptation settings. */
   learning: LearningConfig;
+  /** Broad-consideration coach: recommends or loads skills and tools before the agent acts. */
+  conscience: ConscienceConfig;
 }
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 6;
+export const CONFIG_SCHEMA = 7;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -356,6 +398,19 @@ export function defaultConfig(): WardenConfig {
     notices: false,
     steerBudget: 3,
     learning: { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 },
+    conscience: {
+      enabled: false,
+      skills: { mode: "recommend", exclude: [] },
+      tools: { enabled: true, exclude: [] },
+      timeoutMs: 1500,
+      maxAssessments: 3,
+      maxNudges: 2,
+      maxSkillBytes: 32768,
+      maxLoadedBytes: 65536,
+      // Calibration targets from spec §7. Until measured, 1.0 keeps production trace-only.
+      recommendThreshold: 1.0,
+      loadThreshold: 1.0,
+    },
   };
 }
 
@@ -734,6 +789,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     notices: boolean(raw.notices, base.notices),
     steerBudget: typeof raw.steerBudget === "number" && Number.isInteger(raw.steerBudget) && raw.steerBudget >= 0 ? raw.steerBudget : base.steerBudget,
     learning: applyLearning(base.learning, raw.learning),
+    conscience: applyConscience(base.conscience, raw.conscience),
   };
 }
 
@@ -745,6 +801,31 @@ function applyLearning(base: LearningConfig, raw: unknown): LearningConfig {
     minHoldsForAdaptive: Math.max(5, positiveInteger(raw.minHoldsForAdaptive, base.minHoldsForAdaptive)),
     adaptationRate: Math.max(0, Math.min(1, probability(raw.adaptationRate, base.adaptationRate))),
     retentionDays: Math.max(0, positiveInteger(raw.retentionDays, base.retentionDays)),
+  };
+}
+
+function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig {
+  if (!isObject(raw)) return base;
+  const skillsRaw = isObject(raw.skills) ? raw.skills : undefined;
+  const toolsRaw = isObject(raw.tools) ? raw.tools : undefined;
+  const mode = typeof skillsRaw?.mode === "string" && ["off", "recommend", "load"].includes(skillsRaw.mode) ? skillsRaw.mode as ConscienceSkillMode : base.skills.mode;
+  return {
+    enabled: boolean(raw.enabled, base.enabled),
+    skills: {
+      mode,
+      exclude: Array.isArray(skillsRaw?.exclude) ? skillsRaw.exclude.filter((x: unknown) => typeof x === "string") : base.skills.exclude,
+    },
+    tools: {
+      enabled: boolean(toolsRaw?.enabled, base.tools.enabled),
+      exclude: Array.isArray(toolsRaw?.exclude) ? toolsRaw.exclude.filter((x: unknown) => typeof x === "string") : base.tools.exclude,
+    },
+    timeoutMs: Math.max(100, Math.min(10000, typeof raw.timeoutMs === "number" ? raw.timeoutMs : base.timeoutMs)),
+    maxAssessments: Math.max(1, Math.min(10, typeof raw.maxAssessments === "number" ? raw.maxAssessments : base.maxAssessments)),
+    maxNudges: Math.max(1, Math.min(5, typeof raw.maxNudges === "number" ? raw.maxNudges : base.maxNudges)),
+    maxSkillBytes: Math.max(1024, Math.min(131072, typeof raw.maxSkillBytes === "number" ? raw.maxSkillBytes : base.maxSkillBytes)),
+    maxLoadedBytes: Math.max(1024, Math.min(262144, typeof raw.maxLoadedBytes === "number" ? raw.maxLoadedBytes : base.maxLoadedBytes)),
+    recommendThreshold: Math.max(0, Math.min(1, typeof raw.recommendThreshold === "number" ? raw.recommendThreshold : base.recommendThreshold)),
+    loadThreshold: Math.max(0, Math.min(1, typeof raw.loadThreshold === "number" ? raw.loadThreshold : base.loadThreshold)),
   };
 }
 

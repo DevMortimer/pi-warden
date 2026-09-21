@@ -4,7 +4,7 @@ import { resolveBackend } from "./backend.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 6;
+export const EXPECTED_SCHEMA = 7;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -51,7 +51,19 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     subagent: section("subagent", { ...off, wake: false, threshold: 1, cooldownMs: 0 }),
     widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
     learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 }),
+    conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, loadThreshold: 1.0 }),
   };
+  // A missing/invalid runtime section falls back to disabled conscience, no loads, and the existing update warning.
+  if (typeof config.conscience !== "object" || config.conscience === null) {
+    missing.push("conscience");
+    config.conscience = { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, loadThreshold: 1.0 };
+  }
+  if (typeof config.conscience.skills !== "object" || config.conscience.skills === null) {
+    config.conscience = { ...config.conscience, skills: { mode: "recommend", exclude: [] } };
+  }
+  if (typeof config.conscience.tools !== "object" || config.conscience.tools === null) {
+    config.conscience = { ...config.conscience, tools: { enabled: true, exclude: [] } };
+  }
   if (typeof config.slop.prose !== "object" || config.slop.prose === null) {
     missing.push("slop.prose");
     config.slop = { ...config.slop, prose: proseOff() };

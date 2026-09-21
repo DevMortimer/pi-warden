@@ -38,6 +38,26 @@ import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
+import { assess } from "./conscience.js";
+import { loadSkillBody, buildLoadMessage, policyMatches, getActivePolicy, recordFileIdentity, clearFileIdentityCache } from "./load.js";
+import type { ConsciencePolicy } from "./load.js";
+import type { IntegrationErrorCode } from "pi-typesafe";
+
+/** Classify a conscience assessment error into a safe category (spec §6: never exception bodies). */
+function classifyConscienceError(err: unknown): string {
+  if (err && typeof err === "object" && "code" in err) {
+    const code = (err as { code: string }).code as IntegrationErrorCode;
+    if (code === "timeout") return "timeout";
+    if (code === "http" || code === "connection" || code === "response") return "network";
+    if (code === "configuration" || code === "validation") return "configuration";
+    if (code === "budget" || code === "aborted") return "other";
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/timeout|timed out/i.test(msg)) return "timeout";
+  if (/auth|key|credential|401|403/i.test(msg)) return "auth";
+  if (/network|fetch|connect|ECONNREFUSED|ENOTFOUND/i.test(msg)) return "network";
+  return "other";
+}
 import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
@@ -49,13 +69,13 @@ import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails,
 import type { GuardName, TraceEntry } from "./trace.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name and description only; full skill instructions never go to Jev). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
 
 /** Which guard spent the user's attention. The status line reports one count per guard. */
-export type SteerGuard = "action" | "rules" | "security" | "stuck" | "done" | "prose" | "runaway" | "subagent";
+export type SteerGuard = "action" | "rules" | "security" | "stuck" | "done" | "prose" | "runaway" | "subagent" | "conscience";
 
 interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number; restatements: number }
 const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, steers: 0, steersSkipped: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0, restatements: 0 });
@@ -427,19 +447,46 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   /** Guards whose notices gate the run itself; they deliver even when the per-run steer budget is spent. */
   const CRITICAL_STEER_GUARDS: ReadonlySet<SteerGuard> = new Set(["stuck", "done", "runaway", "subagent"]);
   let steersThisRun = 0;
+  /** Session generation counter for conscience invalidation. Incremented on steer, abort, reload, switch, or config change. */
+  let conscienceGeneration = 0;
+  /** Per-prompt error categories already warned about (one console.warn per category per prompt). */
+  let warnedErrorCategories = new Set<string>();
+  // ── Conscience state per prompt revision ──
+  let selectedCapability: { kind: string; id: string } | null = null;
+  let pendingCapability: { kind: string; id: string } | null = null;
+  let triggerConsumed = false;
+  let assessmentsThisPrompt = 0;
+  let nudgesThisPrompt = 0;
+  let reminderSent = false;
+  let lastAssessmentHash = "";
+  let cachedSkills: Array<{ name: string; description: string; filePath?: string }> = [];
+  let loadedBytes = 0;
+  let instructionState: "none" | "queued" | "instructions_supplied" = "none";
+  let loadedSkillNames = new Set<string>();
+  let queuedRevision = 0;
+  let beforeAgentStartFired = false;
+  let needsReassessment = false;
   /** The final messages of the current run, for restatement measurement. */
   const finals = new RestatementWindow();
   /** Returns true when the message was delivered; false means it was recorded in the trace only. */
+  /**
+   * Check whether a non-critical message can be delivered within the per-run steer budget.
+   * Returns true when the budget allows delivery; false means record-only. Conscience uses this
+   * to gate pre-response delivery without going through the steer path.
+   */
+  const budgetAvailable = (config: WardenConfig): boolean => config.steerBudget > 0 && steersThisRun < config.steerBudget;
+  /** Reserve one budget unit. Call only when budgetAvailable returned true. */
+  const spendBudgetUnit = (): void => { steersThisRun++; };
   const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean }): boolean => {
     const names = typeof guard === "string" ? [guard] : [...guard];
     for (const name of names) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
     const critical = names.every(name => CRITICAL_STEER_GUARDS.has(name));
-    const overBudget = config.steerBudget > 0 && steersThisRun >= config.steerBudget;
     // A notice delivered once is already in the agent's context. Sending the repeat again costs the accounting turn it
     // forbids, so repeats are recorded only. The same goes for notices past the per-run steer budget: every delivered
     // steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the
     // final status. A notice skipped for the budget keeps its fingerprint, so the same notice can deliver next run.
     // Critical guards (stuck, done, runaway recovery, subagent wake) always deliver: their message starts the turn.
+    const overBudget = config.steerBudget > 0 && steersThisRun >= config.steerBudget;
     const deliver = critical || (!overBudget && !steerRepeats.seen(content));
     if (!deliver) {
       stats.steersSkipped++;
@@ -502,6 +549,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
+    if (_event.reason === "reload" || _event.reason === "new") conscienceGeneration++;
     client = undefined;
     budgetExhausted = false;
     warnedFallback = false;
@@ -533,6 +581,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     wakePolicy.reset();
     steerRepeats.reset();
     steersThisRun = 0;
+    conscienceGeneration = 0;
     finals.reset();
     runaway.reset();
     runawayStops = 0;
@@ -569,11 +618,207 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     noteOutcomes(config, holds.promptArrived());
     regretCandidates = holds.candidates();
     if (regretCandidates.length && !judgeFor(config)) settleRegret(config, { regretted: textRegrets(event.prompt), via: "text" });
+
+    // ── Conscience: initial assessment on normal operator prompts ──
+    beforeAgentStartFired = true;
+    if (config.enabled && config.conscience.enabled) {
+      const myGeneration = conscienceGeneration;
+      warnedErrorCategories = new Set();
+      selectedCapability = null;
+      pendingCapability = null;
+      triggerConsumed = false;
+      assessmentsThisPrompt = 0;
+      nudgesThisPrompt = 0;
+      reminderSent = false;
+      lastAssessmentHash = "";
+      needsReassessment = false;
+      loadedBytes = 0;
+      instructionState = "none";
+      loadedSkillNames = new Set();
+      queuedRevision++;
+      clearFileIdentityCache();
+      const judge = judgeFor(config);
+      // Get the resolved skill catalog from the event's system prompt options (spec §3 rule 1)
+      const skills = event.systemPromptOptions?.skills ?? [];
+      cachedSkills = skills;
+      let toolInfos: Array<{ name: string; description: string }> = [];
+      try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
+      // Detect explicit /skill:name invocation (spec §3 rule 5)
+      const explicitSkillMatch = event.prompt.match(/\/skill:([\w-]+)/);
+      if (explicitSkillMatch) {
+        record(ctx, config, "conscience", `explicit skill invocation: ${explicitSkillMatch[1]}`, ["trigger: input", `explicit_skill: ${explicitSkillMatch[1]}`]);
+      } else {
+        // Redact and truncate prompt to 2000 chars (spec §6 payload limit)
+        const redactedPrompt = redact(event.prompt).slice(0, 2000);
+        const truncationRecorded = event.prompt.length > 2000 ? [`prompt truncated from ${event.prompt.length} to 2000 chars`] : [];
+        // Build recent context from session branch (up to 4 messages, 500 chars each)
+        const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
+        const recentMessages: Array<{ role: string; text: string }> = [];
+        for (const entry of branch.slice(-6)) {
+          if (recentMessages.length >= 4) break;
+          const msg = entry.type === "message" ? entry.message : undefined;
+          if (msg && (msg.role === "user" || msg.role === "assistant") && typeof msg.content === "string") {
+            recentMessages.push({ role: msg.role, text: redact(msg.content).slice(0, 500) });
+          } else if (msg && (msg.role === "user" || msg.role === "assistant") && Array.isArray(msg.content)) {
+            const textPart = msg.content.find((c): c is { type: "text"; text: string } => c.type === "text" && "text" in c && typeof (c as { text?: unknown }).text === "string");
+            if (textPart) {
+              recentMessages.push({ role: msg.role, text: redact(textPart.text).slice(0, 500) });
+            }
+          }
+        }
+        const recentContext = recentMessages.map(m => `${m.role}: ${m.text}`).join("\n");
+        // Active and supplied skills
+        const activeSkills = skills.map(s => s.name);
+        const suppliedSkills: string[] = [];
+        // Deadline: smaller of conscience.timeoutMs and shared timeoutMs
+        const effectiveTimeout = Math.min(config.conscience.timeoutMs, config.timeoutMs);
+        const start = Date.now();
+        // AbortController for deadline (spec: when ctx.signal is absent)
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), effectiveTimeout);
+        // Link to host signal if available
+        const hostSignal = ctx.signal ?? undefined;
+        if (hostSignal) {
+          hostSignal.addEventListener("abort", () => ac.abort(), { once: true });
+        }
+        try {
+          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+          const result = await assess(
+            redactedPrompt, recentContext, skills, toolInfos, activeSkills, suppliedSkills,
+            { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() },
+          );
+          // Check generation after await
+          if (conscienceGeneration !== myGeneration) {
+            record(ctx, config, "conscience", "stale: generation changed during assessment", ["trigger: before_agent_start", `generation: ${myGeneration} → ${conscienceGeneration}`, `skipReason: stale`]);
+            return;
+          }
+          // Trace entry
+          const selectedName = result.selected ? `${result.selected.kind}:${result.selected.id}` : "none";
+          const skipInfo = result.skipReason ? [`skipReason: ${result.skipReason}`] : [];
+          const truncInfo = truncationRecorded.length ? truncationRecorded : [];
+          if (result.skipReason === "error" && result.errorCategory) {
+            if (!warnedErrorCategories.has(result.errorCategory)) {
+              warnedErrorCategories.add(result.errorCategory);
+              console.warn(`pi-warden: conscience ${result.errorCategory}`);
+            }
+          }
+          record(ctx, config, "conscience",
+            `assessed ${skills.length} skills + ${toolInfos.length} tools → ${selectedName} (P(useful)=${result.usefulness.toFixed(2)}, P(advance)=${result.pAdvance.toFixed(2)}, ${result.elapsedMs}ms)`,
+            ["trigger: before_agent_start", `eligible: ${skills.length} skills, ${toolInfos.length} tools`, `requests: ${result.requestCount}`, `questionHash: ${result.questionHash}`, ...skipInfo, ...truncInfo],
+          );
+          // Track state for turn-end triggers and reminders
+          assessmentsThisPrompt++;
+          lastAssessmentHash = result.questionHash;
+          if (result.selected) {
+            selectedCapability = { kind: result.selected.kind, id: result.selected.id };
+            pendingCapability = { kind: result.selected.kind, id: result.selected.id };
+            triggerConsumed = false;
+            // Record file identity at selection time for cross-call change detection (Rule 4)
+            if (result.selected.kind === "skill") {
+              const selectedSkill = cachedSkills.find(s => s.name === result.selected!.id);
+              if (selectedSkill?.filePath) recordFileIdentity(result.selected.id, selectedSkill.filePath);
+            }
+          }
+          // Delivery: only when selected, thresholds pass, and activation gate clears
+          if (result.selected && budgetAvailable(config)) {
+            // Activation gate (spec §7): policy must match hash and model when a policy exists
+            const policyActive = getActivePolicy() !== null;
+            if (policyActive && !policyMatches(result.questionHash, "jev-latest")) {
+              record(ctx, config, "conscience", "no policy for current hash/model", ["trigger: before_agent_start", "skipReason: no_policy"]);
+            } else {
+              spendBudgetUnit();
+              // Load mode: try to read the skill body from disk
+              if (result.selected.kind === "skill" && config.conscience.skills.mode === "load" && !loadedSkillNames.has(result.selected.id)) {
+                const skill = cachedSkills.find(s => s.name === result.selected!.id);
+                if (skill) {
+                  const ctxUsage = ctx.getContextUsage?.();
+                  const loadResult = loadSkillBody(skill as unknown as import("@earendil-works/pi-coding-agent").Skill, config.conscience, {
+                    pathRules: config.action.pathRules,
+                    exemptRules: config.action.exemptRules,
+                    loadedBytes,
+                    remainingMs: effectiveTimeout - (Date.now() - start),
+                    consentGiven: config.typesafe,
+                    projectTrusted: ctx.isProjectTrusted(),
+                    catalogName: skill.name,
+                    catalogDescription: skill.description,
+                    userInvoked: false,
+                    contextWindow: ctxUsage?.contextWindow ?? null,
+                    hasImages: !!(event as unknown as Record<string, unknown>).images,
+                  });
+                  if (loadResult.body) {
+                    loadedBytes += loadResult.bytesLoaded;
+                    loadedSkillNames.add(result.selected.id);
+                    instructionState = "queued";
+                    const msg = buildLoadMessage(loadResult);
+                    record(ctx, config, "conscience", `loaded: ${result.selected.id} (${loadResult.bytesLoaded} bytes)`, ["trigger: before_agent_start", `skipReason: none`, `delivery: instructions_supplied`]);
+                    return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msg, display: config.steerVisible } };
+                  } else {
+                    record(ctx, config, "conscience", `load failed: ${result.selected.id}`, ["trigger: before_agent_start", `skipReason: ${loadResult.skipReason}`]);
+                    // Fall through to recommend mode
+                  }
+                }
+              }
+              // Recommend mode or load fallback
+              const msgContent = result.selected.kind === "skill"
+                ? `Consider using the \"${result.selected.id}\" skill: ${result.selected.description}`
+                : `Consider using the \"${result.selected.id}\" tool: ${result.selected.description}`;
+              return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msgContent, display: config.steerVisible } };
+            }
+          } else if (result.selected && !budgetAvailable(config)) {
+            record(ctx, config, "conscience", "selected but budget exhausted", ["trigger: before_agent_start", `skipReason: budget`]);
+          }
+        } catch (err) {
+          const category = classifyConscienceError(err);
+          if (!warnedErrorCategories.has(category)) {
+            warnedErrorCategories.add(category);
+            console.warn(`pi-warden: conscience ${category}`);
+          }
+          record(ctx, config, "conscience", `error: ${category}`, ["trigger: before_agent_start", `skipReason: error`]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    }
   });
 
   // Each assistant message is judged on its own; Pi does not forward the stream's own "start" event, so this is the reset.
-  pi.on("message_start", async event => {
+  pi.on("message_start", async (event, ctx) => {
     if (event.message.role === "assistant") runaway.reset();
+    // ── Conscience: Rule 10 — delivery observed ──
+    // When a custom message with our type is emitted, mark instructions_supplied.
+    if (event.message.role === "assistant" && instructionState === "queued" && (event.message as unknown as Record<string, unknown>).customType === `${PACKAGE_NAME}-conscience`) {
+      const config = configFor(ctx);
+      if (config.enabled && config.conscience.enabled) {
+        instructionState = "instructions_supplied";
+        record(ctx, config, "conscience", `instructions_supplied: delivery observed`, ["trigger: message_start", `revision: ${queuedRevision}`]);
+      }
+    }
+    // ── Part B: queued-prompt admission ──
+    // A user message without a prior before_agent_start is a queued prompt.
+    if (event.message.role === "user") {
+      const config = configFor(ctx);
+      if (config.enabled && config.conscience.enabled && !beforeAgentStartFired) {
+        // This is a queued prompt admitted at message_start without before_agent_start.
+        // Assess against the last valid skill snapshot plus current tools.
+        const judge = judgeFor(config);
+        if (judge && cachedSkills.length > 0) {
+          const myGeneration = conscienceGeneration;
+          const redactedText = redact(typeof event.message.content === "string" ? event.message.content : "").slice(0, 2000);
+          let toolInfos: Array<{ name: string; description: string }> = [];
+          try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
+          const activeSkills = cachedSkills.map(s => s.name);
+          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+          try {
+            const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
+            if (conscienceGeneration !== myGeneration) return;
+            record(ctx, config, "conscience", `queued prompt assessed → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"}`, ["trigger: message_start", `origin: queued`, `skipReason: ${result.skipReason ?? "none"}`]);
+          } catch (err) { const cat = classifyConscienceError(err); if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
+        } else {
+          record(ctx, config, "conscience", `queued prompt: no judge or no skills`, ["trigger: message_start", `origin: queued`, "skipReason: catalog_unavailable"]);
+        }
+      }
+      beforeAgentStartFired = false;
+    }
   });
 
   // Per token this only appends to a buffer; every 256 characters the buffer is checked for identical blocks, with code only.
@@ -593,6 +838,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) ctx.ui.notify(`warden · runaway: the same ${verdict.kind} block repeated ${verdict.count} times in ${verdict.chars} chars; run stopped${recover ? " (agent gets one follow-up turn)" : " (not restarted: second time for this prompt)"}`, "error");
     notifyDesktop(ctx, config, `Runaway stopped: the same ${verdict.kind} block repeated ${verdict.count} times. ${recover ? "The agent gets one recovery turn." : "Second time for this prompt; the agent is waiting for you."}`);
     // Interactive Pi restores the user's queued messages to the editor before aborting; the follow-up is queued in agent_end, after that.
+    conscienceGeneration++;
     ctx.abort();
   });
 
@@ -602,15 +848,52 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   });
 
   // Every turn that runs after a compression is a turn that did not carry the removed text.
-  pi.on("turn_end", async () => {
+  pi.on("turn_end", async (_event, ctx) => {
     ledger.turnEnd();
     actionGuard.turnEnd();
     rulesGuard.turnEnd();
+    // ── Conscience: re-assess on unconsumed triggers ──
+    const config = configFor(ctx);
+    if (config.enabled && config.conscience.enabled && selectedCapability && needsReassessment && assessmentsThisPrompt < config.conscience.maxAssessments) {
+      const myGeneration = conscienceGeneration;
+      const judge = judgeFor(config);
+      if (judge) {
+        let toolInfos: Array<{ name: string; description: string }> = [];
+        try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
+        const redactedPrompt = redact(latestUserPrompt(ctx) ?? "").slice(0, 2000);
+        const activeSkills = cachedSkills.map(s => s.name);
+        const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+        try {
+          const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
+          if (conscienceGeneration !== myGeneration) return;
+          assessmentsThisPrompt++;
+          needsReassessment = false;
+          if (result.selected) {
+            selectedCapability = { kind: result.selected.kind, id: result.selected.id };
+            lastAssessmentHash = result.questionHash;
+          }
+          record(ctx, config, "conscience", `turn_end reassessment → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.elapsedMs}ms)`, ["trigger: turn_end", `assessments: ${assessmentsThisPrompt}/${config.conscience.maxAssessments}`, `skipReason: ${result.skipReason ?? "none"}`]);
+        } catch (err) { const cat = err instanceof Error ? (/(timeout|timed out)/i.test(err.message) ? "timeout" : /(auth|key|credential|401|403)/i.test(err.message) ? "auth" : /(network|fetch|connect)/i.test(err.message) ? "network" : "other") : "other"; if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
+      }
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    // ── Conscience: track tool attempts on the selected capability ──
+    if (config.conscience.enabled && selectedCapability && !triggerConsumed) {
+      if (selectedCapability.kind === "tool" && event.toolName === selectedCapability.id) {
+        pendingCapability = { kind: "tool", id: event.toolName };
+        record(ctx, config, "conscience", `tool_attempted: ${event.toolName}`, ["trigger: tool_call", `capability: ${selectedCapability.id}`]);
+      } else if (selectedCapability.kind === "skill" && event.toolName === "read") {
+        const rawPath = String((event.input as Record<string, unknown>).path ?? "");
+        if (rawPath.includes(selectedCapability.id)) {
+          pendingCapability = { kind: "skill", id: selectedCapability.id };
+          record(ctx, config, "conscience", `read_observed: ${selectedCapability.id}`, ["trigger: tool_call", `path: ${redact(rawPath)}`]);
+        }
+      }
+    }
     // A read of a stored full output means the excerpt was not enough; that is the number that tunes context.confidence.
     // A whole-file read also undoes the saving, so the kind of access is kept apart.
     const serializedInput = JSON.stringify(event.input);
@@ -876,6 +1159,24 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const text = textBlocks.map(part => part.text).join("\n");
     // Repeat detection uses the original result, so its request goes out together with the output check.
     const failed = resultFailed(event.isError, event.details, event.content);
+    // ── Conscience: track tool_result for the pending capability ──
+    if (config.conscience.enabled && pendingCapability && !triggerConsumed) {
+      if (pendingCapability.kind === "tool" && event.toolName === pendingCapability.id) {
+        triggerConsumed = true;
+        if (failed) {
+          needsReassessment = true;
+          record(ctx, config, "conscience", `tool_failed: ${event.toolName}`, ["trigger: tool_result", `capability: ${pendingCapability.id}`]);
+        } else {
+          record(ctx, config, "conscience", `tool_succeeded: ${event.toolName}`, ["trigger: tool_result", `capability: ${pendingCapability.id}`]);
+        }
+        pendingCapability = null;
+      } else if (pendingCapability.kind === "skill" && event.toolName === "read") {
+        triggerConsumed = true;
+        if (failed) needsReassessment = true;
+        record(ctx, config, "conscience", `read_observed: ${pendingCapability.id}`, ["trigger: tool_result", `failed: ${failed}`]);
+        pendingCapability = null;
+      }
+    }
     const stuckCheck = (() => {
       if (!config.stuck.enabled) return undefined;
       attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
@@ -1097,6 +1398,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // The agent has caught up and Pi will not continue on its own: the one moment a wake costs the user nothing.
   pi.on("agent_settled", async (_event, ctx) => {
     await checkSubagentReports(ctx, configFor(ctx));
+    // ── Conscience: finalize trace status ──
+    const config = configFor(ctx);
+    if (config.enabled && config.conscience.enabled && selectedCapability) {
+      const status = triggerConsumed ? "consumed" : reminderSent ? "reminded" : "unresolved";
+      record(ctx, config, "conscience", `settled: ${status} (${selectedCapability.kind}:${selectedCapability.id})`, ["trigger: agent_settled", `assessments: ${assessmentsThisPrompt}`, `nudges: ${nudgesThisPrompt}`, `instructions: ${instructionState}`]);
+    }
   });
 
   // Compaction evidence appendix: after compaction succeeds, send the evidence warden holds as one
@@ -1153,6 +1460,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       ctx.ui.notify("pi-warden is running an audit. Please wait...", "warning");
       return { action: "handled" };
     }
+    // Operator input invalidates in-flight conscience assessments
+    conscienceGeneration++;
   });
 
   pi.on("agent_end", async (event, ctx) => {
@@ -1188,6 +1497,32 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
     }
     const judge = judgeFor(config);
+    // ── Conscience: one reminder at agent_end if capability is still unresolved ──
+    if (config.conscience.enabled && selectedCapability && !reminderSent && !triggerConsumed &&
+        assessmentsThisPrompt < config.conscience.maxAssessments &&
+        nudgesThisPrompt < config.conscience.maxNudges && budgetAvailable(config) && judge) {
+      const myGeneration = conscienceGeneration;
+      let toolInfos: Array<{ name: string; description: string }> = [];
+      try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
+      const redactedPrompt = redact(latestUserPrompt(ctx) ?? "").slice(0, 2000);
+      const activeSkills = cachedSkills.map(s => s.name);
+      const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+      try {
+        const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
+        if (conscienceGeneration !== myGeneration) return;
+        assessmentsThisPrompt++;
+        if (result.selected && result.selected.kind === selectedCapability.kind && result.selected.id === selectedCapability.id &&
+            result.disposition !== "awaiting_user") {
+          reminderSent = true;
+          nudgesThisPrompt++;
+          spendBudgetUnit();
+          const msg = result.selected.kind === "skill"
+            ? `Reminder: consider using the \"${result.selected.id}\" skill. ${result.selected.description}`
+            : `Reminder: consider using the \"${result.selected.id}\" tool. ${result.selected.description}`;
+          steer(config, "conscience", msg, { deliverAs: "followUp" });
+        }
+      } catch (err) { const cat = err instanceof Error ? (/(timeout|timed out)/i.test(err.message) ? "timeout" : /(auth|key|credential|401|403)/i.test(err.message) ? "auth" : /(network|fetch|connect)/i.test(err.message) ? "network" : "other") : "other"; if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
+    }
     if (!finalMessage || !judge) return;
     // Pi shows the agent as working until this hook returns, so the two independent checks share one round trip.
     const task = latestUserPrompt(ctx);

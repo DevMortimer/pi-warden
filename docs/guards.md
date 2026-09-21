@@ -44,6 +44,18 @@ Agents pick the next command well and notice badly when that command is out of p
 
 One request stays well inside Jev's context window. The caps do the work: rule text is condensed to `rules.maxChars` (8,000 characters), task context is at most 8 messages of 750 redacted characters, an output sample is capped at 6,000 characters, and a written-content sample at `rules.maxChars`. The largest request, a rules check on a big edit with 8 rules, lands around 4 to 5 thousand tokens against a 32k window.
 
+## Conscience
+
+The conscience coach assesses whether the agent is missing a useful skill or tool before it acts. Disabled by default (`conscience.enabled: false`) pending calibration; measurement in progress on recorded sessions.
+
+**Modes:** `recommend` (name a skill, ask the agent to load it) and `load` (supply the skill body from disk). Default `recommend`; `load` requires global consent and a trusted project.
+
+**How it works:** On each normal operator prompt, `before_agent_start` evaluates eligible skill and tool candidates via Jev. A selection passing the measured thresholds produces at most one custom message through the steer budget. Turn-end re-assessment triggers on tool failures. One reminder fires at `agent_end` if the capability remains unresolved.
+
+**Trace-only:** all assessments are traced regardless of delivery. No live Jev questions ship until calibration publishes a measured policy (`{ questionHash, model, thresholds }`). Without a matching policy, no recommendation message is sent to the agent regardless of the configured thresholds; the assessment is traced with `no_policy`.
+
+**What it sends to Jev:** current request (2000 redacted chars), up to four recent messages (500 chars each), and sanitized candidate metadata. Full skill instructions never go to Jev.
+
 ## Calibration
 
 `node scripts/calibrate-action.mjs --all` replays every guarded call in your recorded Pi sessions through the guard (one request per call) and asks Jev, once per turn, whether your next message regrets one of the calls that ran, approves each held call, and how it receives the turn (continues, corrects, rejects, unrelated). Run on 321 sessions from this machine (1,085 labelled turns, 17,160 guarded calls, 14,903 judged):
