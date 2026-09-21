@@ -6,7 +6,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+## 0.33.0
+
+### Changed
+- Built-in pattern floor is now evidence when a judge answers (`action.floor: "evidence"`, default). Built-in hits (shell rules, rm classifier, sensitive-path, outside-project) are fed to the judge as `floor_hits` in the request state and traced as `(evidence)`, but they no longer override the judge's `irreversible` score. User-declared rules keep their declared action. `action.floor: "level"` restores the legacy behaviour. Replay on 52 real holds: evidence mode drops held count from 52 to 28; level mode preserves 44 confirm + 8 warn.
+
+### Fixed
+- Deferred sensitive-path hit now warns (instead of silently allowing) when the judge fails in evidence mode with `failOpen: true`.
 
 ## 0.32.0
 

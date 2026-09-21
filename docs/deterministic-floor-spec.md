@@ -4,6 +4,8 @@
 independently mergeable and compose. Config keys marked additive per
 [CONTRIBUTING.md](../CONTRIBUTING.md#change).*
 
+**2026-09-21 update (v0.31):** The built-in floor is now *evidence* when a judge answers. In the default `action.floor: "evidence"` mode, built-in pattern hits (shell rules, rm classifier, sensitive-path regex, outside-project location) are listed as `floor_hits` in the Jev request and traced as `(evidence)` in reasons, but they do not set the hold level. The judge's `irreversible` score against the configured thresholds decides warn and confirm. User-declared rules (`commandRules`, `commandDenyRules`, `pathRules`, `armingRules`) keep their declared action in both modes. Without a judge, or in `action.floor: "level"`, the floor applies as before. Replay on 52 real holds: evidence mode drops held count from 52 to 0 (all Jev scores below 0.7); level mode preserves 29 confirm + 8 warn.
+
 pi-warden's action guard has two layers: a deterministic pattern floor (shell rules,
 sensitive-path detection, `rm` classification) and the Jev judgment layer (irreversibility,
 scope, intent). The judgment layer gets most of the attention because it is the novel part.

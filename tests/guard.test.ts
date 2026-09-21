@@ -318,11 +318,21 @@ test("evaluateAction allows read-only commands without consulting the judge", as
 
 test("evaluateAction escalates destructive patterns to confirm even before the judge answers", async () => {
   const j = judge(0.1, 0.1);
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push my branch" }, { config: defaultConfig().action, judge: j });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push my branch" }, { config: { ...defaultConfig().action, floor: "level" as const }, judge: j });
   assert.equal(verdict.level, "confirm");
   assert.ok(verdict.patterns.some(hit => hit.id === "git-force-push"));
   assert.equal(j.calls.length, 1, "the judge still runs so the widget can show the off-task judgment");
   assert.ok(verdict.judgment);
+});
+
+test("evaluateAction in evidence mode feeds built-in hits to the judge and lets irreversible decide the level", async () => {
+  const j = judge(0.1, 0.1);
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push my branch" }, { config: defaultConfig().action, judge: j });
+  assert.equal(verdict.level, "allow", "built-in hit is evidence, not a level-setter");
+  assert.ok(verdict.patterns.some(hit => hit.id === "git-force-push"), "pattern still recorded for trace");
+  const request = j.calls[0] as { state: Record<string, unknown> };
+  assert.ok(typeof request.state.floor_hits === "string", "floor_hits present in request");
+  assert.ok(request.state.floor_hits.includes("git force push"), "floor_hits names the built-in hit");
 });
 
 test("evaluateAction sends named state fields and the base questions; `visible` joins for commands only", async () => {
