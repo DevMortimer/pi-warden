@@ -31,6 +31,8 @@ export interface RuleSet {
   aggregate?: string;
   /** Rules past the request cap, dropped in file order. */
   dropped: number;
+  /** Fallback document with no rule-shaped sections: prose only, skip judgment. */
+  proseOnly?: boolean;
 }
 
 export const RULES_FILE = "pi-warden.md";
@@ -44,6 +46,9 @@ const MAX_EDITS = 6;
 const RULE_BODY_LIMIT = 400;
 const STEER_BODY_LIMIT = 200;
 const ID_LIMIT = 64;
+const RULE_SHAPE_CONTEXT_LINES = 15;
+const MODAL_WORDS = /^(?:must|shall|never|always|do not|don't|cannot|can't|avoid|prefer|require|should not|shouldn't|no |not )/i;
+const BULLET_LINE = /^\s*[-*+]\s|^\s*\d+\.\s/;
 
 // ---------------------------------------------------------------------------
 // Markdown parsing
@@ -128,6 +133,35 @@ export function parseRules(markdown: string): Rule[] {
   });
 }
 
+/**
+ * A document counts as rule-shaped when at least one section (heading at the rule level) contains an imperative or constraint
+ * sentence (a bullet list, or a line starting with a modal such as must, never, always, do not, avoid, prefer) within the first
+ * few lines of its body. A document with zero rule-shaped sections is prose only.
+ */
+export function isRuleShaped(markdown: string): boolean {
+  const lines = taggedLines(markdown);
+  let ruleLevel = 7;
+  for (const line of lines) {
+    if (line.fenced) continue;
+    const match = HEADING.exec(line.text);
+    if (match && match[1]!.length < ruleLevel) ruleLevel = match[1]!.length;
+  }
+  if (ruleLevel === 7) return false;
+  let inSection = false;
+  let linesInBody = 0;
+  for (const line of lines) {
+    if (line.fenced) continue;
+    const heading = HEADING.exec(line.text);
+    if (heading && heading[1]!.length === ruleLevel) { inSection = true; linesInBody = 0; continue; }
+    if (inSection) {
+      linesInBody++;
+      if (linesInBody > RULE_SHAPE_CONTEXT_LINES) { inSection = false; continue; }
+      if (BULLET_LINE.test(line.text) || MODAL_WORDS.test(line.text.trim())) return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Globs: `**/` any depth, `*` within a segment, `?` one character; unanchored at the start so `migrations/**` matches
 // `db/migrations/0182.sql`. Paths are project-relative with forward slashes.
@@ -195,7 +229,11 @@ export class RuleStore {
     if (!config.fallback) return undefined;
     for (const file of FALLBACK_FILES) {
       const text = this.read(resolve(cwd, file));
-      if (text !== undefined && text.trim()) return { sources: [file], rules: [], aggregate: condense(redact(text), config.maxChars), dropped: 0 };
+      if (text !== undefined && text.trim()) {
+        const redacted = redact(text);
+        if (isRuleShaped(text)) return { sources: [file], rules: [], aggregate: condense(redacted, config.maxChars), dropped: 0 };
+        return { sources: [file], rules: [], dropped: 0, proseOnly: true };
+      }
     }
     return undefined;
   }
@@ -219,6 +257,7 @@ export function rulesFor(set: RuleSet, path: string): Rule[] {
 export function describeRuleSet(set: RuleSet | undefined): string {
   if (!set) return "none found";
   const where = set.sources.join(", ");
+  if (set.proseOnly) return `no rules found in ${where} (prose only)`;
   if (set.aggregate !== undefined && !set.rules.length) return `${where} (no rule headings: judged as one document)`;
   return `${where} (${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}${set.dropped ? `, ${set.dropped} beyond the ${MAX_RULES}-question cap ignored` : ""})`;
 }
@@ -403,6 +442,7 @@ export function skipReason(target: RulesTarget | undefined, set: RuleSet | undef
   if (excluded) return `excluded from Jev by rules.exclude (${excluded})`;
   const skipped = matchGlob(target.path, config.skip);
   if (skipped) return `rules do not apply by rules.skip (${skipped})`;
+  if (set.proseOnly) return `no rules found in ${set.sources.join(", ")} (prose only)`;
   if (set.rules.length && !rulesFor(set, target.path).length) return "no rule's paths match this file";
   return undefined;
 }

@@ -74,6 +74,10 @@ An overnight stability run covered **13,952 guard cases across 109 cycles** with
 
 These are project-maintained benchmarks, not universal claims. Raw reports and reproducible eval tooling are in the repo.
 
+### Does it get in the way? Measured, not promised.
+
+**3 holds per 1,000 calls. The other 997 run.** Across 315 recorded sessions and 18,075 guarded calls, the action hold fired 48 times, each for an action that is hard to undo. On the maintainer's machine, 452 allowed calls have run since outcome tracking began and not one was regretted afterward. When a hold was wrong, one retry cleared it: 2 of 13 labeled holds stood, the other 11 cleared on retry. The 27 calls the maintainer later regretted in the replay were ordinary edits and commits, not the kind a pre-call hold can see coming; those belong to the rules guard, the done-check, and the regret label, which are measured too. Snapshot numbers: `scripts/hold-stats.mjs` refreshes them, and the full replay is in [`eval/reports/2026-09-21-calibration-0.33.3/`](eval/reports/2026-09-21-calibration-0.33.3/).
+
 [See the evals ->](eval/reports/)
 
 ## Privacy

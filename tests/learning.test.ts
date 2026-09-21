@@ -146,7 +146,7 @@ test("querySmartHistory finds similar matches by irr proximity", async () => {
 
 // --- Tests for new learning features ---
 
-import { analyzeThresholds, analyzePatterns, generateRecommendations } from "../src/learning.js";
+import { analyzeThresholds, analyzePatterns, generateRecommendations, holdStats } from "../src/learning.js";
 
 test("analyzeThresholds returns empty for insufficient data", async () => {
   const adjustments = await analyzeThresholds("project-alpha");
@@ -347,6 +347,59 @@ test("read-only skipped call produces no row in SQLite", async () => {
   const projectRoot = "/skipped/project";
   const rows = await queryHoldsForProject(projectRoot);
   assert.equal(rows.length, 0, "no rows for a project with only skipped calls");
+});
+
+// --- Tests for holdStats ---
+
+test("holdStats returns zero counts for unknown project", async () => {
+  const stats = await holdStats("/nonexistent/project");
+  assert.equal(stats.held, 0);
+  assert.equal(stats.labeled, 0);
+  assert.equal(stats.approved, 0);
+  assert.equal(stats.declined, 0);
+  assert.equal(stats.replanned, 0);
+  assert.equal(stats.allowed, 0);
+  assert.equal(stats.regretted, 0);
+  assert.equal(stats.accepted, 0);
+});
+
+test("holdStats counts held rows with mixed outcomes correctly", async () => {
+  const projectRoot = "/stats/project";
+  const now = Date.now();
+
+  // 3 held rows: 1 approved, 1 declined, 1 replanned
+  const id1 = await recordHold({ timestamp: now - 3000, projectRoot, tool: "bash", commandPreview: "cmd1", scores: { irreversible: 0.5, reasons: [] }, level: "confirm", held: true, reasons: [] });
+  const id2 = await recordHold({ timestamp: now - 2000, projectRoot, tool: "bash", commandPreview: "cmd2", scores: { irreversible: 0.5, reasons: [] }, level: "confirm", held: true, reasons: [] });
+  const id3 = await recordHold({ timestamp: now - 1000, projectRoot, tool: "bash", commandPreview: "cmd3", scores: { irreversible: 0.5, reasons: [] }, level: "confirm", held: true, reasons: [] });
+  await recordOutcome(id1, "approved");
+  await recordOutcome(id2, "declined");
+  await recordOutcome(id3, "replanned");
+
+  const stats = await holdStats(projectRoot);
+  assert.equal(stats.held, 3);
+  assert.equal(stats.labeled, 3);
+  assert.equal(stats.approved, 1);
+  assert.equal(stats.declined, 1);
+  assert.equal(stats.replanned, 1);
+  assert.equal(stats.oldest, now - 3000);
+  assert.equal(stats.newest, now - 1000);
+});
+
+test("holdStats counts allowed rows correctly", async () => {
+  const projectRoot = "/stats/allowed";
+  const now = Date.now();
+
+  // 2 allowed rows: 1 accepted, 1 regretted
+  const id1 = await recordHold({ timestamp: now - 2000, projectRoot, tool: "read", commandPreview: "file.ts", scores: { irreversible: 0.1, reasons: [] }, level: "allow", held: false, reasons: [] });
+  const id2 = await recordHold({ timestamp: now - 1000, projectRoot, tool: "read", commandPreview: "file.ts", scores: { irreversible: 0.1, reasons: [] }, level: "allow", held: false, reasons: [] });
+  await recordOutcome(id1, "accepted");
+  await recordOutcome(id2, "regretted");
+
+  const stats = await holdStats(projectRoot);
+  assert.equal(stats.allowed, 2);
+  assert.equal(stats.accepted, 1);
+  assert.equal(stats.regretted, 1);
+  assert.equal(stats.held, 0);
 });
 
 // --- Tests for busy_timeout and VACUUM gating (issue #36) ---

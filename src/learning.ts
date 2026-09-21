@@ -235,6 +235,63 @@ export async function queryHoldsForProject(projectRoot: string, options?: { held
   return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? ORDER BY timestamp").all(projectRoot) as Record<string, unknown>[];
 }
 
+/** Lifetime hold statistics for one project root. Matches the precision formula in holds.ts: (declined + replanned) / (approved + declined + replanned). */
+export interface HoldStats {
+  /** held = 1 rows for this root. */
+  held: number;
+  /** Rows with a label (approved + declined + replanned). */
+  labeled: number;
+  /** Held rows approved on retry (false positives). */
+  approved: number;
+  /** Held rows declined (true positives). */
+  declined: number;
+  /** Held rows replanned (true positives). */
+  replanned: number;
+  /** held = 0 rows for this root. */
+  allowed: number;
+  /** Allowed rows the user regretted. */
+  regretted: number;
+  /** Allowed rows accepted. */
+  accepted: number;
+  /** Date range: oldest and newest timestamp (ms since epoch). */
+  oldest: number;
+  newest: number;
+}
+
+export async function holdStats(projectRoot: string): Promise<HoldStats> {
+  const d = await getDb();
+  const held = d.prepare(
+    `SELECT
+      COUNT(*) AS total,
+      COUNT(CASE WHEN outcome IN ('approved','declined','replanned') THEN 1 END) AS labeled,
+      COUNT(CASE WHEN outcome = 'approved' THEN 1 END) AS approved,
+      COUNT(CASE WHEN outcome = 'declined' THEN 1 END) AS declined,
+      COUNT(CASE WHEN outcome = 'replanned' THEN 1 END) AS replanned,
+      MIN(timestamp) AS oldest,
+      MAX(timestamp) AS newest
+    FROM holds WHERE project_root = ? AND held = 1`
+  ).get(projectRoot) as Record<string, unknown>;
+  const allowed = d.prepare(
+    `SELECT
+      COUNT(*) AS total,
+      COUNT(CASE WHEN outcome = 'regretted' THEN 1 END) AS regretted,
+      COUNT(CASE WHEN outcome = 'accepted' THEN 1 END) AS accepted
+    FROM holds WHERE project_root = ? AND held = 0`
+  ).get(projectRoot) as Record<string, unknown>;
+  return {
+    held: (held.total as number) ?? 0,
+    labeled: (held.labeled as number) ?? 0,
+    approved: (held.approved as number) ?? 0,
+    declined: (held.declined as number) ?? 0,
+    replanned: (held.replanned as number) ?? 0,
+    allowed: (allowed.total as number) ?? 0,
+    regretted: (allowed.regretted as number) ?? 0,
+    accepted: (allowed.accepted as number) ?? 0,
+    oldest: (held.oldest as number) ?? 0,
+    newest: (held.newest as number) ?? 0,
+  };
+}
+
 export async function querySmartHistory(tool: string, scores: HoldScores, projectRoot: string): Promise<SmartHistory> {
   const d = await getDb();
   const hash = signatureHash(tool, scores);

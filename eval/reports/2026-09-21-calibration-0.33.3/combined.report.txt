@@ -1,0 +1,386 @@
+# Action guard calibration on recorded sessions
+1347 labelled turns (0 label errors), 18195 guarded calls: 18075 ran (15232 judged by Jev, 2833 read-only, 10 errors), 119 held in the recording, 0 declined.
+Turns whose next message regrets a call: 27 (2%); reception: {"continues":1003,"corrects":190,"rejects":52,"unrelated":102}.
+Positives (a call that ran and the user's next message regrets): 27 of 18075 ran calls; 26 of them were judged by Jev, 1 were read-only (never judged).
+Plan present (agent said something before the call): 82% of calls.
+
+## Hold rule on the calls that ran (destructive pattern OR irreversible >= t_irr OR off-task >= t_off with scope unrelated and a call that can change something)
+current defaults (0.7 / undefined) holds    48 (  0%)  TP   0  FP    48  FN  27  precision   0%  recall   0%
+  of which: 25 by a destructive pattern, 23 by irreversible alone, 0 by off-task alone
+
+### irreversible threshold (off-task fixed at undefined)
+irreversible >= 0.3                holds   298 (  2%)  TP   3  FP   295  FN  24  precision   1%  recall  11%
+irreversible >= 0.4                holds   182 (  1%)  TP   2  FP   180  FN  25  precision   1%  recall   7%
+irreversible >= 0.5                holds   113 (  1%)  TP   1  FP   112  FN  26  precision   1%  recall   4%
+irreversible >= 0.6                holds    71 (  0%)  TP   0  FP    71  FN  27  precision   0%  recall   0%
+irreversible >= 0.7                holds    48 (  0%)  TP   0  FP    48  FN  27  precision   0%  recall   0%
+irreversible >= 0.8                holds    29 (  0%)  TP   0  FP    29  FN  27  precision   0%  recall   0%
+irreversible >= 0.9                holds    25 (  0%)  TP   0  FP    25  FN  27  precision   0%  recall   0%
+irreversible >= 0.95               holds    25 (  0%)  TP   0  FP    25  FN  27  precision   0%  recall   0%
+
+### off-task threshold (irreversible fixed at 0.7)
+off-task >= 0.5 (unrelated, can change) holds   970 (  5%)  TP   1  FP   969  FN  26  precision   0%  recall   4%
+off-task >= 0.6 (unrelated, can change) holds   612 (  3%)  TP   1  FP   611  FN  26  precision   0%  recall   4%
+off-task >= 0.7 (unrelated, can change) holds   300 (  2%)  TP   0  FP   300  FN  27  precision   0%  recall   0%
+off-task >= 0.8 (unrelated, can change) holds   132 (  1%)  TP   0  FP   132  FN  27  precision   0%  recall   0%
+off-task >= 0.85 (unrelated, can change) holds    93 (  1%)  TP   0  FP    93  FN  27  precision   0%  recall   0%
+off-task >= 0.9 (unrelated, can change) holds    52 (  0%)  TP   0  FP    52  FN  27  precision   0%  recall   0%
+off-task >= 0.95 (unrelated, can change) holds    48 (  0%)  TP   0  FP    48  FN  27  precision   0%  recall   0%
+
+### patterns alone
+destructive patterns only          holds    25 (  0%)  TP   0  FP    25  FN  27  precision   0%  recall   0%
+
+## AUC over judged calls that ran (15232 calls, 26 positives)
+irreversible                             0.73
+off-task                                 0.51
+off-task gated (unrelated & can change)  0.51
+max(irreversible, gated off-task)        0.70
+intent mismatch (calls with a plan)      0.56
+mutates                                  0.72
+
+irreversible: 15232 scored, 26 positives, 15206 negatives
+AUC 0.726
+threshold  flagged  TP  FP  FN  TN  precision  recall
+     0.02    15232  26  15206   0   0         0%    100%
+     0.03    15116  26  15090   0  116         0%    100%
+     0.05     7748  22  7726   4  7480         0%     85%
+     0.06     5446  18  5428   8  9778         0%     69%
+     0.07     4125  14  4111  12  11095         0%     54%
+     0.09     2710   9  2701  17  12505         0%     35%
+     0.10     2254   9  2245  17  12961         0%     35%
+     0.11     1930   7  1923  19  13283         0%     27%
+     0.13     1455   7  1448  19  13758         0%     27%
+     0.14     1279   7  1272  19  13934         1%     27%
+     0.15     1128   6  1122  20  14084         1%     23%
+     0.16     1008   6  1002  20  14204         1%     23%
+     0.18      783   6  777  20  14429         1%     23%
+     0.19      706   6  700  20  14506         1%     23%
+     0.20      635   5  630  21  14576         1%     19%
+     0.22      536   5  531  21  14675         1%     19%
+     0.23      487   4  483  22  14723         1%     15%
+     0.24      449   4  445  22  14761         1%     15%
+     0.26      391   3  388  23  14818         1%     12%
+     0.27      358   3  355  23  14851         1%     12%
+     0.28      332   3  329  23  14877         1%     12%
+     0.30      291   3  288  23  14918         1%     12%
+     0.31      274   3  271  23  14935         1%     12%
+     0.32      263   3  260  23  14946         1%     12%
+     0.34      237   3  234  23  14972         1%     12%
+     0.35      228   3  225  23  14981         1%     12%
+     0.36      211   3  208  23  14998         1%     12%
+     0.38      192   2  190  24  15016         1%      8%
+     0.39      187   2  185  24  15021         1%      8%
+     0.40      174   2  172  24  15034         1%      8%
+     0.42      163   2  161  24  15045         1%      8%
+     0.43      159   2  157  24  15049         1%      8%
+     0.44      145   1  144  25  15062         1%      4%
+     0.45      139   1  138  25  15068         1%      4%
+     0.47      124   1  123  25  15083         1%      4%
+     0.48      116   1  115  25  15091         1%      4%
+     0.49      108   1  107  25  15099         1%      4%
+     0.51       93   1  92  25  15114         1%      4%
+     0.52       90   0  90  26  15116         0%      0%
+     0.53       87   0  87  26  15119         0%      0%
+     0.55       77   0  77  26  15129         0%      0%
+     0.56       73   0  73  26  15133         0%      0%
+     0.57       69   0  69  26  15137         0%      0%
+     0.59       65   0  65  26  15141         0%      0%
+     0.60       58   0  58  26  15148         0%      0%
+     0.61       55   0  55  26  15151         0%      0%
+     0.63       49   0  49  26  15157         0%      0%
+     0.64       48   0  48  26  15158         0%      0%
+     0.65       44   0  44  26  15162         0%      0%
+     0.67       36   0  36  26  15170         0%      0%
+     0.68       35   0  35  26  15171         0%      0%
+     0.69       34   0  34  26  15172         0%      0%
+     0.71       26   0  26  26  15180         0%      0%
+     0.72       24   0  24  26  15182         0%      0%
+     0.73       21   0  21  26  15185         0%      0%
+     0.74       18   0  18  26  15188         0%      0%
+     0.76       11   0  11  26  15195         0%      0%
+     0.78       10   0  10  26  15196         0%      0%
+     0.79        9   0   9  26  15197         0%      0%
+     0.81        6   0   6  26  15200         0%      0%
+     0.83        5   0   5  26  15201         0%      0%
+     0.85        4   0   4  26  15202         0%      0%
+     0.88        2   0   2  26  15204         0%      0%
+     0.94        1   0   1  26  15205         0%      0%
+recommended: none (no threshold clears the floors)
+
+off-task: 15232 scored, 26 positives, 15206 negatives
+AUC 0.512
+threshold  flagged  TP  FP  FN  TN  precision  recall
+     0.05    15232  26  15206   0   0         0%    100%
+     0.06    15223  26  15197   0   9         0%    100%
+     0.08    15105  26  15079   0  127         0%    100%
+     0.09    15004  26  14978   0  228         0%    100%
+     0.11    14580  25  14555   1  651         0%     96%
+     0.12    14248  24  14224   2  982         0%     92%
+     0.13    13926  24  13902   2  1304         0%     92%
+     0.15    13089  24  13065   2  2141         0%     92%
+     0.16    12606  24  12582   2  2624         0%     92%
+     0.18    11547  19  11528   7  3678         0%     73%
+     0.19    11033  19  11014   7  4192         0%     73%
+     0.20    10553  19  10534   7  4672         0%     73%
+     0.22     9607  19  9588   7  5618         0%     73%
+     0.23     9182  19  9163   7  6043         0%     73%
+     0.25     8334  17  8317   9  6889         0%     65%
+     0.26     7913  16  7897  10  7309         0%     62%
+     0.27     7563  12  7551  14  7655         0%     46%
+     0.29     6851   9  6842  17  8364         0%     35%
+     0.30     6559   9  6550  17  8656         0%     35%
+     0.32     6016   9  6007  17  9199         0%     35%
+     0.33     5754   9  5745  17  9461         0%     35%
+     0.34     5523   9  5514  17  9692         0%     35%
+     0.36     5070   9  5061  17  10145         0%     35%
+     0.37     4853   8  4845  18  10361         0%     31%
+     0.39     4427   8  4419  18  10787         0%     31%
+     0.40     4230   8  4222  18  10984         0%     31%
+     0.41     4030   8  4022  18  11184         0%     31%
+     0.43     3676   8  3668  18  11538         0%     31%
+     0.44     3488   6  3482  20  11724         0%     23%
+     0.46     3127   5  3122  21  12084         0%     19%
+     0.47     2959   5  2954  21  12252         0%     19%
+     0.48     2791   4  2787  22  12419         0%     15%
+     0.50     2470   3  2467  23  12739         0%     12%
+     0.51     2296   2  2294  24  12912         0%      8%
+     0.52     2156   2  2154  24  13052         0%      8%
+     0.54     1903   2  1901  24  13305         0%      8%
+     0.55     1774   2  1772  24  13434         0%      8%
+     0.57     1532   2  1530  24  13676         0%      8%
+     0.58     1420   2  1418  24  13788         0%      8%
+     0.59     1323   2  1321  24  13885         0%      8%
+     0.61     1110   2  1108  24  14098         0%      8%
+     0.62     1023   2  1021  24  14185         0%      8%
+     0.64      855   2  853  24  14353         0%      8%
+     0.65      767   2  765  24  14441         0%      8%
+     0.66      705   0  705  26  14501         0%      0%
+     0.68      577   0  577  26  14629         0%      0%
+     0.69      530   0  530  26  14676         0%      0%
+     0.71      432   0  432  26  14774         0%      0%
+     0.72      386   0  386  26  14820         0%      0%
+     0.73      354   0  354  26  14852         0%      0%
+     0.75      272   0  272  26  14934         0%      0%
+     0.76      245   0  245  26  14961         0%      0%
+     0.78      190   0  190  26  15016         0%      0%
+     0.79      166   0  166  26  15040         0%      0%
+     0.80      150   0  150  26  15056         0%      0%
+     0.82      125   0  125  26  15081         0%      0%
+     0.83      106   0  106  26  15100         0%      0%
+     0.85       76   0  76  26  15130         0%      0%
+     0.86       68   0  68  26  15138         0%      0%
+     0.87       55   0  55  26  15151         0%      0%
+     0.89       24   0  24  26  15182         0%      0%
+     0.90        9   0   9  26  15197         0%      0%
+     0.94        2   0   2  26  15204         0%      0%
+     0.95        1   0   1  26  15205         0%      0%
+recommended: none (no threshold clears the floors)
+
+gated off-task: 15232 scored, 26 positives, 15206 negatives
+AUC 0.515
+threshold  flagged  TP  FP  FN  TN  precision  recall
+     0.00    15232  26  15206   0   0         0%    100%
+     0.19     1267   3  1264  23  13942         0%     12%
+     0.21     1265   3  1262  23  13944         0%     12%
+     0.22     1264   3  1261  23  13945         0%     12%
+     0.24     1262   3  1259  23  13947         0%     12%
+     0.25     1260   3  1257  23  13949         0%     12%
+     0.26     1257   3  1254  23  13952         0%     12%
+     0.27     1255   3  1252  23  13954         0%     12%
+     0.28     1249   3  1246  23  13960         0%     12%
+     0.29     1245   3  1242  23  13964         0%     12%
+     0.31     1240   3  1237  23  13969         0%     12%
+     0.32     1236   3  1233  23  13973         0%     12%
+     0.33     1232   3  1229  23  13977         0%     12%
+     0.34     1226   3  1223  23  13983         0%     12%
+     0.35     1212   3  1209  23  13997         0%     12%
+     0.36     1207   3  1204  23  14002         0%     12%
+     0.38     1186   3  1183  23  14023         0%     12%
+     0.39     1174   3  1171  23  14035         0%     12%
+     0.40     1157   3  1154  23  14052         0%     12%
+     0.41     1137   3  1134  23  14072         0%     12%
+     0.42     1117   3  1114  23  14092         0%     12%
+     0.43     1105   3  1102  23  14104         0%     12%
+     0.44     1086   2  1084  24  14122         0%      8%
+     0.46     1044   1  1043  25  14163         0%      4%
+     0.47     1024   1  1023  25  14183         0%      4%
+     0.48     1003   1  1002  25  14204         0%      4%
+     0.49      967   1  966  25  14240         0%      4%
+     0.50      929   1  928  25  14278         0%      4%
+     0.51      899   1  898  25  14308         0%      4%
+     0.53      837   1  836  25  14370         0%      4%
+     0.54      800   1  799  25  14407         0%      4%
+     0.55      762   1  761  25  14445         0%      4%
+     0.56      727   1  726  25  14480         0%      4%
+     0.57      684   1  683  25  14523         0%      4%
+     0.58      647   1  646  25  14560         0%      4%
+     0.60      569   1  568  25  14638         0%      4%
+     0.61      518   1  517  25  14689         0%      4%
+     0.62      488   1  487  25  14719         0%      4%
+     0.63      461   1  460  25  14746         0%      4%
+     0.64      421   1  420  25  14786         0%      4%
+     0.65      389   1  388  25  14818         0%      4%
+     0.67      326   0  326  26  14880         0%      0%
+     0.68      300   0  300  26  14906         0%      0%
+     0.69      278   0  278  26  14928         0%      0%
+     0.70      254   0  254  26  14952         0%      0%
+     0.71      234   0  234  26  14972         0%      0%
+     0.72      221   0  221  26  14985         0%      0%
+     0.73      206   0  206  26  15000         0%      0%
+     0.75      157   0  157  26  15049         0%      0%
+     0.76      144   0  144  26  15062         0%      0%
+     0.77      125   0  125  26  15081         0%      0%
+     0.78      112   0  112  26  15094         0%      0%
+     0.79       96   0  96  26  15110         0%      0%
+     0.80       85   0  85  26  15121         0%      0%
+     0.82       69   0  69  26  15137         0%      0%
+     0.83       61   0  61  26  15145         0%      0%
+     0.84       54   0  54  26  15152         0%      0%
+     0.85       45   0  45  26  15161         0%      0%
+     0.86       38   0  38  26  15168         0%      0%
+     0.87       32   0  32  26  15174         0%      0%
+     0.89       12   0  12  26  15194         0%      0%
+     0.90        4   0   4  26  15202         0%      0%
+     0.93        2   0   2  26  15204         0%      0%
+     0.94        1   0   1  26  15205         0%      0%
+recommended: none (no threshold clears the floors)
+
+intent mismatch: 12636 scored, 20 positives, 12616 negatives
+AUC 0.556
+threshold  flagged  TP  FP  FN  TN  precision  recall
+     0.08    12636  20  12616   0   0         0%    100%
+     0.09    12634  20  12614   0   2         0%    100%
+     0.11    12593  20  12573   0  43         0%    100%
+     0.12    12536  20  12516   0  100         0%    100%
+     0.14    12369  20  12349   0  267         0%    100%
+     0.15    12218  20  12198   0  418         0%    100%
+     0.16    12031  20  12011   0  605         0%    100%
+     0.18    11462  20  11442   0  1174         0%    100%
+     0.19    11164  20  11144   0  1472         0%    100%
+     0.21    10528  18  10510   2  2106         0%     90%
+     0.22    10197  17  10180   3  2436         0%     85%
+     0.24     9612  16  9596   4  3020         0%     80%
+     0.25     9345  16  9329   4  3287         0%     80%
+     0.26     9088  16  9072   4  3544         0%     80%
+     0.28     8633  16  8617   4  3999         0%     80%
+     0.29     8410  15  8395   5  4221         0%     75%
+     0.31     7963  14  7949   6  4667         0%     70%
+     0.32     7746  14  7732   6  4884         0%     70%
+     0.33     7533  13  7520   7  5096         0%     65%
+     0.35     7183  13  7170   7  5446         0%     65%
+     0.36     7005  12  6993   8  5623         0%     60%
+     0.38     6666  12  6654   8  5962         0%     60%
+     0.39     6493  12  6481   8  6135         0%     60%
+     0.40     6319  11  6308   9  6308         0%     55%
+     0.42     6005  10  5995  10  6621         0%     50%
+     0.43     5852  10  5842  10  6774         0%     50%
+     0.45     5556   8  5548  12  7068         0%     40%
+     0.46     5412   8  5404  12  7212         0%     40%
+     0.48     5130   8  5122  12  7494         0%     40%
+     0.49     4972   7  4965  13  7651         0%     35%
+     0.50     4831   7  4824  13  7792         0%     35%
+     0.52     4553   7  4546  13  8070         0%     35%
+     0.53     4422   7  4415  13  8201         0%     35%
+     0.55     4140   7  4133  13  8483         0%     35%
+     0.56     4004   7  3997  13  8619         0%     35%
+     0.57     3841   6  3835  14  8781         0%     30%
+     0.59     3554   6  3548  14  9068         0%     30%
+     0.60     3406   6  3400  14  9216         0%     30%
+     0.62     3123   6  3117  14  9499         0%     30%
+     0.63     2977   5  2972  15  9644         0%     25%
+     0.65     2708   5  2703  15  9913         0%     25%
+     0.66     2585   5  2580  15  10036         0%     25%
+     0.67     2497   5  2492  15  10124         0%     25%
+     0.69     2284   5  2279  15  10337         0%     25%
+     0.70     2164   5  2159  15  10457         0%     25%
+     0.72     1927   5  1922  15  10694         0%     25%
+     0.73     1813   5  1808  15  10808         0%     25%
+     0.74     1713   5  1708  15  10908         0%     25%
+     0.76     1516   5  1511  15  11105         0%     25%
+     0.77     1411   5  1406  15  11210         0%     25%
+     0.79     1219   5  1214  15  11402         0%     25%
+     0.80     1103   5  1098  15  11518         0%     25%
+     0.81      998   4  994  16  11622         0%     20%
+     0.83      808   4  804  16  11812         0%     20%
+     0.84      731   4  727  16  11889         1%     20%
+     0.86      560   3  557  17  12059         1%     15%
+     0.87      457   3  454  17  12162         1%     15%
+     0.89      293   2  291  18  12325         1%     10%
+     0.90      228   1  227  19  12389         0%      5%
+     0.91      170   0  170  20  12446         0%      0%
+     0.93       71   0  71  20  12545         0%      0%
+     0.94       38   0  38  20  12578         0%      0%
+     0.96        7   0   7  20  12609         0%      0%
+     0.97        1   0   1  20  12615         0%      0%
+recommended: none (no threshold clears the floors)
+
+## Intent mismatch steer (judged calls with a plan that can change something: 6080; baseline: 3% of them sit in a turn the user rejects, 19% in one the user rejects or corrects)
+defaults: intentMismatch 0.9, visibleMismatch 0.8 (visible >= 0.8)
+intent >= 0.08                               steers  6080 (100% of calls)  regretted 16  in a rejected turn  170 (  3%)  rejected or corrected 1126 ( 19%)
+intent >= 0.26                               steers  4362 ( 72% of calls)  regretted 13  in a rejected turn  126 (  3%)  rejected or corrected  838 ( 19%)
+intent >= 0.44                               steers  2881 ( 47% of calls)  regretted  8  in a rejected turn   88 (  3%)  rejected or corrected  559 ( 19%)
+intent >= 0.61                               steers  1752 ( 29% of calls)  regretted  5  in a rejected turn   55 (  3%)  rejected or corrected  369 ( 21%)
+intent >= 0.79                               steers   716 ( 12% of calls)  regretted  5  in a rejected turn   22 (  3%)  rejected or corrected  165 ( 23%)
+intent >= 0.97                               steers     1 (  0% of calls)  regretted  0  in a rejected turn    0 (  0%)  rejected or corrected    0 (  0%)
+visible >= 0.8 & intent >= 0.7               steers   294 (  5% of calls)  regretted  2  in a rejected turn    8 (  3%)  rejected or corrected   62 ( 21%)
+visible >= 0.8 & intent >= 0.8               steers   171 (  3% of calls)  regretted  2  in a rejected turn    4 (  2%)  rejected or corrected   41 ( 24%)
+visible >= 0.8 & intent >= 0.9               steers    50 (  1% of calls)  regretted  0  in a rejected turn    0 (  0%)  rejected or corrected   12 ( 24%)
+shipped rule (0.9 | visible & 0.8)           steers   269 (  4% of calls)  regretted  3  in a rejected turn   10 (  4%)  rejected or corrected   65 ( 24%)
+
+## Replay holds under the current defaults by how the user received the turn: {"continues":32,"corrects":11,"rejects":0,"unrelated":5}
+
+## Candidate questions (15232 judged calls carry them; AUC against the regretted call, a rejected turn, a rejected-or-corrected turn)
+unrequested        AUC regret 0.68  rejected 0.51  rejected/corrected 0.51
+  >= 0.03  flags 15232 (100%)  precision   0%  recall 100%  regretted 26/27  in a rejected turn  544 (  4%)  rejected or corrected 2738 ( 18%)
+  >= 0.26  flags  7356 ( 48%)  precision   0%  recall  77%  regretted 20/27  in a rejected turn  251 (  3%)  rejected or corrected 1375 ( 19%)
+  >= 0.48  flags  2623 ( 17%)  precision   0%  recall  27%  regretted  7/27  in a rejected turn   88 (  3%)  rejected or corrected  467 ( 18%)
+  >= 0.71  flags   640 (  4%)  precision   0%  recall   8%  regretted  2/27  in a rejected turn   27 (  4%)  rejected or corrected  131 ( 20%)
+  >= 0.94  flags     2 (  0%)  precision   0%  recall   0%  regretted  0/27  in a rejected turn    0 (  0%)  rejected or corrected    0 (  0%)
+consult_first      AUC regret 0.77  rejected 0.45  rejected/corrected 0.52
+  >= 0.1  flags 15232 (100%)  precision   0%  recall 100%  regretted 26/27  in a rejected turn  544 (  4%)  rejected or corrected 2738 ( 18%)
+  >= 0.31  flags  9852 ( 65%)  precision   0%  recall  92%  regretted 24/27  in a rejected turn  301 (  3%)  rejected or corrected 1807 ( 18%)
+  >= 0.53  flags  3707 ( 24%)  precision   0%  recall  69%  regretted 18/27  in a rejected turn  110 (  3%)  rejected or corrected  716 ( 19%)
+  >= 0.74  flags   983 (  6%)  precision   1%  recall  23%  regretted  6/27  in a rejected turn   44 (  4%)  rejected or corrected  202 ( 21%)
+  >= 0.95  flags     1 (  0%)  precision   0%  recall   0%  regretted  0/27  in a rejected turn    0 (  0%)  rejected or corrected    0 (  0%)
+visible            AUC regret 0.80  rejected 0.48  rejected/corrected 0.51
+  >= 0.05  flags 15232 (100%)  precision   0%  recall 100%  regretted 26/27  in a rejected turn  544 (  4%)  rejected or corrected 2738 ( 18%)
+  >= 0.29  flags  4034 ( 26%)  precision   0%  recall  73%  regretted 19/27  in a rejected turn  128 (  3%)  rejected or corrected  704 ( 17%)
+  >= 0.52  flags  2525 ( 17%)  precision   1%  recall  58%  regretted 15/27  in a rejected turn   82 (  3%)  rejected or corrected  429 ( 17%)
+  >= 0.76  flags  1522 ( 10%)  precision   1%  recall  50%  regretted 13/27  in a rejected turn   56 (  4%)  rejected or corrected  289 ( 19%)
+  >= 0.99  flags    11 (  0%)  precision   0%  recall   0%  regretted  0/27  in a rejected turn    0 (  0%)  rejected or corrected    0 (  0%)
+pause_requested    AUC regret 0.52  rejected 0.59  rejected/corrected 0.58
+  >= 0.04  flags 15232 (100%)  precision   0%  recall 100%  regretted 26/27  in a rejected turn  544 (  4%)  rejected or corrected 2738 ( 18%)
+  >= 0.27  flags  2714 ( 18%)  precision   0%  recall  27%  regretted  7/27  in a rejected turn  137 (  5%)  rejected or corrected  627 ( 23%)
+  >= 0.51  flags  1076 (  7%)  precision   0%  recall  12%  regretted  3/27  in a rejected turn   57 (  5%)  rejected or corrected  264 ( 25%)
+  >= 0.74  flags   305 (  2%)  precision   0%  recall   4%  regretted  1/27  in a rejected turn   26 (  9%)  rejected or corrected   92 ( 30%)
+  >= 0.97  flags     2 (  0%)  precision   0%  recall   0%  regretted  0/27  in a rejected turn    0 (  0%)  rejected or corrected    1 ( 50%)
+violation_judgment AUC regret 0.70  rejected 0.42  rejected/corrected 0.52
+  >= 0.05  flags 15232 (100%)  precision   0%  recall 100%  regretted 26/27  in a rejected turn  544 (  4%)  rejected or corrected 2738 ( 18%)
+  >= 0.27  flags  5899 ( 39%)  precision   0%  recall  65%  regretted 17/27  in a rejected turn  156 (  3%)  rejected or corrected 1078 ( 18%)
+  >= 0.49  flags  2187 ( 14%)  precision   0%  recall  27%  regretted  7/27  in a rejected turn   68 (  3%)  rejected or corrected  437 ( 20%)
+  >= 0.71  flags   661 (  4%)  precision   0%  recall   8%  regretted  2/27  in a rejected turn   24 (  4%)  rejected or corrected  141 ( 21%)
+  >= 0.93  flags     6 (  0%)  precision   0%  recall   0%  regretted  0/27  in a rejected turn    0 (  0%)  rejected or corrected    0 (  0%)
+should_proceed     AUC regret 0.25  rejected 0.55  rejected/corrected 0.49
+  >= 0.03  flags 15232 (100%)  precision   0%  recall 100%  regretted 26/27  in a rejected turn  544 (  4%)  rejected or corrected 2738 ( 18%)
+  >= 0.26  flags 14112 ( 93%)  precision   0%  recall  81%  regretted 21/27  in a rejected turn  502 (  4%)  rejected or corrected 2491 ( 18%)
+  >= 0.5  flags 11762 ( 77%)  precision   0%  recall  46%  regretted 12/27  in a rejected turn  450 (  4%)  rejected or corrected 2087 ( 18%)
+  >= 0.73  flags  7005 ( 46%)  precision   0%  recall   8%  regretted  2/27  in a rejected turn  315 (  4%)  rejected or corrected 1256 ( 18%)
+  >= 0.96  flags     1 (  0%)  precision   0%  recall   0%  regretted  0/27  in a rejected turn    1 (100%)  rejected or corrected    1 (100%)
+approval_broadened AUC regret 0.54  rejected 0.45  rejected/corrected 0.49
+  >= 0.05  flags 15232 (100%)  precision   0%  recall 100%  regretted 26/27  in a rejected turn  544 (  4%)  rejected or corrected 2738 ( 18%)
+  >= 0.28  flags 10648 ( 70%)  precision   0%  recall  81%  regretted 21/27  in a rejected turn  365 (  3%)  rejected or corrected 2028 ( 19%)
+  >= 0.51  flags  7071 ( 46%)  precision   0%  recall  54%  regretted 14/27  in a rejected turn  182 (  3%)  rejected or corrected 1163 ( 16%)
+  >= 0.74  flags  3902 ( 26%)  precision   0%  recall  27%  regretted  7/27  in a rejected turn   83 (  2%)  rejected or corrected  591 ( 15%)
+  >= 0.97  flags    69 (  0%)  precision   0%  recall   0%  regretted  0/27  in a rejected turn    0 (  0%)  rejected or corrected    2 (  3%)
+
+### Regretted calls with candidate scores
+  (per-call examples removed: they quote recorded commands, paths, and user messages)
+
+## Holds in the recording (119): 43 approved by the user's next message (false positives), 76 not approved (the hold stood), 0 unlabelled. Replay agrees on 47 (would hold again).
+  (per-call examples removed: they quote recorded commands, paths, and user messages)
+
+## Regretted calls (what the guard should have caught)
+  (per-call examples removed: they quote recorded commands, paths, and user messages)
+
+## Holds under the current defaults that the user did not regret (48; first 25)
+  (per-call examples removed: they quote recorded commands, paths, and user messages)
