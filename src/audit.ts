@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ask, noul } from "pi-typesafe";
+import { ask, choice, noul } from "pi-typesafe";
 import { redact } from "./redact.js";
 import { detectProjectType } from "./init.js";
 import type { Judge } from "./guard.js";
@@ -94,10 +94,165 @@ function readProjectInfo(projectPath: string, workspaceRoot: string): ProjectInf
 
 
 
+// ─── Opportunity types ──────────────────────────────────────────────────────
+
+const OPPORTUNITY_TYPES = [
+  "decision-points",
+  "scoring",
+  "verification",
+  "semantic-search",
+  "content-quality",
+  "routing",
+  "classification",
+  "extraction",
+  "none",
+] as const;
+
+type OpportunityType = (typeof OPPORTUNITY_TYPES)[number];
+
+interface OpportunityTemplate {
+  task: string;
+  jevOpportunity: string;
+  informationNeeded: string;
+  references: string;
+  question: string;
+  outputType: string;
+  actionOnAnswer: string;
+  riskIfWrong: string;
+  priority: "high" | "medium" | "low";
+  setupEffort: "low" | "medium" | "high";
+  testingEase: "easy" | "medium" | "hard";
+  frequency: string;
+  costImpact: string;
+}
+
+const OPPORTUNITY_TEMPLATES: Record<Exclude<OpportunityType, "none">, OpportunityTemplate> = {
+  "decision-points": {
+    task: "Decision-point evaluation",
+    jevOpportunity: "Jev could evaluate context and choose between options (routing, strategy, mode selection)",
+    informationNeeded: "Current context, available options, constraints",
+    references: "Option definitions, constraints, past outcomes",
+    question: "Given this context, which option best matches the user's intent?",
+    outputType: "choice: [option-a, option-b, ..., uncertain]",
+    actionOnAnswer: "Select the chosen option and proceed",
+    riskIfWrong: "Wrong option selected; may need user correction",
+    priority: "high",
+    setupEffort: "low",
+    testingEase: "easy",
+    frequency: "per request",
+    costImpact: "medium — wrong choice is usually reversible",
+  },
+  scoring: {
+    task: "Scoring and ranking",
+    jevOpportunity: "Jev could score, rank, or rate items based on semantic criteria",
+    informationNeeded: "Items to score, scoring criteria, context",
+    references: "Scoring rubric, past scores, calibration data",
+    question: "How well does this item match the criteria?",
+    outputType: "score: 0-1",
+    actionOnAnswer: "Use score for ranking, filtering, or threshold decisions",
+    riskIfWrong: "Inaccurate ranking; items may be mis-prioritized",
+    priority: "medium",
+    setupEffort: "medium",
+    testingEase: "medium",
+    frequency: "per batch",
+    costImpact: "low — scores inform but don't directly act",
+  },
+  verification: {
+    task: "Verification and validation",
+    jevOpportunity: "Jev could verify claims, validate outputs, or check correctness",
+    informationNeeded: "Claim or output to verify, reference material, constraints",
+    references: "Expected behavior, documentation, test cases",
+    question: "Is this claim correct given the evidence?",
+    outputType: "noul: probability of correctness",
+    actionOnAnswer: "Accept, reject, or flag for review",
+    riskIfWrong: "Incorrect verification may let errors through or block valid work",
+    priority: "high",
+    setupEffort: "low",
+    testingEase: "easy",
+    frequency: "per output",
+    costImpact: "medium — false negatives block work, false positives let bugs through",
+  },
+  "semantic-search": {
+    task: "Semantic search and matching",
+    jevOpportunity: "Jev could find relevant passages, code, or documentation by meaning rather than keywords",
+    informationNeeded: "Search query, corpus of documents or code",
+    references: "Index of searchable content, relevance thresholds",
+    question: "Which passages are most relevant to this query?",
+    outputType: "choice: [relevant, not-relevant, uncertain]",
+    actionOnAnswer: "Return matched passages or filter results",
+    riskIfWrong: "Missing relevant results or returning noise",
+    priority: "medium",
+    setupEffort: "medium",
+    testingEase: "medium",
+    frequency: "per query",
+    costImpact: "low — poor results are retryable",
+  },
+  "content-quality": {
+    task: "Content quality assessment",
+    jevOpportunity: "Jev could evaluate prose, documentation, or code quality against standards",
+    informationNeeded: "Content to evaluate, quality criteria, style guide",
+    references: "Style guide, quality standards, examples of good/bad",
+    question: "Does this content meet the quality standards?",
+    outputType: "noul: probability of meeting standards",
+    actionOnAnswer: "Flag issues, suggest improvements, or approve",
+    riskIfWrong: "Missing quality issues or over-flagging",
+    priority: "low",
+    setupEffort: "low",
+    testingEase: "easy",
+    frequency: "per content change",
+    costImpact: "low — quality flags are advisory",
+  },
+  routing: {
+    task: "Intent-based routing",
+    jevOpportunity: "Jev could route requests to the right handler based on user intent",
+    informationNeeded: "User input, available routes, route descriptions",
+    references: "Route table, handler capabilities, past routing decisions",
+    question: "Which handler best matches this user's intent?",
+    outputType: "choice: [handler-a, handler-b, ..., uncertain]",
+    actionOnAnswer: "Forward to the selected handler",
+    riskIfWrong: "Request goes to wrong handler; may produce incorrect results",
+    priority: "high",
+    setupEffort: "low",
+    testingEase: "easy",
+    frequency: "per request",
+    costImpact: "medium — wrong route may need retry",
+  },
+  classification: {
+    task: "Classification and categorization",
+    jevOpportunity: "Jev could classify items into categories based on content and context",
+    informationNeeded: "Item to classify, available categories, classification criteria",
+    references: "Category definitions, examples, classification rules",
+    question: "Which category does this item belong to?",
+    outputType: "choice: [cat-a, cat-b, ..., uncertain]",
+    actionOnAnswer: "Apply category-specific processing",
+    riskIfWrong: "Misclassification may trigger wrong processing path",
+    priority: "medium",
+    setupEffort: "low",
+    testingEase: "easy",
+    frequency: "per item",
+    costImpact: "low — classification errors are usually correctable",
+  },
+  extraction: {
+    task: "Information extraction",
+    jevOpportunity: "Jev could extract structured information from unstructured text or code",
+    informationNeeded: "Source text, extraction schema, context",
+    references: "Schema definition, extraction examples, validation rules",
+    question: "What structured information can be extracted from this content?",
+    outputType: "noul: confidence in extraction accuracy",
+    actionOnAnswer: "Populate structured fields, create records",
+    riskIfWrong: "Incorrect extraction may corrupt downstream data",
+    priority: "medium",
+    setupEffort: "medium",
+    testingEase: "medium",
+    frequency: "per content block",
+    costImpact: "medium — wrong extraction may require manual correction",
+  },
+};
+
 // ─── Prompt ───────────────────────────────────────────────────────────────────
 
 function buildAuditPrompt(projectInfo: ProjectInfo): string {
-  return `Audit this project for tasks where Jev (an AI judgment model) could improve the codebase.
+  return `Analyze this project and identify which types of AI (Jev) opportunities are present.
 
 PROJECT: ${projectInfo.name}
 TYPE: ${projectInfo.type}
@@ -105,57 +260,18 @@ FILES: ${projectInfo.files.join(", ")}
 ${projectInfo.readme ? `README (first 2000 chars):\n${projectInfo.readme}` : ""}
 ${projectInfo.manifest ? `Manifest:\n${projectInfo.manifest}` : ""}
 
-For each task where Jev could help, report:
+Based on the code structure, file types, and project description, identify which opportunity types are relevant. Look for patterns that suggest each type:
 
-1. FILES — which files contain this task
-2. TODAY — how the task works now (2-3 sentences)
-3. JEV — where Jev could help (1-2 sentences)
-4. READ — what information Jev needs to read
-5. CHECK — what references it should verify against
-6. QUESTION — one specific question Jev should answer
-7. OUTPUT — allowed choices, score scale (0-1), or probability
-8. DO — what the app does with Jev's answer
-9. RISK — what happens if the answer is wrong or uncertain
+- decision-points: if/else chains, switch statements, strategy patterns, config-driven behavior
+- scoring: metrics, ratings, rankings, thresholds, calibration, priority calculations
+- verification: assertions, validation, checks, tests, compliance checks
+- semantic-search: search functionality, matching, similarity, lookup by meaning
+- content-quality: documentation, comments, prose, code review, style checking
+- routing: URL routing, command dispatch, handler selection, middleware chains
+- classification: categorization, tagging, type detection, mode selection
+- extraction: parsing, data extraction, field extraction, schema validation
 
-Look for:
-- Decision points: choosing between options, routing, strategy selection
-- Scoring: metrics, ratings, rankings, thresholds, calibration
-- Verification: validation, assertions, checks, truth testing
-- Search by meaning: finding relevant passages, semantic matching
-- Content quality: prose checking, documentation, code review
-
-For each finding, estimate:
-
-- PRIORITY: high/medium/low (how much Jev improves over current approach)
-- EFFORT: low/medium/high (setup work needed)
-- TESTING: easy/medium/hard (how to verify Jev's answers)
-- FREQUENCY: how often this task runs (or "unknown")
-- COST: effect of a wrong answer (or "unknown")
-
-If a project has no clear Jev opportunities, say so explicitly.
-
-Return findings as a JSON array. Example format:
-[
-  {
-    "project": "my-app",
-    "files": ["src/router.ts"],
-    "task": "Route selection based on user role",
-    "jevOpportunity": "Jev could evaluate whether a route matches the user's intent",
-    "informationNeeded": "User role, route config, current path",
-    "references": "Route table, role permissions",
-    "question": "Does this route match the user's intended destination?",
-    "outputType": "choice: [match, no-match, uncertain]",
-    "actionOnAnswer": "Route to the matched path or show an error",
-    "riskIfWrong": "User reaches wrong page (low impact)",
-    "priority": "medium",
-    "setupEffort": "low",
-    "testingEase": "easy",
-    "frequency": "every navigation",
-    "costImpact": "low — wrong route is reversible"
-  }
-]
-
-Return ONLY the JSON array. No other text.`;
+Select ALL types that apply. If none apply, select "none".`;
 }
 
 // ─── Main audit ───────────────────────────────────────────────────────────────
@@ -193,19 +309,32 @@ export async function auditWorkspace(cwd: string, judge: Judge): Promise<AuditRe
         hasCI: info.hasCI,
         hasRules: info.hasRules,
       };
+      const choiceOptions: Record<string, string> = {};
+      for (const t of OPPORTUNITY_TYPES) {
+        choiceOptions[t] = t === "none"
+          ? `The project has no clear opportunities for this AI type.`
+          : `The project has code patterns suggesting ${t} opportunities where Jev could help.`;
+      }
       const request = {
         state: safeState,
         questions: {
-          audit: noul(redact(prompt), {
-            true: "The project has opportunities where Jev could improve the codebase.",
-            false: "The project has no clear Jev opportunities.",
-          }),
+          audit: choice(redact(prompt), choiceOptions),
         },
       };
       const result = await ask(judge, request);
       if (!result.ok) throw new Error(result.error);
-      const parsed = parseFindings(result.answers.audit as unknown as string, info);
-      findings.push(...parsed);
+      const selected = (result.answers.audit as { choice?: string })?.choice;
+      if (!selected || selected === "none") continue;
+      const selectedTypes = selected.split(/,\s*/).map(s => s.trim()) as OpportunityType[];
+      for (const t of selectedTypes) {
+        if (t === "none" || !(t in OPPORTUNITY_TEMPLATES)) continue;
+        const tmpl = OPPORTUNITY_TEMPLATES[t as Exclude<OpportunityType, "none">];
+        findings.push({
+          project: info.name,
+          files: info.files.slice(0, 5),
+          ...tmpl,
+        });
+      }
     } catch (err) {
       skipped.push({ project: info.name, reason: err instanceof Error ? err.message : String(err) });
     }
@@ -332,47 +461,7 @@ function extractExample(content: string, finding: AuditFinding): string | null {
   return null;
 }
 
-// ─── Parsing ──────────────────────────────────────────────────────────────────
 
-function parseFindings(raw: unknown, info: ProjectInfo): AuditFinding[] {
-  try {
-    const text = typeof raw === "string" ? raw : JSON.stringify(raw);
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return [];
-    const arr = JSON.parse(jsonMatch[0]) as Record<string, unknown>[];
-    return arr.map((item): AuditFinding => ({
-      project: info.name,
-      files: Array.isArray(item.files) ? item.files.map(String) : [],
-      task: String(item.task ?? item.TODAY ?? item.description ?? ""),
-      jevOpportunity: String(item.jevOpportunity ?? item.JEV ?? ""),
-      informationNeeded: String(item.informationNeeded ?? item.READ ?? ""),
-      references: String(item.references ?? item.CHECK ?? ""),
-      question: String(item.question ?? item.QUESTION ?? ""),
-      outputType: String(item.outputType ?? item.OUTPUT ?? "choice"),
-      actionOnAnswer: String(item.actionOnAnswer ?? item.DO ?? ""),
-      riskIfWrong: String(item.riskIfWrong ?? item.RISK ?? "unknown"),
-      example: item.example ? String(item.example) : undefined,
-      priority: validatePriority(item.priority),
-      setupEffort: validateEffort(item.setupEffort ?? item.effort),
-      testingEase: validateEase(item.testingEase ?? item.testing),
-      frequency: String(item.frequency ?? "unknown"),
-      costImpact: String(item.costImpact ?? item.cost ?? "unknown"),
-    }));
-  } catch (err) {
-    console.warn(`audit: could not parse Jev response for ${info.name}: ${err instanceof Error ? err.message : err}`);
-    return [];
-  }
-}
-
-function validatePriority(val: unknown): "high" | "medium" | "low" {
-  return val === "high" || val === "medium" || val === "low" ? val : "medium";
-}
-function validateEffort(val: unknown): "low" | "medium" | "high" {
-  return val === "low" || val === "medium" || val === "high" ? val : "medium";
-}
-function validateEase(val: unknown): "easy" | "medium" | "hard" {
-  return val === "easy" || val === "medium" || val === "hard" ? val : "medium";
-}
 function priorityOrder(p: string): number {
   return p === "high" ? 0 : p === "medium" ? 1 : 2;
 }
