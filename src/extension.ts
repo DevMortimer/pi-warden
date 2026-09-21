@@ -37,7 +37,7 @@ import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from ".
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
-import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
+import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
 import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
@@ -256,6 +256,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
   let regretCandidates: PreviousAction[] = [];
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
+  /** Full output text keyed by attempt index, for stuck-loop diffs. */
+  let fullOutputs = new Map<number, string>();
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
   let warnedFallback = false;
@@ -553,6 +555,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
     const config = configFor(ctx);
     attempts = new AttemptWindow(config.stuck.window);
+    fullOutputs = new Map();
     doneNudged = false;
     steersThisRun = 0;
     finals.reset();
@@ -872,6 +875,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const text = textBlocks.map(part => part.text).join("\n");
     // Repeat detection uses the original result, so its request goes out together with the output check.
     const failed = resultFailed(event.isError, event.details, event.content);
+    // Save the full text for stuck-loop diffs before any compression or duplicate detection.
+    if (config.stuck.enabled && failed && text.length > 0) {
+      const attemptIndex = attempts.attempts.length;
+      fullOutputs.set(attemptIndex, text);
+    }
     const stuckCheck = (() => {
       if (!config.stuck.enabled) return undefined;
       attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
@@ -1044,6 +1052,23 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!verdict) return patch;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     if (verdict.source === "repeat" && !verdict.stuck) return patch;
+    // When a repeat fires and the previous full output is available, replace the tool result with a diff note.
+    if (verdict.stuck && verdict.source === "repeat" && text.length > 0) {
+      const prevIndex = attempts.attempts.length - 2;
+      const prevFull = prevIndex >= 0 ? fullOutputs.get(prevIndex) : undefined;
+      if (prevFull !== undefined) {
+        try {
+          const savedPath = await saveOutput(text);
+          const diffNote = stuckDiff(prevFull, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: savedPath });
+          const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(diffNote);
+          if (bytesSaved > 0) {
+            content = content.map(part => part.type === "text" ? { ...part, text: diffNote } : part);
+          }
+        } catch {
+          noteError(ctx, "Could not store full output for stuck diff; keeping it unchanged.", undefined);
+        }
+      }
+    }
     const nudge = verdict.stuck && config.stuck.nudge ? stuckNudge(verdict) : undefined;
     record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
     if (!verdict.stuck) return patch;

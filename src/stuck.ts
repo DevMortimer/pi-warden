@@ -229,6 +229,57 @@ export function stuckNudge(verdict: StuckVerdict): string {
   return `pi-warden: ${verdict.reasons.join("; ")}. Stop retrying. Re-read the last error output carefully, state a new hypothesis about the cause, and either gather the missing information (read the relevant file, check versions or paths) or try a different method. If two different methods have failed, report the blocker to the user with the exact error instead of trying again.`;
 }
 
+/** LCS-based line diff between two outputs, capped at diffLimit characters. Both inputs must be pre-redacted. */
+function lineDiff(previous: string, current: string, diffLimit: number): string {
+  const prevLines = previous.split("\n");
+  const currLines = current.split("\n");
+  const m = prevLines.length;
+  const n = currLines.length;
+  // Longest common subsequence.
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i]![j] = prevLines[i - 1] === currLines[j - 1] ? dp[i - 1]![j - 1]! + 1 : Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
+    }
+  }
+  // Backtrack to build unified diff.
+  const diff: string[] = [];
+  let i = m;
+  let j = n;
+  const ops: Array<[string, string]> = [];
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && prevLines[i - 1] === currLines[j - 1]) {
+      ops.push([" ", prevLines[i - 1]!]);
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || dp[i]![j - 1]! >= dp[i - 1]![j]!)) {
+      ops.push(["+", currLines[j - 1]!]);
+      j--;
+    } else {
+      ops.push(["-", prevLines[i - 1]!]);
+      i--;
+    }
+  }
+  ops.reverse();
+  for (const [op, line] of ops) diff.push(`${op} ${line}`);
+  const text = diff.join("\n");
+  return text.length <= diffLimit ? text : `${text.slice(0, diffLimit)}\n… [diff truncated]`;
+}
+
+/**
+ * Short note for a stuck-loop repeated failure: header, capped unified diff against the previous output,
+ * tail of the current output, and the path of the full copy. All inputs must be pre-redacted.
+ */
+export function stuckDiff(previous: string, current: string, options: { diffLimit: number; tailLimit: number; fullPath: string }): string {
+  const header = `pi-warden: stuck-loop diff; this output repeated a failure (previous: ${previous.length} chars, current: ${current.length} chars).`;
+  const tail = current.length <= options.tailLimit ? current : `… [${current.length - options.tailLimit} earlier chars omitted]\n${current.slice(-options.tailLimit)}`;
+  if (previous === current) {
+    return `${header}\nOutputs are byte-identical; no diff.\n${tail}\n\nFull output: ${options.fullPath}`;
+  }
+  const diff = lineDiff(previous, current, options.diffLimit);
+  return `${header}\n${diff}\n${tail}\n\nFull output: ${options.fullPath}`;
+}
+
 export function formatStuck(verdict: StuckVerdict, template: string = DEFAULT_TEMPLATES.stuck): string {
   return renderTemplate(template, stuckTokens(verdict));
 }

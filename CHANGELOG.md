@@ -6,7 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+- Stuck-loop diff: when the stuck detector marks a repeated failed attempt, the agent sees a short unified line diff against the previous output instead of the full repeated output again. Config keys `stuck.diffLimit` (3000) and `stuck.tailLimit` (1000) control the diff and tail caps.
 
 ## 0.34.1
 

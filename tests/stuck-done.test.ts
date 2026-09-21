@@ -4,7 +4,7 @@ import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
 import { buildDoneRequest, classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, freshChecks, needsDoneCheck, recordOutcome } from "../src/done.js";
 import type { Judge } from "../src/guard.js";
-import { AttemptWindow, buildStuckRequest, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "../src/stuck.js";
+import { AttemptWindow, buildStuckRequest, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "../src/stuck.js";
 
 const text = (value: string) => [{ type: "text", text: value }];
 const stuckJudge = (sameStrategy: number, approachChange: number, progress: number) => {
@@ -354,4 +354,33 @@ test("evaluateDone flags unverified completion claims and false verification cla
   const request = buildDoneRequest("fix it", "Done. TOKEN=sk-live-0123456789abcdef", evidence);
   assert.ok(!request.state.final_message.includes("sk-live"));
   assert.deepEqual(request.state.run, { file_changes: 2, checks_run: [] });
+});
+
+test("stuckDiff shows a unified diff for outputs differing in one line", () => {
+  const previous = "line1\nline2-old\nline3";
+  const current = "line1\nline2-new\nline3";
+  const result = stuckDiff(previous, current, { diffLimit: 3000, tailLimit: 1000, fullPath: "/tmp/output.txt" });
+  assert.match(result, /stuck-loop diff/);
+  assert.match(result, /- line2-old/);
+  assert.match(result, /\+ line2-new/);
+  assert.match(result, /Full output: \/tmp\/output\.txt/);
+});
+
+test("stuckDiff says outputs are identical when byte-identical", () => {
+  const same = "same output\nline2";
+  const result = stuckDiff(same, same, { diffLimit: 3000, tailLimit: 1000, fullPath: "/tmp/out.txt" });
+  assert.match(result, /byte-identical/);
+  assert.match(result, /no diff/i);
+  assert.match(result, /Full output: \/tmp\/out\.txt/);
+});
+
+test("stuckDiff truncates a diff exceeding the cap", () => {
+  const lines = Array.from({ length: 200 }, (_, i) => `prev-${i}`);
+  const linesNew = Array.from({ length: 200 }, (_, i) => `curr-${i}`);
+  const previous = lines.join("\n");
+  const current = linesNew.join("\n");
+  const result = stuckDiff(previous, current, { diffLimit: 500, tailLimit: 200, fullPath: "/tmp/out.txt" });
+  assert.match(result, /\u2026 \[diff truncated\]/);
+  assert.match(result, /Full output: \/tmp\/out\.txt/);
+  assert.ok(result.length < 2000, `note should be compact; got ${result.length}`);
 });
