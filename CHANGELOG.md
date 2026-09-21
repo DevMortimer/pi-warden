@@ -6,6 +6,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.30.3
+
+### Fixed
+- Live status follows the newest verdict, including guards without sentence tokens; stack entries retain guard update order within their severity groups.
+- Action warning and hold sentences use verdict reasons instead of inferring irreversibility from the level or unrelated scores.
+
 ## 0.30.2
 
 ### Fixed

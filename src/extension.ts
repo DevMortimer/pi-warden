@@ -372,7 +372,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }, { placement: config.widget.placement });
         return;
       }
-      entries = [entries.at(-1)!];
+      entries = [lastEntry ?? entries.at(-1)!];
     }
     // A custom component so the lines wrap to the pane and a click (fullscreen mode) opens the trace panel.
     // When the host TUI lacks MouseRegion (e.g. omp 18.2.5), the extension still loads — the widget
@@ -388,6 +388,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }, { placement: config.widget.placement });
   };
   const record = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig, guard: GuardName, line: string, details: string[], tokens?: Record<string, string | undefined>): TraceEntry => {
+    widget.delete(guard);
     widget.set(guard, line);
     const entry: TraceEntry = { at: Date.now(), guard, line, details, tokens };
     trace.push(entry);
