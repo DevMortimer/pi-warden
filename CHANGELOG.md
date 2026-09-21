@@ -6,6 +6,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 0.31.0
+
+### Added
+- `/warden audit` command: scans workspace projects and generates an HTML report of tasks where Jev (TypeSafe) could improve the codebase. Tests Jev on real project code, measures response time and confidence, and recommends which opportunity to try first.
+
+### Changed
+- Bumped pi-typesafe dependency to ^0.6.1.
+
 ## 0.30.1
 
 ### Fixed
