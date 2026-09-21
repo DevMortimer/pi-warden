@@ -13,6 +13,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Added
 - Conscience coach: disabled by default pending calibration. Recommends or loads skills and tools before the agent acts via `before_agent_start`. Trace-only until a measured policy ships. Load mode reads skill files from disk with path-rule checks, size bounds, frontmatter validation, and credential canary detection. 48 adversarial tests plus the fixture set.
 
+### Docs
+- Conscience recommendation calibration (2026-09-22): first measurement on 609 turns across 4 projects. Tool recommendation 84% precision, skill recommendation 0% precision. No threshold meets the 95% gate; closest is 0.95 at 91%. Policy record written; `docs/guards.md` updated. `eval/reports/2026-09-22-conscience-recommend/`.
+
 ## 0.37.1
 
 ### Docs

@@ -150,6 +150,14 @@ No file needed the same rule steer twice in the window. The hold logs from one o
 
 It is not cheap: the two full runs above made about 32,000 requests and 80M input tokens together (about $3.40 at the listed rate), because every replay carries the prompt, eight context messages, the plan, the action, and the questions. `--dry-run` prints the request count, token estimate, and cost first; a run over 2,000 requests stops there unless you add `--yes`, which then spends what the corpus needs. `--max-requests N` is an explicit cap that `--yes` does not lift: the run stops at N, names how many replays it skipped, and writes `report-latest-partial.md`, so a report over truncated data never reads as complete. The output stays under `.local/calibration/` (owner-only, never committed); `--report FILE` recomputes the tables without requests, `--project DIR` limits the run to one project's sessions.
 
+### Conscience calibration (2026-09-22, first recommendation measurement)
+
+First measurement of the conscience guard's `recommend` skill/tool selection on recorded sessions. n = 609 turns across 4 projects (111 sessions), 1302 requests, about 6.0M input tokens.
+
+Headline: tool recommendation 84% precision (260/308), skill recommendation 0% precision (0/86). Disposition accuracy 63%. P(advance) AUC 0.62. No threshold meets the 95% precision gate; closest is `usefulness ≥ 0.95` at 91% precision, 12% recall. Repeat instability low: 100% disposition agreement, 93% candidate agreement, 100% usefulness agreement (30 prompts × 3 runs).
+
+Policy record: `{ questionHash: "1ee518cb4a54b980", model: "jev-latest", recommendThreshold: 0.95, loadThreshold: 1.0 }`. The policy activates only when hash and model match; `loadThreshold` stays at 1.0 (trace-only) until the authored 240-scenario held-out set is measured per spec §7. Full tables: `eval/reports/2026-09-22-conscience-recommend/`.
+
 ### Path rules
 
 `action.pathRules` (user file only) gives the pattern floor a path dimension: which paths, which side of the access is held, which surfaces check, and what happens on a hit. The `access` field names the side that flows — `"read"` holds writes and lets reads through, `"write"` holds reads (a log the agent may create but never open), `"none"` holds any touch. File tools are checked through the structured `path` argument, exactly; the bash surface sees only two things: the whole data-text-stripped command for `none` rules (you declared the path always-matters, so a mention counts), and redirect/`tee` targets for the write side. Tokens in arbitrary argv are never classified — that is the false-positive treadmill this design exists to avoid. `note` actions ride the existing sensitive-path behavior (Jev decides whether a command that merely mentions the path can write); `warn`, `confirm` (a dialog), and `block` ride the command-rule ladder. Exempt a rule with `exemptRules` by id.
