@@ -101,6 +101,26 @@ Measured 2026-09-21 with intent-based wording (replacing keyword-flavored wordin
 | >= 0.76 | 23% | 2% | 13% |
 | >= 0.97 | 0% | 0% | 0% |
 
+### Action guard calibration (2026-09-21, 0.33.3, floor as evidence)
+
+A full replay of four projects' recorded sessions at 0.33.3 with `--extra`, judge `jev-1.13.0`: 315 sessions, 1,347 labelled turns, 18,195 guarded calls, 15,232 judged, 16,709 requests and about 79M input tokens (about $3.30 at the listed rate). Under the shipped defaults the guard would hold 48 of 18,075 calls that ran (0.27%): 25 by a destructive pattern, 23 by `irreversible` alone, none by off-task. The user regretted 27 calls, and the two sets do not intersect: precision 0%, recall 0%, in every project and at every threshold that holds fewer than 2% of calls. Moving `irreversible` from 0.7 to 0.6 adds 23 holds and catches none of the 27; only 0.3 to 0.5 catch any, at 1% precision. Of the 119 holds made live in those sessions, the user's next message approved 43.
+
+| Question | AUC (regret) | AUC (rejected turn) |
+| --- | --- | --- |
+| `visible` | 0.80 | 0.48 |
+| `consult_first` | 0.77 | 0.45 |
+| `irreversible` | 0.73 | — |
+| `mutates` | 0.72 | — |
+| `violation_judgment` | 0.70 | 0.42 |
+| `unrequested` | 0.68 | 0.51 |
+| `intent_mismatch` | 0.56 | — |
+| `approval_broadened` | 0.54 | 0.45 |
+| `pause_requested` | 0.52 | 0.59 |
+| `off_task` | 0.51 | — |
+| `should_proceed` | 0.25 | 0.55 |
+
+n = 15,232 judged calls with 26 positives, except `intent_mismatch` (12,636 calls with a plan, 20 positives). Since 17 September the hold rate fell from 1% to 0.27%, because off-task no longer holds; `irreversible` rose from 0.71 to 0.73, `mutates` slipped from 0.75 to 0.72, the candidate questions barely moved, and the share of live holds the user approved rose from 12% to 36%. Full tables: `eval/reports/2026-09-21-calibration-0.33.3/`.
+
 ### Live: what fired, and what the agent did next
 
 The replay measures the action guard's decisions against your reactions. It cannot measure the other half: what the agent does with a steer. For that, 67 steer messages from two days of live work on one production repo (19 sessions, 2026-09-16 to 09-17), read back from the recorded session logs:
@@ -116,7 +136,7 @@ The replay measures the action guard's decisions against your reactions. It cann
 
 No file needed the same rule steer twice in the window. The hold logs from one of those days hold 1,042 guarded action decisions: 948 allow, 87 warn, 7 held. Of the 7 holds the agent re-planned on its own after 4, the owner approved 2, and 1 stayed pending. The 51 credential warnings were almost all fixture-shaped values read from a test file; since 0.14 those are traced in the widget instead of steered, which replays the 50-run deepseek batch at 2 credential steers instead of 30 (`node scripts/credential-replay.mjs --report <batch>`).
 
-It is not cheap: the two full runs above made about 32,000 requests and 80M input tokens together (about $3.40 at the listed rate), because every replay carries the prompt, eight context messages, the plan, the action, and the questions. `--dry-run` prints the request count, token estimate, and cost first; a run over 2,000 requests stops there unless you add `--yes`. The output stays under `.local/calibration/` (owner-only, never committed); `--report FILE` recomputes the tables without requests, `--project DIR` limits the run to one project's sessions.
+It is not cheap: the two full runs above made about 32,000 requests and 80M input tokens together (about $3.40 at the listed rate), because every replay carries the prompt, eight context messages, the plan, the action, and the questions. `--dry-run` prints the request count, token estimate, and cost first; a run over 2,000 requests stops there unless you add `--yes`, which then spends what the corpus needs. `--max-requests N` is an explicit cap that `--yes` does not lift: the run stops at N, names how many replays it skipped, and writes `report-latest-partial.md`, so a report over truncated data never reads as complete. The output stays under `.local/calibration/` (owner-only, never committed); `--report FILE` recomputes the tables without requests, `--project DIR` limits the run to one project's sessions.
 
 ### Path rules
 
