@@ -56,6 +56,7 @@ async function getDb(): Promise<import("node:sqlite").DatabaseSync> {
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
     db = new DatabaseSync(dbPath);
     db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA busy_timeout = 10000");
     return db;
   } catch (err) {
     sqliteAvailable = false;
@@ -73,10 +74,13 @@ export async function initSchema(retentionDays = 365): Promise<void> {
     // Prune old records if retention is enabled.
     if (retentionDays > 0) {
       const cutoff = Date.now() - retentionDays * 86_400_000;
-      d.prepare("DELETE FROM holds WHERE timestamp < ?").run(cutoff);
-      d.exec("VACUUM");
+      const { changes } = d.prepare("DELETE FROM holds WHERE timestamp < ?").run(cutoff);
+      if (changes > 0) d.exec("VACUUM");
     }
-  } catch (err) { console.warn("pi-warden: hold retention prune failed:", err); }
+  } catch (err: unknown) {
+    const code = err && typeof err === "object" && "errcode" in err ? ` (errcode ${String((err as { errcode: number }).errcode)})` : "";
+    console.warn(`pi-warden: hold retention prune failed:${code}`, err);
+  }
 }
 
 // --- Types ---

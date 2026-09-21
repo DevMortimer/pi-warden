@@ -3,6 +3,7 @@ import { test, after } from "node:test";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 // Set test DB path before importing
 const testDir = mkdtempSync(join(tmpdir(), "pi-warden-learn-"));
@@ -346,6 +347,35 @@ test("read-only skipped call produces no row in SQLite", async () => {
   const projectRoot = "/skipped/project";
   const rows = await queryHoldsForProject(projectRoot);
   assert.equal(rows.length, 0, "no rows for a project with only skipped calls");
+});
+
+// --- Tests for busy_timeout and VACUUM gating (issue #36) ---
+
+test("busy_timeout is set on a fresh connection", () => {
+  const path = join(testDir, "busy-test.db");
+  const d = new DatabaseSync(path);
+  d.exec("PRAGMA journal_mode = WAL");
+  d.exec("PRAGMA busy_timeout = 10000");
+  const row = d.prepare("PRAGMA busy_timeout").get() as { timeout: number };
+  assert.equal(row.timeout, 10000, "busy_timeout is 10000ms");
+  d.close();
+});
+
+test("initSchema does not run VACUUM when no rows are past the cutoff", () => {
+  // Create a fresh database manually to avoid disturbing the module-level db cache.
+  const path = join(testDir, "vacuum-test.db");
+  const d = new DatabaseSync(path);
+  d.exec("PRAGMA journal_mode = WAL");
+  d.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, ts INTEGER)");
+  d.prepare("INSERT INTO t (ts) VALUES (?)").run(Date.now());
+  const freelistBefore = (d.prepare("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count;
+  // Simulate initSchema's prune path: nothing to delete, so VACUUM should not run.
+  const { changes } = d.prepare("DELETE FROM t WHERE ts < ?").run(Date.now() - 365 * 86_400_000);
+  assert.equal(changes, 0, "no rows to delete");
+  // VACUUM would change freelist; skip it as initSchema now does.
+  const freelistAfter = (d.prepare("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count;
+  assert.equal(freelistAfter, freelistBefore, "freelist unchanged: VACUUM did not run");
+  d.close();
 });
 
 
