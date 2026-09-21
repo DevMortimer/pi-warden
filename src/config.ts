@@ -51,8 +51,8 @@ export interface ActionGuardConfig {
   intentMismatch: number;
   /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
   visibleMismatch: number;
-  /** P(should_proceed) at or below this asks the user before the tool runs. Inverted: low score = hold. Unified gate covering rule violations, unrequested scope, explicit constraint breaches, and material user decisions. Calibrated: AUC 0.26 against regret, 0.58 against rejected turns (100 targeted sessions, 2026-09-20). */
-  shouldProceed: { hold: number };
+  /** Low P(should_proceed) is trace-only unless steer is enabled; hold is the inclusive threshold, not a blocking decision. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
+  shouldProceed: { hold: number; steer: boolean };
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
   feedbackLog: boolean;
   /** User-defined command rules (user file only; project files cannot set severity above warn). */
@@ -326,7 +326,7 @@ export function defaultConfig(): WardenConfig {
       offTask: { warn: 0.6, steer: 0.85 },
       intentMismatch: 0.9,
       visibleMismatch: 0.8,
-      shouldProceed: { hold: 0.6 },
+      shouldProceed: { hold: 0.6, steer: false },
       feedbackLog: true,
       commandRules: [],
       commandDenyRules: [],
@@ -550,7 +550,10 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     offTask: offTaskThreshold(raw.offTask, base.offTask),
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
     visibleMismatch: Math.min(probability(raw.visibleMismatch, base.visibleMismatch), probability(raw.intentMismatch, base.intentMismatch)),
-    shouldProceed: { hold: probability((raw.shouldProceed as { hold?: number } | undefined)?.hold, base.shouldProceed.hold) },
+    shouldProceed: {
+      hold: probability((raw.shouldProceed as { hold?: number } | undefined)?.hold, base.shouldProceed.hold),
+      steer: boolean((raw.shouldProceed as { steer?: boolean } | undefined)?.steer, base.shouldProceed.steer),
+    },
     feedbackLog: boolean(raw.feedbackLog, base.feedbackLog),
     // Only the user file declares these; a project file cannot add, edit, or remove them. The base (already the
     // user's rules when a project file layers on top) is carried through, so a project "action" block cannot wipe them.

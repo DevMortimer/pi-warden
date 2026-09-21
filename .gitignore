@@ -10,3 +10,4 @@ coverage/
 docs/preview.html
 pi-warden.md
 AGENTS.md
+.pi-warden/audit-report.html
