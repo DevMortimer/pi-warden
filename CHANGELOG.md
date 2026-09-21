@@ -6,10 +6,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.38.1
+
 ### Changed
 - Verified against Pi 0.87.0; dev dependency updated.
-
-<!-- Empty. Next release starts here. -->
 
 ## 0.38.0
 
