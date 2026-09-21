@@ -206,3 +206,21 @@ test("(i) built-in ID coverage: every SHELL_RULES, rm classifier, and sensitive-
     assert.ok(BUILT_IN_IDS.has(id), `${id} must be in BUILT_IN_IDS`);
   }
 });
+
+test("(j) deferred sensitive hit warns on judge failure in evidence mode", async () => {
+  const failingJudge: Judge & { requests: unknown[] } = {
+    requests: [],
+    async evaluate(request) {
+      this.requests.push(request);
+      throw new Error("simulated timeout");
+    },
+  };
+  const config = defaultConfig().action;
+  // Bash cat .env: sensitive-path is deferred for bash, judge fails -> warn from deferred hit
+  const bashVerdict = await evaluateAction({ tool: "bash", input: { command: "cat .env" }, cwd, task: "inspect env" }, { config, judge: failingJudge });
+  assert.equal(bashVerdict.level, "warn", "deferred sensitive hit warns when judge fails");
+  assert.ok(bashVerdict.reasons.some(r => /built-in patterns decide/.test(r)));
+  // Write .env: not deferred, warns directly from the floor
+  const writeVerdict = await evaluateAction({ tool: "write", input: { path: ".env", content: "x" }, cwd, task: "inspect env" }, { config, judge: failingJudge });
+  assert.equal(writeVerdict.level, "warn", "write to sensitive path warns on judge failure");
+});

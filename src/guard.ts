@@ -1024,13 +1024,17 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   const builtInHits: string[] = [];
   let hasBuiltInDestructive = false;
   let hasBuiltInOther = false;
+  let hasDeferredSensitive = false;
   let hasOutsideProject = false;
   let outsideProjectExisting = false;
   const evidenceMode = config.floor === "evidence" && judge !== undefined;
   for (const hit of activePatterns) {
     if (hit.severity === "deny") { level = "deny"; reasons.push(hit.message ?? hit.label); continue; }
     const isBuiltIn = BUILT_IN_IDS.has(hit.id);
-    if (hit.severity === "sensitive" && deferSensitive) continue;
+    if (hit.severity === "sensitive" && deferSensitive) {
+      hasDeferredSensitive = true;
+      continue;
+    }
     if (evidenceMode && isBuiltIn) {
       // Built-in pattern hits become evidence: listed in the request for the judge and traced, but not level-setters.
       builtInHits.push(`${hit.label} [${hit.severity}]`);
@@ -1078,10 +1082,10 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     if (!config.failOpen) {
       level = higher(level, "confirm");
       reasons.push("TypeSafe unavailable and failOpen is false");
-    } else if (evidenceMode && (hasBuiltInDestructive || hasBuiltInOther || hasOutsideProject)) {
+    } else if (evidenceMode && (hasBuiltInDestructive || hasBuiltInOther || hasDeferredSensitive || hasOutsideProject)) {
       // Judge failed in evidence mode: re-apply the floor from built-in hits as if level mode.
       if (hasBuiltInDestructive || outsideProjectExisting) level = higher(level, "confirm");
-      else if (hasBuiltInOther || hasOutsideProject) level = higher(level, "warn");
+      else if (hasBuiltInOther || hasDeferredSensitive || hasOutsideProject) level = higher(level, "warn");
       reasons.push("TypeSafe unavailable; built-in patterns decide");
     } else {
       reasons.push("TypeSafe unavailable; allowed by failOpen");
