@@ -1941,3 +1941,51 @@ test("pathRules: a confirm rule prompts the user, a block rule blocks, and notes
   await rm(join(temporary, "deploy.yaml"), { force: true });
   await rm(join(temporary, "audit"), { recursive: true, force: true });
 });
+
+test("stuck-loop diff: third identical failure carries a diff note with a stored full output", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
+  await newPrompt("Run the test suite");
+  const full = "FAIL tests/a.test.ts\n  Expected true, got false\n" + "x".repeat(20_000);
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "first result stays");
+  const second = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  assert.match(second.content[0]!.text, /duplicate/, "second identical result is a duplicate note");
+  const third = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  const text = third.content.find(part => part.type === "text")?.text ?? "";
+  assert.match(text, /stuck-loop diff/);
+  const pathMatch = text.match(/Full output: (.+)/);
+  assert.ok(pathMatch, "the note names the full-output file");
+  assert.ok(text.length < 4500, `note under 4.5K; got ${text.length}`);
+  const saved = await readFile(pathMatch[1]!.trim(), "utf8").catch(() => "");
+  assert.match(saved, /FAIL tests\/a\.test\.ts/, "full output saved to disk");
+});
+
+test("stuck-loop diff: three identical successes are not replaced", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
+  await newPrompt("Run the test suite");
+  const full = "all 42 tests passed\n";
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "first stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "second stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "third stays: successful repeats are not replaced");
+});
+
+test("stuck-loop diff: two failures then a success leave the success unchanged", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
+  await newPrompt("Run the test suite");
+  const fail = "FAIL tests/a.test.ts\n  Expected true, got false";
+  const ok = "all 42 tests passed";
+  assert.equal(await toolResult("bash", { command: "npm test" }, fail, true), undefined, "first failure stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, fail, true), undefined, "second failure stays");
+  assert.equal(await toolResult("bash", { command: "npm test" }, ok, false), undefined, "success is not replaced");
+});
+
+test("stuck-loop diff: stuck.enabled: false prevents any replacement", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false } }));
+  await newPrompt("Run the test suite");
+  const full = "FAIL tests/a.test.ts\n  Expected true, got false" + "x".repeat(5000);
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "stays");
+  const second = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  assert.match(second.content[0]!.text, /duplicate/, "second identical result is a duplicate note");
+  const third = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
+  assert.match(third.content[0]!.text, /duplicate/, "still a duplicate note, not a diff");
+  assert.ok(!third.content[0]!.text.includes("stuck-loop diff"), "no diff when stuck is disabled");
+});

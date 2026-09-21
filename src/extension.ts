@@ -1045,6 +1045,25 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         `output sample: ${redact(text).slice(0, 300)}`, delivered ? `agent told: ${notice}` : `steer recorded, not delivered (a repeat or the per-run budget): ${notice}`,
       ]);
     }
+    // Stuck-loop diff: when a repeat failure has been detected and the previous full output
+    // is available, replace the tool result with a short diff note before the patch is computed,
+    // so the diff overrides any duplicate or compression note.
+    if (config.stuck.enabled && failed && text.length > 0 && attempts.attempts.length >= 2) {
+      const prevIndex = attempts.attempts.length - 2;
+      const prevFull = prevIndex >= 0 ? fullOutputs.get(prevIndex) : undefined;
+      if (prevFull !== undefined && attempts.exactRepeats() >= config.stuck.minFailures) {
+        try {
+          const savedPath = await saveOutput(text);
+          const diffNote = stuckDiff(prevFull, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: savedPath });
+          const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(diffNote);
+          if (bytesSaved > 0) {
+            content = [{ type: "text", text: diffNote }, ...content.filter(part => part.type !== "text")];
+          }
+        } catch {
+          noteError(ctx, "Could not store full output for stuck diff; keeping it unchanged.", undefined);
+        }
+      }
+    }
     const patch = content === event.content ? undefined : { content };
     // Checks use the original result, not the excerpts or security banner.
     if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
@@ -1052,28 +1071,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!verdict) return patch;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     if (verdict.source === "repeat" && !verdict.stuck) return patch;
-    // When a repeat fires and the previous full output is available, replace the tool result with a diff note.
-    if (verdict.stuck && verdict.source === "repeat" && text.length > 0) {
-      const prevIndex = attempts.attempts.length - 2;
-      const prevFull = prevIndex >= 0 ? fullOutputs.get(prevIndex) : undefined;
-      if (prevFull !== undefined) {
-        try {
-          const savedPath = await saveOutput(text);
-          const diffNote = stuckDiff(prevFull, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: savedPath });
-          const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(diffNote);
-          if (bytesSaved > 0) {
-            content = content.map(part => part.type === "text" ? { ...part, text: diffNote } : part);
-          }
-        } catch {
-          noteError(ctx, "Could not store full output for stuck diff; keeping it unchanged.", undefined);
-        }
-      }
-    }
     const nudge = verdict.stuck && config.stuck.nudge ? stuckNudge(verdict) : undefined;
     record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
     if (!verdict.stuck) return patch;
     stats.stuck++;
-    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
+    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
     if (nudge) steer(config, "stuck", nudge);
     return patch;
   });
