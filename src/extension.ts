@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -33,7 +33,7 @@ import { redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
-import { auditWorkspace, generateAuditHTML } from "./audit.js";
+import { buildAuditPrompt, findProjects } from "./audit.js";
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
@@ -258,6 +258,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let warnedMissingRules = false;
   /** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
   let initRunning = false;
+  /** True while /warden audit is sending a prompt and waiting for the agent to write the report. */
+  let auditRunning = false;
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
@@ -1038,10 +1040,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     await checkSubagentReports(ctx, configFor(ctx));
   });
 
-  // Block new user messages while /warden init is generating pi-warden.md.
+  // Block new user messages while /warden init or /warden audit is running.
   pi.on("input", async (event, ctx) => {
     if (initRunning) {
       ctx.ui.notify("pi-warden is generating rules. Please wait...", "warning");
+      return { action: "handled" };
+    }
+    if (auditRunning) {
+      ctx.ui.notify("pi-warden is running an audit. Please wait...", "warning");
       return { action: "handled" };
     }
   });
@@ -1307,22 +1313,27 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "audit") {
-          if (!ctx.hasUI) { report("Audit needs an interactive session to generate the HTML report.", "warning"); return; }
-          const judge = judgeFor(config);
-          if (!judge) { report("TypeSafe is not configured. Run /warden enable first — the audit needs Jev to test opportunities.", "warning"); return; }
-          if (!await ctx.ui.confirm("Run workspace audit?", `This scans projects in ${redact(ctx.cwd)} and uses TypeSafe to evaluate Jev opportunities. Each finding sends one test request to ${backendHost(config.typesafeBackend)}. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
-          if (ctx.hasUI) ctx.ui.notify("pi-warden: Auditing workspace...", "info");
+          if (!ctx.hasUI) { report("Audit needs an interactive session to run.", "warning"); return; }
+          if (!await ctx.ui.confirm("Run workspace audit?", `This runs an agent-driven audit of ${redact(ctx.cwd)}. It uses the session model, reads source code, and writes a report. It may take several minutes and use real tokens.`)) return;
+          const projects = findProjects(ctx.cwd);
+          const prompt = buildAuditPrompt(ctx.cwd, projects);
+          auditRunning = true;
+          if (ctx.hasUI) ctx.ui.notify("pi-warden: Running workspace audit...", "info");
           try {
-            const result = await auditWorkspace(ctx.cwd, judge);
-            const html = generateAuditHTML(result, ctx.cwd);
-            const outDir = join(ctx.cwd, ".pi-warden");
-            if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
-            const outPath = join(outDir, "audit-report.html");
-            writeFileSync(outPath, html, "utf8");
-            report(`Audit complete: ${result.findings.length} findings, ${result.skipped.length} skipped. Report: ${outPath}`);
-          } catch (error) {
-            report(`Audit failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+            for (let attempt = 0; attempt < 40; attempt++) {
+              if (ctx.isIdle()) break;
+              await new Promise(resolve => setTimeout(resolve, 250));
+            }
+            pi.sendUserMessage(prompt);
+            await ctx.waitForIdle();
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            report(`pi-warden audit failed: ${detail}.`, "error");
+          } finally {
+            auditRunning = false;
           }
+          const reportPath = join(ctx.cwd, ".pi-warden", "audit-report.html");
+          report(existsSync(reportPath) ? `Audit report written to ${reportPath}` : "Agent did not write an audit report. The model may have reported findings in chat instead.");
           return;
         }
         if (action === "test") {

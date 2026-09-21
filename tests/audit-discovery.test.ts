@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { discoverSourceFiles, findProjects, SKIP_DIRS, SOURCE_RE } from "../src/discover.js";
+import { buildAuditPrompt } from "../src/audit.js";
 
 let temporary: string;
 
@@ -169,4 +170,16 @@ test("SKIP_DIRS contains expected directories", () => {
   for (const dir of [".git", "node_modules", "dist", "build", ".next", "coverage", "__pycache__", ".pi-warden", "vendor"]) {
     assert.ok(SKIP_DIRS.has(dir), `${dir} should be in SKIP_DIRS`);
   }
+});
+
+// ─── buildAuditPrompt ───────────────────────────────────────────────────────
+
+test("buildAuditPrompt: returns a string containing project names and instructions", () => {
+  const prompt = buildAuditPrompt("/tmp/workspace", ["/tmp/workspace", "/tmp/workspace/packages/a"]);
+  assert.ok(typeof prompt === "string", "should return a string");
+  assert.ok(prompt.includes("Workspace Audit"), "should mention workspace audit");
+  assert.ok(prompt.includes("Jev"), "should mention Jev");
+  assert.ok(prompt.includes("file:line"), "should ask for file:line citations");
+  assert.ok(prompt.includes(".pi-warden/audit-report.html"), "should name the report path");
+  assert.ok(prompt.includes("unmeasured"), "should mention unmeasured findings");
 });

@@ -6,10 +6,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Changed
+- `/warden audit` is now an agent-driven investigation instead of a code scan. The command sends a prompt to the session model which reads source, finds Jev opportunities with file:line citations, produces measurable evidence, and writes the HTML report. No longer requires TypeSafe to be configured.
+
 ## 0.31.0
 
 ### Added
-- `/warden audit` command: scans workspace projects and generates an HTML report of tasks where Jev (TypeSafe) could improve the codebase. Tests Jev on real project code, measures response time and confidence, and recommends which opportunity to try first.
+- `/warden audit` command: agent-driven workspace audit that sends a prompt to the session model. The model reads source, finds concrete Jev opportunities, produces measurable evidence, and writes an HTML report to `.pi-warden/audit-report.html`.
 
 ### Changed
 - Bumped pi-typesafe dependency to ^0.6.1.
