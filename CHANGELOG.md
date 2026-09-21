@@ -13,6 +13,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Docs
 - README "Does it actually help?" section now includes a measurement-on-real-use paragraph with current hold numbers, date, and the link to the floor-evidence decision in 0.33.0.
 
+## 0.33.4
+
+### Fixed
+- Rules guard no longer judges prose-only fallback documents (README.md, CLAUDE.md, AGENTS.md) as one rule; a fallback with no rule-shaped sections is skipped.
+
 ## 0.33.3
 
 ### Tests
