@@ -294,3 +294,21 @@ test("project overrides cannot set typesafeBackend", () => {
   const config = applyProjectOverrides(defaultConfig(), { typesafeBackend: "openrouter" });
   assert.equal(config.typesafeBackend, "typesafe", "project file cannot redirect judgments");
 });
+
+test("floor: user 'level' persists through project override without floor key", () => {
+  const base = applyUserOverrides(defaultConfig(), { action: { floor: "level" } });
+  const project = applyProjectOverrides(base, {});
+  assert.equal(project.action.floor, "level", "user floor survives project override");
+});
+
+test("floor: project file cannot change user 'level' to 'evidence'", () => {
+  const base = applyUserOverrides(defaultConfig(), { action: { floor: "level" } });
+  const project = applyProjectOverrides(base, { action: { floor: "evidence" } });
+  assert.equal(project.action.floor, "level", "project cannot lower user's protective floor setting");
+});
+
+test("floor: invalid value falls back to base", () => {
+  const base = applyUserOverrides(defaultConfig(), { action: { floor: "level" } });
+  const project = applyProjectOverrides(base, { action: { floor: "bogus" } });
+  assert.equal(project.action.floor, "level", "invalid value does not override user setting");
+});
