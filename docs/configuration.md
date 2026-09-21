@@ -102,7 +102,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `learning.adaptiveThresholds` | Learn from hold outcomes and suggest threshold adjustments via `/warden recommend`. | 
 | `learning.patternAnalysis` | Analyze hold patterns and generate recommendations. |
 | `learning.retentionDays` | Days to keep hold records in SQLite before pruning. Records older than this are deleted on startup. `0` disables pruning. Default: `365`. |
-| `conscience.enabled` | Master switch for the conscience coach. Default `true`. |
+| `conscience.enabled` | Master switch for the conscience coach. Default `false` (disabled pending calibration; flips to `true` when a measured policy is present). |
 | `conscience.skills.mode` | `"off"` (no skill selection), `"recommend"` (name a skill and ask the agent to load it), or `"load"` (supply instructions directly from disk). Default `"recommend"`. `load` requires global consent, a trusted project, and reads the skill file bounded by `maxSkillBytes` and `maxLoadedBytes`. A project cannot upgrade from `recommend` to `load` when the user permits only `recommend`. |
 | `conscience.skills.exclude` | Case-sensitive skill names to exclude; `*` is the only wildcard. Default `[]`. |
 | `conscience.tools.enabled` | Suggest tools including evidence/research tools; never execute or enable them directly. Default `true`. |

@@ -399,7 +399,7 @@ export function defaultConfig(): WardenConfig {
     steerBudget: 3,
     learning: { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 },
     conscience: {
-      enabled: true,
+      enabled: false,
       skills: { mode: "recommend", exclude: [] },
       tools: { enabled: true, exclude: [] },
       timeoutMs: 1500,

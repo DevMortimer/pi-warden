@@ -2145,7 +2145,7 @@ test("conscience: long prompt is truncated and truncation recorded in trace", as
 test("conscience: config defaults in defaultConfig match expected schema", () => {
   const config = defaultConfig();
   assert.ok(config.conscience, "defaultConfig must include conscience");
-  assert.equal(config.conscience.enabled, true);
+  assert.equal(config.conscience.enabled, false, "disabled by default pending calibration");
   assert.equal(config.conscience.skills.mode, "recommend");
   assert.equal(config.conscience.tools.enabled, true);
   assert.equal(config.conscience.timeoutMs, 1500);

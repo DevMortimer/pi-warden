@@ -7,7 +7,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 ## Unreleased
 
 ### Added
-- Conscience coach (trace-only, no live Jev questions shipped): configuration layer (`conscience` section in `WardenConfig`), shape fallback, and the `assess()` module with fake-judge tests. Thresholds default to 1.0; no selections are delivered until calibration. The `before_agent_start` hook wires the initial assessment and traces every attempt. Load mode reads skill files from disk with path-rule checks, size bounds, frontmatter validation, and credential canary detection. Activation gate ties delivery to a measured policy record (`{ questionHash, model, thresholds }`).
+- Conscience coach: disabled by default pending calibration. Recommends or loads skills and tools before the agent acts via `before_agent_start`. Trace-only until a measured policy ships. Load mode reads skill files from disk with path-rule checks, size bounds, frontmatter validation, and credential canary detection. 48 adversarial tests plus the fixture set.
 
 ## 0.37.1
 
