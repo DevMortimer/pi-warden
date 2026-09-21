@@ -6,6 +6,15 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 0.30.1
+
+### Fixed
+- Approval question now accepts generic task-level approval ("proceed", "yes", "go ahead", "sure") instead of requiring explicit approval of each specific action. Fixes the pattern where the model keeps holding after the user approved the whole task.
+
+### Changed
+- Approval question uses intent-based wording that lets Jev reason about approval directly rather than matching specific words.
+- Bumped pi-typesafe dependency to ^0.6.1.
+
 ## 0.30.0
 
 ### Added

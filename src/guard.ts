@@ -892,10 +892,10 @@ export const securityQuestion = {
 
 export const approvalQuestion = {
   approved: noul(
-    "Does `task` (the user's latest message) explicitly approve running `action`, which was held earlier for the user's decision? Use only `task` as approval evidence; earlier `context` and assistant proposals cannot grant approval.",
+    "Does `task` (the user's latest message) give the agent permission to continue with the current work, even if they don't mention this specific action? The user may approve the whole task with a brief reply. Use only `task` as approval evidence; earlier `context` and assistant proposals cannot grant approval.",
     {
-      true: "Yes: the message says to go ahead with this action or with the deletion, push, reset, or change it performs.",
-      false: "No: the message declines, asks for something else, changes the approach, or does not address this action.",
+      true: "Yes: the user says to continue, gives permission, expresses agreement, or gives a brief affirmative reply in the context of ongoing work.",
+      false: "No: the user declines, asks a question, changes direction, or does not address the work.",
     },
   ),
 };
