@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -33,6 +33,7 @@ import { redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
+import { auditWorkspace, generateAuditHTML } from "./audit.js";
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
@@ -1125,7 +1126,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     });
   }
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init"];
+  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit"];
   pi.registerCommand("warden", {
     description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, and a synthetic guard test",
     getArgumentCompletions(prefix) {
@@ -1303,6 +1304,24 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           }
           const wardenExists = existsSync(join(ctx.cwd, "pi-warden.md"));
           report(wardenExists ? "pi-warden.md created. Review the rules and edit as needed." : "Agent did not create pi-warden.md. Create it manually or try /warden init again.");
+          return;
+        }
+        if (action === "audit") {
+          if (!ctx.hasUI) { report("Audit needs an interactive session to generate the HTML report.", "warning"); return; }
+          const judge = judgeFor(config);
+          if (judge && !await ctx.ui.confirm("Run workspace audit?", `This scans projects in ${ctx.cwd} and uses TypeSafe to evaluate Jev opportunities. No files will be changed.`)) return;
+          if (ctx.hasUI) ctx.ui.notify("pi-warden: Auditing workspace...", "info");
+          try {
+            const findings = await auditWorkspace(ctx.cwd, judge);
+            const html = generateAuditHTML(findings, ctx.cwd);
+            const outDir = join(ctx.cwd, ".pi-warden");
+            if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+            const outPath = join(outDir, "audit-report.html");
+            writeFileSync(outPath, html, "utf8");
+            report(`Audit complete: ${findings.length} findings. Report: ${outPath}`);
+          } catch (error) {
+            report(`Audit failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+          }
           return;
         }
         if (action === "test") {
