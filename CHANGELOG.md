@@ -6,9 +6,6 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-### Changed
-- `/warden audit` is now an agent-driven investigation instead of a code scan. The command sends a prompt to the session model which reads source, finds Jev opportunities with file:line citations, produces measurable evidence, and writes the HTML report. No longer requires TypeSafe to be configured.
-
 ## 0.31.0
 
 ### Added

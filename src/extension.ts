@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -1317,6 +1317,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           if (!await ctx.ui.confirm("Run workspace audit?", `This runs an agent-driven audit of ${redact(ctx.cwd)}. It uses the session model, reads source code, and writes a report. It may take several minutes and use real tokens.`)) return;
           const projects = findProjects(ctx.cwd);
           const prompt = buildAuditPrompt(ctx.cwd, projects);
+          const reportPath = join(ctx.cwd, ".pi-warden", "audit-report.html");
+          const preExisting = existsSync(reportPath);
+          const preMtime = preExisting ? statSync(reportPath).mtimeMs : 0;
           auditRunning = true;
           if (ctx.hasUI) ctx.ui.notify("pi-warden: Running workspace audit...", "info");
           try {
@@ -1332,8 +1335,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           } finally {
             auditRunning = false;
           }
-          const reportPath = join(ctx.cwd, ".pi-warden", "audit-report.html");
-          report(existsSync(reportPath) ? `Audit report written to ${reportPath}` : "Agent did not write an audit report. The model may have reported findings in chat instead.");
+          const postExists = existsSync(reportPath);
+          const postNew = !preExisting || (postExists && statSync(reportPath).mtimeMs > preMtime);
+          report(postNew ? `Audit report written to ${reportPath}` : postExists ? "Audit finished but the report file was not updated — the agent may have reported findings in chat instead." : "Agent did not write an audit report. The model may have reported findings in chat instead.");
           return;
         }
         if (action === "test") {
