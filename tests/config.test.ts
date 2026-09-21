@@ -37,6 +37,17 @@ test("defaults: guards on, steer mode, TypeSafe consent off, nudges on", () => {
   assert.equal(config.timeoutMs, config.action.timeoutMs);
 });
 
+test("should-proceed steer parser accepts booleans and defaults invalid or missing values", () => {
+  const base = defaultConfig();
+  assert.deepEqual(base.action.shouldProceed, { hold: 0.6, steer: false });
+  for (const apply of [applyUserOverrides, applyProjectOverrides]) {
+    assert.deepEqual(apply(base, { action: { shouldProceed: { steer: true, hold: 0.3 } } }).action.shouldProceed, { hold: 0.3, steer: true });
+    for (const steer of [undefined, "true", 1, null, false]) {
+      assert.equal(apply(base, { action: { shouldProceed: { steer } } }).action.shouldProceed.steer, false);
+    }
+  }
+});
+
 test("user overrides accept valid values and ignore junk", () => {
   const config = applyUserOverrides(defaultConfig(), {
     typesafe: true, mode: "advise", enabled: "yes", headless: "allow",

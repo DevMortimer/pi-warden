@@ -144,19 +144,23 @@ function activeMode(config: WardenConfig, hasUI: boolean): WardenMode {
   return mode === "confirm" && !hasUI ? "steer" : mode;
 }
 
-/** Keep diagnostic reasons intact while removing the one structured trace-only item at the agent boundary. */
+/** Keep diagnostics intact while removing structured trace-only items at the agent boundary. */
 function agentDeliveryReasons(verdict: Verdict): string[] {
-  const index = verdict.offTaskTraceOnly ? verdict.offTaskTraceOnlyReasonIndex : undefined;
-  if (index === undefined || index < 0 || index >= verdict.reasons.length) return verdict.reasons;
-  return verdict.reasons.filter((_reason, reasonIndex) => reasonIndex !== index);
+  const indexes = [
+    verdict.offTaskTraceOnly ? verdict.offTaskTraceOnlyReasonIndex : undefined,
+    verdict.shouldProceedTraceOnly ? verdict.shouldProceedTraceOnlyReasonIndex : undefined,
+  ].filter((index): index is number => index !== undefined && index >= 0 && index < verdict.reasons.length);
+  if (!indexes.length) return verdict.reasons;
+  return verdict.reasons.filter((_reason, reasonIndex) => !indexes.includes(reasonIndex));
 }
 
-/** Keep the full judgment while suppressing the trace-only off-task reason and steer flag. */
+/** Keep the full judgment while suppressing trace-only reasons and steer flags. */
 function agentDeliveryVerdict(verdict: Verdict): Verdict {
   const reasons = agentDeliveryReasons(verdict);
   if (reasons === verdict.reasons) return verdict;
   const deliveryVerdict: Verdict = { ...verdict, reasons };
-  delete deliveryVerdict.offTaskSteer;
+  if (verdict.offTaskTraceOnly) delete deliveryVerdict.offTaskSteer;
+  if (verdict.shouldProceedTraceOnly) delete deliveryVerdict.shouldProceedSteer;
   return deliveryVerdict;
 }
 
@@ -354,7 +358,19 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const color = LEVEL_COLOR[chip ?? ""] ?? "text";
           const chipText = chip ? `${theme.bold(theme.fg(color as "text", chip.toUpperCase()))}  ` : "";
           const guardText = theme.fg("muted", lastEntry.guard + " ");
-          const body = { render: (width: number) => [chipText + guardText + sentence], invalidate: () => {} };
+          // Like widgetLines: the head width is tracked, the body wraps to what remains, and a line wider than
+          // the pane trips pi's render-width guard, which aborts the session.
+          const chipWidth = chip ? chip.length + 2 : 0;
+          const headWidth = chipWidth + lastEntry.guard.length + 1;
+          const head = chipText + guardText;
+          const body = {
+            render: (width: number) => {
+              if (!width) return [head + sentence];
+              const wrapped = tuiModule.wrapTextWithAnsi(sentence, Math.max(10, width - headWidth));
+              return [head + (wrapped[0] ?? ""), ...wrapped.slice(1).map(rest => " ".repeat(headWidth) + rest)];
+            },
+            invalidate: () => {},
+          };
           return MouseRegion ? new MouseRegion(body, event => {
             if (event.type !== "click" || event.button !== "left") return undefined;
             togglePanel(lastUi, config);
@@ -363,7 +379,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }, { placement: config.widget.placement });
         return;
       }
-      entries = [entries.at(-1)!];
+      entries = [lastEntry ?? entries.at(-1)!];
     }
     // A custom component so the lines wrap to the pane and a click (fullscreen mode) opens the trace panel.
     // When the host TUI lacks MouseRegion (e.g. omp 18.2.5), the extension still loads — the widget
@@ -379,6 +395,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }, { placement: config.widget.placement });
   };
   const record = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig, guard: GuardName, line: string, details: string[], tokens?: Record<string, string | undefined>): TraceEntry => {
+    widget.delete(guard);
     widget.set(guard, line);
     const entry: TraceEntry = { at: Date.now(), guard, line, details, tokens };
     trace.push(entry);
@@ -744,7 +761,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         notes.push(offTaskSteer(verdict));
       }
     }
-    if (verdict.shouldProceedSteer) {
+    if (verdict.shouldProceedSteer && !verdict.shouldProceedTraceOnly) {
       noteGuards.add("action");
       notes.push(shouldProceedMessage(verdict));
     }

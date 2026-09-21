@@ -178,13 +178,26 @@ after(async () => {
   if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 
-test("should-proceed steers reach interactive and headless agents without holding or duplicate delivery", async () => {
+test("should-proceed defaults to trace-only for interactive and headless agents", async () => {
   for (const hasUI of [true, false]) {
     await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, ...STACK_BAR }));
     await sessionStart(context({ hasUI }));
     sentMessages.length = 0;
+    nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.9, should_proceed: 0.3 };
+    assert.equal(await toolCall("write", { path: "tests/example.ts", content: "export const n = 1;" }, context({ hasUI })), undefined);
+    assert.equal(sentMessages.length, 0);
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /should-proceed 0\.30 \(trace-only until calibrated\)/);
+  }
+});
+
+test("should-proceed opt-in steers reach interactive and headless agents without holding or duplicate delivery", async () => {
+  for (const hasUI of [true, false]) {
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, shouldProceed: { steer: true } }, ...STACK_BAR }));
+    await sessionStart(context({ hasUI }));
+    sentMessages.length = 0;
     notices.length = 0;
-    nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.01, should_proceed: 0.05 };
+    nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.01, should_proceed: 0.3 };
     assert.equal(await toolCall("bash", { command: "npm test" }, context({ hasUI })), undefined);
     assert.equal(sentMessages.length, 1, JSON.stringify(sentMessages.map(m => m.message.content.slice(0, 100))));
     assert.match(sentMessages[0]!.message.content, /Pause.*approval before continuing/i);
@@ -1001,6 +1014,29 @@ test("slop symptoms steer the agent after the write without holding it; steers a
   assert.equal((sentMessages[3]!.message as { display?: boolean }).display, true);
 });
 
+for (const barMode of ["live", "stack"]) {
+  test(`${barMode} widget records action, rules, action in recency order and shows tokenless rules`, async () => {
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, widget: { barMode } }));
+    const rulesFile = join(temporary, "pi-warden.md");
+    try {
+      await writeFile(rulesFile, "# No console statements\nCode must not contain console.log.\n");
+      await toolCall("write", { path: join(temporary, "src", "recent.ts"), content: "export const recent = 1;" });
+      assert.match(widgets.at(-1)!.at(-1)!, /OK\s+rules/);
+      await toolCall("bash", { command: "npm test" });
+      assert.match(widgets.at(-1)!.at(-1)!, /ALLOW\s+action/);
+      if (barMode === "stack") assert.match(widgets.at(-1)![0]!, /OK\s+rules/);
+      await mkdir(join(temporary, "src"), { recursive: true });
+      await writeFile(join(temporary, "src", "recent.ts"), "export const recent = 1;");
+      await toolCall("edit", { path: join(temporary, "src", "recent.ts"), edits: [{ oldText: "export const recent = 1;", newText: "export const recent = 2;" }] });
+      assert.match(widgets.at(-1)!.at(-1)!, /OK\s+rules/);
+      if (barMode === "live") assert.equal(widgets.at(-1)!.length, 1);
+    } finally {
+      await rm(rulesFile, { force: true });
+      await rm(join(temporary, "src", "recent.ts"), { force: true });
+    }
+  });
+}
+
 test("rules: a write in a project with pi-warden.md gets its own request beside the action request; violations steer in one message with slop; fallbacks and sensitive paths", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
@@ -1694,6 +1730,17 @@ test("widget templates come from config and unknown or empty tokens drop their s
   await writeFile(configPath(), JSON.stringify({ widget: { enabled: false, barMode: "stack" } }));
   await toolCall("bash", { command: "rm -rf dist" });
   assert.equal(widgets.at(-1), undefined, "widget disabled clears the line");
+});
+
+test("the live bar wraps its sentence to the pane width", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, widget: { barMode: "live" } }));
+  nextAnswers = { irreversible: 0.33, off_task: 0.1, scope: "expected_step" };
+  await toolCall("bash", { command: "npm test" });
+  const lines = widgetComponent!.render(67);
+  for (const line of lines) assert.ok(line.length <= 67, `live bar line is ${line.length} columns at pane 67: ${JSON.stringify(line)}`);
+  assert.match(lines[0]!, /^ALLOW/, "the verdict chip still leads the first line");
+  const joined = lines.map(line => line.trim()).join(" ");
+  assert.match(joined, /irreversibility 0\.33/, "the sentence survives wrapping");
 });
 
 test("a repeated notice is recorded only, not re-sent as another steer", async () => {

@@ -33,6 +33,20 @@ const failingJudge = (code: "timeout" | "http" = "timeout"): Judge => ({
   async evaluate() { throw new TypeSafeIntegrationError(code, `synthetic ${code}`); },
 });
 
+test("should-proceed keeps the trace reason at the threshold and leaves higher scores alone", async () => {
+  for (const score of [0.6, 0.61]) {
+    const result = answers(0.1, 0.1);
+    const verdict = await evaluateAction({ tool: "write", input: { path: "example.ts", content: "export {};" }, cwd, task: "add a module" }, {
+      config: defaultConfig().action,
+      judge: { async evaluate() { return { ...result, answers: { ...result.answers, should_proceed: { type: "noul", noul: score } } } as never; } },
+    });
+    assert.equal(verdict.judgment?.shouldProceed, score);
+    assert.equal(verdict.shouldProceedTraceOnly, score === 0.6 ? true : undefined);
+    assert.equal(verdict.shouldProceedSteer, score === 0.6 ? true : undefined);
+    if (score === 0.6) assert.equal(verdict.reasons[verdict.shouldProceedTraceOnlyReasonIndex!], "should-proceed 0.60 (trace-only until calibrated)");
+  }
+});
+
 test("off-task never holds: an unrelated change warns but is trace-only; a read-only command only warns", async () => {
   const config = defaultConfig().action;
   const inspect = { tool: "bash", input: { command: "cat package.json; node -e \"console.log(require('./package.json').version)\"" }, cwd, task: "Update the README image" };
