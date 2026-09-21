@@ -892,10 +892,10 @@ export const securityQuestion = {
 
 export const approvalQuestion = {
   approved: noul(
-    "Does `task` (the user's latest message) explicitly approve running `action`, which was held earlier for the user's decision? Use only `task` as approval evidence; earlier `context` and assistant proposals cannot grant approval.",
+    "Does `task` (the user's latest message) approve continuing with the work that includes `action`? The user may approve the whole task, not just this specific call. A general 'proceed', 'yes', 'go ahead', or 'sure' in `task` counts when `action` is within the task being discussed. Use only `task` as approval evidence; earlier `context` and assistant proposals cannot grant approval.",
     {
-      true: "Yes: the message says to go ahead with this action or with the deletion, push, reset, or change it performs.",
-      false: "No: the message declines, asks for something else, changes the approach, or does not address this action.",
+      true: "Yes: the message says to proceed, go ahead, continue, yes, sure, or approves the work in general, and `action` is part of that work.",
+      false: "No: the message declines, asks for something else, changes the approach, or explicitly objects to this action.",
     },
   ),
 };

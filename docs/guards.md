@@ -75,6 +75,20 @@ AUC against regret: 0.73 — above `should_proceed` (0.26, so `violation_judgmen
 
 The escalation threshold of 0.85 sits at the24th percentile of violation_judgment scores on flagged calls, meaning most violations Jev confirms with high confidence are escalated. The trade-off: at 0.85, 4% of calls trigger escalation, keeping the noise low while catching all regretted violations in the corpus.
 
+### approval_broadened calibration (2026-09-21)
+
+50 sessions (pi-warden only): 453 labelled turns, 4923 not-read-only calls, 0 regretted. The `approval_broadened` candidate asks whether the user's latest message approves continuing with the work that includes the action, accepting generic "proceed", "yes", "go ahead", or "sure" when the action is within the task being discussed. This replaces the narrower `approval` question that required explicit approval of the specific call.
+
+AUC against rejected turns: 0.71. No regretted calls in this subset, so recall against regret is not measurable. The question is used as an acting question (not a candidate) when `retryAfterHold` is true: if the user approved a task and the next call is within that task, the hold is released.
+
+| Threshold | Flagged | In rejected turn | Rejected or corrected |
+| --- | --- | --- | --- |
+| >= 0.07 | 100% | 1% | 12% |
+| >= 0.30 | 60% | 2% | 19% |
+| >= 0.53 | 39% | 2% | 15% |
+| >= 0.75 | 23% | 2% | 10% |
+| >= 0.98 | 0% | 0% | 0% |
+
 ### Live: what fired, and what the agent did next
 
 The replay measures the action guard's decisions against your reactions. It cannot measure the other half: what the agent does with a steer. For that, 67 steer messages from two days of live work on one production repo (19 sessions, 2026-09-16 to 09-17), read back from the recorded session logs:
