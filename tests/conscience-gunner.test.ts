@@ -420,7 +420,7 @@ test("Malicious judge: URL in candidate description is sanitized", async () => {
   );
 
   const candidates = capturedState.candidates as Record<string, Record<string, unknown>>;
-  const c1 = candidates.c1;
+  const c1 = candidates.c1!;
   assert.ok(!(c1.description as string).includes("https://evil.com"),
     "URLs must be stripped by sanitizeDescription");
 });
@@ -540,7 +540,7 @@ test("Envelope: 8193-byte description is truncated by capDescription", async () 
   );
 
   const candidates = capturedState.candidates as Record<string, Record<string, unknown>>;
-  const c1 = candidates.c1;
+  const c1 = candidates.c1!;
   const desc = c1.description as string;
   const bytes = new TextEncoder().encode(desc).byteLength;
   assert.ok(bytes <= 8192, "description should be capped at 8192 bytes, got " + bytes);

@@ -39,7 +39,7 @@ import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckNudge } from "./stuck.js";
 import { assess } from "./conscience.js";
-import { loadSkillBody, buildLoadMessage, policyMatches, getActivePolicy } from "./load.js";
+import { loadSkillBody, buildLoadMessage, policyMatches, getActivePolicy, recordFileIdentity, clearFileIdentityCache } from "./load.js";
 import type { ConsciencePolicy } from "./load.js";
 import type { IntegrationErrorCode } from "pi-typesafe";
 
@@ -456,7 +456,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let nudgesThisPrompt = 0;
   let reminderSent = false;
   let lastAssessmentHash = "";
-  let cachedSkills: Array<{ name: string; description: string }> = [];
+  let cachedSkills: Array<{ name: string; description: string; filePath?: string }> = [];
   let loadedBytes = 0;
   let instructionState: "none" | "queued" | "instructions_supplied" = "none";
   let loadedSkillNames = new Set<string>();
@@ -491,7 +491,6 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     stats.steers++;
     steersThisRun++;
-    conscienceGeneration++;
     const { display, ...delivery } = options ?? { deliverAs: "steer" as const };
     pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: display ?? config.steerVisible }, delivery);
     return true;
@@ -633,6 +632,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       instructionState = "none";
       loadedSkillNames = new Set();
       queuedRevision++;
+      clearFileIdentityCache();
       const judge = judgeFor(config);
       // Get the resolved skill catalog from the event's system prompt options (spec §3 rule 1)
       const skills = event.systemPromptOptions?.skills ?? [];
@@ -678,7 +678,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           hostSignal.addEventListener("abort", () => ac.abort(), { once: true });
         }
         try {
-          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); console.warn(`pi-warden: conscience judge result keys=${Object.keys(r)}`); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
           const result = await assess(
             redactedPrompt, recentContext, skills, toolInfos, activeSkills, suppliedSkills,
             { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() },
@@ -709,6 +709,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             selectedCapability = { kind: result.selected.kind, id: result.selected.id };
             pendingCapability = { kind: result.selected.kind, id: result.selected.id };
             triggerConsumed = false;
+            // Record file identity at selection time for cross-call change detection (Rule 4)
+            if (result.selected.kind === "skill") {
+              const selectedSkill = cachedSkills.find(s => s.name === result.selected!.id);
+              if (selectedSkill?.filePath) recordFileIdentity(result.selected.id, selectedSkill.filePath);
+            }
           }
           // Delivery: only when selected, thresholds pass, and activation gate clears
           if (result.selected && budgetAvailable(config)) {
@@ -1370,6 +1375,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       ctx.ui.notify("pi-warden is running an audit. Please wait...", "warning");
       return { action: "handled" };
     }
+    // Operator input invalidates in-flight conscience assessments
+    conscienceGeneration++;
   });
 
   pi.on("agent_end", async (event, ctx) => {

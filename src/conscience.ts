@@ -9,6 +9,7 @@ import { choice, noul, score } from "pi-typesafe";
 import type { Questions } from "pi-typesafe";
 import { createHash } from "node:crypto";
 import type { ConscienceConfig } from "./config.js";
+import { redact } from "./redact.js";
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
 
@@ -86,13 +87,21 @@ const MAX_QUESTIONS_PER_REQUEST = 32;
 
 /* ─── Path/URL sanitizer (spec §6) ─────────────────────────────────── */
 
-/** Strip absolute paths and URLs from a description to avoid leaking local structure. */
+/** Strip absolute paths, URLs, and credentials from a description. */
 export function sanitizeDescription(text: string): string {
+  // Remove credentials: tokens, keys, secrets
+  let result = text.replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g, "[credential]");
+  result = result.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, "[credential]");
+  result = result.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[credential]");
+  result = result.replace(/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, "[credential]");
+  result = result.replace(/\bAIza[0-9A-Za-z_-]{30,}/g, "[credential]");
+  result = result.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "[credential]");
+  result = result.replace(/(?:TOKEN|SECRET|KEY|PASSWORD)\s*[=:]\s*['"]?[\w\-./]{8,}/gi, "[credential]");
   // Remove absolute paths: /foo/bar, ~/foo, ~user/foo
-  let result = text.replace(/(?:^|\s)\/[\w.~\-/]+(?:\s|$)/g, " ");
+  result = result.replace(/(?:^|\s)\/[\w.~\-/]+(?:\s|$)/g, " ");
   result = result.replace(/~\/[\w.~\-/]+/g, "[path]");
   result = result.replace(/~\w+\/[\w.~\-/]+/g, "[path]");
-  // Remove URLs: http(s)://... and bare domain.tld/path
+  // Remove URLs
   result = result.replace(/https?:\/\/[\w.~\-/]+/g, "[url]");
   return result.trim();
 }
@@ -169,8 +178,8 @@ export function buildState(
     };
   }
   return {
-    task: sanitizeDescription(task),
-    context: sanitizeDescription(recentContext),
+    task: sanitizeDescription(redact(task)),
+    context: sanitizeDescription(redact(recentContext)),
     active_skills: activeSkills,
     supplied_skills: suppliedSkills,
     candidates,

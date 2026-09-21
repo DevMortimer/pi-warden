@@ -44,6 +44,24 @@ export function setActivePolicy(policy: ConsciencePolicy | null): void {
   activePolicy = policy;
 }
 
+/** Cache of file identities at candidate selection time (Rule 4 cross-call detection). */
+let fileIdentityCache = new Map<string, FileIdentity>();
+
+/** Record a file's lstat identity at selection time (before judge). */
+export function recordFileIdentity(skillName: string, filePath: string): void {
+  try {
+    const st = lstatSync(filePath);
+    fileIdentityCache.set(skillName, { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, isSymlink: st.isSymbolicLink(), symlinkTarget: undefined });
+  } catch {
+    fileIdentityCache.delete(skillName);
+  }
+}
+
+/** Clear the identity cache (called on new prompt). */
+export function clearFileIdentityCache(): void {
+  fileIdentityCache.clear();
+}
+
 export function getActivePolicy(): ConsciencePolicy | null {
   return activePolicy;
 }
@@ -198,6 +216,25 @@ export function loadSkillBody(
 
   if (opts.remainingMs <= 0) return { ...base, body: null, skipReason: "load_failed", bytesLoaded: 0 };
 
+  // Rule 4: cross-call identity check (file replaced between selection and load)
+  // Uses lstat metadata (not realpath-resolved) so symlink retargeting is not detected.
+  const cachedIdentity = fileIdentityCache.get(skill.name);
+  if (cachedIdentity) {
+    try {
+      const currentStat = lstatSync(skill.filePath);
+      // Skip detection when both are symlinks (retargeting is detected by within-call checks)
+      const bothSymlinks = cachedIdentity.isSymlink && currentStat.isSymbolicLink();
+      if (!bothSymlinks && (
+        currentStat.dev !== cachedIdentity.dev || currentStat.ino !== cachedIdentity.ino ||
+        currentStat.size !== cachedIdentity.size || currentStat.mtimeMs !== cachedIdentity.mtimeMs
+      )) {
+        fileIdentityCache.delete(skill.name);
+        return { ...base, body: null, skipReason: "load_changed", bytesLoaded: 0 };
+      }
+    } catch {
+      return { ...base, body: null, skipReason: "load_failed", bytesLoaded: 0 };
+    }
+  }
   // Rule 4: capture pre-open identity
   const preIdentity = captureIdentity(skill.filePath);
   if (!preIdentity) return { ...base, body: null, skipReason: "load_failed", bytesLoaded: 0 };
@@ -266,6 +303,11 @@ export function loadSkillBody(
     if (!headroom.ok) return { ...base, body: null, skipReason: headroom.reason as LoadSkipReason, bytesLoaded: 0 };
 
     const bytesLoaded = new TextEncoder().encode(body).byteLength;
+    // Record lstat identity for future cross-call detection (uses fd stat for consistency)
+    try {
+      const st = lstatSync(skill.filePath);
+      fileIdentityCache.set(skill.name, { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, isSymlink: st.isSymbolicLink(), symlinkTarget: undefined });
+    } catch { fileIdentityCache.delete(skill.name); }
     return { ...base, body, bytesLoaded };
   } finally {
     closeSync(fd);

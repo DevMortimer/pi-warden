@@ -2598,3 +2598,24 @@ test("conscience: absolute path in prompt never leaks", async () => {
   const traceText = sentMessages.at(-1)!.message.content;
   assert.ok(!traceText.includes("/Users/secret"), "trace must not contain absolute path");
 });
+
+// Over-invalidation: warden steer from another guard does not make conscience stale
+test("conscience: warden steer does not invalidate conscience assessment", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5, maxAssessments: 3 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  // Initial assessment
+  await promptWithSkills("design a landing page", skills);
+  // Simulate a warden steer from another guard (stuck notice)
+  // This should NOT bump conscienceGeneration
+  const origSteersThisRun = (globalThis as Record<string, unknown>)._testSteers;
+  // Fire a turn_end that triggers a stuck steer via the existing handler
+  // The steer function increments steersThisRun but should NOT bump conscienceGeneration
+  // We verify by checking that a subsequent assessment is NOT stale
+  await fire("turn_end", { turnIndex: 1, message: {}, toolResults: [] });
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  // Should NOT contain "stale" — the assessment should still be valid
+  assert.ok(!traceText.includes("stale"), `conscience should not be stale after warden steer, trace: ${traceText.slice(0, 200)}`);
+});
