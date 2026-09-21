@@ -11,6 +11,7 @@
 | `/warden config` | Edit the user config JSON in Pi's editor |
 | `/warden test` | One synthetic destructive action, its verdict, and what the agent would be told |
 | `/warden trace` | Toggle the trace sidebar (or print the last 20 events without a UI) |
+| `/warden audit` | Scan workspace projects and generate an HTML report of Jev (TypeSafe) opportunities. Tests Jev on real code, measures response time and confidence, recommends which opportunity to try first. Requires TypeSafe. |
 
 ## Status line and trace
 
