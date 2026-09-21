@@ -295,6 +295,10 @@ export interface ConscienceConfig {
   maxSkillBytes: number;
   /** Max cumulative automatic loading bytes per admitted prompt. */
   maxLoadedBytes: number;
+  /** P(useful now) must reach this to select a candidate for recommendation. Default 1.0 (trace-only until calibrated per spec §7). */
+  recommendThreshold: number;
+  /** P(useful now) must reach this to auto-load. Must be >= recommendThreshold. Default 1.0 (trace-only until calibrated). */
+  loadThreshold: number;
 }
 
 
@@ -397,6 +401,9 @@ export function defaultConfig(): WardenConfig {
       maxNudges: 2,
       maxSkillBytes: 32768,
       maxLoadedBytes: 65536,
+      // Calibration targets from spec §7. Until measured, 1.0 keeps production trace-only.
+      recommendThreshold: 1.0,
+      loadThreshold: 1.0,
     },
   };
 }
@@ -808,6 +815,8 @@ function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig
     maxNudges: Math.max(1, Math.min(5, typeof raw.maxNudges === "number" ? raw.maxNudges : base.maxNudges)),
     maxSkillBytes: Math.max(1024, Math.min(131072, typeof raw.maxSkillBytes === "number" ? raw.maxSkillBytes : base.maxSkillBytes)),
     maxLoadedBytes: Math.max(1024, Math.min(262144, typeof raw.maxLoadedBytes === "number" ? raw.maxLoadedBytes : base.maxLoadedBytes)),
+    recommendThreshold: Math.max(0, Math.min(1, typeof raw.recommendThreshold === "number" ? raw.recommendThreshold : base.recommendThreshold)),
+    loadThreshold: Math.max(0, Math.min(1, typeof raw.loadThreshold === "number" ? raw.loadThreshold : base.loadThreshold)),
   };
 }
 
