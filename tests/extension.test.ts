@@ -1719,6 +1719,17 @@ test("widget templates come from config and unknown or empty tokens drop their s
   assert.equal(widgets.at(-1), undefined, "widget disabled clears the line");
 });
 
+test("the live bar wraps its sentence to the pane width", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, widget: { barMode: "live" } }));
+  nextAnswers = { irreversible: 0.33, off_task: 0.1, scope: "expected_step" };
+  await toolCall("bash", { command: "npm test" });
+  const lines = widgetComponent!.render(67);
+  for (const line of lines) assert.ok(line.length <= 67, `live bar line is ${line.length} columns at pane 67: ${JSON.stringify(line)}`);
+  assert.match(lines[0]!, /^ALLOW/, "the verdict chip still leads the first line");
+  const joined = lines.map(line => line.trim()).join(" ");
+  assert.match(joined, /irreversibility 0\.33/, "the sentence survives wrapping");
+});
+
 test("a repeated notice is recorded only, not re-sent as another steer", async () => {
   await grantConsent();
   const first = await toolResult("read", {}, "TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", false) as { content: Array<{ text: string }> };

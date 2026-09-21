@@ -8,11 +8,16 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
-## 0.30.2
+## 0.30.3
 
 ### Fixed
 - Live status follows the newest verdict, including guards without sentence tokens; stack entries retain guard update order within their severity groups.
 - Action warning and hold sentences use verdict reasons instead of inferring irreversibility from the level or unrelated scores.
+
+## 0.30.2
+
+### Fixed
+- The live widget bar wraps its sentence to the pane width; one over-wide line tripped pi's render-width guard and aborted the session. Fixes #29.
 
 ## 0.30.1
 
