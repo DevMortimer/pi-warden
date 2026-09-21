@@ -33,6 +33,7 @@ import { redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
+import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from "./audit.js";
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
@@ -261,6 +262,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let warnedMissingRules = false;
   /** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
   let initRunning = false;
+  /** True while /warden audit is sending a prompt and waiting for the agent to write the report. */
+  let auditRunning = false;
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
@@ -1054,10 +1057,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     await checkSubagentReports(ctx, configFor(ctx));
   });
 
-  // Block new user messages while /warden init is generating pi-warden.md.
+  // Block new user messages while /warden init or /warden audit is running.
   pi.on("input", async (event, ctx) => {
     if (initRunning) {
       ctx.ui.notify("pi-warden is generating rules. Please wait...", "warning");
+      return { action: "handled" };
+    }
+    if (auditRunning) {
+      ctx.ui.notify("pi-warden is running an audit. Please wait...", "warning");
       return { action: "handled" };
     }
   });
@@ -1142,7 +1149,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     });
   }
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init"];
+  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit"];
   pi.registerCommand("warden", {
     description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, and a synthetic guard test",
     getArgumentCompletions(prefix) {
@@ -1320,6 +1327,36 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           }
           const wardenExists = existsSync(join(ctx.cwd, "pi-warden.md"));
           report(wardenExists ? "pi-warden.md created. Review the rules and edit as needed." : "Agent did not create pi-warden.md. Create it manually or try /warden init again.");
+          return;
+        }
+        if (action === "audit") {
+          if (!ctx.hasUI) { report("Audit needs an interactive session to run.", "warning"); return; }
+          if (!await ctx.ui.confirm("Run workspace audit?", `This runs an agent-driven audit of ${redact(ctx.cwd)}. It uses the session model, reads source code, and writes a report. It may take several minutes and use real tokens. Measured comparisons need the agent's TypeSafe tool, which is enabled per session with \`/typesafe enable\`; without it findings will be marked unmeasured.`)) return;
+          const projects = findProjects(ctx.cwd);
+          const prompt = buildAuditPrompt(ctx.cwd, projects);
+          const reportPath = join(ctx.cwd, ".pi-warden", "audit-report.html");
+          const preSnapshot = snapshotReport(reportPath);
+          auditRunning = true;
+          if (ctx.hasUI) ctx.ui.notify("pi-warden: Running workspace audit...", "info");
+          try {
+            for (let attempt = 0; attempt < 40; attempt++) {
+              if (ctx.isIdle()) break;
+              await new Promise(resolve => setTimeout(resolve, 250));
+            }
+            pi.sendUserMessage(prompt);
+            await ctx.waitForIdle();
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            report(`pi-warden audit failed: ${detail}.`, "error");
+          } finally {
+            auditRunning = false;
+          }
+          const outcome = reportOutcome(preSnapshot, snapshotReport(reportPath));
+          switch (outcome) {
+            case "written": report(`Audit report written to ${reportPath}`); break;
+            case "stale": report("Audit finished but the report file was not updated — the agent may have reported findings in chat instead."); break;
+            case "missing": report("Agent did not write an audit report. The model may have reported findings in chat instead."); break;
+          }
           return;
         }
         if (action === "test") {
