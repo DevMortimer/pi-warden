@@ -9,7 +9,7 @@ const testDir = mkdtempSync(join(tmpdir(), "pi-warden-learn-"));
 // A nested folder that does not exist yet: the database must create its own directory.
 process.env.PI_WARDEN_DB = join(testDir, "nested", "pi-warden", "holds.db");
 
-const { initSchema, recordHold, recordOutcome, querySmartHistory, calculateSmartConfidence, shouldSkipHold, signatureHash } = await import("../src/learning.js");
+const { initSchema, recordHold, recordOutcome, toHoldRecord, querySmartHistory, calculateSmartConfidence, shouldSkipHold, signatureHash } = await import("../src/learning.js");
 
 after(() => {
   rmSync(testDir, { recursive: true, force: true });
@@ -233,6 +233,55 @@ test("analyzeSteerEffectivenessReport tracks effectiveness by type", async () =>
   assert.ok(report.overall > 0, "overall effectiveness is positive");
   assert.ok(Object.keys(report.byType).length > 0, "has steer types");
   assert.ok(report.topPatterns.length > 0, "has top patterns");
+});
+
+// --- Tests for command_preview redaction and replanned outcome persistence ---
+
+test("toHoldRecord redacts password-bearing URLs in command_preview", () => {
+  const record = toHoldRecord(
+    { at: Date.now(), tool: "bash", level: "confirm", reasons: ["test"] },
+    "/test/project",
+    { preview: "git push https://user:secret123@github.com/repo.git main" },
+  );
+  assert.ok(!record.commandPreview.includes("secret123"), "password must not appear in command_preview");
+  assert.ok(record.commandPreview.includes("[redacted]"), "password region is redacted");
+});
+
+test("toHoldRecord caps command_preview at 200 characters", () => {
+  const longCommand = "echo " + "x".repeat(300);
+  const record = toHoldRecord(
+    { at: Date.now(), tool: "bash", level: "confirm", reasons: ["test"] },
+    "/test/project",
+    { preview: longCommand },
+  );
+  assert.ok(record.commandPreview.length <= 200, "command_preview must not exceed 200 chars");
+});
+
+test("toHoldRecord falls back to tool name when no preview is provided", () => {
+  const record = toHoldRecord(
+    { at: Date.now(), tool: "bash", level: "confirm", reasons: ["test"] },
+    "/test/project",
+  );
+  assert.equal(record.commandPreview, "bash", "falls back to tool name");
+});
+
+test("recordOutcome persists replanned outcome", async () => {
+  const id = await recordHold({
+    timestamp: Date.now(),
+    projectRoot: "/replanned/project",
+    tool: "bash",
+    commandPreview: "npm test",
+    scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+    level: "allow",
+    held: true,
+    reasons: ["irreversible 0.5"],
+  });
+  await recordOutcome(id, "replanned");
+  // Verify the outcome persisted by querying the database directly.
+  // querySmartHistory filters on held=1, so a replanned record should appear.
+  const history = await querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/replanned/project");
+  const match = history.exact.find(row => row.outcome === "replanned");
+  assert.ok(match, "replanned outcome is queryable via querySmartHistory");
 });
 
 

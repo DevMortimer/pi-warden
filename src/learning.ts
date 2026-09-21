@@ -5,6 +5,7 @@ import { createHash } from "crypto";
 import { mkdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { redact } from "./redact.js";
 import type { CallScores } from "./holds.js";
 
 let db: import("node:sqlite").DatabaseSync | undefined;
@@ -97,6 +98,8 @@ export interface HoldContext {
   contextSummary?: string | undefined;
   precedingActions?: string | undefined;
   agentReason?: string | undefined;
+  /** Redacted command or path, capped at 200 chars. Stored as command_preview instead of the bare tool name. */
+  preview?: string | undefined;
 }
 
 export interface HoldRecord {
@@ -175,7 +178,7 @@ export function toHoldRecord(
     timestamp: item.at,
     projectRoot,
     tool: item.tool,
-    commandPreview: item.tool,
+    commandPreview: redact(ctx?.preview ?? item.tool).slice(0, 200),
     scores: { irreversible: raw?.irreversible ?? 0, reasons: item.reasons },
     level: item.level as HoldLevel,
     held: true,

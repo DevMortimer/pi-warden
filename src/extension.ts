@@ -404,6 +404,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     for (const item of records) {
       const entry = traceOf.get(item);
       if (entry) trace.amend(entry, outcomeNote(item));
+      // Persist every non-pending outcome to SQLite so replanned, regretted, and accepted labels are queryable.
+      const learningId = learningIds.get(item.id);
+      if (learningId && item.outcome !== "pending") {
+        recordOutcome(learningId, item.outcome).catch(err => console.warn("pi-warden: recordOutcome failed:", err));
+      }
     }
     if (config.action.feedbackLog && holds.records().length) void holdLog?.save(holds.records());
   };
@@ -737,10 +742,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         recordHold(toHoldRecord(
           { at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores },
           ctx.cwd,
-          { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: steerReason(deliveryVerdict, { canApprove: judge !== undefined }) },
+          { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: steerReason(deliveryVerdict, { canApprove: judge !== undefined }), preview: redact(verdict.summary.command ?? verdict.summary.path ?? "") },
         )).then(id => {
           learningIds.set(item.id, id);
-          if (outcome) recordOutcome(id, outcome).catch(err => console.warn("pi-warden: recordOutcome failed:", err));
+          // Outcome is now persisted centrally in noteOutcomes; skip the per-call path here.
         }).catch(err => console.warn("pi-warden: recordHold failed:", err));
         pruneLearningIds();
       }
