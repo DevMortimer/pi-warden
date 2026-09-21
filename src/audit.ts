@@ -6,6 +6,14 @@ import type { Judge } from "./guard.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface TestResult {
+  questionAsked: string;
+  jevAnswer: string;
+  confidence: number;
+  responseTimeMs: number;
+  passed: boolean;
+}
+
 export interface AuditFinding {
   project: string;
   files: string[];
@@ -23,6 +31,7 @@ export interface AuditFinding {
   testingEase: "easy" | "medium" | "hard";
   frequency: string;
   costImpact: string;
+  testResult?: TestResult | undefined;
 }
 
 interface ProjectInfo {
@@ -50,12 +59,12 @@ function findProjects(cwd: string): string[] {
   }
 
   let entries: string[];
-  try { entries = readdirSync(cwd); } catch { return projects; }
+  try { entries = readdirSync(cwd); } catch (err) { console.warn(`audit: could not read workspace ${cwd}: ${err instanceof Error ? err.message : err}`); return projects; }
 
   for (const entry of entries) {
     if (entry === "node_modules" || entry.startsWith(".")) continue;
     const sub = join(cwd, entry);
-    try { if (!existsSync(join(sub, "package.json")) && !existsSync(join(sub, "Cargo.toml")) && !existsSync(join(sub, "pyproject.toml")) && !existsSync(join(sub, "go.mod"))) continue; } catch { continue; }
+    try { if (!existsSync(join(sub, "package.json")) && !existsSync(join(sub, "Cargo.toml")) && !existsSync(join(sub, "pyproject.toml")) && !existsSync(join(sub, "go.mod"))) continue; } catch (err) { console.warn(`audit: could not check ${sub}: ${err instanceof Error ? err.message : err}`); continue; }
     if (!projects.includes(sub)) projects.push(sub);
   }
 
@@ -148,6 +157,7 @@ Look for:
 - Content quality: prose checking, documentation, code review
 
 For each finding, estimate:
+
 - PRIORITY: high/medium/low (how much Jev improves over current approach)
 - EFFORT: low/medium/high (setup work needed)
 - TESTING: easy/medium/hard (how to verify Jev's answers)
@@ -182,52 +192,167 @@ Return ONLY the JSON array. No other text.`;
 
 // ─── Main audit ───────────────────────────────────────────────────────────────
 
-export async function auditWorkspace(cwd: string, judge?: Judge): Promise<AuditFinding[]> {
+export async function auditWorkspace(cwd: string, judge: Judge): Promise<AuditFinding[]> {
   const projectPaths = findProjects(cwd);
   const findings: AuditFinding[] = [];
 
   for (const projectPath of projectPaths) {
     const info = readProjectInfo(projectPath, cwd);
 
-    if (judge) {
-      try {
-        const prompt = buildAuditPrompt(info);
-        const safeState = {
-          project: info.name,
-          type: info.type,
-          files: info.files.map(f => f.split("/").pop() ?? f),
-          readme: redact(info.readme ?? ""),
-          manifest: redact(info.manifest ?? ""),
-          hasLinting: info.hasLinting,
-          hasTests: info.hasTests,
-          hasTypeChecking: info.hasTypeChecking,
-          hasCI: info.hasCI,
-          hasRules: info.hasRules,
-        };
-        const request = {
-          state: safeState,
-          questions: {
-            audit: noul(redact(prompt), {
-              true: "The project has opportunities where Jev could improve the codebase.",
-              false: "The project has no clear Jev opportunities.",
-            }),
-          },
-        };
-        const result = await ask(judge, request);
-        if (!result.ok) throw new Error(result.error);
-        const parsed = parseFindings(result.answers.audit as unknown as string, info);
-        findings.push(...parsed);
-        continue;
-      } catch (err) {
-        console.warn(`audit: Jev evaluation failed for ${info.name}, falling back to static analysis: ${err instanceof Error ? err.message : err}`);
-      }
+    try {
+      const prompt = buildAuditPrompt(info);
+      const safeState = {
+        project: info.name,
+        type: info.type,
+        files: info.files.map(f => f.split("/").pop() ?? f),
+        readme: redact(info.readme ?? ""),
+        manifest: redact(info.manifest ?? ""),
+        hasLinting: info.hasLinting,
+        hasTests: info.hasTests,
+        hasTypeChecking: info.hasTypeChecking,
+        hasCI: info.hasCI,
+        hasRules: info.hasRules,
+      };
+      const request = {
+        state: safeState,
+        questions: {
+          audit: noul(redact(prompt), {
+            true: "The project has opportunities where Jev could improve the codebase.",
+            false: "The project has no clear Jev opportunities.",
+          }),
+        },
+      };
+      const result = await ask(judge, request);
+      if (!result.ok) throw new Error(result.error);
+      const parsed = parseFindings(result.answers.audit as unknown as string, info);
+      findings.push(...parsed);
+    } catch (err) {
+      console.warn(`audit: Jev evaluation failed for ${info.name}: ${err instanceof Error ? err.message : err}`);
     }
-
-    findings.push(...staticAnalysis(info));
   }
 
-  return findings.sort((a, b) => priorityOrder(a.priority) - priorityOrder(b.priority));
+  // Sort by priority, then test each finding against Jev.
+  findings.sort((a, b) => priorityOrder(a.priority) - priorityOrder(b.priority));
+  await testFindings(findings, judge);
+
+  return findings;
 }
+
+// ─── Testing phase ────────────────────────────────────────────────────────────
+
+async function testFindings(findings: AuditFinding[], judge: Judge): Promise<void> {
+  for (const finding of findings) {
+    const test = await buildAndRunTest(finding, judge);
+    finding.testResult = test;
+  }
+}
+
+/**
+ * Build a concrete test question from a finding's real project code, send it to
+ * Jev, and measure the response.
+ */
+async function buildAndRunTest(finding: AuditFinding, judge: Judge): Promise<TestResult> {
+  const testQuestion = await buildTestQuestion(finding);
+  const safeState = {
+    project: finding.project,
+    files: finding.files,
+    task: finding.task,
+    question: testQuestion,
+  };
+
+  const t0 = performance.now();
+  try {
+    const result = await ask(judge, {
+      state: safeState,
+      questions: {
+        test: noul(testQuestion, {
+          true: "The answer is yes / correct / applicable.",
+          false: "The answer is no / incorrect / not applicable.",
+        }),
+      },
+    });
+    const elapsed = performance.now() - t0;
+
+    if (!result.ok) {
+      return { questionAsked: testQuestion, jevAnswer: `error: ${result.error}`, confidence: 0, responseTimeMs: elapsed, passed: false };
+    }
+
+    const answer = result.answers.test;
+    const confidence = typeof answer === "object" && answer !== null && "noul" in answer ? (answer as { noul: number }).noul : 0.5;
+    const passed = confidence > 0.5;
+
+    return {
+      questionAsked: testQuestion,
+      jevAnswer: passed ? "yes" : "no",
+      confidence,
+      responseTimeMs: elapsed,
+      passed,
+    };
+  } catch (err) {
+    const elapsed = performance.now() - t0;
+    return {
+      questionAsked: testQuestion,
+      jevAnswer: `error: ${err instanceof Error ? err.message : String(err)}`,
+      confidence: 0,
+      responseTimeMs: elapsed,
+      passed: false,
+    };
+  }
+}
+
+/**
+ * Read the finding's files from disk and extract a concrete example to form a
+ * real test question. Falls back to the finding's generic question if file
+ * content is unavailable.
+ */
+async function buildTestQuestion(finding: AuditFinding): Promise<string> {
+  for (const file of finding.files) {
+    const content = readFileSafe(join(file), 8000);
+    if (!content) continue;
+
+    // Extract a concrete identifier, path, or value from the file.
+    const example = extractExample(content, finding);
+    if (example) {
+      return `${finding.question}\n\nConcrete example from the codebase: ${example}`;
+    }
+  }
+  return finding.question;
+}
+
+/**
+ * Try to pull a concrete value from source code that makes the finding's
+ * question testable. Returns null when nothing useful can be extracted.
+ */
+function extractExample(content: string, finding: AuditFinding): string | null {
+  const lines = content.split("\n");
+
+  // Look for export declarations, function declarations, or constants.
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Exported function or const — a good concrete anchor.
+    if (/^(export\s+)?(async\s+)?function\s+\w+/.test(trimmed)) {
+      const name = trimmed.match(/(?:export\s+)?(?:async\s+)?function\s+(\w+)/)?.[1];
+      if (name) return `function ${name} (from source)`;
+    }
+
+    // Const with a string value — potential config/route/path.
+    const constMatch = trimmed.match(/(?:export\s+)?const\s+(\w+)\s*[:=]\s*["'`](.+)["'`]/);
+    if (constMatch) return `const ${constMatch[1]} = "${constMatch[2]}" (from source)`;
+  }
+
+  // Fallback: first non-empty, non-comment line.
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith("//") && !trimmed.startsWith("*") && !trimmed.startsWith("/*")) {
+      return trimmed.length > 120 ? trimmed.slice(0, 120) + "…" : trimmed;
+    }
+  }
+
+  return null;
+}
+
+// ─── Parsing ──────────────────────────────────────────────────────────────────
 
 function parseFindings(raw: unknown, info: ProjectInfo): AuditFinding[] {
   try {
@@ -272,93 +397,6 @@ function priorityOrder(p: string): number {
   return p === "high" ? 0 : p === "medium" ? 1 : 2;
 }
 
-// ─── Static analysis (fallback when no Jev) ──────────────────────────────────
-
-interface PatternDef {
-  id: string;
-  task: string;
-  jevOpportunity: string;
-  question: string;
-  outputType: string;
-  actionOnAnswer: string;
-  riskIfWrong: string;
-  priority: "high" | "medium" | "low";
-  setupEffort: "low" | "medium" | "high";
-  testingEase: "easy" | "medium" | "hard";
-  frequency: string;
-  costImpact: string;
-  regex: RegExp;
-}
-
-const PATTERNS: PatternDef[] = [
-  { id: "if-else-chain", task: "If-else / switch decision chains", jevOpportunity: "Jev could evaluate which branch best matches the current context", question: "Which branch most accurately handles this case?", outputType: "choice: [branch-a, branch-b, ..., uncertain]", actionOnAnswer: "Select the matched branch dynamically", riskIfWrong: "Incorrect code path executed (medium impact)", priority: "high", setupEffort: "medium", testingEase: "easy", frequency: "per request", costImpact: "medium — wrong branch may cause errors", regex: /if\s*\([^)]+\)\s*\{[\s\S]*\}\s*else\s+if\s*\(/ },
-  { id: "strategy-select", task: "Strategy / plugin selection", jevOpportunity: "Jev could pick the best strategy based on context and requirements", question: "Which strategy is most appropriate for this input and context?", outputType: "choice: [strategy-a, strategy-b, ...]", actionOnAnswer: "Load and execute the selected strategy", riskIfWrong: "Suboptimal strategy chosen (variable impact)", priority: "high", setupEffort: "medium", testingEase: "easy", frequency: "per invocation", costImpact: "medium — wrong strategy degrades results", regex: /strategy|plugin|handler|provider|backend/i },
-  { id: "config-routing", task: "Configuration-based routing", jevOpportunity: "Jev could decide which config value applies to the current scenario", question: "Which configuration applies to this specific scenario?", outputType: "choice: [config-a, config-b, ...]", actionOnAnswer: "Apply the selected configuration", riskIfWrong: "Wrong config applied (low-medium impact)", priority: "medium", setupEffort: "low", testingEase: "easy", frequency: "per startup or request", costImpact: "low — config is usually reversible", regex: /config\s*\.\s*\w+\s*\?\s*\w+|switch\s*\(\s*\w+\.mode\s*\)/ },
-  { id: "metric-score", task: "Metric scoring or ranking", jevOpportunity: "Jev could provide nuanced scoring that accounts for context and edge cases", question: "How should this item be scored given the current context?", outputType: "score: 0-1", actionOnAnswer: "Use score for filtering, ranking, or threshold decisions", riskIfWrong: "Incorrect ranking or filtering (variable impact)", priority: "high", setupEffort: "medium", testingEase: "medium", frequency: "per evaluation", costImpact: "medium — wrong score affects downstream decisions", regex: /score|rating|rank|threshold|calibrat|metric|weight/i },
-  { id: "threshold-tune", task: "Threshold tuning and calibration", jevOpportunity: "Jev could dynamically adjust thresholds based on context", question: "What threshold is appropriate for this context and risk level?", outputType: "score: 0-1 (threshold value)", actionOnAnswer: "Adjust comparison threshold", riskIfWrong: "Too strict or too lenient (medium impact)", priority: "medium", setupEffort: "medium", testingEase: "medium", frequency: "per evaluation or periodically", costImpact: "medium — affects sensitivity of checks", regex: /threshold|calibrat|tuning|sensitivity|tolerance/i },
-  { id: "validation", task: "Validation and assertion logic", jevOpportunity: "Jev could validate whether output is semantically correct, not just syntactically", question: "Does this output correctly satisfy the requirements?", outputType: "choice: [valid, invalid, uncertain]", actionOnAnswer: "Flag invalid output for correction", riskIfWrong: "Invalid output passes or valid output rejected (high impact)", priority: "high", setupEffort: "medium", testingEase: "hard", frequency: "per output", costImpact: "high — incorrect validation can cause data issues", regex: /assert|valid|check|verify|invariant|precondition|postcondition/i },
-  { id: "semantic-search", task: "Search and retrieval", jevOpportunity: "Jev could find results by meaning rather than exact keyword match", question: "Which results are most semantically relevant to this query?", outputType: "score: 0-1 (relevance)", actionOnAnswer: "Rank and filter results by semantic relevance", riskIfWrong: "Irrelevant results shown (low-medium impact)", priority: "high", setupEffort: "high", testingEase: "medium", frequency: "per search", costImpact: "low — user can refine search", regex: /search|find|match|retriev|recommend|lookup|query/i },
-  { id: "content-quality", task: "Content quality assessment", jevOpportunity: "Jev could evaluate prose, documentation, or code quality semantically", question: "How well does this content serve its intended audience and purpose?", outputType: "score: 0-1 (quality)", actionOnAnswer: "Flag low-quality content for improvement", riskIfWrong: "Good content flagged or bad content missed (low impact)", priority: "medium", setupEffort: "low", testingEase: "easy", frequency: "per write or review", costImpact: "low — content quality is usually iterative", regex: /prose|documentation|readme|changelog|comment|doc/i },
-];
-
-function staticAnalysis(info: ProjectInfo): AuditFinding[] {
-  const findings: AuditFinding[] = [];
-  const readCache = new Map<string, string>();
-
-  for (const file of info.files) {
-    const fullPath = join(info.path, file);
-    let content = readCache.get(fullPath);
-    if (content === undefined) {
-      content = readFileSafe(fullPath, 20000) ?? "";
-      readCache.set(fullPath, content);
-    }
-
-    for (const pattern of PATTERNS) {
-      if (pattern.regex.test(content)) {
-        findings.push({
-          project: info.name,
-          files: [file],
-          task: pattern.task,
-          jevOpportunity: pattern.jevOpportunity,
-          informationNeeded: `Source code of ${file}`,
-          references: "Project requirements and existing behavior",
-          question: pattern.question,
-          outputType: pattern.outputType,
-          actionOnAnswer: pattern.actionOnAnswer,
-          riskIfWrong: pattern.riskIfWrong,
-          priority: pattern.priority,
-          setupEffort: pattern.setupEffort,
-          testingEase: pattern.testingEase,
-          frequency: pattern.frequency,
-          costImpact: pattern.costImpact,
-        });
-      }
-    }
-  }
-
-  if (findings.length === 0 && info.files.length > 0) {
-    findings.push({
-      project: info.name,
-      files: info.files.slice(0, 3),
-      task: "Codebase review and quality checks",
-      jevOpportunity: "Jev could review code changes for quality, consistency, and potential issues",
-      informationNeeded: "Source code, project conventions, and requirements",
-      references: "Project standards, coding guidelines, and existing patterns",
-      question: "Does this code change follow the project's conventions and meet quality standards?",
-      outputType: "choice: [pass, needs-improvement, uncertain]",
-      actionOnAnswer: "Flag code that needs improvement or passes review",
-      riskIfWrong: "Code quality issues missed (low impact)",
-      priority: "low",
-      setupEffort: "low",
-      testingEase: "easy",
-      frequency: "per code change",
-      costImpact: "low — code review is iterative",
-    });
-  }
-
-  return findings;
-}
-
 // ─── HTML generation ──────────────────────────────────────────────────────────
 
 export function generateAuditHTML(findings: AuditFinding[], cwd: string): string {
@@ -370,6 +408,12 @@ export function generateAuditHTML(findings: AuditFinding[], cwd: string): string
 
   const firstHigh = findings.find(f => f.priority === "high");
   const firstMedium = findings.find(f => f.priority === "medium");
+
+  // Test result summary stats.
+  const tested = findings.filter(f => f.testResult);
+  const passed = tested.filter(f => f.testResult!.passed);
+  const avgConf = tested.length > 0 ? tested.reduce((s, f) => s + f.testResult!.confidence, 0) / tested.length : 0;
+  const avgMs = tested.length > 0 ? tested.reduce((s, f) => s + f.testResult!.responseTimeMs, 0) / tested.length : 0;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -385,6 +429,8 @@ export function generateAuditHTML(findings: AuditFinding[], cwd: string): string
   --medium: #d97706; --medium-bg: #fffbeb; --medium-border: #fde68a;
   --low: #16a34a; --low-bg: #f0fdf4; --low-border: #bbf7d0;
   --accent: #2563eb; --radius: 10px;
+  --pass: #16a34a; --pass-bg: #f0fdf4; --pass-border: #bbf7d0;
+  --fail: #dc2626; --fail-bg: #fef2f2; --fail-border: #fecaca;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -392,6 +438,7 @@ export function generateAuditHTML(findings: AuditFinding[], cwd: string): string
     --border: #334155; --shadow: 0 1px 3px rgba(0,0,0,0.3);
     --high-bg: #1c0a0a; --high-border: #7f1d1d; --medium-bg: #1a1207; --medium-border: #78350f;
     --low-bg: #071a0d; --low-border: #14532d; --accent: #60a5fa;
+    --pass-bg: #071a0d; --pass-border: #14532d; --fail-bg: #1c0a0a; --fail-border: #7f1d1d;
   }
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -400,13 +447,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 header { margin-bottom: 2rem; }
 header h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.25rem; }
 header .subtitle { color: var(--text-secondary); font-size: 0.95rem; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
 .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow); text-align: center; }
 .stat .number { font-size: 2rem; font-weight: 700; }
 .stat .label { font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.25rem; }
 .stat.high .number { color: var(--high); }
 .stat.medium .number { color: var(--medium); }
 .stat.low .number { color: var(--low); }
+.stat.pass .number { color: var(--pass); }
+.stat.fail .number { color: var(--fail); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 1rem; overflow: hidden; }
 .card-header { padding: 1rem 1.25rem; display: flex; align-items: center; gap: 0.75rem; cursor: pointer; }
 .card-header:hover { background: var(--bg); }
@@ -415,6 +464,8 @@ header .subtitle { color: var(--text-secondary); font-size: 0.95rem; }
 .badge-medium { background: var(--medium-bg); color: var(--medium); border: 1px solid var(--medium-border); }
 .badge-low { background: var(--low-bg); color: var(--low); border: 1px solid var(--low-border); }
 .badge-effort { background: var(--surface); border: 1px solid var(--border); color: var(--text-secondary); }
+.badge-pass { background: var(--pass-bg); color: var(--pass); border: 1px solid var(--pass-border); }
+.badge-fail { background: var(--fail-bg); color: var(--fail); border: 1px solid var(--fail-border); }
 .card-title { flex: 1; font-size: 1.05rem; font-weight: 600; }
 .card-project { font-size: 0.8rem; color: var(--text-secondary); }
 .card-chevron { color: var(--text-secondary); transition: transform 0.2s; font-size: 1.2rem; }
@@ -425,6 +476,12 @@ header .subtitle { color: var(--text-secondary); font-size: 0.95rem; }
 .card-body p, .card-body pre { font-size: 0.9rem; color: var(--text); }
 .card-body pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; overflow-x: auto; font-size: 0.82rem; }
 .meta { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+.test-result { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+.test-result h4 { margin-top: 0; }
+.test-row { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
+.test-item { font-size: 0.85rem; }
+.test-item .label { color: var(--text-secondary); }
+.test-item .value { font-weight: 600; }
 table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; background: var(--surface); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border); }
 th { background: var(--bg); text-align: left; padding: 0.75rem 1rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); border-bottom: 2px solid var(--border); }
 td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
@@ -450,6 +507,9 @@ footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--bord
     <div class="stat high"><div class="number">${high}</div><div class="label">High Priority</div></div>
     <div class="stat medium"><div class="number">${medium}</div><div class="label">Medium Priority</div></div>
     <div class="stat low"><div class="number">${low}</div><div class="label">Low Priority</div></div>
+    <div class="stat pass"><div class="number">${passed.length}/${tested.length}</div><div class="label">Tests Passed</div></div>
+    <div class="stat"><div class="number">${(avgConf * 100).toFixed(0)}%</div><div class="label">Avg Confidence</div></div>
+    <div class="stat"><div class="number">${avgMs.toFixed(0)}ms</div><div class="label">Avg Response</div></div>
   </div>
 
   ${firstHigh || firstMedium ? `<div class="recommendation">
@@ -466,15 +526,19 @@ footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--bord
   <section>
     <h2>Comparison</h2>
     <table>
-      <thead><tr><th>Task</th><th>Project</th><th>Priority</th><th>Setup Effort</th><th>Testing Ease</th><th>Frequency</th></tr></thead>
+      <thead><tr><th>Task</th><th>Project</th><th>Priority</th><th>Setup Effort</th><th>Testing Ease</th><th>Frequency</th><th>Avg Confidence</th><th>Response</th></tr></thead>
       <tbody>
-${findings.map(f => `        <tr><td>${esc(f.task)}</td><td>${esc(f.project)}</td><td><span class="badge badge-${f.priority}">${f.priority}</span></td><td>${esc(f.setupEffort)}</td><td>${esc(f.testingEase)}</td><td>${esc(f.frequency)}</td></tr>`).join("\n")}
+${findings.map(f => {
+  const conf = f.testResult ? `${(f.testResult.confidence * 100).toFixed(0)}%` : "—";
+  const resp = f.testResult ? `${f.testResult.responseTimeMs.toFixed(0)}ms` : "—";
+  return `        <tr><td>${esc(f.task)}</td><td>${esc(f.project)}</td><td><span class="badge badge-${f.priority}">${f.priority}</span></td><td>${esc(f.setupEffort)}</td><td>${esc(f.testingEase)}</td><td>${esc(f.frequency)}</td><td>${conf}</td><td>${resp}</td></tr>`;
+}).join("\n")}
       </tbody>
     </table>
   </section>
 
   <footer>
-    <p>Generated by pi-warden audit &middot; ${findings.length} findings across ${new Set(findings.map(f => f.project)).size} project(s) &middot; ${timestamp}</p>
+    <p>Generated by pi-warden audit &middot; ${findings.length} findings across ${new Set(findings.map(f => f.project)).size} project(s) &middot; ${tested.length} Jev tests &middot; ${timestamp}</p>
   </footer>
 </div>
 <script>
@@ -489,6 +553,16 @@ document.querySelectorAll('.card-header').forEach(h => {
 function card(f: AuditFinding, i: number): string {
   const id = `f-${i}`;
   const fileLinks = f.files.map(file => `<code>${esc(file)}</code>`).join(", ");
+  const testSection = f.testResult ? `
+        <div class="test-result">
+          <h4>Jev Test Result <span class="badge badge-${f.testResult.passed ? "pass" : "fail"}">${f.testResult.passed ? "passed" : "failed"}</span></h4>
+          <div class="test-row">
+            <div class="test-item"><span class="label">Question: </span><span class="value">${esc(f.testResult.questionAsked)}</span></div>
+            <div class="test-item"><span class="label">Answer: </span><span class="value">${esc(f.testResult.jevAnswer)}</span></div>
+            <div class="test-item"><span class="label">Confidence: </span><span class="value">${(f.testResult.confidence * 100).toFixed(1)}%</span></div>
+            <div class="test-item"><span class="label">Response: </span><span class="value">${f.testResult.responseTimeMs.toFixed(0)}ms</span></div>
+          </div>
+        </div>` : "";
   return `    <div class="card" id="${id}">
       <div class="card-header">
         <span class="badge badge-${f.priority}">${f.priority}</span>
@@ -507,6 +581,7 @@ function card(f: AuditFinding, i: number): string {
         <h4>Action on Answer</h4><p>${esc(f.actionOnAnswer)}</p>
         <h4>Risk if Wrong</h4><p>${esc(f.riskIfWrong)}</p>
         ${f.example ? `<h4>Example</h4><pre>${esc(f.example)}</pre>` : ""}
+        ${testSection}
         <div class="meta">
           <span class="badge badge-effort">effort: ${esc(f.setupEffort)}</span>
           <span class="badge badge-effort">testing: ${esc(f.testingEase)}</span>

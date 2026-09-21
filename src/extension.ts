@@ -1309,7 +1309,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         if (action === "audit") {
           if (!ctx.hasUI) { report("Audit needs an interactive session to generate the HTML report.", "warning"); return; }
           const judge = judgeFor(config);
-          if (judge && !await ctx.ui.confirm("Run workspace audit?", `This scans projects in ${ctx.cwd} and uses TypeSafe to evaluate Jev opportunities. No files will be changed.`)) return;
+          if (!judge) { report("TypeSafe is not configured. Run /warden enable first — the audit needs Jev to test opportunities.", "warning"); return; }
+          if (!await ctx.ui.confirm("Run workspace audit?", `This scans projects in ${ctx.cwd} and uses TypeSafe to evaluate Jev opportunities. No files will be changed.`)) return;
           if (ctx.hasUI) ctx.ui.notify("pi-warden: Auditing workspace...", "info");
           try {
             const findings = await auditWorkspace(ctx.cwd, judge);
