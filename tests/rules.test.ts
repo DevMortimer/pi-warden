@@ -6,7 +6,7 @@ import { after, before, test } from "node:test";
 import { defaultConfig } from "../src/config.js";
 import type { RulesConfig } from "../src/config.js";
 import type { Judge } from "pi-typesafe";
-import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeTarget, evaluateRules, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
+import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeRuleSet, describeTarget, evaluateRules, isRuleShaped, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
 import type { RulesVerdict, RuleSet } from "../src/rules.js";
 
 let cwd: string;
@@ -298,4 +298,59 @@ test("the shipped examples parse: the starter rules file yields scoped rules und
   assert.equal(user.typesafe, true);
   assert.equal(user.rules.maxChars, 8000);
   assert.match(user.slop.prose.audience, /founder/);
+});
+
+test("isRuleShaped: a document with headings but imperative sentences is rule-shaped; one without is prose only", () => {
+  const ruleDoc = ["# Project rules", "", "## No console", "You must not use console.log.", "", "## Use const", "Prefer const over let."].join("\n");
+  assert.equal(isRuleShaped(ruleDoc), true);
+  const proseDoc = ["# My Project", "", "This is a project about building things.", "It does many interesting things.", "", "## Overview", "Here we describe the project."].join("\n");
+  assert.equal(isRuleShaped(proseDoc), false);
+  const bulletDoc = ["# Guide", "", "## Coding style", "- Always use strict mode", "- Never use var"].join("\n");
+  assert.equal(isRuleShaped(bulletDoc), true);
+  const noHeadings = "Just some prose with no headings at all.";
+  assert.equal(isRuleShaped(noHeadings), false);
+});
+
+test("RuleStore: a fallback README with no rule-shaped sections returns proseOnly; one with rule-shaped sections returns aggregate", async () => {
+  const store = new RuleStore();
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rules-prose-"));
+  const proseReadme = ["# pi-warden", "", "**Stop babysitting your coding agent.**", "", "pi-warden supervises Pi while it works.", "", "## Install", "", "```bash", "pi install npm:pi-warden", "```"].join("\n");
+  await writeFile(join(dir, "README.md"), proseReadme);
+  const proseSet = store.load(dir, rulesConfig());
+  assert.equal(proseSet?.proseOnly, true, "prose README is flagged proseOnly");
+  assert.equal(proseSet?.aggregate, undefined, "prose README has no aggregate");
+  assert.equal(proseSet?.rules.length, 0, "prose README has no rules");
+
+  const ruleReadme = ["# Project rules", "", "## No console", "You must not use console.log.", "", "## Use const", "Prefer const."].join("\n");
+  const dir2 = await mkdtemp(join(tmpdir(), "pi-warden-rules-prose-"));
+  await writeFile(join(dir2, "README.md"), ruleReadme);
+  const ruleSet = store.load(dir2, rulesConfig());
+  assert.equal(ruleSet?.proseOnly, undefined, "rule-shaped README is not proseOnly");
+  assert.ok(ruleSet?.aggregate, "rule-shaped README has aggregate");
+  assert.equal(ruleSet?.rules.length, 0, "rule-shaped README still has no parsed rules (heading level mismatch)");
+  await rm(dir, { recursive: true, force: true });
+  await rm(dir2, { recursive: true, force: true });
+});
+
+test("evaluateRules: a prose-only fallback set skips with prose reason and does not ask Jev", async () => {
+  const set: RuleSet = { sources: ["README.md"], rules: [], dropped: 0, proseOnly: true };
+  const judge = stubJudge({});
+  const verdict = await evaluateRules("write", { path: "src/a.ts", content: "x" }, { cwd, config: rulesConfig(), set, judge, timeoutMs: 1000 });
+  assert.equal(verdict.source, "skipped");
+  assert.match(verdict.skippedReason!, /no rules found in README\.md \(prose only\)/);
+  assert.equal(judge.requests.length, 0, "judge not called for prose-only set");
+});
+
+test("describeRuleSet: proseOnly set shows 'no rules found in X (prose only)'", () => {
+  const proseOnly: RuleSet = { sources: ["README.md"], rules: [], dropped: 0, proseOnly: true };
+  assert.match(describeRuleSet(proseOnly), /no rules found in README\.md \(prose only\)/);
+  const aggregate: RuleSet = { sources: ["AGENTS.md"], rules: [], aggregate: "Always write tests.", dropped: 0 };
+  assert.match(describeRuleSet(aggregate), /no rule headings: judged as one document/);
+});
+
+test("pi-warden.md with no headings still yields one rule (exempt from prose check)", () => {
+  const noHeadingDoc = "Always write tests.\nNever use console.log.";
+  const rules = parseRules(noHeadingDoc);
+  assert.equal(rules.length, 0, "parseRules returns nothing for no headings");
+  assert.equal(isRuleShaped(noHeadingDoc), false, "prose check says not rule-shaped");
 });
