@@ -15,6 +15,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Docs
 - Action guard calibration on 315 recorded sessions at 0.33.3 under `eval/reports/2026-09-21-calibration-0.33.3/`, with the headline table in `docs/guards.md`.
+- README measurement paragraph reworded for readability, same numbers.
 
 ## 0.34.0
 
