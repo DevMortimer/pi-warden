@@ -12,6 +12,20 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Docs
 - Action guard calibration on 315 recorded sessions at 0.33.3 under `eval/reports/2026-09-21-calibration-0.33.3/`, with the headline table in `docs/guards.md`.
 
+## 0.34.0
+
+### Added
+- `scripts/hold-stats.mjs`: read-only script reporting per-project and total hold statistics from the SQLite database, with `--json` output and `PI_WARDEN_DB` support.
+- `/warden status` now shows a lifetime hold sentence for the current project root (e.g. "Lifetime here: 55 holds, 11 labeled, 0 stood (0/11), 114 allowed accepted, 0 regretted.").
+
+### Docs
+- README "Does it actually help?" section now includes a measurement-on-real-use paragraph with current hold numbers, date, and the link to the floor-evidence decision in 0.33.0.
+
+## 0.33.4
+
+### Fixed
+- Rules guard no longer judges prose-only fallback documents (README.md, CLAUDE.md, AGENTS.md) as one rule; a fallback with no rule-shaped sections is skipped.
+
 ## 0.33.3
 
 ### Tests

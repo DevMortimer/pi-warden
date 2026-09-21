@@ -858,7 +858,7 @@ test("hold feedback offline: approval, re-plan, and a stop reply label the calls
   prompt = "fix the bug";
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
   await runCommand("status");
-  assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 awaiting your reply; precision not yet measurable; 0 allowed \(0 regretted by you, 0 accepted\)\. Rules:/);
+  assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 awaiting your reply; precision not yet measurable; 0 allowed \(0 regretted by you, 0 accepted\)\. Lifetime here:.*\. Rules:/);
   assert.ok(!notices.at(-1)!.text.includes("Log:"));
   await assert.rejects(readFile(logPath), "nothing is written with feedbackLog off");
 });
