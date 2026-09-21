@@ -455,6 +455,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let reminderSent = false;
   let lastAssessmentHash = "";
   let cachedSkills: Array<{ name: string; description: string }> = [];
+  let needsReassessment = false;
   /** The final messages of the current run, for restatement measurement. */
   const finals = new RestatementWindow();
   /** Returns true when the message was delivered; false means it was recorded in the trace only. */
@@ -619,6 +620,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       nudgesThisPrompt = 0;
       reminderSent = false;
       lastAssessmentHash = "";
+      needsReassessment = false;
       const judge = judgeFor(config);
       // Get the resolved skill catalog from the event's system prompt options (spec §3 rule 1)
       const skills = event.systemPromptOptions?.skills ?? [];
@@ -757,7 +759,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     rulesGuard.turnEnd();
     // ── Conscience: re-assess on unconsumed triggers ──
     const config = configFor(ctx);
-    if (config.enabled && config.conscience.enabled && selectedCapability && !triggerConsumed && assessmentsThisPrompt < config.conscience.maxAssessments) {
+    if (config.enabled && config.conscience.enabled && selectedCapability && needsReassessment && assessmentsThisPrompt < config.conscience.maxAssessments) {
       const myGeneration = conscienceGeneration;
       const judge = judgeFor(config);
       if (judge) {
@@ -770,6 +772,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
           if (conscienceGeneration !== myGeneration) return;
           assessmentsThisPrompt++;
+          needsReassessment = false;
           if (result.selected) {
             selectedCapability = { kind: result.selected.kind, id: result.selected.id };
             lastAssessmentHash = result.questionHash;
@@ -1066,6 +1069,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (pendingCapability.kind === "tool" && event.toolName === pendingCapability.id) {
         triggerConsumed = true;
         if (failed) {
+          needsReassessment = true;
           record(ctx, config, "conscience", `tool_failed: ${event.toolName}`, ["trigger: tool_result", `capability: ${pendingCapability.id}`]);
         } else {
           record(ctx, config, "conscience", `tool_succeeded: ${event.toolName}`, ["trigger: tool_result", `capability: ${pendingCapability.id}`]);
@@ -1073,6 +1077,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         pendingCapability = null;
       } else if (pendingCapability.kind === "skill" && event.toolName === "read") {
         triggerConsumed = true;
+        if (failed) needsReassessment = true;
         record(ctx, config, "conscience", `read_observed: ${pendingCapability.id}`, ["trigger: tool_result", `failed: ${failed}`]);
         pendingCapability = null;
       }
@@ -1314,6 +1319,32 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
     }
     const judge = judgeFor(config);
+    // ── Conscience: one reminder at agent_end if capability is still unresolved ──
+    if (config.conscience.enabled && selectedCapability && !reminderSent && !triggerConsumed &&
+        assessmentsThisPrompt < config.conscience.maxAssessments &&
+        nudgesThisPrompt < config.conscience.maxNudges && budgetAvailable(config) && judge) {
+      const myGeneration = conscienceGeneration;
+      let toolInfos: Array<{ name: string; description: string }> = [];
+      try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
+      const redactedPrompt = redact(latestUserPrompt(ctx) ?? "").slice(0, 2000);
+      const activeSkills = cachedSkills.map(s => s.name);
+      const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+      try {
+        const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
+        if (conscienceGeneration !== myGeneration) return;
+        assessmentsThisPrompt++;
+        if (result.selected && result.selected.kind === selectedCapability.kind && result.selected.id === selectedCapability.id &&
+            result.disposition !== "awaiting_user") {
+          reminderSent = true;
+          nudgesThisPrompt++;
+          spendBudgetUnit();
+          const msg = result.selected.kind === "skill"
+            ? `Reminder: consider using the \"${result.selected.id}\" skill. ${result.selected.description}`
+            : `Reminder: consider using the \"${result.selected.id}\" tool. ${result.selected.description}`;
+          steer(config, "conscience", msg, { deliverAs: "followUp" });
+        }
+      } catch (err) { const cat = err instanceof Error ? (/(timeout|timed out)/i.test(err.message) ? "timeout" : /(auth|key|credential|401|403)/i.test(err.message) ? "auth" : /(network|fetch|connect)/i.test(err.message) ? "network" : "other") : "other"; if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
+    }
     if (!finalMessage || !judge) return;
     // Pi shows the agent as working until this hook returns, so the two independent checks share one round trip.
     const task = latestUserPrompt(ctx);
@@ -1349,35 +1380,6 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (nudge) {
       doneNudged = true;
       steer(config, "done", nudge, { deliverAs: "followUp", triggerTurn: true });
-    }
-    // ── Conscience: one reminder at agent_end if capability is still unresolved ──
-    if (config.conscience.enabled && selectedCapability && !reminderSent && !triggerConsumed &&
-        assessmentsThisPrompt < config.conscience.maxAssessments &&
-        nudgesThisPrompt < config.conscience.maxNudges && budgetAvailable(config)) {
-      const myGeneration = conscienceGeneration;
-      const judge = judgeFor(config);
-      if (judge) {
-        let toolInfos: Array<{ name: string; description: string }> = [];
-        try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
-        const redactedPrompt = redact(latestUserPrompt(ctx) ?? "").slice(0, 2000);
-        const activeSkills = cachedSkills.map(s => s.name);
-        const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
-        try {
-          const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
-          if (conscienceGeneration !== myGeneration) return;
-          assessmentsThisPrompt++;
-          if (result.selected && result.selected.kind === selectedCapability.kind && result.selected.id === selectedCapability.id &&
-              result.disposition !== "awaiting_user") {
-            reminderSent = true;
-            nudgesThisPrompt++;
-            spendBudgetUnit();
-            const msg = result.selected.kind === "skill"
-              ? `Reminder: consider using the \"${result.selected.id}\" skill. ${result.selected.description}`
-              : `Reminder: consider using the \"${result.selected.id}\" tool. ${result.selected.description}`;
-            steer(config, "conscience", msg, { deliverAs: "followUp" });
-          }
-        } catch (err) { const cat = err instanceof Error ? (/(timeout|timed out)/i.test(err.message) ? "timeout" : /(auth|key|credential|401|403)/i.test(err.message) ? "auth" : /(network|fetch|connect)/i.test(err.message) ? "network" : "other") : "other"; if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
-      }
     }
   });
 

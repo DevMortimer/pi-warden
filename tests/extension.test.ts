@@ -2237,3 +2237,81 @@ test("conscience: origin_unknown noted for direct SDK input", async () => {
   // No skills available → no_match, no crash
   assert.ok(!result?.message, "no message when no skills available");
 });
+
+// (h) tool failure triggers exactly one re-assessment at turn_end; second failure adds no request
+test("conscience: tool failure triggers one turn_end re-assessment, second does not", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5, maxAssessments: 3 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  requests.length = 0;
+  // Initial assessment via before_agent_start
+  await promptWithSkills("fix the bug", skills);
+  const requestsAfterInit = requests.length;
+  assert.ok(requestsAfterInit >= 1, `initial assessment should make at least 1 request, got ${requestsAfterInit}`);
+  // tool_call + tool_result with failure for the selected skill (read of skill file)
+  await fire("tool_call", { toolName: "read", toolCallId: "r1", input: { path: "/skills/impeccable/SKILL.md" } });
+  await fire("tool_result", { toolName: "read", toolCallId: "r1", input: { path: "/skills/impeccable/SKILL.md" }, content: [{ type: "text", text: "" }], isError: true, details: {} });
+  // turn_end should trigger one re-assessment (unconsumed trigger from tool_result)
+  await fire("turn_end", { turnIndex: 1, message: {}, toolResults: [] });
+  const requestsAfterFirstTurn = requests.length;
+  assert.ok(requestsAfterFirstTurn > requestsAfterInit, `turn_end should add a request, got ${requestsAfterFirstTurn} (was ${requestsAfterInit})`);
+  // Second tool failure in same turn — trigger already consumed, no new pending
+  await fire("tool_call", { toolName: "read", toolCallId: "r2", input: { path: "/skills/impeccable/SKILL.md" } });
+  await fire("tool_result", { toolName: "read", toolCallId: "r2", input: { path: "/skills/impeccable/SKILL.md" }, content: [{ type: "text", text: "" }], isError: true, details: {} });
+  await fire("turn_end", { turnIndex: 2, message: {}, toolResults: [] });
+  const requestsAfterSecondTurn = requests.length;
+  // Second turn_end should NOT add a request (trigger was consumed by the first failure)
+  assert.equal(requestsAfterSecondTurn, requestsAfterFirstTurn, `second turn_end should not add a request, got ${requestsAfterSecondTurn} (was ${requestsAfterFirstTurn})`);
+});
+
+// (j) reminder fires once at agent_end; second agent_end delivers nothing, trace says unresolved
+test("conscience: reminder fires once, second agent_end says unresolved", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5, maxNudges: 2 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  await promptWithSkills("design a landing page", skills);
+  // agent_end: fresh assessment re-selects, budgets allow → one reminder
+  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "text", text: "Done" }], stopReason: "stop" }] });
+  const reminders1 = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
+  assert.ok(reminders1.length >= 1, `first agent_end should send a reminder, got ${reminders1.length}`);
+  assert.match(reminders1[0]!.message.content, /impeccable/);
+  // Second agent_end for same prompt: reminderSent=true → no second reminder
+  sentMessages.length = 0;
+  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "text", text: "Done again" }], stopReason: "stop" }] });
+  const reminders2 = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
+  assert.equal(reminders2.length, 0, "second agent_end should not send a reminder");
+  // agent_settled should show unresolved
+  await fire("agent_settled", {});
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /settled: reminded/, "trace should say reminded after reminder was sent");
+});
+
+// (k) reminder suppressed when disposition is awaiting_user or maxNudges spent
+test("conscience: reminder suppressed on awaiting_user and when nudges exhausted", async () => {
+  // Test 1: awaiting_user suppresses reminder
+  await writeConscienceConfig({ recommendThreshold: 0.5, maxNudges: 2 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "awaiting_user", c1: 3 };
+  sentMessages.length = 0;
+  await promptWithSkills("what style?", skills);
+  await fire("agent_end", { messages: [{ role: "user", content: "what style?" }, { role: "assistant", content: [{ type: "text", text: "Which style?" }], stopReason: "stop" }] });
+  const remindersAwaiting = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
+  assert.equal(remindersAwaiting.length, 0, "reminder suppressed when awaiting_user");
+  // Test 2: maxNudges=1, already spent → suppresses reminder
+  await writeConscienceConfig({ recommendThreshold: 0.5, maxNudges: 1 });
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  await promptWithSkills("design a page", skills);
+  // First agent_end spends the one nudge
+  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "text", text: "Done" }], stopReason: "stop" }] });
+  const firstReminder = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
+  assert.ok(firstReminder.length >= 1, "first agent_end should send the one allowed reminder");
+  // Second agent_end: nudgesThisPrompt=1 >= maxNudges=1 → suppressed
+  sentMessages.length = 0;
+  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "text", text: "Done again" }], stopReason: "stop" }] });
+  const remindersBudget = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
+  assert.equal(remindersBudget.length, 0, "reminder suppressed when maxNudges exhausted");
+});
