@@ -267,6 +267,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const widget = new Map<GuardName, string>();
   const trace = new Trace();
   let panel: PanelController | undefined;
+  let configPanel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
   const actionGuard = new ActionGuard();
   // Arming rules: session-scoped state that correlates preparation edits with later commands.
@@ -381,6 +382,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const opened = openTracePanel(ui, trace, { width: config.widget.panelWidth });
     panel = opened;
     opened.closed.catch(() => undefined).finally(() => { if (panel === opened) panel = undefined; });
+  };
+  /** The config overlay toggles the same way the sidebar does, so the hint in its header is true. */
+  const toggleConfigPanel = (ui: PanelUi | undefined, config: WardenConfig) => {
+    if (!ui) return;
+    if (configPanel) { configPanel.close(); return; }
+    const opened = openConfigPanel(ui, config, { width: config.widget.panelWidth });
+    configPanel = opened;
+    opened.closed.catch(() => undefined).finally(() => { if (configPanel === opened) configPanel = undefined; });
   };
   const paint = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig) => {
     if (!ctx.hasUI) return;
@@ -582,6 +591,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     widget.clear();
     trace.clear();
     panel?.close();
+    configPanel?.close();
     actionGuard.reset();
     rulesGuard.reset();
     holds.reset();
@@ -1643,7 +1653,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       return matches.length ? matches : null;
     },
     async handler(args, ctx) {
-      const [action = "status", argument] = args.trim().split(/\s+/);
+      // `.filter(Boolean)` because an empty args string splits to [""] and the `status` default would never fire.
+      // `argument` stays the single word the one-word actions expect; `tail` keeps the whole line for
+      // `config set <key> <value>`, where the value is the rest of what was typed.
+      const tokens = args.trim().split(/\s+/).filter(Boolean);
+      const [action = "status", argument] = tokens;
+      const tail = tokens.slice(1).join(" ");
       const report = (text: string, level: "info" | "warning" | "error" = "info") => {
         if (ctx.hasUI) ctx.ui.notify(text, level);
         else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
@@ -1758,8 +1773,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "config") {
-          if (argument && argument.startsWith("set ")) {
-            const rest = argument.slice(4).trim();
+          // A bare "set" or "get" is an incomplete command, not a request for the panel; tell the user rather than opening it.
+          if (tail === "set" || tail === "get") { report("Usage: /warden config set <key> <value> or /warden config get <key>", "warning"); return; }
+          if (tail.startsWith("set ")) {
+            const rest = tail.slice(4).trim();
             const spaceIndex = rest.indexOf(" ");
             if (spaceIndex === -1) { report("Usage: /warden config set <key> <value>", "warning"); return; }
             const keyPath = rest.slice(0, spaceIndex).trim();
@@ -1772,8 +1789,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             report(`Saved ${keyPath} = ${JSON.stringify(value)}.`);
             return;
           }
-          if (argument && argument.startsWith("get ")) {
-            const keyPath = argument.slice(4).trim();
+          if (tail.startsWith("get ")) {
+            const keyPath = tail.slice(4).trim();
             const current = readUserConfig();
             const value = getNestedValue(current as Record<string, unknown>, keyPath);
             const defaultValue = getNestedValue(defaultConfig() as unknown as Record<string, unknown>, keyPath);
@@ -1781,7 +1798,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             return;
           }
           if (!ctx.hasUI || !lastUi) { report(`Edit ${userConfigPath()} directly. Use /warden config set <key> <value> for quick changes.`); return; }
-          openConfigPanel(lastUi, config, { width: config.widget.panelWidth });
+          toggleConfigPanel(lastUi, config);
           return;
         }
         if (action === "init") {

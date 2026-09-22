@@ -26,6 +26,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Fixed
 - The conscience activation gate now fails closed: with no active policy, or a policy whose hash or model does not match the request, no recommendation is delivered (traced `no_policy`). Previously an absent policy let delivery through, contradicting `docs/configuration.md`. The gate also compares the policy's model against the model that actually answered instead of the literal `"jev-latest"`.
 
+## 0.38.3
+
+### Fixed
+- `/warden config` keeps its panel handle and toggles shut, instead of stacking a second overlay against its own header hint.
+- A bare `/warden` runs `status` again, and `config set <key> <value>` / `get <key>` reach the setting — the argument split dropped the default action and kept only the word after the subcommand.
+
 ## 0.38.2
 
 ### Docs
