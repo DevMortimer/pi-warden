@@ -8,6 +8,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.38.2
+
+### Docs
+- Conscience recommendation calibration on recorded sessions: first measurement scripts, report, and guard calibration tables.
+
 ## 0.38.1
 
 ### Changed
@@ -18,6 +23,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Added
 - Conscience coach: disabled by default pending calibration. Recommends or loads skills and tools before the agent acts via `before_agent_start`. Trace-only until a measured policy ships. Load mode reads skill files from disk with path-rule checks, size bounds, frontmatter validation, and credential canary detection. 48 adversarial tests plus the fixture set.
 
+### Docs
+- Conscience recommendation calibration (2026-09-22): first measurement on 609 turns across 4 projects. Tool recommendation 84% precision, skill recommendation unmeasured pending human labels. No threshold meets the 95% gate; closest is 0.95 at 91%. Candidate policy recorded (not active); `docs/guards.md` updated. `eval/reports/2026-09-22-conscience-recommend/`.
 ## 0.37.1
 
 ### Docs
