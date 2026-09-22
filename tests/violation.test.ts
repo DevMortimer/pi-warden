@@ -122,6 +122,21 @@ test("patternHitsToViolations: converts rm hits to per-target violations and ski
   assert.ok(violations[0]!.scope?.paths?.length, "rm violation has per-target path scope");
 });
 
+test("patternHitsToViolations: rm targets stop at shell operators", () => {
+  const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
+  const violations = patternHitsToViolations(hits, "bash", {
+    command: "rm -rf /tmp/build && npm run build && npm test && echo done",
+  });
+  assert.equal(violations.length, 1, "only the rm segment yields a target");
+  assert.deepEqual(violations[0]!.scope?.paths, ["/tmp/build"]);
+});
+
+test("patternHitsToViolations: every rm segment contributes its own targets", () => {
+  const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
+  const violations = patternHitsToViolations(hits, "bash", { command: "rm -rf a; rm -rf b c" });
+  assert.deepEqual(violations.map(violation => violation.scope?.paths?.[0]), ["a", "b", "c"]);
+});
+
 // ---------------------------------------------------------------------------
 // Escalation A: blast-radius.
 

@@ -1438,9 +1438,13 @@ const RM_FAMILY_IDS = new Set(["rm", "rm-recursive", "rm-rf", "rm-recursive-dang
 
 /** Extract file targets from an rm command segment. */
 function detectRmTargets(command: string): string[] {
-  const raw = RM_COMMAND_RE.exec(command);
-  if (!raw) return [];
-  return raw[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/^["']|["']$/g, "")).filter(token => !token.startsWith("-"));
+  const targets: string[] = [];
+  for (const segment of splitShell(command)) {
+    const raw = RM_COMMAND_RE.exec(segment);
+    if (!raw) continue;
+    targets.push(...raw[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/^["']|["']$/g, "")).filter(token => !token.startsWith("-")));
+  }
+  return targets;
 }
 
 /** Convert PatternHit[] to Violation[] with scope.
