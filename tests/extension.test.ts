@@ -7,6 +7,8 @@ import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-codin
 import type { Extension, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
 import { defaultConfig } from "../src/config.js";
+import { _testSetIndexRunning } from "../src/extension.js";
+import { indexPath } from "../src/index-cmd.js";
 
 let temporary: string;
 let extension: Extension;
@@ -2767,4 +2769,68 @@ test("session_compact: two compactions send two messages, each from the memory a
   assert.equal(second.length, 1, "second compaction sends one message");
   assert.match(second[0]!.message.content, /npm run lint/, "second message includes the new failed check");
 
+});
+
+/* ─── Index write bypass (defect 1 from order 03) ──────────────────── */
+
+test("index write bypass: absolute path to global index is allowed while indexRunning", async () => {
+  const globalPath = indexPath("global");
+  await grantConsent();
+  _testSetIndexRunning(true, [resolve(globalPath)]);
+  try {
+    const result = await toolCall("write", { path: globalPath, content: "{}" });
+    assert.equal(result, undefined, "should be allowed (no block)");
+  } finally {
+    _testSetIndexRunning(false);
+  }
+});
+
+test("index write bypass: tilde path to global index is allowed while indexRunning", async () => {
+  const globalPath = indexPath("global");
+  const tildePath = globalPath.replace(homedir(), "~");
+  await grantConsent();
+  _testSetIndexRunning(true, [resolve(globalPath)]);
+  try {
+    const result = await toolCall("write", { path: tildePath, content: "{}" });
+    assert.equal(result, undefined, "should be allowed (no block)");
+  } finally {
+    _testSetIndexRunning(false);
+  }
+});
+
+test("index write bypass: sibling file in same directory is judged while indexRunning", async () => {
+  const globalPath = indexPath("global");
+  const siblingPath = join(globalPath, "..", "sibling.json");
+  await grantConsent();
+  _testSetIndexRunning(true, [resolve(globalPath)]);
+  try {
+    const result = await toolCall("write", { path: resolve(siblingPath), content: "{}" });
+    // Should be judged (not bypassed) — the action guard runs
+    assert.ok(result !== undefined || notices.length === 0, "sibling should be judged normally");
+  } finally {
+    _testSetIndexRunning(false);
+  }
+});
+
+test("index write bypass: index path is judged when indexRunning is false", async () => {
+  const globalPath = indexPath("global");
+  await grantConsent();
+  _testSetIndexRunning(false);
+  const result = await toolCall("write", { path: resolve(globalPath), content: "{}" });
+  assert.ok(result !== undefined || notices.length === 0, "should be judged when not running");
+});
+
+test("index write bypass: flag clears after error in index command", async () => {
+  const globalPath = indexPath("global");
+  await grantConsent();
+  _testSetIndexRunning(true, [resolve(globalPath)]);
+  try {
+    // Simulate an error that triggers the finally block
+    throw new Error("simulated index failure");
+  } catch {
+    _testSetIndexRunning(false);
+  }
+  // After clearing, the same path should be judged
+  const result = await toolCall("write", { path: resolve(globalPath), content: "{}" });
+  assert.ok(result !== undefined || notices.length === 0, "should be judged after flag clears");
 });

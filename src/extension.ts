@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve as pathResolve } from "node:path";
+import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
 import * as tuiModule from "@earendil-works/pi-tui";
@@ -246,6 +247,15 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
 }
 
 /** Native Pi registration; importing the root library does not load this module. */
+let indexRunning = false;
+let indexWritePaths: string[] = [];
+
+/** Test-only: set the index-running state and write paths for the action guard bypass. */
+export function _testSetIndexRunning(running: boolean, paths: string[] = []): void {
+  indexRunning = running;
+  indexWritePaths = paths;
+}
+
 export default function wardenExtension(pi: ExtensionAPI): void {
   let client: TypeSafe | undefined;
   let budgetExhausted = false;
@@ -473,8 +483,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let globalIndexFile: IndexFile | undefined;
   let projectIndexFile: IndexFile | undefined;
   let indexNudged = false;
-  let indexRunning = false;
-  let indexWritePaths: string[] = [];
+
   /** The final messages of the current run, for restatement measurement. */
   const finals = new RestatementWindow();
   /** Returns true when the message was delivered; false means it was recorded in the trace only. */
@@ -971,10 +980,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const call = { id: event.toolCallId, tool: event.toolName, input: event.input };
     // Index command writes its own output files — exempt them from the action guard.
     if (indexRunning && event.toolName === "write") {
-      const writePath = typeof (event.input as Record<string, unknown>).path === "string" ? (event.input as Record<string, unknown>).path as string : "";
-      if (indexWritePaths.includes(writePath)) {
-        record(ctx, config, "action", "index write, expected", ["trigger: before_tool_use", `path: ${redact(writePath)}`]);
-        return;
+      const rawPath = typeof (event.input as Record<string, unknown>).path === "string" ? (event.input as Record<string, unknown>).path as string : "";
+      if (rawPath) {
+        const resolved = rawPath.startsWith("~") ? pathResolve(rawPath.replace(/^~/, homedir())) : pathResolve(rawPath);
+        if (indexWritePaths.includes(resolved)) {
+          record(ctx, config, "action", "index write, expected", ["trigger: before_tool_use", `path: ${redact(rawPath)}`]);
+          return;
+        }
       }
     }
     // The rules request carries the written content and the rule text, so it goes out beside the action request, not inside it.
@@ -1898,7 +1910,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const preGlobal = snap(globalPath);
           const preProject = snap(projectPath);
           indexRunning = true;
-          indexWritePaths = [globalPath, projectPath];
+          indexWritePaths = [pathResolve(globalPath), pathResolve(projectPath)];
           if (ctx.hasUI) ctx.ui.notify("pi-warden: Building capability index...", "info");
           try {
             for (let attempt = 0; attempt < 40; attempt++) {
