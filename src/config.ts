@@ -402,7 +402,7 @@ export function defaultConfig(): WardenConfig {
       enabled: false,
       skills: { mode: "recommend", exclude: [] },
       tools: { enabled: true, exclude: [] },
-      timeoutMs: 1500,
+      timeoutMs: 3000,
       maxAssessments: 3,
       maxNudges: 2,
       maxSkillBytes: 32768,

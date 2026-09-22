@@ -392,7 +392,7 @@ function parseScoreAnswer(answer: unknown): { level: number; probabilities: numb
 /**
  * Run assessment for the given prompt revision.
  * Pre-measurement: returns trace-only results. No steers, no auto-loading.
- * Issues sequential requests: skills first, then tools in the remaining envelope.
+ * Issues concurrent requests (up to four in flight), skills first, shared deadline.
  */
 export async function assess(
   prompt: string,
@@ -418,137 +418,170 @@ export async function assess(
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: "no_match" };
   }
 
-  // Split into skills and tools for sequential assessment
-  const skillCandidates = candidates.filter(c => c.kind === "skill");
-  const toolCandidates = candidates.filter(c => c.kind === "tool");
-
-  // Cap descriptions
-  const cappedSkills = skillCandidates.map(c => capDescription(c));
-  const cappedTools = toolCandidates.map(c => capDescription(c));
-
   const effectiveTimeout = Math.min(config.timeoutMs, sharedTimeoutMs);
   const deadline = start + effectiveTimeout;
-  let requestCount = 0;
 
-  // Disposition result (shared across batches)
-  let disposition: Disposition = "unclear";
-  let pAdvance = 0;
-  let hash = "";
+  const MAX_IN_FLIGHT = 4;
 
-  // Track best candidate across batches
-  type ScoredCandidate = { candidate: Candidate; usefulness: number; level: number };
-  let bestScored: ScoredCandidate | null = null;
-
-  // Process skills first, then tools
-  const batches = [
-    { items: cappedSkills, overflow: skillOverflow, categoryOverflowReason: "catalog_limit" as const },
-    { items: cappedTools, overflow: toolOverflow, categoryOverflowReason: "catalog_limit" as const },
+  // Skill chunks are built first so the semaphore fills with skill requests before
+  // any tool request gets a slot — a slow tool batch cannot starve the skill result.
+  type Category = "skill" | "tool";
+  interface ChunkWork {
+    category: Category;
+    items: Array<{ candidate: Candidate; capped: { candidate: Candidate; overLimit: boolean } }>;
+    overflow: boolean;
+  }
+  const categoryMeta: Array<{ category: Category; overflow: boolean }> = [
+    { category: "skill", overflow: skillOverflow },
+    { category: "tool", overflow: toolOverflow },
   ];
-
-  // Track if we have a complete skill assessment (for tool catalog to proceed)
-  let skillAssessmentComplete = false;
-
-  for (const batch of batches) {
-    if (batch.items.length === 0 && !batch.overflow) continue;
-
-    // Pack into requests of at most MAX_QUESTIONS_PER_REQUEST (including disposition)
-    const maxCandidatesPerRequest = MAX_QUESTIONS_PER_REQUEST - 1; // -1 for disposition
-    const chunks: Array<typeof batch.items> = [];
-    for (let i = 0; i < batch.items.length; i += maxCandidatesPerRequest) {
-      chunks.push(batch.items.slice(i, i + maxCandidatesPerRequest));
+  const cappedByCategory: Record<Category, Array<{ candidate: Candidate; capped: { candidate: Candidate; overLimit: boolean } }>> = {
+    skill: candidates.filter(c => c.kind === "skill").map(c => ({ candidate: c, capped: capDescription(c) })),
+    tool: candidates.filter(c => c.kind === "tool").map(c => ({ candidate: c, capped: capDescription(c) })),
+  };
+  const maxCandidatesPerRequest = MAX_QUESTIONS_PER_REQUEST - 1; // -1 for disposition
+  const workQueue: ChunkWork[] = [];
+  for (const meta of categoryMeta) {
+    const items = cappedByCategory[meta.category];
+    if (items.length === 0 && !meta.overflow) continue;
+    for (let i = 0; i < items.length; i += maxCandidatesPerRequest) {
+      workQueue.push({ category: meta.category, items: items.slice(i, i + maxCandidatesPerRequest), overflow: false });
     }
-
-    for (const chunk of chunks) {
-      const opaqueBatch = assignOpaqueIds(chunk.map(e => e.candidate));
-      const { questions, dispositionKey, idMap } = buildBatchQuestions(
-        opaqueBatch, prompt, recentContext, activeSkills, suppliedSkills,
-      );
-      hash = questionHash(questions);
-      const state = buildState(prompt, recentContext, activeSkills, suppliedSkills, opaqueBatch);
-
-      const remaining = deadline - (deps.now?.() ?? Date.now());
-      if (remaining <= 0) {
-        return { disposition: "unclear", selected: null, usefulness: 0, pAdvance: 0, questionHash: hash, elapsedMs: (deps.now?.() ?? Date.now()) - start, requestCount, skipReason: "timeout" };
-      }
-
-      let answers: Record<string, unknown>;
-      try {
-        const result = await Promise.race([
-          judge.evaluate({ state, questions }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), remaining)),
-        ]);
-        answers = result.answers;
-        requestCount++;
-      } catch (err) {
-        return { disposition: "unclear", selected: null, usefulness: 0, pAdvance: 0, questionHash: hash, elapsedMs: (deps.now?.() ?? Date.now()) - start, requestCount, skipReason: "error", errorCategory: classifyError(err) };
-      }
-
-      // Parse disposition (only from first batch that returns it)
-      if (disposition === "unclear") {
-        const dispRaw = parseChoiceAnswer(answers[dispositionKey]);
-        if (dispRaw) {
-          disposition = dispRaw.label as Disposition;
-          pAdvance = dispRaw.pAdvance;
-        }
-      }
-
-      // If disposition is not advance, stop assessing
-      if (disposition !== "advance") continue;
-
-      // Score each candidate in this chunk
-      for (const { opaqueId, candidate } of opaqueBatch) {
-        const answer = parseScoreAnswer(answers[opaqueId]);
-        if (!answer) continue;
-
-        // P(useful now) = P(level 2: directly_useful) + P(level 3: prerequisite)
-        const pUseful = (answer.probabilities[2] ?? 0) + (answer.probabilities[3] ?? 0);
-
-        if (!bestScored || pUseful > bestScored.usefulness ||
-            (pUseful === bestScored.usefulness && answer.level > bestScored.level) ||
-            (pUseful === bestScored.usefulness && answer.level === bestScored.level &&
-             (candidate.kind === "skill" && bestScored.candidate.kind !== "skill" ||
-              (candidate.kind === bestScored.candidate.kind && candidate.id < bestScored.candidate.id)))) {
-          bestScored = { candidate, usefulness: pUseful, level: answer.level };
-        }
-      }
-    }
-
-    if (batch.items.length > 0 || batch.overflow) {
-      skillAssessmentComplete = true;
-    }
-
-    // If skills had catalog_limit, do not proceed to tools with partial results
-    if (batch.overflow && batch.categoryOverflowReason === "catalog_limit") {
-      // Per spec: "if a required batch for a category fails or times out, discard that category's selection"
-      // But catalog_limit means the category is incomplete, not failed. Selection may use the other category.
-      // Record catalog_limit but continue to tools.
+    if (items.length === 0 && meta.overflow) {
+      workQueue.push({ category: meta.category, items: [], overflow: true });
     }
   }
 
-  // Return disposition result
+  // Per-category tracking: a category whose every batch fails or times out is discarded.
+  const categoryCompleted: Record<Category, boolean> = { skill: false, tool: false };
+  const categoryFailed: Record<Category, boolean> = { skill: false, tool: false };
+  const judgeError: { value: { message: string; category: string } | null } = { value: null };
+
+  type ScoredCandidate = { candidate: Candidate; usefulness: number; level: number };
+  const state_ = { disposition: "unclear" as Disposition, pAdvance: 0, hash: "", requestCount: 0, bestScored: null as ScoredCandidate | null };
+
+  // Execute chunks with at most MAX_IN_FLIGHT concurrent judge calls.
+  // Each chunk races its own evaluate against the shared deadline.
+  // A settled chunk (success or error) frees its slot for the next waiting chunk.
+  let nextIdx = 0;
+  const inFlight: Promise<void>[] = [];
+
+  function launchNext(): void {
+    while (inFlight.length < MAX_IN_FLIGHT && nextIdx < workQueue.length) {
+      const work = workQueue[nextIdx]!;
+      nextIdx++;
+      const p = runChunk(work).finally(() => {
+        const pos = inFlight.indexOf(p);
+        if (pos !== -1) inFlight.splice(pos, 1);
+        launchNext();
+      });
+      inFlight.push(p);
+    }
+  }
+
+  async function runChunk(work: ChunkWork): Promise<void> {
+    if (work.items.length === 0) {
+      if (work.overflow) categoryCompleted[work.category] = true;
+      return;
+    }
+
+    const opaqueBatch = assignOpaqueIds(work.items.map(e => e.capped.candidate));
+    const { questions, dispositionKey } = buildBatchQuestions(
+      opaqueBatch, prompt, recentContext, activeSkills, suppliedSkills,
+    );
+    state_.hash = questionHash(questions);
+    const state = buildState(prompt, recentContext, activeSkills, suppliedSkills, opaqueBatch);
+
+    const remaining = deadline - (deps.now?.() ?? Date.now());
+    if (remaining <= 0) {
+      categoryFailed[work.category] = true;
+      return;
+    }
+
+    let answers: Record<string, unknown>;
+    const j = judge!;
+    try {
+      const result = await Promise.race([
+        j.evaluate({ state, questions }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), remaining)),
+      ]);
+      answers = result.answers;
+      state_.requestCount++;
+    } catch (err) {
+      categoryFailed[work.category] = true;
+      judgeError.value = { message: err instanceof Error ? err.message : String(err), category: classifyError(err) };
+      return;
+    }
+
+    categoryCompleted[work.category] = true;
+
+    if (state_.disposition === "unclear") {
+      const dispRaw = parseChoiceAnswer(answers[dispositionKey]);
+      if (dispRaw) {
+        state_.disposition = dispRaw.label as Disposition;
+        state_.pAdvance = dispRaw.pAdvance;
+      }
+    }
+
+    if (state_.disposition !== "advance") return;
+
+    for (const { opaqueId, candidate } of opaqueBatch) {
+      const answer = parseScoreAnswer(answers[opaqueId]);
+      if (!answer) continue;
+
+      const pUseful = (answer.probabilities[2] ?? 0) + (answer.probabilities[3] ?? 0);
+
+      if (!state_.bestScored || pUseful > state_.bestScored.usefulness ||
+          (pUseful === state_.bestScored.usefulness && answer.level > state_.bestScored.level) ||
+          (pUseful === state_.bestScored.usefulness && answer.level === state_.bestScored.level &&
+           (candidate.kind === "skill" && state_.bestScored.candidate.kind !== "skill" ||
+            (candidate.kind === state_.bestScored.candidate.kind && candidate.id < state_.bestScored.candidate.id)))) {
+        state_.bestScored = { candidate, usefulness: pUseful, level: answer.level };
+      }
+    }
+  }
+
+  launchNext();
+  await Promise.all(inFlight);
+
+  const elapsedMs = (deps.now?.() ?? Date.now()) - start;
+  const { disposition, pAdvance, hash, requestCount, bestScored } = state_;
+
+  const skillUsable = categoryCompleted.skill && !categoryFailed.skill;
+  const toolUsable = categoryCompleted.tool && !categoryFailed.tool;
+
+  // When every category failed, the judge is broken — surface the error, not no_match.
+  if (!skillUsable && !toolUsable && judgeError.value) {
+    return { disposition: "unclear", selected: null, usefulness: 0, pAdvance: 0, questionHash: state_.hash, elapsedMs, requestCount: state_.requestCount, skipReason: "error", errorCategory: judgeError.value.category };
+  }
+
   if (disposition !== "advance") {
     const skipReason: SkipReason | undefined = disposition === "awaiting_user" ? "awaiting_user" : undefined;
-    const result: AssessmentResult = { disposition, selected: null, usefulness: 0, pAdvance, questionHash: hash, elapsedMs: (deps.now?.() ?? Date.now()) - start, requestCount };
+    const result: AssessmentResult = { disposition, selected: null, usefulness: 0, pAdvance, questionHash: hash, elapsedMs, requestCount };
     if (skipReason) result.skipReason = skipReason;
     return result;
   }
 
-  // No candidate scored
   if (!bestScored) {
     const skipReason: SkipReason = skillOverflow ? "catalog_limit" : "no_match";
-    return { disposition, selected: null, usefulness: 0, pAdvance, questionHash: hash, elapsedMs: (deps.now?.() ?? Date.now()) - start, requestCount, skipReason };
+    return { disposition, selected: null, usefulness: 0, pAdvance, questionHash: hash, elapsedMs, requestCount, skipReason };
   }
 
-  // Threshold gate: both P(useful now) and P(advance) must pass
+  if (bestScored.candidate.kind === "skill" && !skillUsable) {
+    return { disposition, selected: null, usefulness: 0, pAdvance, questionHash: hash, elapsedMs, requestCount, skipReason: "no_match" };
+  }
+  if (bestScored.candidate.kind === "tool" && !toolUsable) {
+    return { disposition, selected: null, usefulness: 0, pAdvance, questionHash: hash, elapsedMs, requestCount, skipReason: "no_match" };
+  }
+
   const passesUsefulness = bestScored.usefulness >= config.recommendThreshold;
   const passesAdvance = pAdvance >= config.recommendThreshold;
   if (!passesUsefulness || !passesAdvance) {
-    return { disposition, selected: null, usefulness: bestScored.usefulness, pAdvance, questionHash: hash, elapsedMs: (deps.now?.() ?? Date.now()) - start, requestCount, skipReason: "below_threshold" };
+    return { disposition, selected: null, usefulness: bestScored.usefulness, pAdvance, questionHash: hash, elapsedMs, requestCount, skipReason: "below_threshold" };
   }
 
-  // Catalog completeness gate: do not select from an incomplete category
   if (bestScored.candidate.kind === "skill" && skillOverflow) {
-    return { disposition, selected: null, usefulness: bestScored.usefulness, pAdvance, questionHash: hash, elapsedMs: (deps.now?.() ?? Date.now()) - start, requestCount, skipReason: "catalog_limit" };
+    return { disposition, selected: null, usefulness: bestScored.usefulness, pAdvance, questionHash: hash, elapsedMs, requestCount, skipReason: "catalog_limit" };
   }
 
   return {
@@ -557,7 +590,7 @@ export async function assess(
     usefulness: bestScored.usefulness,
     pAdvance,
     questionHash: hash,
-    elapsedMs: (deps.now?.() ?? Date.now()) - start,
+    elapsedMs,
     requestCount,
   };
 }

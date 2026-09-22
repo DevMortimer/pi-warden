@@ -2148,7 +2148,7 @@ test("conscience: config defaults in defaultConfig match expected schema", () =>
   assert.equal(config.conscience.enabled, false, "disabled by default pending calibration");
   assert.equal(config.conscience.skills.mode, "recommend");
   assert.equal(config.conscience.tools.enabled, true);
-  assert.equal(config.conscience.timeoutMs, 1500);
+  assert.equal(config.conscience.timeoutMs, 3000);
   assert.equal(config.conscience.maxAssessments, 3);
   assert.equal(config.conscience.maxNudges, 2);
 });

@@ -30,7 +30,7 @@ const fakeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceConfig
   enabled: true,
   skills: { mode: "recommend", exclude: [] },
   tools: { enabled: true, exclude: [] },
-  timeoutMs: 1500,
+  timeoutMs: 3000,
   maxAssessments: 3,
   maxNudges: 2,
   maxSkillBytes: 32768,
@@ -597,12 +597,42 @@ test("assess ranks by usefulness probability, then Score level, then skill-befor
 
 /* ─── Config defaults ───────────────────────────────────────────────── */
 
+test("concurrent batches: 3 batches complete in ~one round-trip with 400ms delayed judge", async () => {
+  let callCount = 0;
+  const delayedJudge: Judge = {
+    evaluate: async () => {
+      callCount++;
+      await new Promise(r => setTimeout(r, 400));
+      return {
+        answers: {
+          conscience_disposition: {
+            type: "choice", choice: "advance", confidence: 0.9,
+            probabilities: { advance: 0.9, awaiting_user: 0, no_gap: 0, unclear: 0.1 },
+          },
+        },
+      };
+    },
+  };
+  // 76 candidates → 3 batches of 25 questions each. With 400ms delay and default 3000ms deadline,
+  // all 3 should complete (concurrent, not sequential).
+  const skills = Array.from({ length: 76 }, (_, i) => fakeSkill(`skill-${i}`, `Skill ${i}`));
+  const start = Date.now();
+  const result = await assess(
+    "test", "", skills, [], [], [],
+    { judge: delayedJudge, config: fakeConfig(), sharedTimeoutMs: 5000, now: () => Date.now() },
+  );
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 2000, `3 concurrent 400ms batches should finish in ~400ms, took ${elapsed}ms`);
+  assert.ok(callCount >= 3, `should issue 3 batches, got ${callCount} calls`);
+});
+
+
 test("conscience config defaults: recommend mode, tools enabled, thresholds at 1.0", () => {
   const config = fakeConfig();
   assert.equal(config.skills.mode, "recommend");
   assert.equal(config.tools.enabled, true);
   assert.equal(config.enabled, true);
-  assert.equal(config.timeoutMs, 1500);
+  assert.equal(config.timeoutMs, 3000);
   assert.equal(config.maxAssessments, 3);
   assert.equal(config.maxNudges, 2);
   assert.equal(config.maxSkillBytes, 32768);

@@ -262,13 +262,10 @@ export function buildIndexPrompt(
     "",
     "## Format",
     "",
-    "Write two JSON files. Each file has this structure:",
+    "Write each file as an object with only an `entries` array (the tool adds metadata):",
     "",
     "```json",
     "{",
-    '  "formatVersion": 1,',
-    '  "builtAt": "<ISO 8601 timestamp>",',
-    '  "model": "<your model name>",',
     '  "entries": [',
     "    {",
     '      "kind": "skill" | "tool",',
@@ -306,7 +303,7 @@ export function buildIndexPrompt(
     `Global index: ${outputPaths.global}`,
     `Project index: ${outputPaths.project}`,
     "",
-    "Write the global index to the global path and the project index to the project path.",
+    "Write one file per scope. The tool adds `formatVersion`, `builtAt`, and `model` metadata after validation.",
     "Write valid JSON only. No markdown, no explanation, no code fences.",
   ].join("\n");
 }

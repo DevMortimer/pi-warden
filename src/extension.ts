@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -734,8 +734,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
               console.warn(`pi-warden: conscience ${result.errorCategory}`);
             }
           }
+          const skipTag = result.skipReason ? `, ${result.skipReason}` : "";
           record(ctx, config, "conscience",
-            `assessed ${skills.length} skills + ${toolInfos.length} tools → ${selectedName} (P(useful)=${result.usefulness.toFixed(2)}, P(advance)=${result.pAdvance.toFixed(2)}, ${result.elapsedMs}ms)`,
+            `assessed ${skills.length} skills + ${toolInfos.length} tools → ${selectedName} (P(useful)=${result.usefulness.toFixed(2)}, P(advance)=${result.pAdvance.toFixed(2)}, ${result.elapsedMs}ms${skipTag})`,
             ["trigger: before_agent_start", `eligible: ${skills.length} skills, ${toolInfos.length} tools`, `requests: ${result.requestCount}`, `questionHash: ${result.questionHash}`, ...skipInfo, ...truncInfo],
           );
           // Track state for turn-end triggers and reminders
@@ -843,7 +844,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           try {
             const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile });
             if (conscienceGeneration !== myGeneration) return;
-            record(ctx, config, "conscience", `queued prompt assessed → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"}`, ["trigger: message_start", `origin: queued`, `skipReason: ${result.skipReason ?? "none"}`]);
+            record(ctx, config, "conscience", `queued prompt assessed → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.skipReason ?? "none"})`, ["trigger: message_start", `origin: queued`, `skipReason: ${result.skipReason ?? "none"}`]);
           } catch (err) { const cat = classifyConscienceError(err); if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
         } else {
           record(ctx, config, "conscience", `queued prompt: no judge or no skills`, ["trigger: message_start", `origin: queued`, "skipReason: catalog_unavailable"]);
@@ -904,7 +905,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             selectedCapability = { kind: result.selected.kind, id: result.selected.id };
             lastAssessmentHash = result.questionHash;
           }
-          record(ctx, config, "conscience", `turn_end reassessment → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.elapsedMs}ms)`, ["trigger: turn_end", `assessments: ${assessmentsThisPrompt}/${config.conscience.maxAssessments}`, `skipReason: ${result.skipReason ?? "none"}`]);
+          record(ctx, config, "conscience", `turn_end reassessment → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.elapsedMs}ms, ${result.skipReason ?? "none"})`, ["trigger: turn_end", `assessments: ${assessmentsThisPrompt}/${config.conscience.maxAssessments}`, `skipReason: ${result.skipReason ?? "none"}`]);
         } catch (err) { const cat = err instanceof Error ? (/(timeout|timed out)/i.test(err.message) ? "timeout" : /(auth|key|credential|401|403)/i.test(err.message) ? "auth" : /(network|fetch|connect)/i.test(err.message) ? "network" : "other") : "other"; if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
       }
     }
@@ -1852,16 +1853,30 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }
         if (action === "index") {
           if (!ctx.hasUI) { report("Index needs an interactive session to run.", "warning"); return; }
-          // Count skills and tools for the confirm dialog
-          const skillCount = cachedSkills.length;
+          // The snapshot from Pi is authoritative; cachedSkills is only filled by before_agent_start.
+          let skillsForIndex: Array<{ name: string; description: string; filePath: string }> = [];
+          try {
+            const snapshot = (ctx as ExtensionCommandContext).getSystemPromptOptions().skills;
+            if (snapshot && snapshot.length > 0) {
+              skillsForIndex = snapshot.filter(s => !s.disableModelInvocation).map(s => ({ name: s.name, description: s.description, filePath: s.filePath ?? "" }));
+            }
+          } catch (err) {
+            record(ctx, config, "conscience", `snapshot unavailable: ${err instanceof Error ? err.message : String(err)}`, ["trigger: warden_index"]);
+          }
+          if (skillsForIndex.length === 0 && cachedSkills.length > 0) {
+            skillsForIndex = cachedSkills.filter(s => !(s as { disableModelInvocation?: boolean }).disableModelInvocation).map(s => ({ name: s.name, description: s.description, filePath: s.filePath ?? "" }));
+          }
+          if (skillsForIndex.length === 0) {
+            report("No skills available. Run a prompt first so Pi discovers installed skills, then retry /warden index.", "warning");
+            return;
+          }
           let toolCount = 0;
           try { toolCount = pi.getAllTools().length; } catch { toolCount = 0; }
-          const roughBytes = skillCount * 200 + toolCount * 100; // rough estimate
+          const roughBytes = skillsForIndex.length * 200 + toolCount * 100;
           if (!await ctx.ui.confirm(
             "Build capability index?",
-            `This reads every installed skill file (${skillCount} skills) and tool description (${toolCount} tools, ~${roughBytes} bytes total) and runs the session model to produce index entries. It may take a minute and use real tokens.`,
+            `This reads every installed skill file (${skillsForIndex.length} skills) and tool description (${toolCount} tools, ~${roughBytes} bytes total) and runs the session model to produce index entries. It may take a minute and use real tokens.`,
           )) return;
-          const skillsForIndex = cachedSkills.map(s => ({ name: s.name, description: s.description, filePath: s.filePath ?? "" }));
           let toolInfosForIndex: Array<{ name: string; description: string }> = [];
           try { toolInfosForIndex = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfosForIndex = []; }
           const globalPath = indexPath("global");
@@ -1869,6 +1884,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           ensureIndexDir("global");
           ensureIndexDir("project");
           const prompt = buildIndexPrompt(ctx.cwd, skillsForIndex, toolInfosForIndex, { global: globalPath, project: projectPath });
+          // Snapshot files before the model runs so we can detect whether it wrote anything.
+          const snap = (p: string) => { try { const s = statSync(p); return { exists: true as const, mtimeMs: s.mtimeMs }; } catch { return { exists: false as const, mtimeMs: 0 }; } };
+          const preGlobal = snap(globalPath);
+          const preProject = snap(projectPath);
           indexRunning = true;
           if (ctx.hasUI) ctx.ui.notify("pi-warden: Building capability index...", "info");
           try {
@@ -1886,12 +1905,37 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           } finally {
             indexRunning = false;
           }
-          // Parse and validate both files
+          const postGlobal = snap(globalPath);
+          const postProject = snap(projectPath);
+          const globalChanged = !preGlobal.exists || postGlobal.mtimeMs > preGlobal.mtimeMs;
+          const projectChanged = !preProject.exists || postProject.mtimeMs > preProject.mtimeMs;
+          if (!globalChanged && !projectChanged) {
+            report("The model did not write the index; nothing was changed.", "warning");
+            return;
+          }
           const rawGlobal = readIndex(globalPath);
           const rawProject = readIndex(projectPath);
-          const validatedGlobal = rawGlobal ? validateIndex(rawGlobal) : undefined;
-          const validatedProject = rawProject ? validateIndex(rawProject) : undefined;
-          // On failure: keep old files, report
+          // The model may write the old full format or the new entries-only format.
+          // Accept both; warden always writes the final metadata.
+          let validatedGlobal = rawGlobal ? validateIndex(rawGlobal) : undefined;
+          let validatedProject = rawProject ? validateIndex(rawProject) : undefined;
+          // Entries-only fallback: read raw JSON and extract entries array
+          if (!validatedGlobal) {
+            try {
+              const parsed = JSON.parse(readFileSync(globalPath, "utf8")) as unknown;
+              if (parsed && typeof parsed === "object" && Array.isArray((parsed as { entries?: unknown }).entries)) {
+                validatedGlobal = validateIndex({ formatVersion: 1, builtAt: "", model: "", entries: (parsed as { entries: unknown }).entries });
+              }
+            } catch (err) { record(ctx, config, "conscience", `global entries-only parse: ${err instanceof Error ? err.message : String(err)}`, ["trigger: warden_index"]); }
+          }
+          if (!validatedProject) {
+            try {
+              const parsed = JSON.parse(readFileSync(projectPath, "utf8")) as unknown;
+              if (parsed && typeof parsed === "object" && Array.isArray((parsed as { entries?: unknown }).entries)) {
+                validatedProject = validateIndex({ formatVersion: 1, builtAt: "", model: "", entries: (parsed as { entries: unknown }).entries });
+              }
+            } catch (err) { record(ctx, config, "conscience", `project entries-only parse: ${err instanceof Error ? err.message : String(err)}`, ["trigger: warden_index"]); }
+          }
           if ((rawGlobal && !validatedGlobal) || (rawProject && !validatedProject)) {
             const issues: string[] = [];
             if (rawGlobal && !validatedGlobal) issues.push("global index: invalid format or over-cap entry");
@@ -1899,9 +1943,23 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             report(`Index rejected: ${issues.join("; ")}. Old files kept.`, "warning");
             return;
           }
-          // Rewrite with validated (sanitized) content
-          if (validatedGlobal) writeIndex(globalPath, validatedGlobal);
-          if (validatedProject) writeIndex(projectPath, validatedProject);
+          // Recompute sourceHash from actual skill files; the model's hash is untrusted.
+          const recomputeHashes = (file: IndexFile) => {
+            for (const entry of file.entries) {
+              if (entry.kind === "skill") {
+                const skill = skillsForIndex.find(s => s.name === entry.name);
+                if (skill?.filePath) entry.sourceHash = fileContentHash(skill.filePath);
+              }
+            }
+          };
+          if (validatedGlobal) recomputeHashes(validatedGlobal);
+          if (validatedProject) recomputeHashes(validatedProject);
+          // Warden writes metadata: formatVersion, builtAt, model from the real session.
+          const realModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown";
+          const builtAt = new Date().toISOString();
+          const buildFile = (file: IndexFile): IndexFile => ({ formatVersion: 1, builtAt, model: realModel, entries: file.entries });
+          if (validatedGlobal) writeIndex(globalPath, buildFile(validatedGlobal));
+          if (validatedProject) writeIndex(projectPath, buildFile(validatedProject));
           // Reload indexes into session state
           globalIndexFile = validatedGlobal;
           projectIndexFile = validatedProject;

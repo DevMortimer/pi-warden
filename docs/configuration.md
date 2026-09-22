@@ -107,7 +107,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `conscience.skills.exclude` | Case-sensitive skill names to exclude; `*` is the only wildcard. Default `[]`. |
 | `conscience.tools.enabled` | Suggest tools including evidence/research tools; never execute or enable them directly. Default `true`. |
 | `conscience.tools.exclude` | Case-sensitive tool names to exclude; `*` is the only wildcard. Default `[]`. |
-| `conscience.timeoutMs` | Total wall-clock deadline for one assessment (ms). Effective deadline is `min(conscience.timeoutMs, timeoutMs)`. Range 100–10000. Default `1500`. |
+| `conscience.timeoutMs` | Total wall-clock deadline for one assessment (ms). Effective deadline is `min(conscience.timeoutMs, timeoutMs)`. Range 100–10000. Default `3000`. |
 | `conscience.maxAssessments` | Max assessments per admitted operator prompt, including the initial. Range 1–10. Default `3`. |
 | `conscience.maxNudges` | Max new guidance deliveries per admitted operator prompt. Range 1–5. Default `2`. |
 | `conscience.maxSkillBytes` | Max UTF-8 bytes per skill file for automatic loading. Range 1024–131072. Default `32768`. |
