@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.40.0
+
 ### Fixed
 
 - `/warden status` and `/warden enable` now describe the key of the configured `typesafeBackend`. With `"openrouter"`, status said "TypeSafe key: missing" on the same line that counted judgments, and enable opened the TypeSafe login prompt, so consent could not be saved. Both call pi-typesafe's backend-aware `authState` and `ensureApiKey`; with no OpenRouter key, enable reports the variable to set instead of prompting (#57).
