@@ -6,7 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+- `/warden config` keeps its panel handle and toggles shut, instead of stacking a second overlay against its own header hint.
 
 ## 0.38.2
 

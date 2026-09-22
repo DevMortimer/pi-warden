@@ -250,6 +250,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const widget = new Map<GuardName, string>();
   const trace = new Trace();
   let panel: PanelController | undefined;
+  let configPanel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
   const actionGuard = new ActionGuard();
   // Arming rules: session-scoped state that correlates preparation edits with later commands.
@@ -364,6 +365,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const opened = openTracePanel(ui, trace, { width: config.widget.panelWidth });
     panel = opened;
     opened.closed.catch(() => undefined).finally(() => { if (panel === opened) panel = undefined; });
+  };
+  /** The config overlay toggles the same way the sidebar does, so the hint in its header is true. */
+  const toggleConfigPanel = (ui: PanelUi | undefined, config: WardenConfig) => {
+    if (!ui) return;
+    if (configPanel) { configPanel.close(); return; }
+    const opened = openConfigPanel(ui, config, { width: config.widget.panelWidth });
+    configPanel = opened;
+    opened.closed.catch(() => undefined).finally(() => { if (configPanel === opened) configPanel = undefined; });
   };
   const paint = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig) => {
     if (!ctx.hasUI) return;
@@ -560,6 +569,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     widget.clear();
     trace.clear();
     panel?.close();
+    configPanel?.close();
     actionGuard.reset();
     rulesGuard.reset();
     holds.reset();
@@ -1716,7 +1726,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             return;
           }
           if (!ctx.hasUI || !lastUi) { report(`Edit ${userConfigPath()} directly. Use /warden config set <key> <value> for quick changes.`); return; }
-          openConfigPanel(lastUi, config, { width: config.widget.panelWidth });
+          toggleConfigPanel(lastUi, config);
           return;
         }
         if (action === "init") {
