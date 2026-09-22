@@ -8,6 +8,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.38.2
+
+### Docs
+- Conscience recommendation calibration on recorded sessions: first measurement scripts, report, and guard calibration tables.
+
 ## 0.38.1
 
 ### Changed
