@@ -647,12 +647,30 @@ test("conscience config defaults: recommend mode, tools enabled, thresholds at 1
 /* ─── advanceThreshold gate ─────────────────────────────────────────── */
 
 // The beta policy pins the question wording: any wording change moves the hash and this test fails
-// until the policy is re-measured.
+// until the policy is re-measured. The hash is computed over the disposition question plus one
+// canonical candidate question, so it is the same value for every batch shape.
 test("one-candidate question set hashes to the beta policy questionHash", () => {
   const batch = [{ opaqueId: "c1", candidate: { kind: "skill" as const, id: "beta-shape", description: "beta batch shape" } }];
   const { questions } = buildBatchQuestions(batch, "task", "", [], []);
   assert.equal(questionHash(questions), CONSCIENCE_BETA_POLICY.questionHash,
     "question wording changed; re-measure the policy before shipping");
+});
+
+test("questionHash is independent of batch shape: 1 skill, 4 skills, 1 tool, 4 tools, mixed", () => {
+  const shape = (n: number, kind: "skill" | "tool") =>
+    Array.from({ length: n }, (_, i) => ({ opaqueId: `c${i + 1}`, candidate: { kind, id: `${kind}-${i}`, description: "d" } }));
+  const mixed = [...shape(2, "skill"), ...shape(2, "tool")];
+  for (const batch of [shape(1, "skill"), shape(4, "skill"), shape(1, "tool"), shape(4, "tool"), mixed]) {
+    const { questions } = buildBatchQuestions(batch, "task", "", [], []);
+    assert.equal(questionHash(questions), CONSCIENCE_BETA_POLICY.questionHash,
+      `batch of ${batch.length} ${batch[0]!.candidate.kind}s must hash to the policy hash`);
+  }
+});
+
+test("the concrete measured wording still hashes to fb2d35042f667b3c", () => {
+  const batch = [{ opaqueId: "c1", candidate: { kind: "skill" as const, id: "any", description: "any" } }];
+  const { questions } = buildBatchQuestions(batch, "task", "", [], []);
+  assert.equal(questionHash(questions), "fb2d35042f667b3c");
 });
 
 test("assess returns below_threshold when pAdvance is below advanceThreshold", async () => {

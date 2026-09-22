@@ -52,14 +52,13 @@ export const CONSCIENCE_BETA_POLICY: ConsciencePolicy = {
   loadThreshold: 1.0,
 };
 
-// Pi loads an extension through its own transpile cache, so src/load.ts exists as one module
-// instance inside the extension and another inside tests; module-level state would split. The
-// active policy is therefore parked on globalThis under a registered symbol, which both instances read.
-const POLICY_SLOT = Symbol.for("pi-warden.consciencePolicy");
-const policySlot = globalThis as typeof globalThis & { [POLICY_SLOT]?: ConsciencePolicy | null };
-
-export function setActivePolicy(policy: ConsciencePolicy | null): void {
-  policySlot[POLICY_SLOT] = policy;
+/**
+ * Pure activation-gate predicate: the policy matches when both the question hash and the model that
+ * actually answered equal the policy's. Callers hold the policy themselves — there is no module state.
+ */
+export function policyMatches(policy: ConsciencePolicy | null, questionHash: string, model: string): boolean {
+  if (!policy) return false;
+  return policy.questionHash === questionHash && policy.model === model;
 }
 
 /** Cache of file identities at candidate selection time (Rule 4 cross-call detection). */
@@ -78,16 +77,6 @@ export function recordFileIdentity(skillName: string, filePath: string): void {
 /** Clear the identity cache (called on new prompt). */
 export function clearFileIdentityCache(): void {
   fileIdentityCache.clear();
-}
-
-export function getActivePolicy(): ConsciencePolicy | null {
-  return policySlot[POLICY_SLOT] ?? null;
-}
-
-export function policyMatches(questionHash: string, model: string): boolean {
-  const activePolicy = getActivePolicy();
-  if (!activePolicy) return false;
-  return activePolicy.questionHash === questionHash && activePolicy.model === model;
 }
 
 /**

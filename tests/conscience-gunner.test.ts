@@ -17,7 +17,6 @@ import {
 } from "../src/conscience.js";
 import {
   loadSkillBody,
-  setActivePolicy,
   buildLoadMessage,
 } from "../src/load.js";
 import { applyProjectOverrides } from "../src/config.js";
@@ -132,11 +131,9 @@ const allLowScores = (): Record<string, { level: number; probs: number[] }> => (
 
 before(async () => {
   temp = await mkdtemp(join(tmpdir(), "conscience-gunner-"));
-  setActivePolicy(null);
 });
 
 after(async () => {
-  setActivePolicy(null);
   await rm(temp, { recursive: true, force: true });
 });
 
@@ -722,8 +719,8 @@ test("Config attack: recommendThreshold 0 with no policy does not bypass the ext
   const config = defaultConscienceConfig({ recommendThreshold: 0.0 });
   const skills = [fakeSkill("zero-threshold", "Zero threshold skill")];
 
-  setActivePolicy(null);
-
+  // No policy exists at the assess() layer: the gate lives in the extension, which holds
+  // CONSCIENCE_BETA_POLICY itself; assess() only reports scores and never delivers.
   const judge = selectionJudge("advance", "c1", 3, [0.05, 0.05, 0.65, 0.25]);
   const result = await assess(
     "test", "", skills, [], [], [],

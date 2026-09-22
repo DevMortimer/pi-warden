@@ -7,7 +7,7 @@ import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-codin
 import type { Extension, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
 import { defaultConfig } from "../src/config.js";
-import { setActivePolicy } from "../src/load.js";
+import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
 import { _testSetIndexRunning } from "../src/extension.js";
 import { indexPath } from "../src/index-cmd.js";
 
@@ -28,6 +28,8 @@ let confirmResult = true;
 let editorText: string | undefined;
 let networkCalls = 0;
 let nextAnswers: Record<string, number | string> = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
+/** Model string the mock judge reports. Defaults to the beta policy's model so conscience delivery tests pass its gate. */
+let nextModel = "jev-1.13.0";
 let failNetwork = false;
 const sentMessages: Array<{ message: { customType: string; content: string }; options?: Record<string, unknown> }> = [];
 const sentUserMessages: Array<string> = [];
@@ -145,7 +147,7 @@ before(async () => {
         answers[id] = { type: "score", score: scoreValue, confidence: 0.8, legend: Object.fromEntries(Array.from({ length: levels }, (_, index) => [String(index), `level ${index}`])), probabilities: Object.fromEntries(Array.from({ length: levels }, (_, index) => [String(index), index === Math.round(scoreValue) ? 0.8 : 0.2 / (levels - 1)])) };
       }
     }
-    return Response.json({ model: "jev-test", answers, usage: { input_tokens: 50, output_tokens: 0 } });
+    return Response.json({ model: nextModel, answers, usage: { input_tokens: 50, output_tokens: 0 } });
   };
   const loader = new DefaultResourceLoader({
     cwd: temporary,
@@ -176,9 +178,8 @@ beforeEach(async () => {
   widgetComponent = undefined; widgetPlacement = undefined; customCalls.length = 0; openPanels.length = 0; renders = 0;
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
+  nextModel = "jev-1.13.0";
   await rm(configPath(), { force: true });
-  // Each test controls the activation gate itself; the harness judge's model never matches the beta policy.
-  setActivePolicy(null);
   await sessionStart();
   widgets.length = 0;
 });
@@ -755,7 +756,7 @@ test("headless /warden test filters trace-only off-task delivery but keeps the f
   const trace = sentMessages.at(-1)!.message.content;
   assert.match(trace, /irreversible 0\.95/, "the trace keeps the independent risk");
   assert.match(trace, /off-task 0\.95 \(unrelated to the request; trace-only until AUC clears 0\.51\)/, "the trace keeps the off-task diagnostic");
-  assert.match(trace, /jev: irreversible 0\.95 · off-task 0\.95 · unrelated \(0\.80\).*jev-test/, "the trace retains the complete judgment");
+  assert.match(trace, /jev: irreversible 0\.95 · off-task 0\.95 · unrelated \(0\.80\).*jev-1\.13\.0/, "the trace retains the complete judgment");
 
   await runCommand("test");
   assert.ok(notices.some(notice => /warden · bash · irreversible 0\.95 · off-task 0\.95 · unrelated/.test(notice.text)), "interactive diagnostics still render the full judgment");
@@ -1981,19 +1982,9 @@ const writeConscienceConfig = (overrides: Record<string, unknown> = {}) =>
     ...STACK_BAR,
   }));
 
-/**
- * The harness judge answers with model "jev-test"; the activation gate compares the policy's model
- * against it. A one-skill catalog hashes to fb2d35042f667b3c, a two-skill catalog to 127335eac64670bf
- * (the hash covers the question keys, so it moves with the batch shape).
- */
-const activateTestPolicy = (questionHash = "fb2d35042f667b3c") => {
-  setActivePolicy({ questionHash, model: "jev-test", recommendThreshold: 0, advanceThreshold: 0, loadThreshold: 1.0 });
-};
-
 test("conscience: no-tool lifecycle fixture for recommend mode", async () => {
   await writeConscienceConfig();
-  activateTestPolicy("127335eac64670bf");
-  const skills = [
+    const skills = [
     conscienceSkill("impeccable", "Frontend interface design, polish, and UX"),
     conscienceSkill("tdd", "Test-driven development"),
   ];
@@ -2013,7 +2004,6 @@ test("conscience: no-tool lifecycle fixture for load mode", async () => {
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
-  activateTestPolicy();
   const skills = [{
     name: "impeccable",
     description: "Frontend interface design, polish, and UX",
@@ -2053,7 +2043,6 @@ test("conscience: default threshold 1.0 traces assessment but delivers nothing",
 
 test("conscience: lowered threshold delivers one message via hook return", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
-  activateTestPolicy();
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
   sentMessages.length = 0;
@@ -2086,7 +2075,6 @@ test("conscience: steer budget exhausted blocks delivery", async () => {
 
 test("conscience: session_start during assessment produces stale trace", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
-  activateTestPolicy();
   const skills = [conscienceSkill("impeccable", "UI design")];
   // The test harness mock fetch answers immediately from nextAnswers.
   // To test stale, we verify that session_start bumps generation and that
@@ -2374,7 +2362,6 @@ test("conscience: load-mode lifecycle fixture delivers skill body", async () => 
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
-  activateTestPolicy();
   const skills = [{
     name: "test-skill",
     description: "A test skill",
@@ -2421,7 +2408,6 @@ test("conscience: load delivers body and sets instructions_supplied", async () =
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
-  activateTestPolicy();
   const skills = [{
     name: "my-skill", description: "My skill", filePath: skillPath,
     baseDir: join(temporary, ".pi", "skills", "my-skill"),
@@ -2444,7 +2430,6 @@ test("conscience: judge answer with path does not bypass load safety", async () 
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
-  activateTestPolicy();
   const skills = [{
     name: "safe-skill", description: "Safe", filePath: skillPath,
     baseDir: join(temporary, ".pi", "skills", "safe-skill"),
@@ -2468,7 +2453,6 @@ test("conscience: oversized skill body rejected", async () => {
     tools: { enabled: false, exclude: [] },
     maxSkillBytes: 1000,
   });
-  activateTestPolicy();
   const skills = [{
     name: "big-skill", description: "Big", filePath: skillPath,
     baseDir: join(temporary, ".pi", "skills", "big-skill"),
@@ -2482,55 +2466,35 @@ test("conscience: oversized skill body rejected", async () => {
   assert.match(result!.message!.content, /Consider using/, "should fall back to recommend");
 });
 
-// No policy → no delivery, fail closed, exactly as docs/configuration.md promises
-test("conscience: no policy blocks delivery", async () => {
-  await writeConscienceConfig({ recommendThreshold: 0.0, loadThreshold: 0.0 });
-  const skills = [conscienceSkill("impeccable", "UI design")];
-  nextAnswers = { conscience_disposition: "advance", c1: 3 };
-  sentMessages.length = 0;
-  const result = await promptWithSkills("design a page", skills) as { message?: { content: string } } | undefined;
-  assert.ok(!result?.message, "without a policy set, no recommendation message is sent");
-  await runCommand("trace", context({ hasUI: false }));
-  const traceText = sentMessages.at(-1)!.message.content;
-  assert.match(traceText, /no_policy/, "trace should note no_policy");
+// Pure-function gate tests: policyMatches takes the policy explicitly, there is no module state.
+test("activation gate: no policy never matches", () => {
+  assert.equal(policyMatches(null, "fb2d35042f667b3c", "jev-1.13.0"), false);
 });
 
-// Matching policy (hash and model both match the harness judge) → delivery proceeds
-test("conscience: matching policy delivers", async () => {
-  await writeConscienceConfig({ recommendThreshold: 0.0, loadThreshold: 0.0 });
-  activateTestPolicy();
-  const skills = [conscienceSkill("impeccable", "UI design")];
-  nextAnswers = { conscience_disposition: "advance", c1: 3 };
-  sentMessages.length = 0;
-  const result = await promptWithSkills("design a page", skills) as { message?: { content: string } } | undefined;
-  if (!result?.message) { await runCommand("trace", context({ hasUI: false })); console.log("TRACE:", sentMessages.at(-1)?.message.content); }
-  assert.ok(result?.message, "a matching policy lets delivery proceed");
-  assert.match(result!.message!.content, /impeccable/);
+test("activation gate: matching hash and model pass", () => {
+  assert.equal(policyMatches(CONSCIENCE_BETA_POLICY, "fb2d35042f667b3c", "jev-1.13.0"), true);
 });
 
-// Policy whose questionHash does not match the current questions → no_policy, no delivery
-test("conscience: hash mismatch blocks delivery", async () => {
-  await writeConscienceConfig({ recommendThreshold: 0.0, loadThreshold: 0.0 });
-  setActivePolicy({ questionHash: "0000000000000000", model: "jev-test", recommendThreshold: 0, advanceThreshold: 0, loadThreshold: 1.0 });
-  const skills = [conscienceSkill("impeccable", "UI design")];
-  nextAnswers = { conscience_disposition: "advance", c1: 3 };
-  sentMessages.length = 0;
-  const result = await promptWithSkills("design a page", skills) as { message?: { content: string } } | undefined;
-  assert.ok(!result?.message, "a hash mismatch blocks delivery");
-  await runCommand("trace", context({ hasUI: false }));
-  const traceText = sentMessages.at(-1)!.message.content;
-  assert.match(traceText, /no_policy/, "trace should note no_policy");
+test("activation gate: hash mismatch fails", () => {
+  assert.equal(policyMatches(CONSCIENCE_BETA_POLICY, "0000000000000000", "jev-1.13.0"), false);
 });
 
-// Policy whose model does not match the model that answered → no_policy, no delivery
+test("activation gate: model mismatch fails", () => {
+  assert.equal(policyMatches(CONSCIENCE_BETA_POLICY, "fb2d35042f667b3c", "jev-other"), false);
+});
+
+// Extension-level: the judge's answer carries the model that actually answered; a model the policy
+// does not name skips delivery with no_policy. ("No policy" and hash mismatch at the extension level
+// are unreachable by test because the extension always holds the beta policy in its closure; the
+// pure-function tests above cover both branches.)
 test("conscience: model mismatch blocks delivery", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.0, loadThreshold: 0.0 });
-  setActivePolicy({ questionHash: "fb2d35042f667b3c", model: "jev-other", recommendThreshold: 0, advanceThreshold: 0, loadThreshold: 1.0 });
+  nextModel = "jev-other";
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
   sentMessages.length = 0;
   const result = await promptWithSkills("design a page", skills) as { message?: { content: string } } | undefined;
-  assert.ok(!result?.message, "a model mismatch blocks delivery");
+  assert.ok(!result?.message, "a model the policy does not name blocks delivery");
   await runCommand("trace", context({ hasUI: false }));
   const traceText = sentMessages.at(-1)!.message.content;
   assert.match(traceText, /no_policy/, "trace should note no_policy");
@@ -2598,7 +2562,6 @@ test("conscience: unreadable skill file fails load", async () => {
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
-  activateTestPolicy();
   const skills = [{
     name: "locked-skill", description: "Locked", filePath: skillPath,
     baseDir: join(temporary, ".pi", "skills", "locked-skill"),

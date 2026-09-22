@@ -213,8 +213,27 @@ export function buildState(
 /**
  * Compute a deterministic hash of the assessment questions for deduplication.
  * Recursively sorts all object keys for canonical form.
+ *
+ * Opaque candidate ids (c1, c2, …) are positional, not semantic: which batch a prompt happens to
+ * produce must not change the hash the activation gate compares. A conscience question set
+ * (recognised by the `conscience_disposition` key) is therefore hashed as the disposition question
+ * plus one canonical candidate question, keyed `c1` — every candidate question carries the same
+ * wording by design (per-candidate state lives in the request state, not the question text), so any
+ * one of them is the canonical representative.
+ *
+ * Why the hash was constant before this change: each assessment issues several requests (one per
+ * batch), each with its own question keys, and `assess` kept only the hash of whichever batch wrote
+ * `state_.hash` last. Every recorded replay row showed `fb2d35042f667b3c` only because those final
+ * batches happened to serialize identically — an accident of batch order, not a guarantee.
  */
 export function questionHash(questions: Questions): string {
+  if ((questions as Record<string, unknown>).conscience_disposition) {
+    const firstCandidate = Object.entries(questions).find(([key]) => /^c\d+$/.test(key));
+    questions = {
+      conscience_disposition: questions.conscience_disposition,
+      ...(firstCandidate ? { [firstCandidate[0]]: firstCandidate[1] } : {}),
+    } as Questions;
+  }
   const sorted = JSON.parse(JSON.stringify(questions, (_key, value) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
