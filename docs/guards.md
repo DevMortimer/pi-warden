@@ -162,6 +162,25 @@ Headline: tool recommendation 84% precision (260/308 of tool-recommended turns u
 
 Candidate policy (not active): `{ questionHash: "1ee518cb4a54b980", model: "jev-1.13.0", recommendThreshold: 0.95, loadThreshold: 1.0 }`. No threshold met the gate; the guard stays disabled by default and trace-only. This is the candidate the next measurement will test, not an active policy. `loadThreshold` stays at 1.0 (trace-only) until the authored 240-scenario held-out set is measured per spec §7. Full tables: `eval/reports/2026-09-22-conscience-recommend/`.
 
+### Conscience remeasurement (2026-09-22, after index + question changes)
+
+Second measurement after crew-a's `feat/conscience-index`: index entries with `role`, request-not-topic clause, status-update-is-`no_gap` clause. Full tool catalog from the capability index (32 tools). n = 2114 turns across 4 projects (333 sessions), 2114 requests, about 9.0M input tokens.
+
+| metric | baseline | remeasure | delta |
+| --- | --- | --- | --- |
+| tool precision (≥0.80) | 88% (120 selected) | 92% (331 selected) | +4pp, +175% recall |
+| skill precision (≥0.80) | 0% (20 selected) | 10% (86 selected) | +10pp, +330% recall |
+| disposition accuracy | 63% | 60% | −3pp |
+| P(advance) AUC | 0.62 | 0.60 | −0.02 |
+| usefulness AUC | 0.60 | 0.62 | +0.02 |
+| unnecessary-suggestion (≥0.80) | 14% | 4% | −10pp |
+| research-role recommendation | unmeasured | 6% | new signal |
+| status-update no_gap | unmeasured | 42% | new signal |
+| best candidate threshold | 0.95 (91%, n=12) | 0.75 (90%, n=10) | lower, comparable |
+| question hash | 1ee518cb4a54b980 | fb2d35042f667b3c | changed |
+
+Candidate policy (not active): `{ questionHash: "fb2d35042f667b3c", model: "jev-1.13.0", recommendThreshold: 0.75, loadThreshold: 1.0 }`. 90% precision on the labelled subset (n=10); does not meet the 95% gate. Full tables: `eval/reports/2026-09-22-conscience-remeasure/`.
+
 ### Path rules
 
 `action.pathRules` (user file only) gives the pattern floor a path dimension: which paths, which side of the access is held, which surfaces check, and what happens on a hit. The `access` field names the side that flows — `"read"` holds writes and lets reads through, `"write"` holds reads (a log the agent may create but never open), `"none"` holds any touch. File tools are checked through the structured `path` argument, exactly; the bash surface sees only two things: the whole data-text-stripped command for `none` rules (you declared the path always-matters, so a mention counts), and redirect/`tee` targets for the write side. Tokens in arbitrary argv are never classified — that is the false-positive treadmill this design exists to avoid. `note` actions ride the existing sensitive-path behavior (Jev decides whether a command that merely mentions the path can write); `warn`, `confirm` (a dialog), and `block` ride the command-rule ladder. Exempt a rule with `exemptRules` by id.

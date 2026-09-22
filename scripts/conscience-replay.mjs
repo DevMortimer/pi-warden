@@ -36,6 +36,8 @@ const args = process.argv.slice(2);
 const flag = name => args.includes(`--${name}`);
 const value = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback; };
 
+const indexDir = value('index');
+const labelsFile = value('labels');
 const sessionsRoot = join(homedir(), '.pi', 'agent', 'sessions');
 const concurrency = Number(value('concurrency', 6));
 const budgetOf = argv => (argv.includes('--max-requests')
@@ -183,6 +185,38 @@ function toolsFromSession(turns) {
   }));
 }
 
+// ── Index loading ───────────────────────────────────────────────────
+
+function loadIndex(dir) {
+  if (!dir) return undefined;
+  const globalPath = join(dir, 'global.json');
+  if (!existsSync(globalPath)) { console.warn(`Index global.json not found at ${globalPath}`); return undefined; }
+  const globalIndex = JSON.parse(readFileSync(globalPath, 'utf8'));
+  const projectsDir = join(dir, 'projects');
+  let projectIndex;
+  if (existsSync(projectsDir)) {
+    const projectFiles = readdirSync(projectsDir).filter(n => n.endsWith('.json'));
+    if (projectFiles.length > 0) {
+      // Merge all project index files into one
+      const allEntries = [];
+      for (const pf of projectFiles) {
+        const data = JSON.parse(readFileSync(join(projectsDir, pf), 'utf8'));
+        if (data.entries) allEntries.push(...data.entries);
+      }
+      projectIndex = { entries: allEntries };
+    }
+  }
+  const toolEntries = globalIndex.entries.filter(e => e.kind === 'tool');
+  const toolCatalog = toolEntries.map(e => ({ name: e.name, description: e.lead ?? e.name }));
+  console.log(`  Index loaded: ${globalIndex.entries.length} entries (${toolEntries.length} tools, ${globalIndex.entries.length - toolEntries.length} skills)${projectIndex ? `, ${projectIndex.entries.length} project entries` : ''}`);
+  return { globalIndex, projectIndex, toolCatalog };
+}
+
+function toolsFromIndex(dir) {
+  const result = loadIndex(dir);
+  return result ? result.toolCatalog : toolsFromSession([]);
+}
+
 // ── Labels ───────────────────────────────────────────────────────────
 
 function detectFirstUsage(turn) {
@@ -210,10 +244,10 @@ function anyToolCalled(turn) {
 
 function fakeConfig() {
   const base = defaultConfig().conscience;
-  return { ...base, recommendThreshold: 0, loadThreshold: 0 };
+  return { ...base, enabled: true, recommendThreshold: 0, loadThreshold: 0 };
 }
 
-async function runAssessment(turn, skills, toolCatalog, judge) {
+async function runAssessment(turn, skills, toolCatalog, judge, indexes) {
   const activeSkills = skills.filter(s => !s.disableModelInvocation).map(s => s.name);
   const suppliedSkills = turn.skillExpansions;
   const recentContext = turn.context.map(m => `${m.role}: ${clip(m.text, 500)}`).join('\n');
@@ -225,7 +259,7 @@ async function runAssessment(turn, skills, toolCatalog, judge) {
     toolCatalog,
     activeSkills,
     suppliedSkills,
-    { judge, config: fakeConfig(), sharedTimeoutMs: timeoutMs, now: () => Date.now() },
+    { judge, config: fakeConfig(), sharedTimeoutMs: timeoutMs, now: () => Date.now(), ...(indexes ?? {}) },
   );
 }
 
@@ -245,13 +279,14 @@ async function pool(items, limit, work) {
 const pct = v => `${(v * 100).toFixed(0)}%`;
 const fixed = v => (v === undefined ? '-' : v.toFixed(2));
 
-function report(records, skipped = 0) {
+function report(records, skipped = 0, ownerLabels) {
   const turns = records.filter(r => r.kind === 'turn');
   const lines = [];
   const out = line => { lines.push(line); console.log(line); };
 
   out(`\n# Conscience recommendation calibration on recorded sessions`);
   if (skipped) out(`!! PARTIAL: the request budget stopped the run with ${skipped} assessments never made.`);
+  if (ownerLabels) out(`Labelled subset: ${ownerLabels.size} prompts.`);
   out(`${turns.length} labelled turns (${turns.filter(t => t.error).length} errors).`);
 
   const withTool = turns.filter(t => t.anyTool);
@@ -346,6 +381,94 @@ function report(records, skipped = 0) {
     }
   }
 
+  // Labelled-subset comparison when owner labels are provided
+  if (ownerLabels && ownerLabels.size > 0) {
+    const labelled = turns.filter(t => ownerLabels.has(`${t.session}#${t.index}`));
+    const labelledNoErr = labelled.filter(t => !t.error);
+    out(`\n## Labelled-subset comparison (owner labels)`);
+    out(`  ${labelled.length} rows, ${labelledNoErr.length} scored (${labelled.length - labelledNoErr.length} errors).`);
+
+    const ownerY = labelled.filter(t => ownerLabels.get(`${t.session}#${t.index}`).helpful === 'y');
+    const ownerN = labelled.filter(t => ownerLabels.get(`${t.session}#${t.index}`).helpful === 'n');
+    const ownerUnpicked = labelled.filter(t => {
+      const h = ownerLabels.get(`${t.session}#${t.index}`).helpful;
+      return h !== 'y' && h !== 'n';
+    });
+    out(`  Owner labels: ${ownerY.length} y, ${ownerN.length} n, ${ownerUnpicked.length} unpicked.`);
+
+    // At various thresholds: how many y-picks survive, how many n-picks are no longer picked or below threshold
+    out(`\n  threshold | y-picks survive | n-picks rescued | new picks on unpicked`);
+    const allKeys = new Set([...labelled.map(t => `${t.session}#${t.index}`), ...[...ownerLabels.keys()]]);
+    for (const t of [0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95]) {
+      const selectedNow = new Set(labelledNoErr.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= t).map(r => `${r.session}#${r.index}`));
+      const ySurvive = ownerY.filter(r => selectedNow.has(`${r.session}#${r.index}`)).length;
+      const nRescued = ownerN.filter(r => !selectedNow.has(`${r.session}#${r.index}`)).length;
+      // New picks: labelled rows not in ownerY that are now selected
+      const newPicks = labelledNoErr.filter(r => {
+        const key = `${r.session}#${r.index}`;
+        const label = ownerLabels.get(key);
+        return label && label.helpful !== 'y' && label.helpful !== 'n' && selectedNow.has(key);
+      }).length;
+      out(`  ${t.toFixed(2)}     | ${String(ySurvive).padStart(14)} | ${String(nRescued).padStart(14)} | ${String(newPicks).padStart(18)}`);
+    }
+
+    // Disposition on status-update prompts
+    const statusKeys = labelled.filter(t => {
+      const label = ownerLabels.get(`${t.session}#${t.index}`);
+      return label && (label.agentDidFirst === '' || label.agentDidFirst === ' ');
+    });
+    if (statusKeys.length > 0) {
+      const noGap = statusKeys.filter(t => t.disposition === 'no_gap').length;
+      out(`\n  Status-update prompts (${statusKeys.length}): ${noGap} no_gap (${pct(noGap / statusKeys.length)}), ${statusKeys.length - noGap} other.`);
+    }
+
+    // Precision at the gate threshold (on labelled picks only: y and n)
+    const labelledPicks = labelledNoErr.filter(t => {
+      const h = ownerLabels.get(`${t.session}#${t.index}`).helpful;
+      return h === 'y' || h === 'n';
+    });
+    for (const t of [0.80, 0.85, 0.90, 0.95]) {
+      const predicted = labelledPicks.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= t);
+      const tp = predicted.filter(r => {
+        const label = ownerLabels.get(`${r.session}#${r.index}`);
+        return label && label.helpful === 'y';
+      }).length;
+      const fp = predicted.filter(r => {
+        const label = ownerLabels.get(`${r.session}#${r.index}`);
+        return label && label.helpful === 'n';
+      }).length;
+      const prec = tp + fp > 0 ? tp / (tp + fp) : undefined;
+      out(`  P(useful) ≥ ${t.toFixed(2)}: precision ${tp}/${tp + fp} (${prec === undefined ? '-' : pct(prec)}), n=${predicted.length}`);
+    }
+
+    // Candidate policy candidate (on labelled picks only)
+    let bestThreshold;
+    let bestPrecision;
+    for (const t of [0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50]) {
+      const predicted = labelledPicks.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= t);
+      if (predicted.length < 10) continue;
+      const tp = predicted.filter(r => {
+        const label = ownerLabels.get(`${r.session}#${r.index}`);
+        return label && label.helpful === 'y';
+      }).length;
+      const fp = predicted.filter(r => {
+        const label = ownerLabels.get(`${r.session}#${r.index}`);
+        return label && label.helpful === 'n';
+      }).length;
+      const prec = tp + fp > 0 ? tp / (tp + fp) : 0;
+      if (prec >= 0.95 || !bestThreshold) {
+        bestThreshold = t;
+        bestPrecision = prec;
+        if (prec >= 0.95) break;
+      }
+    }
+    if (bestThreshold !== undefined) {
+      const qHash = labelledNoErr[0]?.questionHash ?? 'unknown';
+      out(`\n  Candidate policy: threshold=${bestThreshold.toFixed(2)}, precision=${pct(bestPrecision)}, n≥10 gate met=${bestPrecision >= 0.95}`);
+      out(`  questionHash=${qHash}`);
+    }
+  }
+
   const reportPath = join(outDir, skipped ? 'conscience-report-partial.md' : 'conscience-report-latest.md');
   mkdirSync(outDir, { recursive: true, mode: 0o700 });
   writeFileSync(reportPath, `${lines.join('\n')}\n`, { mode: 0o600 });
@@ -374,13 +497,6 @@ async function run() {
   const turns = limitN ? allTurns.slice(0, limitN) : allTurns;
   console.log(`${files.length} session files, ${turns.length} turns${limitN ? ` (limited to ${limitN})` : ''}`);
 
-  const sessionToolCats = new Map();
-  for (const turn of turns) {
-    if (!sessionToolCats.has(turn.file)) {
-      sessionToolCats.set(turn.file, toolsFromSession(turns.filter(t => t.file === turn.file)));
-    }
-  }
-
   for (const turn of turns) {
     turn.firstUsage = detectFirstUsage(turn);
     turn.anyTool = anyToolCalled(turn);
@@ -390,8 +506,50 @@ async function run() {
   const withSkill = turns.filter(t => t.firstUsage?.kind === 'skill').length;
   console.log(`Labels: ${withTool} with tool calls (${withSkill} skill-first), ${turns.length - withTool} without.`);
 
+  // Load owner labels (--labels) for the labelled-subset measurement
+  let ownerLabels;
+  if (labelsFile) {
+    ownerLabels = new Map();
+    const tsv = readFileSync(resolve(labelsFile), 'utf8');
+    for (const line of tsv.split('\n').slice(1)) {
+      if (!line.trim()) continue;
+      const cols = line.split('\t');
+      if (cols.length >= 7) {
+        ownerLabels.set(cols[0], {
+          recommendedSkill: cols[3],
+          pUseful: Number(cols[4]),
+          agentDidFirst: cols[5],
+          helpful: cols[6].trim(),
+        });
+      }
+    }
+    const yCount = [...ownerLabels.values()].filter(v => v.helpful === 'y').length;
+    const nCount = [...ownerLabels.values()].filter(v => v.helpful === 'n').length;
+    const emptyCount = ownerLabels.size - yCount - nCount;
+    console.log(`Owner labels loaded: ${ownerLabels.size} rows (${yCount} y, ${nCount} n, ${emptyCount} unpicked).`);
+  }
+
+  // Filter turns to labelled subset when --labels is set
+  let activeTurns = turns;
+  if (ownerLabels) {
+    activeTurns = turns.filter(t => ownerLabels.has(`${t.session}#${t.index}`));
+    console.log(`Filtered to ${activeTurns.length} turns matching owner labels.`);
+  }
+
+  // Load index (--index) for the full tool catalog and candidate metadata
+  let indexes;
+  let toolCatalog;
+  if (indexDir) {
+    const loaded = loadIndex(resolve(indexDir));
+    if (loaded) {
+      indexes = { globalIndex: loaded.globalIndex, projectIndex: loaded.projectIndex };
+      toolCatalog = loaded.toolCatalog;
+    }
+  }
+  // toolCatalog remains undefined when no index; pool uses per-session catalogs in that case
+
   const doneKeys = new Set(existing.map(r => r.key));
-  const pending = turns.filter(t => !doneKeys.has(`${t.session}#${t.index}`));
+  const pending = activeTurns.filter(t => !doneKeys.has(`${t.session}#${t.index}`));
   const planned = pending.length;
   console.log(`Requests: ${planned} still to make (${existing.length} done); roughly ${(planned * TOKENS_PER_REQUEST / 1e6).toFixed(1)}M input tokens, about $${(planned * TOKENS_PER_REQUEST / 1e6 * DEFAULT_USD_PER_MTOK).toFixed(2)} at $${DEFAULT_USD_PER_MTOK}/MTok.`);
 
@@ -410,11 +568,21 @@ async function run() {
   let skipped = 0;
   const budgetLeft = () => requests < maxRequests;
 
+  // Per-session tool catalogs for non-index mode
+  const sessionToolCats2 = new Map();
+  if (!indexes) {
+    for (const turn of activeTurns) {
+      if (!sessionToolCats2.has(turn.file)) {
+        sessionToolCats2.set(turn.file, toolsFromSession(activeTurns.filter(t => t.file === turn.file)));
+      }
+    }
+  }
+
   console.log('# assessments');
   await pool(pending, concurrency, async turn => {
     if (!budgetLeft()) { skipped++; return; }
     const key = `${turn.session}#${turn.index}`;
-    const toolCatalog = sessionToolCats.get(turn.file) ?? [];
+    const turnToolCatalog = indexes ? toolCatalog : (sessionToolCats2.get(turn.file) ?? []);
     const base = {
       kind: 'turn', key, session: turn.session, cwd: turn.cwd, index: turn.index, at: turn.at,
       prompt: clip(redact(turn.prompt), 200),
@@ -422,7 +590,7 @@ async function run() {
     };
     try {
       requests++;
-      const result = await runAssessment(turn, skills, toolCatalog, judge);
+      const result = await runAssessment(turn, skills, turnToolCatalog, judge, indexes);
       const selectedName = result.selected ? `${result.selected.kind}:${result.selected.id}` : null;
       append({
         ...base,
@@ -445,7 +613,7 @@ async function run() {
   const spend = judge.getSpend();
   if (skipped) console.log(`!! PARTIAL: --max-requests ${maxRequests} stopped the run with ${skipped} assessments skipped.`);
   console.log(`${requests} requests. Session: ${spend.session.requestsStarted} started, ${spend.session.requestsSucceeded} ok, ${spend.session.inputTokens} input tokens, about $${spend.session.estimatedUsd.toFixed(2)}.`);
-  report(readFileSync(outFile, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)), skipped);
+  report(readFileSync(outFile, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)), skipped, ownerLabels);
 }
 
 run().catch(error => { console.error(error); process.exit(1); });

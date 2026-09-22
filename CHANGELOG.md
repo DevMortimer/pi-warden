@@ -6,6 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Docs
+- Conscience recommendation remeasurement after index + question changes: before-and-after table, labelled-subset comparison, research-role tool rate, candidate policy update.
+
 ### Added
 - `/warden index` command: builds a local capability index with the session model. Entries carry `lead`, `useWhen`, `examples`, and `role` instead of bare names and descriptions. The conscience uses index entries when the source hash matches; bare descriptions are the fallback. Index files live at `~/.pi/agent/pi-warden/index/global.json` and `projects/<hash>.json`. Once-per-session nudge when the index is missing or stale.
 - Conscience disposition question now marks status-reporting messages as `no_gap`.
