@@ -6,7 +6,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+- `/warden index` command: builds a local capability index with the session model. Entries carry `lead`, `useWhen`, `examples`, and `role` instead of bare names and descriptions. The conscience uses index entries when the source hash matches; bare descriptions are the fallback. Index files live at `~/.pi/agent/pi-warden/index/global.json` and `projects/<hash>.json`. Once-per-session nudge when the index is missing or stale.
+- Conscience disposition question now marks status-reporting messages as `no_gap`.
+- Per-candidate question judges the request, not the topic; a candidate that matches prompt words but does not serve the actual request belongs at the lowest level.
+- Capability roles (`research`, `evidence`, `execution`, `delegation`, `review`, `conversation`) in index entries and candidate state; role-based guidance in Score questions.
 
 ## 0.38.2
 

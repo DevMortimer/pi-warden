@@ -52,6 +52,8 @@ The conscience coach assesses whether the agent is missing a useful skill or too
 
 **How it works:** On each normal operator prompt, `before_agent_start` evaluates eligible skill and tool candidates via Jev. A selection passing the measured thresholds produces at most one custom message through the steer budget. Turn-end re-assessment triggers on tool failures. One reminder fires at `agent_end` if the capability remains unresolved.
 
+**Index:** `/warden index` builds a local capability index. Entries carry `lead`, `useWhen`, `examples`, and `role` instead of bare names and descriptions. The conscience uses index entries when the source hash matches; bare descriptions are the fallback. The per-candidate question judges the request, not the topic; a message that reports status without asking for anything is `no_gap`.
+
 **Trace-only:** all assessments are traced regardless of delivery. No live Jev questions ship until calibration publishes a measured policy (`{ questionHash, model, thresholds }`). Without a matching policy, no recommendation message is sent to the agent regardless of the configured thresholds; the assessment is traced with `no_policy`.
 
 **What it sends to Jev:** current request (2000 redacted chars), up to four recent messages (500 chars each), and sanitized candidate metadata. Full skill instructions never go to Jev.

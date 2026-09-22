@@ -41,6 +41,9 @@ import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, s
 import { assess } from "./conscience.js";
 import { loadSkillBody, buildLoadMessage, policyMatches, getActivePolicy, recordFileIdentity, clearFileIdentityCache } from "./load.js";
 import type { ConsciencePolicy } from "./load.js";
+import { buildIndexPrompt, readIndex, writeIndex, validateIndex, indexStats, indexPath, ensureIndexDir } from "./index-cmd.js";
+import { fileContentHash } from "./hashing.js";
+import type { IndexFile } from "./index-cmd.js";
 import type { IntegrationErrorCode } from "pi-typesafe";
 
 /** Classify a conscience assessment error into a safe category (spec §6: never exception bodies). */
@@ -69,7 +72,7 @@ import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails,
 import type { GuardName, TraceEntry } from "./trace.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name and description only; full skill instructions never go to Jev). Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -466,6 +469,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let queuedRevision = 0;
   let beforeAgentStartFired = false;
   let needsReassessment = false;
+  // Index state: loaded once per session, nudged once when stale.
+  let globalIndexFile: IndexFile | undefined;
+  let projectIndexFile: IndexFile | undefined;
+  let indexNudged = false;
+  let indexRunning = false;
   /** The final messages of the current run, for restatement measurement. */
   const finals = new RestatementWindow();
   /** Returns true when the message was delivered; false means it was recorded in the trace only. */
@@ -589,6 +597,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     searchTool = undefined;
     notifier = undefined;
     lastNotifiedAt = 0;
+    // Load capability indexes (once per session, overwritten on every /warden index run).
+    globalIndexFile = readIndex(indexPath("global")) ?? undefined;
+    projectIndexFile = readIndex(indexPath("project", ctx.cwd)) ?? undefined;
+    indexNudged = false;
+    indexRunning = false;
     for (const symptom of Object.keys(slopCounts) as SlopSymptom[]) slopCounts[symptom] = 0;
     if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
     // One-time notice when confirm mode falls back to steer (headless).
@@ -670,6 +683,25 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         // Active and supplied skills
         const activeSkills = skills.map(s => s.name);
         const suppliedSkills: string[] = [];
+        // ── Index nudge: once per session when index is missing or stale ──
+        if (!indexNudged && (globalIndexFile === undefined || projectIndexFile === undefined)) {
+          indexNudged = true;
+          if (ctx.hasUI) ctx.ui.notify("pi-warden: run /warden index so the conscience recommends skills and tools from real descriptions.", "info");
+          else record(ctx, config, "conscience", "nudge: index missing", ["trigger: before_agent_start", "nudgeReason: missing_index"]);
+        } else if (!indexNudged && skills.length > 0) {
+          // Check if any cached skill has no matching index entry
+          const missing = skills.filter(s => {
+            if (s.disableModelInvocation) return false;
+            const hash = s.filePath ? fileContentHash(s.filePath) : "missing";
+            const search = (index: { entries: Array<{ name: string; sourceHash: string }> } | undefined) => index?.entries.some(e => e.name === s.name && e.sourceHash === hash) ?? false;
+            return !search(projectIndexFile) && !search(globalIndexFile);
+          });
+          if (missing.length > 0) {
+            indexNudged = true;
+            if (ctx.hasUI) ctx.ui.notify("pi-warden: run /warden index so the conscience recommends skills and tools from real descriptions.", "info");
+            else record(ctx, config, "conscience", `nudge: ${missing.length} skill(s) unindexed`, ["trigger: before_agent_start", "nudgeReason: stale_index", ...missing.map(s => `unindexed: ${s.name}`)]);
+          }
+        }
         // Deadline: smaller of conscience.timeoutMs and shared timeoutMs
         const effectiveTimeout = Math.min(config.conscience.timeoutMs, config.timeoutMs);
         const start = Date.now();
@@ -685,7 +717,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
           const result = await assess(
             redactedPrompt, recentContext, skills, toolInfos, activeSkills, suppliedSkills,
-            { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() },
+            { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile },
           );
           // Check generation after await
           if (conscienceGeneration !== myGeneration) {
@@ -809,7 +841,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const activeSkills = cachedSkills.map(s => s.name);
           const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
           try {
-            const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
+            const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile });
             if (conscienceGeneration !== myGeneration) return;
             record(ctx, config, "conscience", `queued prompt assessed → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"}`, ["trigger: message_start", `origin: queued`, `skipReason: ${result.skipReason ?? "none"}`]);
           } catch (err) { const cat = classifyConscienceError(err); if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
@@ -864,7 +896,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         const activeSkills = cachedSkills.map(s => s.name);
         const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
         try {
-          const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
+          const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile });
           if (conscienceGeneration !== myGeneration) return;
           assessmentsThisPrompt++;
           needsReassessment = false;
@@ -1460,6 +1492,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       ctx.ui.notify("pi-warden is running an audit. Please wait...", "warning");
       return { action: "handled" };
     }
+    if (indexRunning) {
+      ctx.ui.notify("pi-warden is building the capability index. Please wait...", "warning");
+      return { action: "handled" };
+    }
     // Operator input invalidates in-flight conscience assessments
     conscienceGeneration++;
   });
@@ -1508,7 +1544,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const activeSkills = cachedSkills.map(s => s.name);
       const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
       try {
-        const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now() });
+        const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile });
         if (conscienceGeneration !== myGeneration) return;
         assessmentsThisPrompt++;
         if (result.selected && result.selected.kind === selectedCapability.kind && result.selected.id === selectedCapability.id &&
@@ -1570,7 +1606,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     });
   }
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit"];
+  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index"];
   pi.registerCommand("warden", {
     description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, and a synthetic guard test",
     getArgumentCompletions(prefix) {
@@ -1812,6 +1848,75 @@ export default function wardenExtension(pi: ExtensionAPI): void {
               report(`In ${mode} mode a real call would ${mode === "advise" ? "run with this warning shown to you" : "be held and the agent would read"}: "${steerReason(deliveryVerdict, { canApprove: judge !== undefined })}"`);
             }
           }
+          return;
+        }
+        if (action === "index") {
+          if (!ctx.hasUI) { report("Index needs an interactive session to run.", "warning"); return; }
+          // Count skills and tools for the confirm dialog
+          const skillCount = cachedSkills.length;
+          let toolCount = 0;
+          try { toolCount = pi.getAllTools().length; } catch { toolCount = 0; }
+          const roughBytes = skillCount * 200 + toolCount * 100; // rough estimate
+          if (!await ctx.ui.confirm(
+            "Build capability index?",
+            `This reads every installed skill file (${skillCount} skills) and tool description (${toolCount} tools, ~${roughBytes} bytes total) and runs the session model to produce index entries. It may take a minute and use real tokens.`,
+          )) return;
+          const skillsForIndex = cachedSkills.map(s => ({ name: s.name, description: s.description, filePath: s.filePath ?? "" }));
+          let toolInfosForIndex: Array<{ name: string; description: string }> = [];
+          try { toolInfosForIndex = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfosForIndex = []; }
+          const globalPath = indexPath("global");
+          const projectPath = indexPath("project", ctx.cwd);
+          ensureIndexDir("global");
+          ensureIndexDir("project");
+          const prompt = buildIndexPrompt(ctx.cwd, skillsForIndex, toolInfosForIndex, { global: globalPath, project: projectPath });
+          indexRunning = true;
+          if (ctx.hasUI) ctx.ui.notify("pi-warden: Building capability index...", "info");
+          try {
+            for (let attempt = 0; attempt < 40; attempt++) {
+              if (ctx.isIdle()) break;
+              await new Promise(resolve => setTimeout(resolve, 250));
+            }
+            pi.sendUserMessage(prompt);
+            await ctx.waitForIdle();
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            report(`pi-warden index failed: ${detail}.`, "error");
+            indexRunning = false;
+            return;
+          } finally {
+            indexRunning = false;
+          }
+          // Parse and validate both files
+          const rawGlobal = readIndex(globalPath);
+          const rawProject = readIndex(projectPath);
+          const validatedGlobal = rawGlobal ? validateIndex(rawGlobal) : undefined;
+          const validatedProject = rawProject ? validateIndex(rawProject) : undefined;
+          // On failure: keep old files, report
+          if ((rawGlobal && !validatedGlobal) || (rawProject && !validatedProject)) {
+            const issues: string[] = [];
+            if (rawGlobal && !validatedGlobal) issues.push("global index: invalid format or over-cap entry");
+            if (rawProject && !validatedProject) issues.push("project index: invalid format or over-cap entry");
+            report(`Index rejected: ${issues.join("; ")}. Old files kept.`, "warning");
+            return;
+          }
+          // Rewrite with validated (sanitized) content
+          if (validatedGlobal) writeIndex(globalPath, validatedGlobal);
+          if (validatedProject) writeIndex(projectPath, validatedProject);
+          // Reload indexes into session state
+          globalIndexFile = validatedGlobal;
+          projectIndexFile = validatedProject;
+          // Report
+          const globalStats = validatedGlobal ? indexStats(validatedGlobal) : { globalEntries: 0, projectEntries: 0, thinSources: [], truncatedCount: 0 };
+          const projectStats = validatedProject ? indexStats(validatedProject) : { globalEntries: 0, projectEntries: 0, thinSources: [], truncatedCount: 0 };
+          const totalEntries = globalStats.globalEntries + projectStats.projectEntries;
+          const allThin = [...globalStats.thinSources, ...projectStats.thinSources];
+          const totalTruncated = globalStats.truncatedCount + projectStats.truncatedCount;
+          const lines = [
+            `Index built: ${totalEntries} entries (${globalStats.globalEntries} global, ${projectStats.projectEntries} project).`,
+            allThin.length ? `Thin sources: ${allThin.join(", ")}.` : undefined,
+            totalTruncated ? `${totalTruncated} truncated at bullet boundary.` : undefined,
+          ].filter(Boolean);
+          report(lines.join(" "));
           return;
         }
         report(`Unknown action "${action}". Use: ${actions.join(", ")}.`, "warning");

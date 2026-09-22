@@ -10,10 +10,31 @@ import type { Questions } from "pi-typesafe";
 import { createHash } from "node:crypto";
 import type { ConscienceConfig } from "./config.js";
 import { redact } from "./redact.js";
+import { fileContentHash, toolSourceHash } from "./hashing.js";
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
 
 export type Disposition = "advance" | "awaiting_user" | "no_gap" | "unclear";
+
+/** Capability roles the session model assigns to index entries. */
+export type CapabilityRole = "research" | "evidence" | "execution" | "delegation" | "review" | "conversation";
+
+/** Minimal index entry shape used by the conscience; full validation lives in index-cmd. */
+export interface IndexEntry {
+  kind: "skill" | "tool";
+  name: string;
+  scope: "global" | "project";
+  sourceHash: string;
+  role: CapabilityRole;
+  lead: string;
+  useWhen: string[];
+  notWhen: string[];
+  inputs: string;
+  examples: string[];
+  thin: boolean;
+  truncated?: boolean;
+  _location?: string;
+}
 
 /** One candidate for assessment: a skill or a tool. */
 export interface Candidate {
@@ -27,6 +48,10 @@ export interface Candidate {
   incomplete?: boolean;
   /** Full skill metadata, present for kind=skill. */
   skill?: Skill;
+  /** Capability role, present when the candidate has an index entry. */
+  role?: CapabilityRole;
+  /** Index entry when the candidate has a matching entry; bare description is the fallback. */
+  indexEntry?: IndexEntry;
 }
 
 /** The result of one assessment. */
@@ -138,7 +163,7 @@ export function buildBatchQuestions(
   // Shared disposition question
   const dispositionKey = "conscience_disposition";
   questions[dispositionKey] = choice(
-    "Disposition of the current request.",
+    `Disposition of the current request. A message that reports status, shares context, or narrates what the user is doing elsewhere, without asking the agent to do anything, is no_gap; select nothing on it.`,
     {
       advance: "A useful next step can be taken now.",
       awaiting_user: "The assistant has already asked for information and must wait.",
@@ -151,7 +176,7 @@ export function buildBatchQuestions(
   for (const { opaqueId, candidate } of batch) {
     idMap.set(opaqueId, candidate);
     questions[opaqueId] = score(
-      `Judge candidates.${opaqueId} against task and context.`,
+      `Judge candidates.${opaqueId} against what the user is asking the agent to do now in task, not against the subjects the prompt mentions in passing; a candidate that matches words in the prompt but does not serve the actual request belongs at the lowest level. When the request needs information the repository cannot supply, a research-role candidate serves the request; when the request is about the repository's own code or behaviour, an evidence-role candidate does.`,
       [...SCORE_LEVELS],
     );
   }
@@ -171,11 +196,10 @@ export function buildState(
 ): Record<string, unknown> {
   const candidates: Record<string, unknown> = {};
   for (const { opaqueId, candidate } of batch) {
-    candidates[opaqueId] = {
-      kind: candidate.kind,
-      name: candidate.id,
-      description: candidate.description,
-    };
+    const entry = candidate.indexEntry;
+    candidates[opaqueId] = entry
+      ? { kind: candidate.kind, name: candidate.id, lead: entry.lead, useWhen: entry.useWhen, examples: entry.examples }
+      : { kind: candidate.kind, name: candidate.id, description: candidate.description, unindexed: true };
   }
   return {
     task: sanitizeDescription(redact(task)),
@@ -212,17 +236,27 @@ function isExcluded(id: string, exclude: string[]): boolean {
   return false;
 }
 
-/** Filter candidates by eligibility rules, capped at MAX_ELIGIBLE per category. */
+/** Filter candidates by eligibility rules, capped at MAX_ELIGIBLE per category. Attaches index entries when available. */
 export function eligibleCandidates(
   skills: Skill[],
   tools: { name: string; description: string }[],
   config: ConscienceConfig,
   activeSkills: string[],
   suppliedSkills: string[],
+  globalIndex?: { entries: IndexEntry[] } | undefined,
+  projectIndex?: { entries: IndexEntry[] } | undefined,
 ): { candidates: Candidate[]; skillOverflow: boolean; toolOverflow: boolean } {
   const candidates: Candidate[] = [];
   let skillOverflow = false;
   let toolOverflow = false;
+
+  const findEntry = (name: string, sourceHash: string): IndexEntry | undefined => {
+    const search = (index: { entries: IndexEntry[] } | undefined): IndexEntry | undefined => {
+      if (!index) return undefined;
+      return index.entries.find(e => e.name === name && e.sourceHash === sourceHash);
+    };
+    return search(projectIndex) ?? search(globalIndex);
+  };
 
   if (config.skills.mode !== "off") {
     let count = 0;
@@ -233,11 +267,14 @@ export function eligibleCandidates(
       // Already supplied: skip
       if (suppliedSkills.includes(skill.name)) continue;
       if (count >= MAX_ELIGIBLE) { skillOverflow = true; break; }
+      const sourceHash = skill.filePath ? fileContentHash(skill.filePath) : "missing";
+      const entry = findEntry(skill.name, sourceHash);
       candidates.push({
         kind: "skill",
         id: skill.name,
         description: sanitizeDescription(skill.description),
         skill,
+        ...(entry ? { role: entry.role, indexEntry: entry } : {}),
       });
       count++;
     }
@@ -248,10 +285,13 @@ export function eligibleCandidates(
     for (const tool of tools) {
       if (isExcluded(tool.name, config.tools.exclude)) continue;
       if (count >= MAX_ELIGIBLE) { toolOverflow = true; break; }
+      const sourceHash = toolSourceHash(tool.name, tool.description);
+      const entry = findEntry(tool.name, sourceHash);
       candidates.push({
         kind: "tool",
         id: tool.name,
         description: sanitizeDescription(tool.description),
+        ...(entry ? { role: entry.role, indexEntry: entry } : {}),
       });
       count++;
     }
@@ -309,6 +349,10 @@ export interface ConscienceDeps {
   sharedTimeoutMs: number;
   /** Current wall-clock time (ms). Injected for testability. */
   now?: () => number;
+  /** Pre-loaded global index, if any. */
+  globalIndex?: { entries: IndexEntry[] } | undefined;
+  /** Pre-loaded project index, if any. */
+  projectIndex?: { entries: IndexEntry[] } | undefined;
 }
 
 /**
@@ -369,7 +413,7 @@ export async function assess(
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: "no_consent" };
   }
 
-  const { candidates, skillOverflow, toolOverflow } = eligibleCandidates(skills, tools, config, activeSkills, suppliedSkills);
+  const { candidates, skillOverflow, toolOverflow } = eligibleCandidates(skills, tools, config, activeSkills, suppliedSkills, deps.globalIndex, deps.projectIndex);
   if (candidates.length === 0) {
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: "no_match" };
   }
