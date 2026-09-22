@@ -8,14 +8,18 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.38.1
+
+### Changed
+- Verified against Pi 0.87.0; dev dependency updated.
+
 ## 0.38.0
 
 ### Added
 - Conscience coach: disabled by default pending calibration. Recommends or loads skills and tools before the agent acts via `before_agent_start`. Trace-only until a measured policy ships. Load mode reads skill files from disk with path-rule checks, size bounds, frontmatter validation, and credential canary detection. 48 adversarial tests plus the fixture set.
 
 ### Docs
-- Conscience recommendation calibration (2026-09-22): first measurement on 609 turns across 4 projects. Tool recommendation 84% precision, skill recommendation 0% precision. No threshold meets the 95% gate; closest is 0.95 at 91%. Policy record written; `docs/guards.md` updated. `eval/reports/2026-09-22-conscience-recommend/`.
-
+- Conscience recommendation calibration (2026-09-22): first measurement on 609 turns across 4 projects. Tool recommendation 84% precision, skill recommendation unmeasured pending human labels. No threshold meets the 95% gate; closest is 0.95 at 91%. Candidate policy recorded (not active); `docs/guards.md` updated. `eval/reports/2026-09-22-conscience-recommend/`.
 ## 0.37.1
 
 ### Docs
