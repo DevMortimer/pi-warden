@@ -1702,6 +1702,25 @@ test("a new session closes a config panel left open", async () => {
   assert.equal(panelClosed[0], true, "session_start closes it alongside the trace sidebar");
 });
 
+test("bare /warden reports status", async () => {
+  await grantConsent();
+  await runCommand("");
+  assert.match(notices.at(-1)!.text, /^pi-warden: /, "empty args are the default action, not an unknown action");
+  assert.equal(notices.filter(notice => /Unknown action/.test(notice.text)).length, 0);
+});
+
+test("/warden config set and get keep the whole value", async () => {
+  await grantConsent();
+  await runCommand("config set widget.barMode live");
+  const saved = JSON.parse(await readFile(configPath(), "utf8")) as { widget: { barMode: string } };
+  assert.equal(saved.widget.barMode, "live", "the value survives, not just the word after 'set'");
+  assert.match(notices.at(-1)!.text, /Saved widget\.barMode = "live"\./);
+
+  await runCommand("config get widget.barMode");
+  assert.match(notices.at(-1)!.text, /widget\.barMode = "live"/);
+  assert.equal(customCalls.length, 0, "neither one is a reason to open the editor");
+});
+
 test("the widget is a clickable component: a left click toggles a non-capturing right-hand sidebar, live-updating", async () => {
   await grantConsent();
   nextAnswers = { irreversible: 0.2, off_task: 0.1, scope: "expected_step" };

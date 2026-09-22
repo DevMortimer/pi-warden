@@ -1588,7 +1588,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       return matches.length ? matches : null;
     },
     async handler(args, ctx) {
-      const [action = "status", argument] = args.trim().split(/\s+/);
+      // `.filter(Boolean)` because an empty args string splits to [""] and the `status` default would never fire.
+      // `argument` stays the single word the one-word actions expect; `tail` keeps the whole line for
+      // `config set <key> <value>`, where the value is the rest of what was typed.
+      const tokens = args.trim().split(/\s+/).filter(Boolean);
+      const [action = "status", argument] = tokens;
+      const tail = tokens.slice(1).join(" ");
       const report = (text: string, level: "info" | "warning" | "error" = "info") => {
         if (ctx.hasUI) ctx.ui.notify(text, level);
         else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
@@ -1703,8 +1708,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "config") {
-          if (argument && argument.startsWith("set ")) {
-            const rest = argument.slice(4).trim();
+          if (tail.startsWith("set ")) {
+            const rest = tail.slice(4).trim();
             const spaceIndex = rest.indexOf(" ");
             if (spaceIndex === -1) { report("Usage: /warden config set <key> <value>", "warning"); return; }
             const keyPath = rest.slice(0, spaceIndex).trim();
@@ -1717,8 +1722,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             report(`Saved ${keyPath} = ${JSON.stringify(value)}.`);
             return;
           }
-          if (argument && argument.startsWith("get ")) {
-            const keyPath = argument.slice(4).trim();
+          if (tail.startsWith("get ")) {
+            const keyPath = tail.slice(4).trim();
             const current = readUserConfig();
             const value = getNestedValue(current as Record<string, unknown>, keyPath);
             const defaultValue = getNestedValue(defaultConfig() as unknown as Record<string, unknown>, keyPath);

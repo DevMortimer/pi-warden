@@ -6,7 +6,7 @@ Contents: [User config](#user-config) · [Project config](#project-config) · [R
 
 ## User config
 
-User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` opens the panel that edits it (`s` saves, `/warden config` again or `q` closes). Missing keys use these defaults:
+User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` opens the panel that edits it (`s` saves, `/warden config` again or `q` closes); `/warden config get <key>` prints one value without the panel. Missing keys use these defaults:
 
 ```json
 {
