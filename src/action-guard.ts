@@ -1,6 +1,7 @@
 import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { evaluateAction, textApproves } from "./guard.js";
 import type { EvaluateOptions, PreviousAction, TaskMessage, Verdict } from "./guard.js";
+import type { TaskSpine } from "./shape.js";
 import type { Judge } from "pi-typesafe";
 
 /** One tool call as the agent proposed it. `id` is Pi's tool call id, stable across hooks and retries. */
@@ -15,6 +16,8 @@ export interface Conversation {
   task: string | undefined;
   /** Scope context only: approval still comes from `task`, never from this history. */
   context?: readonly TaskMessage[] | undefined;
+  /** The task spine: the thread's goal and earlier user turns, so follow-ups are judged with the goal they belong to. Scope context only: it never authorizes; approval still comes from `task`. */
+  spine?: TaskSpine | undefined;
   /** Tool calls in the same assistant message, this one included; they are judged together. */
   siblings?: readonly ToolCallRef[] | undefined;
   /** The agent's own words in that message (or its latest text under this prompt); shared by the siblings. Explains, never authorizes. */
@@ -60,7 +63,7 @@ export class ActionGuard {
     // A hold happened under an earlier prompt and the user has since replied: ask whether the reply approves this action.
     const retryAfterHold = this.holdPending && this.lastHoldPrompt !== task;
     const judgeCall = (tool: string, input: Record<string, unknown>, previousActions?: readonly PreviousAction[]) => evaluateAction(
-      { tool, input, cwd: options.cwd, task, context: conversation.context, plan: conversation.plan },
+      { tool, input, cwd: options.cwd, task, context: conversation.context, plan: conversation.plan, spine: conversation.spine },
       { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, rules: options.rules, retryAfterHold, previousActions },
     );
     // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.

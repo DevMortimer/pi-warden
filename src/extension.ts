@@ -63,7 +63,7 @@ function classifyConscienceError(err: unknown): string {
   return "other";
 }
 import { openConfigPanel, openTracePanel } from "./panel.js";
-import { completeConfig, shapeWarning } from "./shape.js";
+import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
 import { buildCompactSnapshot, compactAppendix, type CompactSnapshot } from "./compact.js";
@@ -73,7 +73,7 @@ import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails,
 import type { GuardName, TraceEntry } from "./trace.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -690,6 +690,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         const truncationRecorded = event.prompt.length > 2000 ? [`prompt truncated from ${event.prompt.length} to 2000 chars`] : [];
         // Build recent context from session branch (up to 4 messages, 500 chars each)
         const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
+        const spine = taskSpine(branch, event.prompt);
         const recentMessages: Array<{ role: string; text: string }> = [];
         for (const entry of branch.slice(-6)) {
           if (recentMessages.length >= 4) break;
@@ -745,6 +746,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const result = await assess(
             redactedPrompt, recentContext, skills, toolInfos, activeSkills, suppliedSkills,
             { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile },
+            spine,
           );
           // Check generation after await
           if (conscienceGeneration !== myGeneration) {
@@ -920,11 +922,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (judge) {
         let toolInfos: Array<{ name: string; description: string }> = [];
         try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
-        const redactedPrompt = redact(latestUserPrompt(ctx) ?? "").slice(0, 2000);
+        const prompt = latestUserPrompt(ctx);
+        const redactedPrompt = redact(prompt ?? "").slice(0, 2000);
+        const spine = taskSpine(typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [], prompt ?? undefined);
         const activeSkills = cachedSkills.map(s => s.name);
         const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
         try {
-          const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile });
+          const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile }, spine);
           if (conscienceGeneration !== myGeneration) return;
           assessmentsThisPrompt++;
           needsReassessment = false;
@@ -1016,7 +1020,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     rulesCheck?.catch(() => undefined);
     const verdict = await actionGuard.inspect(
       call,
-      { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx) },
+      { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx), spine: taskSpine(ctx.sessionManager.getBranch()) },
       { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined },
     );
     if (verdict.source === "skipped") return;
@@ -1582,11 +1586,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const myGeneration = conscienceGeneration;
       let toolInfos: Array<{ name: string; description: string }> = [];
       try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
-      const redactedPrompt = redact(latestUserPrompt(ctx) ?? "").slice(0, 2000);
+      const prompt = latestUserPrompt(ctx);
+      const redactedPrompt = redact(prompt ?? "").slice(0, 2000);
+      const spine = taskSpine(typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [], prompt ?? undefined);
       const activeSkills = cachedSkills.map(s => s.name);
       const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
       try {
-        const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile });
+        const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile }, spine);
         if (conscienceGeneration !== myGeneration) return;
         assessmentsThisPrompt++;
         if (result.selected && result.selected.kind === selectedCapability.kind && result.selected.id === selectedCapability.id &&

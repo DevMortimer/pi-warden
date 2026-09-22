@@ -1,6 +1,7 @@
 import { isMode } from "./config.js";
 import type { WardenConfig } from "./config.js";
 import { resolveBackend } from "./backend.js";
+import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
@@ -99,4 +100,85 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
 
 export function shapeWarning(missing: readonly string[], loadedSchema: number | undefined): string {
   return `warden: config sections ${missing.join(", ")} are missing (config module schema ${loadedSchema ?? "pre-3"}, extension expects ${EXPECTED_SCHEMA}); those guards are off. This happens when pi-warden was updated while Pi was running: restart Pi (a /reload is not enough).`;
+}
+
+/* ─── Task spine ────────────────────────────────────────────────────── */
+
+/**
+ * The task spine the action guard and the conscience both judge with: the thread's first user turn (`goal`),
+ * the latest user turn (`task`), and up to four earlier user turns (`history`, newest first). A follow-up
+ * like "now the tests" is judged against the goal it belongs to, not on its words alone.
+ */
+export interface TaskSpine {
+  /** The first user turn of the thread. Always present; the goal the latest turn belongs to. */
+  goal: string;
+  /** The latest user turn, raw and unclipped: the request state already carries it as `task` (redacted, bounded) and approval reads only that field. */
+  task: string;
+  /** Earlier user turns between goal and task, newest first; empty when goal and task are the same turn. */
+  history: string[];
+}
+
+/** Whole-spine character budget. `task_history` is clipped first, then `goal`; `task` is never clipped here. */
+export const SPINE_CAP = 1200;
+/** Earlier turns the spine keeps, between goal and task. */
+export const SPINE_HISTORY_TURNS = 4;
+
+/** The slice of a Pi session entry the spine reads; structural, so shape.ts needs no host types. */
+export interface BranchMessageEntry {
+  type: string;
+  message?: { role: string; content?: string | ReadonlyArray<{ type: string; text?: string }> } | undefined;
+}
+
+/** User-turn texts in branch order: text parts joined with newlines, non-text parts skipped, blank turns dropped. */
+export function userTurnTexts(entries: readonly (BranchMessageEntry | undefined | null)[] | undefined): string[] {
+  const turns: string[] = [];
+  for (const entry of entries ?? []) {
+    if (!entry || entry.type !== "message") continue;
+    const message = entry.message;
+    if (!message || message.role !== "user") continue;
+    const content = message.content;
+    if (content === undefined) continue;
+    const text = typeof content === "string"
+      ? content
+      : content.filter(part => part.type === "text").map(part => part.text ?? "").join("\n");
+    if (text.trim()) turns.push(text.trim());
+  }
+  return turns;
+}
+
+/**
+ * The task spine over the branch entries: goal, task, and up to four earlier turns, newest first. Pure.
+ * The whole spine fits SPINE_CAP characters — `history` is clipped first (newest turns keep their text,
+ * the oldest give way), then `goal`; `task` is never clipped, because approval is judged from the request's
+ * `task` field and a clipped task would judge a request the user did not write. `goal` and `history` are
+ * redacted here; `task` stays raw because both request paths redact and bound it themselves. `latest`
+ * supplies the latest turn when the branch does not carry it yet (the conscience passes the prompt it is
+ * about to send); when the branch already carries it, that copy is dropped from `history`. No user turn at
+ * all: no spine. Scope context only — the spine never authorizes an action.
+ */
+export function taskSpine(entries: readonly (BranchMessageEntry | undefined | null)[] | undefined, latest?: string): TaskSpine | undefined {
+  const turns = userTurnTexts(entries);
+  const supplied = latest?.trim();
+  const last = turns.at(-1);
+  const task = supplied || last || "";
+  if (!task) return undefined;
+  const earlier = supplied
+    ? (last === task ? turns.slice(0, -1) : turns)
+    : turns.slice(0, -1);
+  let goal = redact(earlier[0] ?? task);
+  let history = earlier.slice(1).slice(-SPINE_HISTORY_TURNS).reverse().map(redact);
+  let budget = SPINE_CAP - goal.length - task.length;
+  const kept: string[] = [];
+  for (const turn of history) { // newest first: the oldest give way first
+    if (budget <= 0) break;
+    const take = turn.slice(0, Math.max(0, budget));
+    kept.push(take);
+    budget -= take.length;
+  }
+  history = kept;
+  const historyLength = history.reduce((n, turn) => n + turn.length, 0);
+  if (goal.length + task.length + historyLength > SPINE_CAP) {
+    goal = goal.slice(0, Math.max(0, SPINE_CAP - task.length - historyLength));
+  }
+  return { goal, task, history };
 }

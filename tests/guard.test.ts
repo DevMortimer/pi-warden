@@ -923,3 +923,21 @@ test("rules.enabled false keeps the rules file out of the action request; true a
 
   await rm(project, { recursive: true, force: true });
 });
+
+/* ─── Task spine in the request state ───────────────────────────────── */
+
+test("buildRequest carries the task spine as goal and task_history beside task, and the spine never replaces task", () => {
+  const spine = { goal: "add a rate limiter", task: "now the tests", history: ["wire it into the app", "run the suite"] };
+  const request = buildRequest(describeAction("bash", { command: "npm test" }, cwd), "now the tests", { spine });
+  assert.deepEqual(request.state.spine, { goal: "add a rate limiter", task_history: ["wire it into the app", "run the suite"] });
+  assert.equal(request.state.task, "now the tests", "task stays the latest user turn, the approval evidence");
+});
+
+test("no spine, no field; the spine is redacted like every other state field", () => {
+  assert.ok(!("spine" in buildRequest(describeAction("bash", { command: "ls" }, cwd), "t").state), "no spine, no field");
+  const request = buildRequest(describeAction("bash", { command: "ls" }, cwd), "t", {
+    spine: { goal: "use TOKEN=supersecretvalue1 to log in", task: "t", history: [] },
+  });
+  const spineState = (request.state as Record<string, unknown>).spine as { goal: string };
+  assert.ok(!spineState.goal.includes("supersecretvalue1"), "goal leaves redacted");
+});

@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- The off-task judgment and the conscience recommendation both judge with a task spine in the request state: the thread's first user turn (the goal), the latest user turn, and up to four earlier user turns (newest first). The whole spine is capped at 1200 characters — `task_history` is clipped first, then `goal`; the latest turn is never clipped. A follow-up like "now the tests" is no longer judged without the goal it belongs to. Approval still comes from the latest user turn only; the spine is context, never authorization, and no question wording or threshold moved (the conscience beta policy's pinned questionHash still matches).
 
 ## 0.40.2
 
