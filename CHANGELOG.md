@@ -11,10 +11,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Added
 - `/warden index` command: builds a local capability index with the session model. Entries carry `lead`, `useWhen`, `examples`, and `role` instead of bare names and descriptions. The conscience uses index entries when the source hash matches; bare descriptions are the fallback. Index files live at `~/.pi/agent/pi-warden/index/global.json` and `projects/<hash>.json`. Once-per-session nudge when the index is missing or stale.
-- Conscience disposition question now marks status-reporting messages as `no_gap`.
-- Per-candidate question judges the request, not the topic; a candidate that matches prompt words but does not serve the actual request belongs at the lowest level.
+- `conscience.advanceThreshold` config key (default `0.70`): separate gate for the disposition question's P(advance), independent of the usefulness threshold.
 - Capability roles (`research`, `evidence`, `execution`, `delegation`, `review`, `conversation`) in index entries and candidate state; role-based guidance in Score questions.
-- Conscience question wording iteration: disposition marks status-reporting, explanations, and opinion-asks as `no_gap`; Score instruction demotes topic-word-only matches while preserving explicit-ask candidates. Calibrated on 126 labelled rows (questionHash `b36e19f22160ac88`).
+
+### Changed
+- Replay script `scripts/conscience-replay.mjs` gates delivery on `advanceThreshold` (default 0.70) and reports pi-warden status rows below the gate.
+- Conscience question wording reverted to baseline after four calibration iterations; the disposition gate, not wording, was the lever.
+- Capability roles (`research`, `evidence`, `execution`, `delegation`, `review`, `conversation`) in index entries and candidate state; role-based guidance in Score questions.
 
 ## 0.38.2
 

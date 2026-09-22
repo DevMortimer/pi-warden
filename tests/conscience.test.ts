@@ -36,6 +36,7 @@ const fakeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceConfig
   maxSkillBytes: 32768,
   maxLoadedBytes: 65536,
   recommendThreshold: 1.0,
+  advanceThreshold: 0.70,
   loadThreshold: 1.0,
   ...overrides,
 });
@@ -638,5 +639,32 @@ test("conscience config defaults: recommend mode, tools enabled, thresholds at 1
   assert.equal(config.maxSkillBytes, 32768);
   assert.equal(config.maxLoadedBytes, 65536);
   assert.equal(config.recommendThreshold, 1.0);
+  assert.equal(config.advanceThreshold, 0.70);
   assert.equal(config.loadThreshold, 1.0);
+});
+
+/* ─── advanceThreshold gate ─────────────────────────────────────────── */
+
+test("assess returns below_threshold when pAdvance is below advanceThreshold", async () => {
+  // usefulness passes recommendThreshold (0.9) but pAdvance is 0.5 (below advanceThreshold 0.7)
+  const judge = selectionJudge("advance", "c1", 3, [0.05, 0.05, 0.65, 0.25], 0.5);
+  const result = await assess(
+    "test", "", defaultSkills, defaultTools, [], [],
+    defaultDeps(judge, { recommendThreshold: 0.9, advanceThreshold: 0.7 }),
+  );
+  assert.equal(result.skipReason, "below_threshold");
+  assert.equal(result.selected, null);
+  assert.equal(result.pAdvance, 0.5);
+});
+
+test("assess selects when both usefulness and pAdvance pass their thresholds", async () => {
+  // usefulness = 0.9, pAdvance = 0.8, both pass
+  const judge = selectionJudge("advance", "c1", 3, [0.05, 0.05, 0.65, 0.25], 0.8);
+  const result = await assess(
+    "test", "", defaultSkills, defaultTools, [], [],
+    defaultDeps(judge, { recommendThreshold: 0.9, advanceThreshold: 0.7 }),
+  );
+  assert.equal(result.selected!.id, "impeccable");
+  assert.ok(result.usefulness >= 0.9);
+  assert.ok(result.pAdvance >= 0.7);
 });

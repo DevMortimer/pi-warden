@@ -45,6 +45,7 @@ const budgetOf = argv => (argv.includes('--max-requests')
   : { cap: argv.includes('--yes') ? Number.POSITIVE_INFINITY : 2000, explicit: false });
 const { cap: maxRequests, explicit: explicitCap } = budgetOf(args);
 const timeoutMs = Number(value('timeout', 20000));
+const advanceThreshold = Number(value('advance-threshold', 0.70));
 const outDir = resolve('.local', 'calibration');
 const TOKENS_PER_REQUEST = 4000; // skill+tool catalogs are larger than action replay payloads
 
@@ -285,6 +286,7 @@ function report(records, skipped = 0, ownerLabels) {
   const out = line => { lines.push(line); console.log(line); };
 
   out(`\n# Conscience recommendation calibration on recorded sessions`);
+  out(`Advance threshold: ${advanceThreshold}.`);
   if (skipped) out(`!! PARTIAL: the request budget stopped the run with ${skipped} assessments never made.`);
   if (ownerLabels) out(`Labelled subset: ${ownerLabels.size} prompts.`);
   out(`${turns.length} labelled turns (${turns.filter(t => t.error).length} errors).`);
@@ -308,7 +310,7 @@ function report(records, skipped = 0, ownerLabels) {
   out(`\n## Recommendation: precision/recall vs any-usage (threshold sweep)`);
   out(`  threshold | selected | precision | recall | unnecessary (no-usage FP)`);
   for (const t of [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]) {
-    const predictedPositive = turns.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= t);
+    const predictedPositive = turns.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= advanceThreshold);
     const tp = predictedPositive.filter(r => r.anyTool).length;
     const fp = predictedPositive.filter(r => !r.anyTool).length;
     const fn = turns.filter(r => r.anyTool).length - tp;
@@ -321,7 +323,7 @@ function report(records, skipped = 0, ownerLabels) {
   out(`\n## Skill recommendation: precision/recall vs skill-used-first`);
   out(`  threshold | selected-skill | precision | recall`);
   for (const t of [0.50, 0.60, 0.70, 0.80, 0.90]) {
-    const predictedSkill = turns.filter(r => r.disposition === 'advance' && r.selectedKind === 'skill' && r.usefulness >= t && r.pAdvance >= t);
+    const predictedSkill = turns.filter(r => r.disposition === 'advance' && r.selectedKind === 'skill' && r.usefulness >= t && r.pAdvance >= advanceThreshold);
     const tp = predictedSkill.filter(r => r.firstUsage?.kind === 'skill').length;
     const fp = predictedSkill.filter(r => r.firstUsage?.kind !== 'skill').length;
     const fn = withSkill.length - tp;
@@ -400,7 +402,7 @@ function report(records, skipped = 0, ownerLabels) {
     out(`\n  threshold | y-picks survive | n-picks rescued | new picks on unpicked`);
     const allKeys = new Set([...labelled.map(t => `${t.session}#${t.index}`), ...[...ownerLabels.keys()]]);
     for (const t of [0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95]) {
-      const selectedNow = new Set(labelledNoErr.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= t).map(r => `${r.session}#${r.index}`));
+      const selectedNow = new Set(labelledNoErr.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= advanceThreshold).map(r => `${r.session}#${r.index}`));
       const ySurvive = ownerY.filter(r => selectedNow.has(`${r.session}#${r.index}`)).length;
       const nRescued = ownerN.filter(r => !selectedNow.has(`${r.session}#${r.index}`)).length;
       // New picks: labelled rows not in ownerY that are now selected
@@ -420,6 +422,15 @@ function report(records, skipped = 0, ownerLabels) {
     if (statusKeys.length > 0) {
       const noGap = statusKeys.filter(t => t.disposition === 'no_gap').length;
       out(`\n  Status-update prompts (${statusKeys.length}): ${noGap} no_gap (${pct(noGap / statusKeys.length)}), ${statusKeys.length - noGap} other.`);
+      // Pi-warden status rows with pAdvance below the advance threshold
+      const pwStatus = statusKeys.filter(t => {
+        const label = ownerLabels.get(`${t.session}#${t.index}`);
+        return label && label.project === 'pi-warden';
+      });
+      if (pwStatus.length > 0) {
+        const belowGate = pwStatus.filter(t => t.pAdvance < advanceThreshold).length;
+        out(`  Pi-warden status rows with pAdvance < ${advanceThreshold}: ${belowGate}/${pwStatus.length}.`);
+      }
     }
 
     // Precision at the gate threshold (on labelled picks only: y and n)
@@ -428,7 +439,7 @@ function report(records, skipped = 0, ownerLabels) {
       return h === 'y' || h === 'n';
     });
     for (const t of [0.80, 0.85, 0.90, 0.95]) {
-      const predicted = labelledPicks.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= t);
+      const predicted = labelledPicks.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= advanceThreshold);
       const tp = predicted.filter(r => {
         const label = ownerLabels.get(`${r.session}#${r.index}`);
         return label && label.helpful === 'y';
@@ -445,7 +456,7 @@ function report(records, skipped = 0, ownerLabels) {
     let bestThreshold;
     let bestPrecision;
     for (const t of [0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50]) {
-      const predicted = labelledPicks.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= t);
+      const predicted = labelledPicks.filter(r => r.disposition === 'advance' && r.usefulness >= t && r.pAdvance >= advanceThreshold);
       if (predicted.length < 10) continue;
       const tp = predicted.filter(r => {
         const label = ownerLabels.get(`${r.session}#${r.index}`);
@@ -464,7 +475,7 @@ function report(records, skipped = 0, ownerLabels) {
     }
     if (bestThreshold !== undefined) {
       const qHash = labelledNoErr[0]?.questionHash ?? 'unknown';
-      out(`\n  Candidate policy: threshold=${bestThreshold.toFixed(2)}, precision=${pct(bestPrecision)}, n≥10 gate met=${bestPrecision >= 0.95}`);
+      out(`\n  Candidate policy: threshold=${bestThreshold.toFixed(2)}, advanceThreshold=${advanceThreshold}, precision=${pct(bestPrecision)}, n≥10 gate met=${bestPrecision >= 0.95}`);
       out(`  questionHash=${qHash}`);
     }
   }
@@ -516,6 +527,7 @@ async function run() {
       const cols = line.split('\t');
       if (cols.length >= 7) {
         ownerLabels.set(cols[0], {
+          project: cols[1],
           recommendedSkill: cols[3],
           pUseful: Number(cols[4]),
           agentDidFirst: cols[5],

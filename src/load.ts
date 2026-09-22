@@ -35,6 +35,7 @@ export interface ConsciencePolicy {
   questionHash: string;
   model: string;
   recommendThreshold: number;
+  advanceThreshold: number;
   loadThreshold: number;
 }
 

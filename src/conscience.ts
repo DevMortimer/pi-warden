@@ -163,7 +163,7 @@ export function buildBatchQuestions(
   // Shared disposition question
   const dispositionKey = "conscience_disposition";
   questions[dispositionKey] = choice(
-    `Disposition of the current request. A message that reports status, shares context, narrates what the user is doing elsewhere, asks for an explanation, or asks the agent what it thinks, without telling the agent to do something specific, is no_gap; select nothing on it. Only advance when the message gives the agent a task or explicit instruction.`,
+    `Disposition of the current request. A message that reports status, shares context, or narrates what the user is doing elsewhere, without asking the agent to do anything, is no_gap; select nothing on it.`,
     {
       advance: "A useful next step can be taken now.",
       awaiting_user: "The assistant has already asked for information and must wait.",
@@ -176,7 +176,7 @@ export function buildBatchQuestions(
   for (const { opaqueId, candidate } of batch) {
     idMap.set(opaqueId, candidate);
     questions[opaqueId] = score(
-      `Judge candidates.${opaqueId} against what the user is asking the agent to do now in task, not against the subjects the prompt mentions in passing; only demote a candidate that matches words in the prompt but has no explicit ask in the request; a candidate that directly serves an explicit ask keeps its level. When the request needs information the repository cannot supply, a research-role candidate serves the request; when the request is about the repository's own code or behaviour, an evidence-role candidate does.`,
+      `Judge candidates.${opaqueId} against what the user is asking the agent to do now in task, not against the subjects the prompt mentions in passing; a candidate that matches words in the prompt but does not serve the actual request belongs at the lowest level. When the request needs information the repository cannot supply, a research-role candidate serves the request; when the request is about the repository's own code or behaviour, an evidence-role candidate does.`,
       [...SCORE_LEVELS],
     );
   }
@@ -575,7 +575,7 @@ export async function assess(
   }
 
   const passesUsefulness = bestScored.usefulness >= config.recommendThreshold;
-  const passesAdvance = pAdvance >= config.recommendThreshold;
+  const passesAdvance = pAdvance >= (config.advanceThreshold ?? 0.70);
   if (!passesUsefulness || !passesAdvance) {
     return { disposition, selected: null, usefulness: bestScored.usefulness, pAdvance, questionHash: hash, elapsedMs, requestCount, skipReason: "below_threshold" };
   }

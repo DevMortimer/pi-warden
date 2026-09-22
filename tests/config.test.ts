@@ -312,3 +312,17 @@ test("floor: invalid value falls back to base", () => {
   const project = applyProjectOverrides(base, { action: { floor: "bogus" } });
   assert.equal(project.action.floor, "level", "invalid value does not override user setting");
 });
+
+test("conscience.advanceThreshold defaults to 0.70", () => {
+  const config = defaultConfig();
+  assert.equal(config.conscience.advanceThreshold, 0.70);
+});
+
+test("conscience.advanceThreshold clamps to [0, 1]", () => {
+  const config1 = applyUserOverrides(defaultConfig(), { conscience: { advanceThreshold: -0.5 } });
+  assert.equal(config1.conscience.advanceThreshold, 0, "negative clamps to 0");
+  const config2 = applyUserOverrides(defaultConfig(), { conscience: { advanceThreshold: 1.5 } });
+  assert.equal(config2.conscience.advanceThreshold, 1, "above 1 clamps to 1");
+  const config3 = applyUserOverrides(defaultConfig(), { conscience: { advanceThreshold: 0.85 } });
+  assert.equal(config3.conscience.advanceThreshold, 0.85, "valid value passes through");
+});

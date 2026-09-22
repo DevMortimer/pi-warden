@@ -179,24 +179,27 @@ Second measurement after crew-a's `feat/conscience-index`: index entries with `r
 | best candidate threshold | 0.95 (91%, n=12) | 0.75 (90%, n=10) | lower, comparable |
 | question hash | 1ee518cb4a54b980 | fb2d35042f667b3c | changed |
 
-Candidate policy (not active): `{ questionHash: "fb2d35042f667b3c", model: "jev-1.13.0", recommendThreshold: 0.75, loadThreshold: 1.0 }`. 90% precision on the labelled subset (n=10); does not meet the 95% gate. Full tables: `eval/reports/2026-09-22-conscience-remeasure/`.
+Candidate policy (not active): `{ questionHash: "fb2d35042f667b3c", model: "jev-1.13.0", recommendThreshold: 0.75, advanceThreshold: 0.70, loadThreshold: 1.0 }`. 90% precision on the labelled subset (n=10); does not meet the 95% gate. Full tables: `eval/reports/2026-09-22-conscience-remeasure/`.
 
-#### Iteration on question wording (2026-09-22)
+#### Disposition gate (2026-09-22)
 
-Four iterations on the disposition and Score question instructions against 126 labelled rows (20 y, 18 n, 88 unpicked, 12 pi-warden status prompts). Live judge, real key.
+Four wording iterations on the disposition and Score question instructions against 126 labelled rows (20 y, 18 n, 88 unpicked, 12 pi-warden status prompts). None accepted:
+- Iteration 2 (`b36e19f`): marked explanations and opinion-asks as `no_gap`, which suppressed five technical-thinking-partner y-picks (max usefulness 0.67 in all runs; the index description is the lever, not the wording).
+- Iterations 3 and 4: broke the pi-warden status rows back to 4/12.
 
-| metric | baseline (fb2d350) | best iteration (b36e19f) | target |
-| --- | --- | --- | --- |
-| status-update no_gap (pi-warden) | 4/12 | 10/12 | ≥10/12 |
-| y-picks survive at 0.80 | 5/20 | 4/20 | ≥12/20 |
-| n-picks rescued at 0.80 | 17/18 | 17/18 | ≥15/18 |
-| new picks on unpicked | 1 | 3 | no rejectable |
+The lever was not wording but the `pAdvance` gate on the four-way disposition probability. Good bug-report picks score 0.93–0.97 usefulness but 0.4–0.9 `pAdvance`; the 0.80 gate on a choice probability drops them.
 
-Final disposition wording: `"Disposition of the current request. A message that reports status, shares context, narrates what the user is doing elsewhere, asks for an explanation, or asks the agent what it thinks, without telling the agent to do something specific, is no_gap; select nothing on it. Only advance when the message gives the agent a task or explicit instruction."`
+| wording | pAdvance gate | y survive /20 | n rescued /18 | new picks /88 | precision | status below gate /12 |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline (`fb2d350`) | 0.80 | 5 | 17 | 1 | 5/6 | 11 |
+| baseline | **0.70** | **9** | **17** | **4** | **9/10** | **11** |
+| iteration 2 (`b36e19f`) | 0.80 | 4 | 17 | 3 | 4/5 | 12 |
+| iteration 2 | 0.70 | 6 | 16 | 5 | 6/8 | 11 |
+| live run (baseline wording, advanceThreshold=0.70) | 0.70 | 9 | 17 | 2 | 9/10 | 11 |
 
-Final Score wording: `"Judge candidates.{id} against what the user is asking the agent to do now in task, not against the subjects the prompt mentions in passing; only demote a candidate that matches words in the prompt but has no explicit ask in the request; a candidate that directly serves an explicit ask keeps its level. When the request needs information the repository cannot supply, a research-role candidate serves the request; when the request is about the repository's own code or behaviour, an evidence-role candidate does."`
+`conscience.advanceThreshold` (default 0.70) separates the disposition gate from the usefulness gate. The 12/20 y target was never reachable: the five technical-thinking-partner rows never exceed 0.67 usefulness in any iteration, even when disposition advances. That is a Score/index-description problem, out of scope here. 9/20 is the ceiling with the current index.
 
-questionHash: `b36e19f22160ac88`. Status-update target met; y-pick target not met (some owner y-picks are inherently status-like prompts that the judge correctly scores as no_gap).
+Candidate policy (not active): `{ questionHash: "fb2d35042f667b3c", model: "jev-1.13.0", recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }`.
 
 ### Path rules
 

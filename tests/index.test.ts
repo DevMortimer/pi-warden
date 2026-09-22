@@ -443,7 +443,7 @@ test("Score question instruction contains request-not-topic sentence", () => {
   const q = questions.c1 as { type: string; instructions: string };
   assert.ok(q.instructions.includes("against what the user is asking"), "should contain request-not-topic instruction");
   assert.ok(q.instructions.includes("not against the subjects the prompt mentions in passing"), "should mention prompt subjects");
-  assert.ok(q.instructions.includes("no explicit ask"), "should mention no explicit ask");
+  assert.ok(q.instructions.includes("lowest level"), "should mention lowest level for word-matching candidates");
 });
 
 test("Score question instruction contains role-based guidance", () => {
@@ -460,8 +460,7 @@ test("disposition question instruction contains status-update clause", () => {
   const q = questions.conscience_disposition as { type: string; instructions: string };
   assert.ok(q.instructions.includes("reports status"), "should mention status reporting");
   assert.ok(q.instructions.includes("no_gap"), "should mention no_gap");
-  assert.ok(q.instructions.includes("asks for an explanation"), "should mention explanation-asking");
-  assert.ok(q.instructions.includes("asks the agent what it thinks"), "should mention opinion-asking");
+  assert.ok(q.instructions.includes("without asking the agent to do anything"), "should mention no-action clause");
 });
 
 test("disposition question is unchanged beyond the status clause", () => {
