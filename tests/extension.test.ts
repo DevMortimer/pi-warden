@@ -1721,6 +1721,14 @@ test("/warden config set and get keep the whole value", async () => {
   assert.equal(customCalls.length, 0, "neither one is a reason to open the editor");
 });
 
+test("/warden config set or get with no key reports usage instead of opening the panel", async () => {
+  await grantConsent();
+  await runCommand("config set");
+  await runCommand("config get");
+  assert.equal(customCalls.length, 0, "an incomplete command is not a request for the panel");
+  assert.equal(notices.filter(notice => /Usage: \/warden config (set|get)/.test(notice.text)).length, 2);
+});
+
 test("the widget is a clickable component: a left click toggles a non-capturing right-hand sidebar, live-updating", async () => {
   await grantConsent();
   nextAnswers = { irreversible: 0.2, off_task: 0.1, scope: "expected_step" };

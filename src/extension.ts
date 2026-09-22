@@ -1708,6 +1708,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "config") {
+          // A bare "set" or "get" is an incomplete command, not a request for the panel; tell the user rather than opening it.
+          if (tail === "set" || tail === "get") { report("Usage: /warden config set <key> <value> or /warden config get <key>", "warning"); return; }
           if (tail.startsWith("set ")) {
             const rest = tail.slice(4).trim();
             const spaceIndex = rest.indexOf(" ");
