@@ -50,6 +50,7 @@ const SAMPLE_ENTRY: IndexEntry = {
     "write a regression test for issue #42",
   ],
   thin: false,
+  sourceQuality: "strong",
 };
 
 const SAMPLE_TOOL_ENTRY: IndexEntry = {
@@ -70,6 +71,7 @@ const SAMPLE_TOOL_ENTRY: IndexEntry = {
     "search for all TypeSafe calls",
   ],
   thin: false,
+  sourceQuality: "strong",
 };
 
 /* ─── Setup / teardown ──────────────────────────────────────────────── */
@@ -192,6 +194,7 @@ test("entry over 700 chars is truncated at bullet boundary", () => {
     inputs: "x",
     examples: ["ex1 " + longWord, "ex2 " + longWord, "ex3 " + longWord],
     thin: false,
+    sourceQuality: "strong",
   };
   assert.ok(JSON.stringify(base).length > 700, `fixture should exceed 700, got ${JSON.stringify(base).length}`);
   const result = validateEntry(base);
@@ -501,6 +504,106 @@ test("nudge fires once per session with missing index", () => {
   assert.equal(missing.length, 1, "all skills missing when no index");
   assert.equal(missing[0], "skill-a");
 });
+
+/* ─── sourceQuality ────────────────────────────────────────────────── */
+
+test("validateEntry accepts strong, weak, and thin sourceQuality", () => {
+  const strong = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "strong" });
+  assert.ok(strong, "strong should be accepted");
+  assert.equal(strong!.sourceQuality, "strong");
+
+  const weak = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "weak", improve: "add situations and examples" });
+  assert.ok(weak, "weak should be accepted");
+  assert.equal(weak!.sourceQuality, "weak");
+  assert.equal(weak!.improve, "add situations and examples");
+
+  const thin = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "thin", improve: "expand to include when-to-use triggers" });
+  assert.ok(thin, "thin should be accepted");
+  assert.equal(thin!.sourceQuality, "thin");
+  assert.equal(thin!.improve, "expand to include when-to-use triggers");
+});
+
+test("validateEntry rejects invalid sourceQuality", () => {
+  const result = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "meh" });
+  assert.equal(result, null, "invalid sourceQuality should be rejected");
+});
+
+test("validateEntry defaults sourceQuality to strong when absent", () => {
+  const { sourceQuality, ...noSq } = SAMPLE_ENTRY;
+  const result = validateEntry(noSq);
+  assert.ok(result, "should accept entry without sourceQuality");
+  assert.equal(result!.sourceQuality, "strong");
+});
+
+test("validateEntry caps improve at 200 characters", () => {
+  const longImprove = "x".repeat(250);
+  const result = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "weak", improve: longImprove });
+  assert.ok(result, "should accept");
+  assert.ok(result!.improve!.length <= 200, `improve should be capped at 200, got ${result!.improve!.length}`);
+});
+
+test("indexStats groups weak and thin entries into sourceQualityReport", () => {
+  const index: IndexFile = {
+    formatVersion: 1,
+    builtAt: "t",
+    model: "m",
+    entries: [
+      { ...SAMPLE_ENTRY, sourceQuality: "strong" },
+      { ...SAMPLE_ENTRY, name: "weak-skill", sourceQuality: "weak", improve: "add examples" },
+      { ...SAMPLE_ENTRY, name: "thin-skill", sourceQuality: "thin", improve: "too short, expand" },
+      { ...SAMPLE_TOOL_ENTRY, sourceQuality: "strong" },
+    ],
+  };
+  const stats = indexStats(index);
+  assert.equal(stats.sourceQualityReport.length, 2, "should have 2 weak/thin entries");
+  const names = stats.sourceQualityReport.map(r => r.name);
+  assert.ok(names.includes("weak-skill"));
+  assert.ok(names.includes("thin-skill"));
+  assert.ok(!names.includes("test-skill"), "strong entry should not appear");
+});
+
+test("indexStats sourceQualityReport groups thin and weak entries", () => {
+  const index: IndexFile = {
+    formatVersion: 1,
+    builtAt: "t",
+    model: "m",
+    entries: [
+      { ...SAMPLE_ENTRY, name: "weak-a", sourceQuality: "weak", improve: "add triggers" },
+      { ...SAMPLE_ENTRY, name: "thin-a", sourceQuality: "thin", improve: "expand" },
+      { ...SAMPLE_ENTRY, name: "weak-b", sourceQuality: "weak", improve: "add examples" },
+    ],
+  };
+  const stats = indexStats(index);
+  assert.equal(stats.sourceQualityReport.length, 3);
+  const thinEntries = stats.sourceQualityReport.filter(r => r.sourceQuality === "thin");
+  const weakEntries = stats.sourceQualityReport.filter(r => r.sourceQuality === "weak");
+  assert.equal(thinEntries.length, 1, "should have 1 thin entry");
+  assert.equal(thinEntries[0]!.name, "thin-a");
+  assert.equal(weakEntries.length, 2, "should have 2 weak entries");
+});
+
+test("validateEntry rejects improve over 200 characters", () => {
+  const result = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "weak", improve: "x".repeat(201) });
+  assert.ok(result, "should accept (improve is capped, not rejected)");
+  assert.equal(result!.improve!.length, 200, "should be capped at 200");
+});
+
+test("thin boolean is derived from sourceQuality", () => {
+  const thinEntry = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "thin", improve: "expand" });
+  assert.ok(thinEntry);
+  assert.equal(thinEntry!.thin, true, "thin sourceQuality should produce thin=true");
+
+  const strongEntry = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "strong" });
+  assert.ok(strongEntry);
+  assert.equal(strongEntry!.thin, false, "strong sourceQuality should produce thin=false");
+
+  // Model writes thin:true with sourceQuality:strong — derived thin wins
+  const mismatch = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "strong", thin: true } as unknown as Record<string, unknown>);
+  assert.ok(mismatch);
+  assert.equal(mismatch!.thin, false, "derived thin should override model's thin:true");
+});
+
+/* ─── Nudge tests ───────────────────────────────────────────────────── */
 
 test("indexCoverage with current index shows all covered", () => {
   const hash = fileContentHash(FAKE_SKILL_FILE);

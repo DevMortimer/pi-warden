@@ -1964,8 +1964,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           globalIndexFile = validatedGlobal;
           projectIndexFile = validatedProject;
           // Report
-          const globalStats = validatedGlobal ? indexStats(validatedGlobal) : { globalEntries: 0, projectEntries: 0, thinSources: [], truncatedCount: 0 };
-          const projectStats = validatedProject ? indexStats(validatedProject) : { globalEntries: 0, projectEntries: 0, thinSources: [], truncatedCount: 0 };
+          const globalStats = validatedGlobal ? indexStats(validatedGlobal) : { globalEntries: 0, projectEntries: 0, thinSources: [], truncatedCount: 0, sourceQualityReport: [] };
+          const projectStats = validatedProject ? indexStats(validatedProject) : { globalEntries: 0, projectEntries: 0, thinSources: [], truncatedCount: 0, sourceQualityReport: [] };
           const totalEntries = globalStats.globalEntries + projectStats.projectEntries;
           const allThin = [...globalStats.thinSources, ...projectStats.thinSources];
           const totalTruncated = globalStats.truncatedCount + projectStats.truncatedCount;
@@ -1974,7 +1974,21 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             allThin.length ? `Thin sources: ${allThin.join(", ")}.` : undefined,
             totalTruncated ? `${totalTruncated} truncated at bullet boundary.` : undefined,
           ].filter(Boolean);
-          report(lines.join(" "));
+          const qualityReport = [...globalStats.sourceQualityReport, ...projectStats.sourceQualityReport]
+            .sort((a, b) => (a.sourceQuality === "thin" ? 0 : 1) - (b.sourceQuality === "thin" ? 0 : 1));
+          if (qualityReport.length === 0) {
+            lines.push("", "Every description states when to use it.");
+          } else {
+            lines.push("", "These descriptions would recommend better with a rewrite:");
+            const shown = qualityReport.slice(0, 25);
+            for (const q of shown) {
+              lines.push(`  ${q.name} (${q.kind}): ${q.improve}`);
+            }
+            if (qualityReport.length > 25) {
+              lines.push(`  ... and ${qualityReport.length - 25} more.`);
+            }
+          }
+          report(lines.join("\n"));
           return;
         }
         report(`Unknown action "${action}". Use: ${actions.join(", ")}.`, "warning");

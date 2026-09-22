@@ -16,6 +16,8 @@ export { fileContentHash, toolSourceHash } from "./hashing.js";
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
 
+export type SourceQuality = "strong" | "weak" | "thin";
+
 export interface IndexEntry {
   kind: "skill" | "tool";
   name: string;
@@ -28,6 +30,9 @@ export interface IndexEntry {
   inputs: string;
   examples: string[];
   thin: boolean;
+  sourceQuality: SourceQuality;
+  /** One sentence, at most 20 words, saying what the description lacks. Present for weak/thin entries. */
+  improve?: string;
   /** True when the entry was truncated at a bullet boundary. */
   truncated?: boolean;
   /** Advertised location — kept local-only, never copied into judge state. */
@@ -111,6 +116,8 @@ function isIndexFile(value: unknown): value is IndexFile {
 const MAX_ENTRY_CHARS = 700;
 
 const VALID_ROLES: ReadonlySet<string> = new Set(["research", "evidence", "execution", "delegation", "review", "conversation"]);
+const VALID_SOURCE_QUALITY: ReadonlySet<string> = new Set(["strong", "weak", "thin"]);
+const MAX_IMPROVE_CHARS = 200;
 
 /** Validate a single entry; returns the sanitized entry or null on failure. */
 export function validateEntry(entry: unknown): IndexEntry | null {
@@ -126,8 +133,16 @@ export function validateEntry(entry: unknown): IndexEntry | null {
   if (!Array.isArray(e.notWhen)) return null;
   if (typeof e.inputs !== "string") return null;
   if (!Array.isArray(e.examples) || e.examples.length < 2 || e.examples.length > 3) return null;
-  if (typeof e.thin !== "boolean") return null;
-  // Sanitize all string fields
+  // sourceQuality: absent defaults to strong; any other invalid value rejects the entry
+  if (e.sourceQuality !== undefined && (typeof e.sourceQuality !== "string" || !VALID_SOURCE_QUALITY.has(e.sourceQuality))) return null;
+  const sq: SourceQuality = typeof e.sourceQuality === "string" ? e.sourceQuality as SourceQuality : "strong";
+  // thin boolean must equal sourceQuality === "thin"
+  const thin = sq === "thin";
+  // improve: optional string, capped at MAX_IMPROVE_CHARS, required for weak/thin
+  let improve: string | undefined;
+  if (sq === "weak" || sq === "thin") {
+    improve = typeof e.improve === "string" ? sanitizeDescription(String(e.improve)).slice(0, MAX_IMPROVE_CHARS) : "";
+  }
   const sanitized: IndexEntry = {
     kind: e.kind,
     name: String(e.name),
@@ -139,8 +154,10 @@ export function validateEntry(entry: unknown): IndexEntry | null {
     notWhen: (e.notWhen as unknown[]).map(s => sanitizeDescription(String(s))),
     inputs: sanitizeDescription(String(e.inputs)),
     examples: (e.examples as unknown[]).map(s => sanitizeDescription(String(s))),
-    thin: e.thin,
+    thin,
+    sourceQuality: sq,
   };
+  if (improve) sanitized.improve = improve;
   if (e._location) sanitized._location = String(e._location);
   // Check serialized size
   const serialized = JSON.stringify(sanitized);
@@ -210,18 +227,29 @@ export function validateIndex(raw: unknown): IndexFile | undefined {
   return { formatVersion: 1, builtAt: obj.builtAt, model: obj.model, entries };
 }
 
-export function indexStats(index: IndexFile): { globalEntries: number; projectEntries: number; thinSources: string[]; truncatedCount: number } {
+export interface SourceQualityReport {
+  name: string;
+  kind: "skill" | "tool";
+  sourceQuality: SourceQuality;
+  improve: string;
+}
+
+export function indexStats(index: IndexFile): { globalEntries: number; projectEntries: number; thinSources: string[]; truncatedCount: number; sourceQualityReport: SourceQualityReport[] } {
   let globalEntries = 0;
   let projectEntries = 0;
   const thinSources: string[] = [];
   let truncatedCount = 0;
+  const sourceQualityReport: SourceQualityReport[] = [];
   for (const entry of index.entries) {
     if (entry.scope === "global") globalEntries++;
     else projectEntries++;
     if (entry.thin) thinSources.push(entry.name);
     if (entry.truncated) truncatedCount++;
+    if (entry.sourceQuality === "weak" || entry.sourceQuality === "thin") {
+      sourceQualityReport.push({ name: entry.name, kind: entry.kind, sourceQuality: entry.sourceQuality, improve: entry.improve ?? "" });
+    }
   }
-  return { globalEntries, projectEntries, thinSources, truncatedCount };
+  return { globalEntries, projectEntries, thinSources, truncatedCount, sourceQualityReport };
 }
 
 /* ─── Prompt builder ─────────────────────────────────────────────────── */
@@ -278,7 +306,9 @@ export function buildIndexPrompt(
     '      "notWhen": ["<situation> do <alternative>"] (0-2 bullets, each ending with what to do instead),',
     '      "inputs": "<one line describing what it needs>",',
     '      "examples": ["<prompt phrasing 1>", "<prompt phrasing 2>"] (2-3 phrasings a user would type),',
-    '      "thin": true when the source description is under 80 characters or the skill body under 300 characters',
+    '      "thin": true when the source description is under 80 characters or the skill body under 300 characters,',
+    '      "sourceQuality": "strong" | "weak" | "thin",',
+    '      "improve": "<one sentence, at most 20 words, saying what the description lacks>" (only for weak or thin entries)',
     "    }",
     "  ]",
     "}",
