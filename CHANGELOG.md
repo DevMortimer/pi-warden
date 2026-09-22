@@ -7,6 +7,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 ## Unreleased
 
 ### Docs
+- Conscience policy measurement on the per-project corpus with the split disposition gate: beta candidate policy record (89% pooled precision, 74/83; 95% gate not met), comparison against the first measurement and the remeasure, labelled-subset reproduction of the live-run gate numbers.
 - Conscience recommendation remeasurement after index + question changes: before-and-after table, labelled-subset comparison, research-role tool rate, candidate policy update.
 
 ### Added

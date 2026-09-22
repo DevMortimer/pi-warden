@@ -199,7 +199,7 @@ The lever was not wording but the `pAdvance` gate on the four-way disposition pr
 
 `conscience.advanceThreshold` (default 0.70) separates the disposition gate from the usefulness gate. The 12/20 y target was never reachable: the five technical-thinking-partner rows never exceed 0.67 usefulness in any iteration, even when disposition advances. That is a Score/index-description problem, out of scope here. 9/20 is the ceiling with the current index.
 
-Candidate policy (not active): `{ questionHash: "fb2d35042f667b3c", model: "jev-1.13.0", recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }`.
+Candidate policy (beta candidate): `{ questionHash: "fb2d35042f667b3c", model: "jev-1.13.0", recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }`. Pooled precision at this policy on the 2026-09-22 per-project corpus: 89% (74/83); on the owner-labelled subset 90% (9/10). The 95% precision gate with n ≥ 10 is not met. Full tables: `eval/reports/2026-09-22-conscience-policy/`.
 
 ### Path rules
 
