@@ -474,6 +474,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let projectIndexFile: IndexFile | undefined;
   let indexNudged = false;
   let indexRunning = false;
+  let indexWritePaths: string[] = [];
   /** The final messages of the current run, for restatement measurement. */
   const finals = new RestatementWindow();
   /** Returns true when the message was delivered; false means it was recorded in the trace only. */
@@ -968,6 +969,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const judge = judgeFor(config);
     const siblings = siblingToolCalls(ctx);
     const call = { id: event.toolCallId, tool: event.toolName, input: event.input };
+    // Index command writes its own output files — exempt them from the action guard.
+    if (indexRunning && event.toolName === "write") {
+      const writePath = typeof (event.input as Record<string, unknown>).path === "string" ? (event.input as Record<string, unknown>).path as string : "";
+      if (indexWritePaths.includes(writePath)) {
+        record(ctx, config, "action", "index write, expected", ["trigger: before_tool_use", `path: ${redact(writePath)}`]);
+        return;
+      }
+    }
     // The rules request carries the written content and the rule text, so it goes out beside the action request, not inside it.
     const rulesCheck = config.rules.enabled && (event.toolName === "write" || event.toolName === "edit")
       ? rulesGuard.inspect(call, siblings, { cwd: ctx.cwd, config: config.rules, judge, timeoutMs: config.timeoutMs, signal: ctx.signal })
@@ -1889,6 +1898,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const preGlobal = snap(globalPath);
           const preProject = snap(projectPath);
           indexRunning = true;
+          indexWritePaths = [globalPath, projectPath];
           if (ctx.hasUI) ctx.ui.notify("pi-warden: Building capability index...", "info");
           try {
             for (let attempt = 0; attempt < 40; attempt++) {
@@ -1901,9 +1911,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             const detail = err instanceof Error ? err.message : String(err);
             report(`pi-warden index failed: ${detail}.`, "error");
             indexRunning = false;
+            indexWritePaths = [];
             return;
           } finally {
             indexRunning = false;
+            indexWritePaths = [];
           }
           const postGlobal = snap(globalPath);
           const postProject = snap(projectPath);
@@ -1915,34 +1927,43 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           }
           const rawGlobal = readIndex(globalPath);
           const rawProject = readIndex(projectPath);
-          // The model may write the old full format or the new entries-only format.
-          // Accept both; warden always writes the final metadata.
-          let validatedGlobal = rawGlobal ? validateIndex(rawGlobal) : undefined;
-          let validatedProject = rawProject ? validateIndex(rawProject) : undefined;
+          // Accept both the full format and entries-only; warden always writes the final metadata.
+          let globalResult = rawGlobal ? validateIndex(rawGlobal) : { file: undefined, rejections: [] };
+          let projectResult = rawProject ? validateIndex(rawProject) : { file: undefined, rejections: [] };
           // Entries-only fallback: read raw JSON and extract entries array
-          if (!validatedGlobal) {
+          if (!globalResult.file && rawGlobal) {
             try {
               const parsed = JSON.parse(readFileSync(globalPath, "utf8")) as unknown;
               if (parsed && typeof parsed === "object" && Array.isArray((parsed as { entries?: unknown }).entries)) {
-                validatedGlobal = validateIndex({ formatVersion: 1, builtAt: "", model: "", entries: (parsed as { entries: unknown }).entries });
+                globalResult = validateIndex({ formatVersion: 1, builtAt: "", model: "", entries: (parsed as { entries: unknown }).entries });
               }
-            } catch (err) { record(ctx, config, "conscience", `global entries-only parse: ${err instanceof Error ? err.message : String(err)}`, ["trigger: warden_index"]); }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              if (!msg.includes("ENOENT")) record(ctx, config, "conscience", `global entries-only parse: ${msg}`, ["trigger: warden_index"]);
+            }
           }
-          if (!validatedProject) {
+          if (!projectResult.file && rawProject) {
             try {
               const parsed = JSON.parse(readFileSync(projectPath, "utf8")) as unknown;
               if (parsed && typeof parsed === "object" && Array.isArray((parsed as { entries?: unknown }).entries)) {
-                validatedProject = validateIndex({ formatVersion: 1, builtAt: "", model: "", entries: (parsed as { entries: unknown }).entries });
+                projectResult = validateIndex({ formatVersion: 1, builtAt: "", model: "", entries: (parsed as { entries: unknown }).entries });
               }
-            } catch (err) { record(ctx, config, "conscience", `project entries-only parse: ${err instanceof Error ? err.message : String(err)}`, ["trigger: warden_index"]); }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              // ENOENT is normal (no project index yet); only trace actual parse errors
+              if (!msg.includes("ENOENT")) record(ctx, config, "conscience", `project entries-only parse: ${msg}`, ["trigger: warden_index"]);
+            }
           }
-          if ((rawGlobal && !validatedGlobal) || (rawProject && !validatedProject)) {
-            const issues: string[] = [];
-            if (rawGlobal && !validatedGlobal) issues.push("global index: invalid format or over-cap entry");
-            if (rawProject && !validatedProject) issues.push("project index: invalid format or over-cap entry");
-            report(`Index rejected: ${issues.join("; ")}. Old files kept.`, "warning");
+          // Collect rejections from both files
+          const allRejections: string[] = [];
+          if (rawGlobal && !globalResult.file) allRejections.push(...globalResult.rejections.map(r => `global index: entry ${r}`));
+          if (rawProject && !projectResult.file) allRejections.push(...projectResult.rejections.map(r => `project index: entry ${r}`));
+          if (allRejections.length > 0) {
+            report(`Index rejected:\n${allRejections.map(r => `  ${r}`).join("\n")}\nOld files kept.`, "warning");
             return;
           }
+          const validatedGlobal = globalResult.file;
+          const validatedProject = projectResult.file;
           // Recompute sourceHash from actual skill files; the model's hash is untrusted.
           const recomputeHashes = (file: IndexFile) => {
             for (const entry of file.entries) {
@@ -1954,13 +1975,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           };
           if (validatedGlobal) recomputeHashes(validatedGlobal);
           if (validatedProject) recomputeHashes(validatedProject);
-          // Warden writes metadata: formatVersion, builtAt, model from the real session.
           const realModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown";
           const builtAt = new Date().toISOString();
           const buildFile = (file: IndexFile): IndexFile => ({ formatVersion: 1, builtAt, model: realModel, entries: file.entries });
           if (validatedGlobal) writeIndex(globalPath, buildFile(validatedGlobal));
           if (validatedProject) writeIndex(projectPath, buildFile(validatedProject));
-          // Reload indexes into session state
           globalIndexFile = validatedGlobal;
           projectIndexFile = validatedProject;
           // Report

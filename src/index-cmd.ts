@@ -119,26 +119,30 @@ const VALID_ROLES: ReadonlySet<string> = new Set(["research", "evidence", "execu
 const VALID_SOURCE_QUALITY: ReadonlySet<string> = new Set(["strong", "weak", "thin"]);
 const MAX_IMPROVE_CHARS = 200;
 
-/** Validate a single entry; returns the sanitized entry or null on failure. */
-export function validateEntry(entry: unknown): IndexEntry | null {
-  if (typeof entry !== "object" || entry === null) return null;
+export type EntryValidation = { entry: IndexEntry } | { reject: string };
+
+function reject(e: Record<string, unknown>, field: string, msg: string): EntryValidation {
+  const name = typeof e.name === "string" ? `"${e.name}"` : `position ${"unknown"}`;
+  return { reject: `${name}: ${field} ${msg}` };
+}
+
+/** Validate a single entry; returns the sanitized entry or a rejection reason. */
+export function validateEntry(entry: unknown, position?: number): EntryValidation {
+  if (typeof entry !== "object" || entry === null) return { reject: `position ${position ?? "unknown"}: not an object` };
   const e = entry as Record<string, unknown>;
-  if (e.kind !== "skill" && e.kind !== "tool") return null;
-  if (typeof e.name !== "string" || !e.name) return null;
-  if (e.scope !== "global" && e.scope !== "project") return null;
-  if (typeof e.sourceHash !== "string") return null;
-  if (typeof e.role !== "string" || !VALID_ROLES.has(e.role)) return null;
-  if (typeof e.lead !== "string" || !e.lead) return null;
-  if (!Array.isArray(e.useWhen) || e.useWhen.length < 2 || e.useWhen.length > 4) return null;
-  if (!Array.isArray(e.notWhen)) return null;
-  if (typeof e.inputs !== "string") return null;
-  if (!Array.isArray(e.examples) || e.examples.length < 2 || e.examples.length > 3) return null;
-  // sourceQuality: absent defaults to strong; any other invalid value rejects the entry
-  if (e.sourceQuality !== undefined && (typeof e.sourceQuality !== "string" || !VALID_SOURCE_QUALITY.has(e.sourceQuality))) return null;
+  if (e.kind !== "skill" && e.kind !== "tool") return reject(e, "kind", "must be \"skill\" or \"tool\"");
+  if (typeof e.name !== "string" || !e.name) return reject(e, "name", "must be a non-empty string");
+  if (e.scope !== "global" && e.scope !== "project") return reject(e, "scope", "must be \"global\" or \"project\"");
+  if (typeof e.sourceHash !== "string") return reject(e, "sourceHash", "must be a string");
+  if (typeof e.role !== "string" || !VALID_ROLES.has(e.role)) return reject(e, "role", `must be one of: ${[...VALID_ROLES].join(", ")}`);
+  if (typeof e.lead !== "string" || !e.lead) return reject(e, "lead", "must be a non-empty string");
+  if (!Array.isArray(e.useWhen) || e.useWhen.length < 2 || e.useWhen.length > 4) return reject(e, "useWhen", "must have 2 to 4 items");
+  if (!Array.isArray(e.notWhen)) return reject(e, "notWhen", "must be an array");
+  if (typeof e.inputs !== "string") return reject(e, "inputs", "must be a string");
+  if (!Array.isArray(e.examples) || e.examples.length < 2 || e.examples.length > 3) return reject(e, "examples", "must have 2 to 3 items");
+  if (e.sourceQuality !== undefined && (typeof e.sourceQuality !== "string" || !VALID_SOURCE_QUALITY.has(e.sourceQuality))) return reject(e, "sourceQuality", "must be \"strong\", \"weak\", or \"thin\"");
   const sq: SourceQuality = typeof e.sourceQuality === "string" ? e.sourceQuality as SourceQuality : "strong";
-  // thin boolean must equal sourceQuality === "thin"
   const thin = sq === "thin";
-  // improve: optional string, capped at MAX_IMPROVE_CHARS, required for weak/thin
   let improve: string | undefined;
   if (sq === "weak" || sq === "thin") {
     improve = typeof e.improve === "string" ? sanitizeDescription(String(e.improve)).slice(0, MAX_IMPROVE_CHARS) : "";
@@ -159,15 +163,13 @@ export function validateEntry(entry: unknown): IndexEntry | null {
   };
   if (improve) sanitized.improve = improve;
   if (e._location) sanitized._location = String(e._location);
-  // Check serialized size
   const serialized = JSON.stringify(sanitized);
   if (serialized.length > MAX_ENTRY_CHARS) {
-    // Truncate at a bullet boundary
     const truncated = truncateEntry(sanitized);
-    if (truncated) return truncated;
-    return null; // Could not truncate sensibly
+    if (truncated) return { entry: truncated };
+    return reject(e, "entries", `exceeds ${MAX_ENTRY_CHARS} chars and cannot be truncated`);
   }
-  return sanitized;
+  return { entry: sanitized };
 }
 
 /** Truncate an entry at a bullet boundary (end of a useWhen or notWhen item). */
@@ -204,27 +206,33 @@ function truncateEntry(entry: IndexEntry): IndexEntry | null {
   return null;
 }
 
-/** Validate an entire index file. Returns the validated file or undefined on failure. */
-export function validateIndex(raw: unknown): IndexFile | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
+export interface ValidationResult {
+  file?: IndexFile;
+  rejections: string[];
+}
+
+/** Validate an entire index file. Returns the validated file and any per-entry rejections. */
+export function validateIndex(raw: unknown): ValidationResult {
+  if (typeof raw !== "object" || raw === null) return { rejections: ["not an object"] };
   const obj = raw as Record<string, unknown>;
-  if (obj.formatVersion !== 1) return undefined;
-  if (typeof obj.builtAt !== "string") return undefined;
-  if (typeof obj.model !== "string") return undefined;
-  if (!Array.isArray(obj.entries)) return undefined;
+  if (obj.formatVersion !== 1) return { rejections: ["formatVersion must be 1"] };
+  if (typeof obj.builtAt !== "string") return { rejections: ["builtAt must be a string"] };
+  if (typeof obj.model !== "string") return { rejections: ["model must be a string"] };
+  if (!Array.isArray(obj.entries)) return { rejections: ["entries must be an array"] };
   const entries: IndexEntry[] = [];
+  const rejections: string[] = [];
   let truncatedCount = 0;
-  for (const entry of obj.entries) {
-    const validated = validateEntry(entry);
-    if (validated) {
-      entries.push(validated);
-      if (validated.truncated) truncatedCount++;
+  for (let i = 0; i < obj.entries.length; i++) {
+    const result = validateEntry(obj.entries[i], i + 1);
+    if ("entry" in result) {
+      entries.push(result.entry);
+      if (result.entry.truncated) truncatedCount++;
     } else {
-      // Invalid entry: reject entire file
-      return undefined;
+      rejections.push(result.reject);
     }
   }
-  return { formatVersion: 1, builtAt: obj.builtAt, model: obj.model, entries };
+  if (rejections.length > 0) return { rejections };
+  return { file: { formatVersion: 1, builtAt: obj.builtAt, model: obj.model, entries }, rejections: [] };
 }
 
 export interface SourceQualityReport {

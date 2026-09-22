@@ -105,6 +105,12 @@ function mkdtempSync(prefix: string): string {
   return path;
 }
 
+/** Extract the entry from a validation result, or throw if rejected. */
+function validEntry(result: ReturnType<typeof validateEntry>): IndexEntry {
+  if ("entry" in result) return result.entry;
+  throw new Error(`expected entry, got rejection: ${result.reject}`);
+}
+
 /* ─── buildIndexPrompt ──────────────────────────────────────────────── */
 
 test("buildIndexPrompt contains both output paths", () => {
@@ -150,35 +156,34 @@ test("buildIndexPrompt contains role definitions", () => {
 /* ─── validateEntry ─────────────────────────────────────────────────── */
 
 test("validateEntry accepts a valid entry", () => {
-  const result = validateEntry(SAMPLE_ENTRY);
-  assert.ok(result, "should accept valid entry");
-  assert.equal(result!.name, "test-skill");
-  assert.equal(result!.role, "evidence");
+  const result = validEntry(validateEntry(SAMPLE_ENTRY));
+  assert.equal(result.name, "test-skill");
+  assert.equal(result.role, "evidence");
 });
 
 test("validateEntry rejects entry without role", () => {
   const invalid = { ...SAMPLE_ENTRY, role: undefined };
   delete (invalid as Record<string, unknown>).role;
-  assert.equal(validateEntry(invalid), null, "should reject entry without role");
+  const result = validateEntry(invalid);
+  assert.ok(!result || "reject" in result, "should reject entry without role");
 });
 
 test("validateEntry rejects entry with invalid role", () => {
   const invalid = { ...SAMPLE_ENTRY, role: "invalid_role" };
-  assert.equal(validateEntry(invalid), null, "should reject invalid role");
+  const result = validateEntry(invalid);
+  assert.ok(!result || "reject" in result, "should reject invalid role");
 });
 
 test("validateEntry scrubs seeded path from lead", () => {
   const entry = { ...SAMPLE_ENTRY, lead: "Read /Users/admin/secret/file.ts for context" };
-  const result = validateEntry(entry);
-  assert.ok(result, "should accept");
-  assert.ok(!result!.lead.includes("/Users/admin"), "path should be scrubbed");
+  const result = validEntry(validateEntry(entry));
+  assert.ok(!result.lead.includes("/Users/admin"), "path should be scrubbed");
 });
 
 test("validateEntry scrubs seeded credential from lead", () => {
   const entry = { ...SAMPLE_ENTRY, lead: "Use token sk-live-abcdefghij1234567890 for auth" };
-  const result = validateEntry(entry);
-  assert.ok(result, "should accept");
-  assert.ok(!result!.lead.includes("sk-live"), "credential should be scrubbed");
+  const result = validEntry(validateEntry(entry));
+  assert.ok(!result.lead.includes("sk-live"), "credential should be scrubbed");
 });
 
 /* ─── Entry truncation ──────────────────────────────────────────────── */
@@ -197,10 +202,9 @@ test("entry over 700 chars is truncated at bullet boundary", () => {
     sourceQuality: "strong",
   };
   assert.ok(JSON.stringify(base).length > 700, `fixture should exceed 700, got ${JSON.stringify(base).length}`);
-  const result = validateEntry(base);
-  assert.ok(result, `should accept and truncate`);
-  assert.ok(result!.truncated, "should be marked truncated");
-  assert.ok(JSON.stringify(result!).length <= 700, `serialized should be <= 700, got ${JSON.stringify(result!).length}`);
+  const result = validEntry(validateEntry(base));
+  assert.ok(result.truncated, "should be marked truncated");
+  assert.ok(JSON.stringify(result).length <= 700, `serialized should be <= 700, got ${JSON.stringify(result).length}`);
 });
 
 /* ─── validateIndex ─────────────────────────────────────────────────── */
@@ -213,8 +217,9 @@ test("validateIndex accepts valid file", () => {
     entries: [SAMPLE_ENTRY, SAMPLE_TOOL_ENTRY],
   };
   const result = validateIndex(file);
-  assert.ok(result, "should accept valid file");
-  assert.equal(result!.entries.length, 2);
+  assert.ok(result.file, "should accept valid file");
+  assert.equal(result.file!.entries.length, 2);
+  assert.equal(result.rejections.length, 0);
 });
 
 test("validateIndex rejects file with invalid entry", () => {
@@ -225,12 +230,15 @@ test("validateIndex rejects file with invalid entry", () => {
     entries: [SAMPLE_ENTRY, { ...SAMPLE_TOOL_ENTRY, role: "bad" } as unknown as IndexEntry],
   };
   const result = validateIndex(file);
-  assert.equal(result, undefined, "should reject file with invalid entry");
+  assert.equal(result.file, undefined, "should reject file with invalid entry");
+  assert.ok(result.rejections.length > 0, "should have rejections");
 });
 
 test("validateIndex rejects wrong formatVersion", () => {
   const file = { formatVersion: 2, builtAt: "x", model: "y", entries: [] };
-  assert.equal(validateIndex(file), undefined);
+  const result = validateIndex(file);
+  assert.equal(result.file, undefined);
+  assert.ok(result.rejections.length > 0);
 });
 
 /* ─── readIndex / writeIndex round-trip ──────────────────────────────── */
@@ -508,38 +516,33 @@ test("nudge fires once per session with missing index", () => {
 /* ─── sourceQuality ────────────────────────────────────────────────── */
 
 test("validateEntry accepts strong, weak, and thin sourceQuality", () => {
-  const strong = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "strong" });
-  assert.ok(strong, "strong should be accepted");
-  assert.equal(strong!.sourceQuality, "strong");
+  const strong = validEntry(validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "strong" }));
+  assert.equal(strong.sourceQuality, "strong");
 
-  const weak = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "weak", improve: "add situations and examples" });
-  assert.ok(weak, "weak should be accepted");
-  assert.equal(weak!.sourceQuality, "weak");
-  assert.equal(weak!.improve, "add situations and examples");
+  const weak = validEntry(validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "weak", improve: "add situations and examples" }));
+  assert.equal(weak.sourceQuality, "weak");
+  assert.equal(weak.improve, "add situations and examples");
 
-  const thin = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "thin", improve: "expand to include when-to-use triggers" });
-  assert.ok(thin, "thin should be accepted");
-  assert.equal(thin!.sourceQuality, "thin");
-  assert.equal(thin!.improve, "expand to include when-to-use triggers");
+  const thin = validEntry(validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "thin", improve: "expand to include when-to-use triggers" }));
+  assert.equal(thin.sourceQuality, "thin");
+  assert.equal(thin.improve, "expand to include when-to-use triggers");
 });
 
 test("validateEntry rejects invalid sourceQuality", () => {
   const result = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "meh" });
-  assert.equal(result, null, "invalid sourceQuality should be rejected");
+  assert.ok(!result || "reject" in result, "invalid sourceQuality should be rejected");
 });
 
 test("validateEntry defaults sourceQuality to strong when absent", () => {
   const { sourceQuality, ...noSq } = SAMPLE_ENTRY;
-  const result = validateEntry(noSq);
-  assert.ok(result, "should accept entry without sourceQuality");
-  assert.equal(result!.sourceQuality, "strong");
+  const result = validEntry(validateEntry(noSq));
+  assert.equal(result.sourceQuality, "strong");
 });
 
 test("validateEntry caps improve at 200 characters", () => {
   const longImprove = "x".repeat(250);
-  const result = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "weak", improve: longImprove });
-  assert.ok(result, "should accept");
-  assert.ok(result!.improve!.length <= 200, `improve should be capped at 200, got ${result!.improve!.length}`);
+  const result = validEntry(validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "weak", improve: longImprove }));
+  assert.ok(result.improve!.length <= 200, `improve should be capped at 200, got ${result.improve!.length}`);
 });
 
 test("indexStats groups weak and thin entries into sourceQualityReport", () => {
@@ -583,27 +586,89 @@ test("indexStats sourceQualityReport groups thin and weak entries", () => {
 });
 
 test("validateEntry rejects improve over 200 characters", () => {
-  const result = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "weak", improve: "x".repeat(201) });
-  assert.ok(result, "should accept (improve is capped, not rejected)");
-  assert.equal(result!.improve!.length, 200, "should be capped at 200");
+  const result = validEntry(validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "weak", improve: "x".repeat(201) }));
+  assert.equal(result.improve!.length, 200, "should be capped at 200");
 });
 
 test("thin boolean is derived from sourceQuality", () => {
-  const thinEntry = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "thin", improve: "expand" });
-  assert.ok(thinEntry);
-  assert.equal(thinEntry!.thin, true, "thin sourceQuality should produce thin=true");
+  const thinEntry = validEntry(validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "thin", improve: "expand" }));
+  assert.equal(thinEntry.thin, true, "thin sourceQuality should produce thin=true");
 
-  const strongEntry = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "strong" });
-  assert.ok(strongEntry);
-  assert.equal(strongEntry!.thin, false, "strong sourceQuality should produce thin=false");
+  const strongEntry = validEntry(validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "strong" }));
+  assert.equal(strongEntry.thin, false, "strong sourceQuality should produce thin=false");
 
   // Model writes thin:true with sourceQuality:strong — derived thin wins
-  const mismatch = validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "strong", thin: true } as unknown as Record<string, unknown>);
-  assert.ok(mismatch);
-  assert.equal(mismatch!.thin, false, "derived thin should override model's thin:true");
+  const mismatch = validEntry(validateEntry({ ...SAMPLE_ENTRY, sourceQuality: "strong", thin: true } as unknown as Record<string, unknown>));
+  assert.equal(mismatch.thin, false, "derived thin should override model's thin:true");
 });
 
 /* ─── Nudge tests ───────────────────────────────────────────────────── */
+
+/* ─── Defect 2: rejection names the entry ──────────────────────────── */
+
+test("validateIndex rejection names the entry and field", () => {
+  const file = {
+    formatVersion: 1,
+    builtAt: "t",
+    model: "m",
+    entries: [
+      SAMPLE_ENTRY,
+      { ...SAMPLE_ENTRY, name: "bad-skill", useWhen: ["only one"] },
+    ],
+  };
+  const result = validateIndex(file);
+  assert.equal(result.file, undefined, "should reject");
+  assert.ok(result.rejections.length > 0, "should have rejections");
+  assert.ok(result.rejections.some(r => r.includes("bad-skill")), `rejection should name entry, got: ${result.rejections.join(", ")}`);
+  assert.ok(result.rejections.some(r => r.includes("useWhen")), `rejection should name field, got: ${result.rejections.join(", ")}`);
+});
+
+test("validateIndex rejection for invalid kind names the field", () => {
+  const file = {
+    formatVersion: 1,
+    builtAt: "t",
+    model: "m",
+    entries: [
+      { kind: "invalid", name: "x", scope: "global", sourceHash: "h", role: "evidence", lead: "Do thing", useWhen: ["A", "B"], notWhen: [], inputs: "x", examples: ["ex1", "ex2"], thin: false },
+    ],
+  };
+  const result = validateIndex(file);
+  assert.equal(result.file, undefined);
+  assert.ok(result.rejections.some(r => r.includes("kind")), `should name kind field, got: ${result.rejections.join(", ")}`);
+});
+
+test("validateIndex over-cap entry is truncated, not rejected", () => {
+  const longWord = "word ".repeat(10);
+  const file = {
+    formatVersion: 1,
+    builtAt: "t",
+    model: "m",
+    entries: [
+      { ...SAMPLE_ENTRY, useWhen: ["A", "B", "C", "D"].map(i => `When ${i}: ${longWord}`), notWhen: ["N1: " + longWord, "N2: " + longWord], examples: ["ex1 " + longWord, "ex2 " + longWord, "ex3 " + longWord] },
+    ],
+  };
+  const result = validateIndex(file);
+  assert.ok(result.file, "over-cap entry should be truncated, not rejected");
+  assert.ok(result.file!.entries[0]!.truncated, "entry should be marked truncated");
+  assert.equal(result.rejections.length, 0, "should have no rejections");
+});
+
+test("validateEntry over-cap entry is truncated, not rejected", () => {
+  const longWord = "word ".repeat(10);
+  const entry = { ...SAMPLE_ENTRY, useWhen: ["A", "B", "C", "D"].map(i => `When ${i}: ${longWord}`), notWhen: ["N1: " + longWord, "N2: " + longWord], examples: ["ex1 " + longWord, "ex2 " + longWord, "ex3 " + longWord] };
+  const result = validateEntry(entry);
+  assert.ok("entry" in result, "over-cap should be truncated, not rejected");
+  assert.ok(result.entry.truncated, "should be marked truncated");
+});
+
+/* ─── Defect 3: missing file is silent ──────────────────────────────── */
+
+test("readIndex returns undefined for missing file without throwing", () => {
+  const result = readIndex(join(temporary, "nonexistent.json"));
+  assert.equal(result, undefined, "missing file should return undefined");
+});
+
+/* ─── indexCoverage with current index shows all covered ──────────── */
 
 test("indexCoverage with current index shows all covered", () => {
   const hash = fileContentHash(FAKE_SKILL_FILE);
