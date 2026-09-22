@@ -244,7 +244,7 @@ function anyToolCalled(turn) {
 
 function fakeConfig() {
   const base = defaultConfig().conscience;
-  return { ...base, recommendThreshold: 0, loadThreshold: 0 };
+  return { ...base, enabled: true, recommendThreshold: 0, loadThreshold: 0 };
 }
 
 async function runAssessment(turn, skills, toolCatalog, judge, indexes) {
