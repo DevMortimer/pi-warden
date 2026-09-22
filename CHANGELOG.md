@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.39.0
+
 ### Docs
 - README quick start now carries the four setup commands (`/warden enable`, `/warden init`, `/warden index`, `/warden test`) and the beta note; `docs/commands.md` gains rows for `/warden init --force` and `/warden index`.
 - Conscience policy measurement on the per-project corpus with the split disposition gate: beta candidate policy record (89% pooled precision, 74/83; 95% gate not met), comparison against the first measurement and the remeasure, labelled-subset reproduction of the live-run gate numbers.
