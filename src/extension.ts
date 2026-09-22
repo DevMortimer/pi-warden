@@ -10,7 +10,7 @@ const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ 
 import { authState, createTypeSafe, describeAuth } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
-import { backendHost, disclosureFor, judgeOptions, keyAvailable, resolveBackend } from "./backend.js";
+import { backendHost, disclosureFor, judgeOptions, keyEnvFor, resolveBackend } from "./backend.js";
 import { ActionGuard } from "./action-guard.js";
 import type { ToolCallRef } from "./action-guard.js";
 import { ArmingTracker, unparseableArmingRules } from "./arming.js";
@@ -367,7 +367,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   /** A consent flag is not proof that judgments happen; check the key state for the chosen backend. */
   const judgeFor = (config: WardenConfig): TypeSafe | undefined => {
     if (!consentGiven(config) || budgetExhausted) return undefined;
-    if (!keyAvailable(config.typesafeBackend, process.env, () => authState().usable)) return undefined;
+    if (!authState({ backend: config.typesafeBackend }).usable) return undefined;
     return client ??= createTypeSafe(judgeOptions(config));
   };
   const noteError = (ctx: ExtensionContext, message: string, code: string | undefined) => {
@@ -1666,7 +1666,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       try {
         const config = configFor(ctx);
         if (action === "status") {
-          const auth = describeAuth();
+          const auth = describeAuth(authState({ backend: config.typesafeBackend }));
           const source = consentSource(config);
           const usage = client?.getUsage();
           const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.rules.enabled && "rules", config.context.enabled && "context", config.runaway.enabled && "runaway", config.subagent.enabled && "subagent triage", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
@@ -1750,15 +1750,16 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "enable") {
-          if (!ctx.hasUI) { report("Consent needs an interactive session. For headless runs set PI_WARDEN_ENABLED=1 and TYPESAFE_API_KEY explicitly.", "warning"); return; }
+          if (!ctx.hasUI) { report(`Consent needs an interactive session. For headless runs set PI_WARDEN_ENABLED=1 and ${keyEnvFor(config.typesafeBackend)} explicitly.`, "warning"); return; }
           if (!await ctx.ui.confirm("Enable TypeSafe judgments for pi-warden?", disclosure)) return;
-          // One flow: consent, then a key if none is configured yet (hidden input, verified, stored for every pi-typesafe consumer).
-          const key = await ensureApiKey(ctx);
+          // One flow: consent, then a key if none is configured yet. TypeSafe prompts, verifies, and stores the key for every
+          // pi-typesafe consumer; any other backend has no login, so a missing key is reported with the variable to set.
+          const key = await ensureApiKey(ctx, { backend: config.typesafeBackend });
           if (!key) { report("No key entered; pi-warden stays on pattern checks only. Run /warden enable again when you have a key from console.typesafe.ai.", "warning"); return; }
           const path = setUserSetting("typesafe", true);
           client = undefined;
           budgetExhausted = false;
-          report(`TypeSafe judgments enabled and saved to ${path}${key.login ? `; key verified (${key.login.models} model${key.login.models === 1 ? "" : "s"}) and stored at ${key.login.path}` : ` using the ${key.source === "stored" ? "stored key" : "key from TYPESAFE_API_KEY"}`}. This stays on in new sessions until /warden disable.`);
+          report(`TypeSafe judgments enabled and saved to ${path}${key.login ? `; key verified (${key.login.models} model${key.login.models === 1 ? "" : "s"}) and stored at ${key.login.path}` : ` using the ${key.source === "stored" ? "stored key" : `key from ${keyEnvFor(config.typesafeBackend)}`}`}. This stays on in new sessions until /warden disable.`);
           return;
         }
         if (action === "disable") {

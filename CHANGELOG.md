@@ -9,6 +9,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Fixed
 - An `rm` in a compound command (`rm -rf build && npm test`) no longer makes every word after it a separate target. Target extraction now runs per shell segment, so a compound command stops producing one Jev question per trailing token and no longer trips TypeSafe's 32-question limit on long command lines. A single `rm` naming more targets than the request budget still can; chunking is separate.
 
+## 0.40.0
+
+### Fixed
+
+- `/warden status` and `/warden enable` now describe the key of the configured `typesafeBackend`. With `"openrouter"`, status said "TypeSafe key: missing" on the same line that counted judgments, and enable opened the TypeSafe login prompt, so consent could not be saved. Both call pi-typesafe's backend-aware `authState` and `ensureApiKey`; with no OpenRouter key, enable reports the variable to set instead of prompting (#57).
+- The headless hint and the enable confirmation name the backend's own environment variable.
+
+### Changed
+
+- `src/backend.ts` reads hosts and key variables from pi-typesafe's `DECISIONS_BACKENDS` instead of keeping its own copy; `keyAvailable` is replaced by `authState({ backend }).usable`, which also honours a rejected key. Requires pi-typesafe 0.7.0.
+
 ## 0.39.1
 
 ### Changed
