@@ -14,6 +14,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 - Conscience disposition question now marks status-reporting messages as `no_gap`.
 - Per-candidate question judges the request, not the topic; a candidate that matches prompt words but does not serve the actual request belongs at the lowest level.
 - Capability roles (`research`, `evidence`, `execution`, `delegation`, `review`, `conversation`) in index entries and candidate state; role-based guidance in Score questions.
+- Conscience question wording iteration: disposition marks status-reporting, explanations, and opinion-asks as `no_gap`; Score instruction demotes topic-word-only matches while preserving explicit-ask candidates. Calibrated on 126 labelled rows (questionHash `b36e19f22160ac88`).
 
 ## 0.38.2
 
