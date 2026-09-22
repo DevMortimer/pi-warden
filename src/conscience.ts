@@ -575,7 +575,7 @@ export async function assess(
   }
 
   const passesUsefulness = bestScored.usefulness >= config.recommendThreshold;
-  const passesAdvance = pAdvance >= (config.advanceThreshold ?? 0.70);
+  const passesAdvance = pAdvance >= config.advanceThreshold;
   if (!passesUsefulness || !passesAdvance) {
     return { disposition, selected: null, usefulness: bestScored.usefulness, pAdvance, questionHash: hash, elapsedMs, requestCount, skipReason: "below_threshold" };
   }

@@ -10,7 +10,10 @@
  *
  * Billable and explicit: run it on purpose. --dry-run prints the estimate; a run above 2000
  * requests needs --yes. --max-requests N caps the run even with --yes. Output is owner-only
- * under .local/calibration/ and never committed.
+ * under .local/calibration/ and never committed. Prompt excerpts (Linear ids, branch names,
+ * anything matching CON-[0-9]+) stay out of anything written to eval/reports/: the selected-candidates
+ * table omits the prompt column unless PI_WARDEN_OWNER_REPORTS=1. Report scrubbing greps for
+ * CON-[0-9]+ alongside the standard secret/path scrub before a report is committed.
  *
  *   node scripts/conscience-replay.mjs --dry-run              # counts and estimate
  *   node scripts/conscience-replay.mjs --project . --yes      # sessions of one project
@@ -377,9 +380,10 @@ function report(records, skipped = 0, ownerLabels) {
 
   if (selected.length) {
     out(`\n## Selected candidates (first 25)`);
+    out(`  Prompt excerpts are owner-only (see script header); they are not written to committed reports.`);
     for (const r of selected.slice(0, 25)) {
       const label = r.firstUsage ? `${r.firstUsage.kind}:${r.firstUsage.id}` : 'none';
-      out(`  ${r.selectedId?.padEnd(30)} P=${r.usefulness.toFixed(2)} disp=${r.disposition} label=${label} | ${clip(r.prompt, 100)}`);
+      out(`  ${r.selectedId?.padEnd(30)} P=${r.usefulness.toFixed(2)} disp=${r.disposition} label=${label}${process.env.PI_WARDEN_OWNER_REPORTS === "1" ? ` | ${clip(r.prompt, 100)}` : ""}`);
     }
   }
 

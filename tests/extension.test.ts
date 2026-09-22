@@ -7,6 +7,7 @@ import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-codin
 import type { Extension, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
 import { defaultConfig } from "../src/config.js";
+import { setActivePolicy } from "../src/load.js";
 import { _testSetIndexRunning } from "../src/extension.js";
 import { indexPath } from "../src/index-cmd.js";
 
@@ -176,6 +177,8 @@ beforeEach(async () => {
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   await rm(configPath(), { force: true });
+  // Each test controls the activation gate itself; the harness judge's model never matches the beta policy.
+  setActivePolicy(null);
   await sessionStart();
   widgets.length = 0;
 });
@@ -1974,12 +1977,22 @@ const writeConscienceConfig = (overrides: Record<string, unknown> = {}) =>
     typesafe: true, notices: false,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
-    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, loadThreshold: 1.0, ...overrides },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0, ...overrides },
     ...STACK_BAR,
   }));
 
+/**
+ * The harness judge answers with model "jev-test"; the activation gate compares the policy's model
+ * against it. A one-skill catalog hashes to fb2d35042f667b3c, a two-skill catalog to 127335eac64670bf
+ * (the hash covers the question keys, so it moves with the batch shape).
+ */
+const activateTestPolicy = (questionHash = "fb2d35042f667b3c") => {
+  setActivePolicy({ questionHash, model: "jev-test", recommendThreshold: 0, advanceThreshold: 0, loadThreshold: 1.0 });
+};
+
 test("conscience: no-tool lifecycle fixture for recommend mode", async () => {
   await writeConscienceConfig();
+  activateTestPolicy("127335eac64670bf");
   const skills = [
     conscienceSkill("impeccable", "Frontend interface design, polish, and UX"),
     conscienceSkill("tdd", "Test-driven development"),
@@ -2000,6 +2013,7 @@ test("conscience: no-tool lifecycle fixture for load mode", async () => {
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
+  activateTestPolicy();
   const skills = [{
     name: "impeccable",
     description: "Frontend interface design, polish, and UX",
@@ -2022,7 +2036,7 @@ test("conscience: default threshold 1.0 traces assessment but delivers nothing",
     typesafe: true, notices: false,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
-    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 1.0, loadThreshold: 1.0 },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 },
     ...STACK_BAR,
   }));
   const skills = [conscienceSkill("impeccable", "UI design")];
@@ -2039,6 +2053,7 @@ test("conscience: default threshold 1.0 traces assessment but delivers nothing",
 
 test("conscience: lowered threshold delivers one message via hook return", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
+  activateTestPolicy();
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
   sentMessages.length = 0;
@@ -2059,7 +2074,7 @@ test("conscience: steer budget exhausted blocks delivery", async () => {
     typesafe: true, notices: false, steerBudget: 0,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
-    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, loadThreshold: 1.0 },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0 },
     ...STACK_BAR,
   }));
   const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
@@ -2071,6 +2086,7 @@ test("conscience: steer budget exhausted blocks delivery", async () => {
 
 test("conscience: session_start during assessment produces stale trace", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
+  activateTestPolicy();
   const skills = [conscienceSkill("impeccable", "UI design")];
   // The test harness mock fetch answers immediately from nextAnswers.
   // To test stale, we verify that session_start bumps generation and that
@@ -2358,6 +2374,7 @@ test("conscience: load-mode lifecycle fixture delivers skill body", async () => 
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
+  activateTestPolicy();
   const skills = [{
     name: "test-skill",
     description: "A test skill",
@@ -2404,6 +2421,7 @@ test("conscience: load delivers body and sets instructions_supplied", async () =
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
+  activateTestPolicy();
   const skills = [{
     name: "my-skill", description: "My skill", filePath: skillPath,
     baseDir: join(temporary, ".pi", "skills", "my-skill"),
@@ -2426,6 +2444,7 @@ test("conscience: judge answer with path does not bypass load safety", async () 
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
+  activateTestPolicy();
   const skills = [{
     name: "safe-skill", description: "Safe", filePath: skillPath,
     baseDir: join(temporary, ".pi", "skills", "safe-skill"),
@@ -2449,6 +2468,7 @@ test("conscience: oversized skill body rejected", async () => {
     tools: { enabled: false, exclude: [] },
     maxSkillBytes: 1000,
   });
+  activateTestPolicy();
   const skills = [{
     name: "big-skill", description: "Big", filePath: skillPath,
     baseDir: join(temporary, ".pi", "skills", "big-skill"),
@@ -2462,18 +2482,58 @@ test("conscience: oversized skill body rejected", async () => {
   assert.match(result!.message!.content, /Consider using/, "should fall back to recommend");
 });
 
-// No policy → no_policy, nothing delivered even with thresholds at 0
+// No policy → no delivery, fail closed, exactly as docs/configuration.md promises
 test("conscience: no policy blocks delivery", async () => {
-  const { setActivePolicy } = await import("../src/load.js");
-  setActivePolicy(null);
   await writeConscienceConfig({ recommendThreshold: 0.0, loadThreshold: 0.0 });
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
   sentMessages.length = 0;
-  // With no policy set, the gate is skipped and delivery proceeds normally
   const result = await promptWithSkills("design a page", skills) as { message?: { content: string } } | undefined;
-  assert.ok(result?.message, "without a policy set, delivery should proceed");
+  assert.ok(!result?.message, "without a policy set, no recommendation message is sent");
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /no_policy/, "trace should note no_policy");
+});
+
+// Matching policy (hash and model both match the harness judge) → delivery proceeds
+test("conscience: matching policy delivers", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.0, loadThreshold: 0.0 });
+  activateTestPolicy();
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a page", skills) as { message?: { content: string } } | undefined;
+  if (!result?.message) { await runCommand("trace", context({ hasUI: false })); console.log("TRACE:", sentMessages.at(-1)?.message.content); }
+  assert.ok(result?.message, "a matching policy lets delivery proceed");
   assert.match(result!.message!.content, /impeccable/);
+});
+
+// Policy whose questionHash does not match the current questions → no_policy, no delivery
+test("conscience: hash mismatch blocks delivery", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.0, loadThreshold: 0.0 });
+  setActivePolicy({ questionHash: "0000000000000000", model: "jev-test", recommendThreshold: 0, advanceThreshold: 0, loadThreshold: 1.0 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a page", skills) as { message?: { content: string } } | undefined;
+  assert.ok(!result?.message, "a hash mismatch blocks delivery");
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /no_policy/, "trace should note no_policy");
+});
+
+// Policy whose model does not match the model that answered → no_policy, no delivery
+test("conscience: model mismatch blocks delivery", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.0, loadThreshold: 0.0 });
+  setActivePolicy({ questionHash: "fb2d35042f667b3c", model: "jev-other", recommendThreshold: 0, advanceThreshold: 0, loadThreshold: 1.0 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a page", skills) as { message?: { content: string } } | undefined;
+  assert.ok(!result?.message, "a model mismatch blocks delivery");
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /no_policy/, "trace should note no_policy");
 });
 
 // Canary check: seeded credential never appears in trace or message
@@ -2508,7 +2568,7 @@ test("conscience: path rule confirm blocks load via loadSkillBody", async () => 
   const { loadSkillBody } = await import("../src/load.js");
   const skillPath = await writeSkillFile("gated-skill", "---\nname: gated-skill\ndescription: Gated\n---\n\nBody.");
   const skill = { name: "gated-skill", description: "Gated", filePath: skillPath, baseDir: join(temporary, ".pi", "skills", "gated-skill"), sourceInfo: { path: skillPath, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
-  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, loadThreshold: 1.0 };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
   const pathRules = [{ id: "block-skills", paths: ["**/skills/**"], access: "none" as const, tools: ["read"], action: "confirm" as const }];
   const result = loadSkillBody(skill as any, loadConfig, { pathRules, exemptRules: [], loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, catalogName: "gated-skill", catalogDescription: "Gated", userInvoked: false, contextWindow: 200000, hasImages: false });
   assert.equal(result.skipReason, "load_denied", `expected load_denied, got ${result.skipReason}`);
@@ -2520,7 +2580,7 @@ test("conscience: cumulative maxLoadedBytes limits loads via loadSkillBody", asy
   const { loadSkillBody } = await import("../src/load.js");
   const sp1 = await writeSkillFile("skill-a", "---\nname: skill-a\ndescription: A\n---\n\nBody A.");
   const skill = { name: "skill-a", description: "A", filePath: sp1, baseDir: join(temporary, ".pi", "skills", "skill-a"), sourceInfo: { path: sp1, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
-  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 100, recommendThreshold: 1.0, loadThreshold: 1.0 };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 100, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
   const r1 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });
   assert.ok(r1.body, "first load should succeed");
   const r2 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 90, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });
@@ -2538,6 +2598,7 @@ test("conscience: unreadable skill file fails load", async () => {
     skills: { mode: "load", exclude: [] },
     tools: { enabled: false, exclude: [] },
   });
+  activateTestPolicy();
   const skills = [{
     name: "locked-skill", description: "Locked", filePath: skillPath,
     baseDir: join(temporary, ".pi", "skills", "locked-skill"),

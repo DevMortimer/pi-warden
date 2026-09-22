@@ -49,6 +49,7 @@ const defaultConscienceConfig = (overrides: Partial<ConscienceConfig> = {}): Con
   maxSkillBytes: 32768,
   maxLoadedBytes: 65536,
   recommendThreshold: 1.0,
+  advanceThreshold: 0.70,
   loadThreshold: 1.0,
   ...overrides,
 });
@@ -63,6 +64,7 @@ const loadModeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceCo
   maxSkillBytes: 32768,
   maxLoadedBytes: 65536,
   recommendThreshold: 1.0,
+  advanceThreshold: 0.70,
   loadThreshold: 1.0,
   ...overrides,
 });

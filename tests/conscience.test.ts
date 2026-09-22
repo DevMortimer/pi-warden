@@ -14,6 +14,7 @@ import {
 } from "../src/conscience.js";
 import type { Candidate, Judge } from "../src/conscience.js";
 import type { ConscienceConfig } from "../src/config.js";
+import { CONSCIENCE_BETA_POLICY } from "../src/load.js";
 
 /* ─── Helpers ───────────────────────────────────────────────────────── */
 
@@ -35,7 +36,7 @@ const fakeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceConfig
   maxNudges: 2,
   maxSkillBytes: 32768,
   maxLoadedBytes: 65536,
-  recommendThreshold: 1.0,
+  recommendThreshold: 0.80,
   advanceThreshold: 0.70,
   loadThreshold: 1.0,
   ...overrides,
@@ -638,12 +639,21 @@ test("conscience config defaults: recommend mode, tools enabled, thresholds at 1
   assert.equal(config.maxNudges, 2);
   assert.equal(config.maxSkillBytes, 32768);
   assert.equal(config.maxLoadedBytes, 65536);
-  assert.equal(config.recommendThreshold, 1.0);
+  assert.equal(config.recommendThreshold, 0.80);
   assert.equal(config.advanceThreshold, 0.70);
   assert.equal(config.loadThreshold, 1.0);
 });
 
 /* ─── advanceThreshold gate ─────────────────────────────────────────── */
+
+// The beta policy pins the question wording: any wording change moves the hash and this test fails
+// until the policy is re-measured.
+test("one-candidate question set hashes to the beta policy questionHash", () => {
+  const batch = [{ opaqueId: "c1", candidate: { kind: "skill" as const, id: "beta-shape", description: "beta batch shape" } }];
+  const { questions } = buildBatchQuestions(batch, "task", "", [], []);
+  assert.equal(questionHash(questions), CONSCIENCE_BETA_POLICY.questionHash,
+    "question wording changed; re-measure the policy before shipping");
+});
 
 test("assess returns below_threshold when pAdvance is below advanceThreshold", async () => {
   // usefulness passes recommendThreshold (0.9) but pAdvance is 0.5 (below advanceThreshold 0.7)

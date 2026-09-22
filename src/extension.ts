@@ -40,7 +40,7 @@ import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
 import { assess } from "./conscience.js";
-import { loadSkillBody, buildLoadMessage, policyMatches, getActivePolicy, recordFileIdentity, clearFileIdentityCache } from "./load.js";
+import { loadSkillBody, buildLoadMessage, policyMatches, getActivePolicy, setActivePolicy, CONSCIENCE_BETA_POLICY, recordFileIdentity, clearFileIdentityCache } from "./load.js";
 import type { ConsciencePolicy } from "./load.js";
 import { buildIndexPrompt, readIndex, writeIndex, validateIndex, indexStats, indexPath, ensureIndexDir } from "./index-cmd.js";
 import { fileContentHash } from "./hashing.js";
@@ -257,6 +257,9 @@ export function _testSetIndexRunning(running: boolean, paths: string[] = []): vo
 }
 
 export default function wardenExtension(pi: ExtensionAPI): void {
+  // The beta policy gates delivery from load time; a question-wording change breaks the hash test and
+  // the gate fail-closes (no delivery) until the policy is re-measured.
+  setActivePolicy(CONSCIENCE_BETA_POLICY);
   let client: TypeSafe | undefined;
   let budgetExhausted = false;
   let stats = freshStats();
@@ -724,7 +727,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           hostSignal.addEventListener("abort", () => ac.abort(), { once: true });
         }
         try {
-          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+          // The evaluate result carries the model that answered; the activation gate compares the policy's model against
+          // it. Empty until the first evaluate call, and an empty model never matches a policy, so the gate fails closed.
+          let judgeModel = "";
+          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); judgeModel = r.model; return { answers: r.answers as Record<string, unknown> }; } } : undefined;
           const result = await assess(
             redactedPrompt, recentContext, skills, toolInfos, activeSkills, suppliedSkills,
             { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile },
@@ -764,10 +770,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           }
           // Delivery: only when selected, thresholds pass, and activation gate clears
           if (result.selected && budgetAvailable(config)) {
-            // Activation gate (spec §7): policy must match hash and model when a policy exists
-            const policyActive = getActivePolicy() !== null;
-            if (policyActive && !policyMatches(result.questionHash, "jev-latest")) {
-              record(ctx, config, "conscience", "no policy for current hash/model", ["trigger: before_agent_start", "skipReason: no_policy"]);
+            // Activation gate (spec §7): no policy means no delivery; a policy that does not match the current hash or
+            // the model that actually answered also means no delivery. Fail closed either way.
+            const policy = getActivePolicy();
+            if (!policy || !policyMatches(result.questionHash, judgeModel)) {
+              record(ctx, config, "conscience", "no policy for current hash/model", ["trigger: before_agent_start", "skipReason: no_policy", `policy: ${policy ? "present" : "none"}`, `hash: ${result.questionHash}`, `model: ${judgeModel || "none"}`]);
             } else {
               spendBudgetUnit();
               // Load mode: try to read the skill body from disk

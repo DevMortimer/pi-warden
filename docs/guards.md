@@ -46,7 +46,9 @@ One request stays well inside Jev's context window. The caps do the work: rule t
 
 ## Conscience
 
-The conscience coach assesses whether the agent is missing a useful skill or tool before it acts. Disabled by default (`conscience.enabled: false`) pending calibration; measurement in progress on recorded sessions.
+**Status: beta.** The conscience ships off by default; `conscience.enabled: true` is the one switch. It recommends only (names a skill or tool and asks the agent to load it; it never loads by itself — `loadThreshold` stays at 1.0). Measured on 2026-09-22 against the owner's labels: pooled tool precision 74/83 (89%) at the 0.80/0.70 gates, labelled precision 9/10, good picks survive 9/20, status-update noise 11/12 below the gate. Known limits: design and opinion asks are under-recommended (the five technical-thinking-partner rows never exceed 0.67 usefulness — the index description is the lever), and the judge sees only the latest prompt, not the conversation.
+
+The conscience coach assesses whether the agent is missing a useful skill or tool before it acts. Disabled by default (`conscience.enabled: false`).
 
 **Modes:** `recommend` (name a skill, ask the agent to load it) and `load` (supply the skill body from disk). Default `recommend`; `load` requires global consent and a trusted project.
 
@@ -54,7 +56,7 @@ The conscience coach assesses whether the agent is missing a useful skill or too
 
 **Index:** `/warden index` builds a local capability index. Entries carry `lead`, `useWhen`, `examples`, and `role` instead of bare names and descriptions. The conscience uses index entries when the source hash matches; bare descriptions are the fallback. The per-candidate question judges the request, not the topic; a message that reports status without asking for anything is `no_gap`.
 
-**Trace-only:** all assessments are traced regardless of delivery. No live Jev questions ship until calibration publishes a measured policy (`{ questionHash, model, thresholds }`). Without a matching policy, no recommendation message is sent to the agent regardless of the configured thresholds; the assessment is traced with `no_policy`.
+**Activation gate:** delivery happens only when the active policy matches the current question hash and the model that actually answered. No policy, or a hash/model mismatch, means no recommendation message is sent regardless of the configured thresholds; the assessment is traced with `no_policy`. The shipped beta policy is `CONSCIENCE_BETA_POLICY` in `src/load.ts` (questionHash `fb2d35042f667b3c`, model `jev-1.13.0`, usefulness 0.80, advance 0.70); a test pins the question wording to that hash, so any wording change fails the build until the policy is re-measured.
 
 **What it sends to Jev:** current request (2000 redacted chars), up to four recent messages (500 chars each), and sanitized candidate metadata. Full skill instructions never go to Jev.
 

@@ -39,10 +39,27 @@ export interface ConsciencePolicy {
   loadThreshold: number;
 }
 
-let activePolicy: ConsciencePolicy | null = null;
+/**
+ * Beta policy measured on 2026-09-22 (126 labelled rows + pooled tool precision 74/83): shipped
+ * off by default; `conscience.enabled: true` is the one switch. The questionHash pins the question
+ * wording — any wording change must re-measure before this constant may ship again.
+ */
+export const CONSCIENCE_BETA_POLICY: ConsciencePolicy = {
+  questionHash: "fb2d35042f667b3c",
+  model: "jev-1.13.0",
+  recommendThreshold: 0.80,
+  advanceThreshold: 0.70,
+  loadThreshold: 1.0,
+};
+
+// Pi loads an extension through its own transpile cache, so src/load.ts exists as one module
+// instance inside the extension and another inside tests; module-level state would split. The
+// active policy is therefore parked on globalThis under a registered symbol, which both instances read.
+const POLICY_SLOT = Symbol.for("pi-warden.consciencePolicy");
+const policySlot = globalThis as typeof globalThis & { [POLICY_SLOT]?: ConsciencePolicy | null };
 
 export function setActivePolicy(policy: ConsciencePolicy | null): void {
-  activePolicy = policy;
+  policySlot[POLICY_SLOT] = policy;
 }
 
 /** Cache of file identities at candidate selection time (Rule 4 cross-call detection). */
@@ -64,10 +81,11 @@ export function clearFileIdentityCache(): void {
 }
 
 export function getActivePolicy(): ConsciencePolicy | null {
-  return activePolicy;
+  return policySlot[POLICY_SLOT] ?? null;
 }
 
 export function policyMatches(questionHash: string, model: string): boolean {
+  const activePolicy = getActivePolicy();
   if (!activePolicy) return false;
   return activePolicy.questionHash === questionHash && activePolicy.model === model;
 }

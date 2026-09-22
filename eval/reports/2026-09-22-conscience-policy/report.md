@@ -8,7 +8,7 @@ per-project full-corpus run, then the owner-labelled subset.
 ## Corpus and spend
 
 | project | sessions | turns | requests | tokens | cost |
-| --- | --- | --- | --- | --- | --- |
+| --- | --- | --- | --- | --- |
 | millia | 50 | 285 | 855 | 4.9M (est.) | ~$0.21 |
 | pi-warden | 50 | 239 | 717 | 4.07M | $0.17 |
 | pi-tiny-search | 5 | 14 | 42 | 0.23M | $0.01 |
@@ -119,33 +119,33 @@ candidate: 14 (16%). At the candidate policy (≥ 0.80 with the gate): 9 (10%).
 
 ## Selected candidates (first 25)
 
-| candidate | P(useful) | disposition | actual first usage | prompt |
-| --- | --- | --- | --- | --- |
-| technical-thinking-partner | 0.80 | advance | tool:bash | doing the CON-142 thing.... and CON-350. in progress. the snm-hk-onboarding was done yesterday btw. … |
-| mcp__linear | 0.97 | advance | tool:bash | make the CON linear issue for this please... assign me. put it under an existing project if applicab… |
-| mcp | 0.38 | advance | none | Agent said: \<logs\>This will permanently delete whatsapp_groups row [id]… |
-| impeccable | 0.85 | advance | tool:read | Add another issue on shift-note about this /staff [path] |
-| search_code | 0.72 | advance | tool:ctx_batch_execute | [path] |
-| writing-for-agents | 0.70 | advance | tool:bash | On 2673, i'll let it finish every single CI errors. need a pormpt for it,, both CI errors AND dev er… |
-| mcp__linear | 0.94 | advance | tool:mcpScript | for these three, make the linear issues, thank you,,, again same rules, if they are under a project … |
-| mcp__linear | 0.85 | advance | tool:mcpScript | need to have linear issues for the other three. the CON-372 entry one is linear CON-373 haha. don't … |
-| search_code | 0.82 | advance | tool:read | [path] |
-| mcp__linear | 0.55 | advance | tool:ctx_execute | ohhhh, is CON-376 something started rn, what's the overall state of everything. don't show me comple… |
-| bash | 0.95 | advance | tool:ctx_execute | yes apply them please now, then rerun dev deploy |
-| search_code | 0.87 | advance | tool:ctx_batch_execute | also check how pi-warden works so you know what to put in pi-warden.md |
-| bash | 0.58 | advance | tool:bash | continue the UI wiring on the same PR.. so rename PR title + PR body. |
-| tdd | 0.71 | advance | tool:bash | Decision: start the Lane-3 code now. Rebase mail/con-350-... onto the CON-322/P13 branch and state t… |
-| bash | 0.78 | advance | tool:bash | it now has real code. continue reviewing. |
-| bash | 0.79 | advance | tool:bash | don't use subagents, do it yourself. |
-| edit | 0.83 | advance | tool:bash | On the same PR, fix all the hard violations (if any) and all the judgement calls that you think were… |
-| mcp__linear | 0.84 | advance | tool:bash | paste the snapshot and the delete result as a CON-365 comment, and set the issue to In Progress. |
-| edit | 0.84 | advance | tool:ctx_execute | On the same PR, fix all hard violations, all the bad "judgement calls" you think. Push on the same p… |
-| read | 0.87 | advance | skill:impeccable | one more. [path] |
-| read | 0.65 | advance | tool:ctx_execute | continue |
-| edit | 0.75 | advance | tool:ctx_batch_execute | hmmmmm idk,,, need something or somehow a way to "view" sample photo... let's not make it shown by d… |
-| read | 0.80 | advance | tool:ctx_batch_execute | dont use subagent. review it yourself. |
-| edit | 0.87 | advance | tool:ctx_execute | fix all. for the judgement call, judge them if they are a non-issue or not, your call whethter to fi… |
-| bash | 0.81 | advance | tool:bash | Yes, I give you explicit go on the force push yes you can force push but do not do force with lease … |
+| candidate | P(useful) | disposition | actual first usage |
+| --- | --- | --- | --- |
+| technical-thinking-partner | 0.80 | advance | tool:bash |
+| mcp__linear | 0.97 | advance | tool:bash |
+| mcp | 0.38 | advance | none |
+| impeccable | 0.85 | advance | tool:read |
+| search_code | 0.72 | advance | tool:ctx_batch_execute |
+| writing-for-agents | 0.70 | advance | tool:bash |
+| mcp__linear | 0.94 | advance | tool:mcpScript |
+| mcp__linear | 0.85 | advance | tool:mcpScript |
+| search_code | 0.82 | advance | tool:read |
+| mcp__linear | 0.55 | advance | tool:ctx_execute |
+| bash | 0.95 | advance | tool:ctx_execute |
+| search_code | 0.87 | advance | tool:ctx_batch_execute |
+| bash | 0.58 | advance | tool:bash |
+| tdd | 0.71 | advance | tool:bash |
+| bash | 0.78 | advance | tool:bash |
+| bash | 0.79 | advance | tool:bash |
+| edit | 0.83 | advance | tool:bash |
+| mcp__linear | 0.84 | advance | tool:bash |
+| edit | 0.84 | advance | tool:ctx_execute |
+| read | 0.87 | advance | skill:impeccable |
+| read | 0.65 | advance | tool:ctx_execute |
+| edit | 0.75 | advance | tool:ctx_batch_execute |
+| read | 0.80 | advance | tool:ctx_batch_execute |
+| edit | 0.87 | advance | tool:ctx_execute |
+| bash | 0.81 | advance | tool:bash |
 
 ## Labelled subset (owner labels, 126 rows)
 
