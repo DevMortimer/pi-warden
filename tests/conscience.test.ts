@@ -14,6 +14,7 @@ import {
 } from "../src/conscience.js";
 import type { Candidate, Judge } from "../src/conscience.js";
 import type { ConscienceConfig } from "../src/config.js";
+import { CONSCIENCE_BETA_POLICY } from "../src/load.js";
 
 /* ─── Helpers ───────────────────────────────────────────────────────── */
 
@@ -30,12 +31,13 @@ const fakeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceConfig
   enabled: true,
   skills: { mode: "recommend", exclude: [] },
   tools: { enabled: true, exclude: [] },
-  timeoutMs: 1500,
+  timeoutMs: 3000,
   maxAssessments: 3,
   maxNudges: 2,
   maxSkillBytes: 32768,
   maxLoadedBytes: 65536,
-  recommendThreshold: 1.0,
+  recommendThreshold: 0.80,
+  advanceThreshold: 0.70,
   loadThreshold: 1.0,
   ...overrides,
 });
@@ -597,16 +599,100 @@ test("assess ranks by usefulness probability, then Score level, then skill-befor
 
 /* ─── Config defaults ───────────────────────────────────────────────── */
 
+test("concurrent batches: 3 batches complete in ~one round-trip with 400ms delayed judge", async () => {
+  let callCount = 0;
+  const delayedJudge: Judge = {
+    evaluate: async () => {
+      callCount++;
+      await new Promise(r => setTimeout(r, 400));
+      return {
+        answers: {
+          conscience_disposition: {
+            type: "choice", choice: "advance", confidence: 0.9,
+            probabilities: { advance: 0.9, awaiting_user: 0, no_gap: 0, unclear: 0.1 },
+          },
+        },
+      };
+    },
+  };
+  // 76 candidates → 3 batches of 25 questions each. With 400ms delay and default 3000ms deadline,
+  // all 3 should complete (concurrent, not sequential).
+  const skills = Array.from({ length: 76 }, (_, i) => fakeSkill(`skill-${i}`, `Skill ${i}`));
+  const start = Date.now();
+  const result = await assess(
+    "test", "", skills, [], [], [],
+    { judge: delayedJudge, config: fakeConfig(), sharedTimeoutMs: 5000, now: () => Date.now() },
+  );
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 2000, `3 concurrent 400ms batches should finish in ~400ms, took ${elapsed}ms`);
+  assert.ok(callCount >= 3, `should issue 3 batches, got ${callCount} calls`);
+});
+
+
 test("conscience config defaults: recommend mode, tools enabled, thresholds at 1.0", () => {
   const config = fakeConfig();
   assert.equal(config.skills.mode, "recommend");
   assert.equal(config.tools.enabled, true);
   assert.equal(config.enabled, true);
-  assert.equal(config.timeoutMs, 1500);
+  assert.equal(config.timeoutMs, 3000);
   assert.equal(config.maxAssessments, 3);
   assert.equal(config.maxNudges, 2);
   assert.equal(config.maxSkillBytes, 32768);
   assert.equal(config.maxLoadedBytes, 65536);
-  assert.equal(config.recommendThreshold, 1.0);
+  assert.equal(config.recommendThreshold, 0.80);
+  assert.equal(config.advanceThreshold, 0.70);
   assert.equal(config.loadThreshold, 1.0);
+});
+
+/* ─── advanceThreshold gate ─────────────────────────────────────────── */
+
+// The beta policy pins the question wording: any wording change moves the hash and this test fails
+// until the policy is re-measured. The hash is computed over the disposition question plus one
+// canonical candidate question, so it is the same value for every batch shape.
+test("one-candidate question set hashes to the beta policy questionHash", () => {
+  const batch = [{ opaqueId: "c1", candidate: { kind: "skill" as const, id: "beta-shape", description: "beta batch shape" } }];
+  const { questions } = buildBatchQuestions(batch, "task", "", [], []);
+  assert.equal(questionHash(questions), CONSCIENCE_BETA_POLICY.questionHash,
+    "question wording changed; re-measure the policy before shipping");
+});
+
+test("questionHash is independent of batch shape: 1 skill, 4 skills, 1 tool, 4 tools, mixed", () => {
+  const shape = (n: number, kind: "skill" | "tool") =>
+    Array.from({ length: n }, (_, i) => ({ opaqueId: `c${i + 1}`, candidate: { kind, id: `${kind}-${i}`, description: "d" } }));
+  const mixed = [...shape(2, "skill"), ...shape(2, "tool")];
+  for (const batch of [shape(1, "skill"), shape(4, "skill"), shape(1, "tool"), shape(4, "tool"), mixed]) {
+    const { questions } = buildBatchQuestions(batch, "task", "", [], []);
+    assert.equal(questionHash(questions), CONSCIENCE_BETA_POLICY.questionHash,
+      `batch of ${batch.length} ${batch[0]!.candidate.kind}s must hash to the policy hash`);
+  }
+});
+
+test("the concrete measured wording still hashes to fb2d35042f667b3c", () => {
+  const batch = [{ opaqueId: "c1", candidate: { kind: "skill" as const, id: "any", description: "any" } }];
+  const { questions } = buildBatchQuestions(batch, "task", "", [], []);
+  assert.equal(questionHash(questions), "fb2d35042f667b3c");
+});
+
+test("assess returns below_threshold when pAdvance is below advanceThreshold", async () => {
+  // usefulness passes recommendThreshold (0.9) but pAdvance is 0.5 (below advanceThreshold 0.7)
+  const judge = selectionJudge("advance", "c1", 3, [0.05, 0.05, 0.65, 0.25], 0.5);
+  const result = await assess(
+    "test", "", defaultSkills, defaultTools, [], [],
+    defaultDeps(judge, { recommendThreshold: 0.9, advanceThreshold: 0.7 }),
+  );
+  assert.equal(result.skipReason, "below_threshold");
+  assert.equal(result.selected, null);
+  assert.equal(result.pAdvance, 0.5);
+});
+
+test("assess selects when both usefulness and pAdvance pass their thresholds", async () => {
+  // usefulness = 0.9, pAdvance = 0.8, both pass
+  const judge = selectionJudge("advance", "c1", 3, [0.05, 0.05, 0.65, 0.25], 0.8);
+  const result = await assess(
+    "test", "", defaultSkills, defaultTools, [], [],
+    defaultDeps(judge, { recommendThreshold: 0.9, advanceThreshold: 0.7 }),
+  );
+  assert.equal(result.selected!.id, "impeccable");
+  assert.ok(result.usefulness >= 0.9);
+  assert.ok(result.pAdvance >= 0.7);
 });

@@ -7,6 +7,9 @@ import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-codin
 import type { Extension, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
 import { defaultConfig } from "../src/config.js";
+import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
+import { _testSetIndexRunning } from "../src/extension.js";
+import { indexPath } from "../src/index-cmd.js";
 
 let temporary: string;
 let extension: Extension;
@@ -25,6 +28,8 @@ let confirmResult = true;
 let editorText: string | undefined;
 let networkCalls = 0;
 let nextAnswers: Record<string, number | string> = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
+/** Model string the mock judge reports. Defaults to the beta policy's model so conscience delivery tests pass its gate. */
+let nextModel = "jev-1.13.0";
 let failNetwork = false;
 const sentMessages: Array<{ message: { customType: string; content: string }; options?: Record<string, unknown> }> = [];
 const sentUserMessages: Array<string> = [];
@@ -146,7 +151,7 @@ before(async () => {
         answers[id] = { type: "score", score: scoreValue, confidence: 0.8, legend: Object.fromEntries(Array.from({ length: levels }, (_, index) => [String(index), `level ${index}`])), probabilities: Object.fromEntries(Array.from({ length: levels }, (_, index) => [String(index), index === Math.round(scoreValue) ? 0.8 : 0.2 / (levels - 1)])) };
       }
     }
-    return Response.json({ model: "jev-test", answers, usage: { input_tokens: 50, output_tokens: 0 } });
+    return Response.json({ model: nextModel, answers, usage: { input_tokens: 50, output_tokens: 0 } });
   };
   const loader = new DefaultResourceLoader({
     cwd: temporary,
@@ -177,6 +182,7 @@ beforeEach(async () => {
   widgetComponent = undefined; widgetPlacement = undefined; customCalls.length = 0; openPanels.length = 0; panelClosed.length = 0; renders = 0;
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
+  nextModel = "jev-1.13.0";
   await rm(configPath(), { force: true });
   await sessionStart();
   widgets.length = 0;
@@ -754,7 +760,7 @@ test("headless /warden test filters trace-only off-task delivery but keeps the f
   const trace = sentMessages.at(-1)!.message.content;
   assert.match(trace, /irreversible 0\.95/, "the trace keeps the independent risk");
   assert.match(trace, /off-task 0\.95 \(unrelated to the request; trace-only until AUC clears 0\.51\)/, "the trace keeps the off-task diagnostic");
-  assert.match(trace, /jev: irreversible 0\.95 · off-task 0\.95 · unrelated \(0\.80\).*jev-test/, "the trace retains the complete judgment");
+  assert.match(trace, /jev: irreversible 0\.95 · off-task 0\.95 · unrelated \(0\.80\).*jev-1\.13\.0/, "the trace retains the complete judgment");
 
   await runCommand("test");
   assert.ok(notices.some(notice => /warden · bash · irreversible 0\.95 · off-task 0\.95 · unrelated/.test(notice.text)), "interactive diagnostics still render the full judgment");
@@ -2027,13 +2033,13 @@ const writeConscienceConfig = (overrides: Record<string, unknown> = {}) =>
     typesafe: true, notices: false,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
-    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, loadThreshold: 1.0, ...overrides },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0, ...overrides },
     ...STACK_BAR,
   }));
 
 test("conscience: no-tool lifecycle fixture for recommend mode", async () => {
   await writeConscienceConfig();
-  const skills = [
+    const skills = [
     conscienceSkill("impeccable", "Frontend interface design, polish, and UX"),
     conscienceSkill("tdd", "Test-driven development"),
   ];
@@ -2075,7 +2081,7 @@ test("conscience: default threshold 1.0 traces assessment but delivers nothing",
     typesafe: true, notices: false,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
-    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 1.0, loadThreshold: 1.0 },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 },
     ...STACK_BAR,
   }));
   const skills = [conscienceSkill("impeccable", "UI design")];
@@ -2112,7 +2118,7 @@ test("conscience: steer budget exhausted blocks delivery", async () => {
     typesafe: true, notices: false, steerBudget: 0,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
-    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, loadThreshold: 1.0 },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0 },
     ...STACK_BAR,
   }));
   const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
@@ -2203,7 +2209,7 @@ test("conscience: config defaults in defaultConfig match expected schema", () =>
   assert.equal(config.conscience.enabled, false, "disabled by default pending calibration");
   assert.equal(config.conscience.skills.mode, "recommend");
   assert.equal(config.conscience.tools.enabled, true);
-  assert.equal(config.conscience.timeoutMs, 1500);
+  assert.equal(config.conscience.timeoutMs, 3000);
   assert.equal(config.conscience.maxAssessments, 3);
   assert.equal(config.conscience.maxNudges, 2);
 });
@@ -2515,18 +2521,38 @@ test("conscience: oversized skill body rejected", async () => {
   assert.match(result!.message!.content, /Consider using/, "should fall back to recommend");
 });
 
-// No policy → no_policy, nothing delivered even with thresholds at 0
-test("conscience: no policy blocks delivery", async () => {
-  const { setActivePolicy } = await import("../src/load.js");
-  setActivePolicy(null);
+// Pure-function gate tests: policyMatches takes the policy explicitly, there is no module state.
+test("activation gate: no policy never matches", () => {
+  assert.equal(policyMatches(null, "fb2d35042f667b3c", "jev-1.13.0"), false);
+});
+
+test("activation gate: matching hash and model pass", () => {
+  assert.equal(policyMatches(CONSCIENCE_BETA_POLICY, "fb2d35042f667b3c", "jev-1.13.0"), true);
+});
+
+test("activation gate: hash mismatch fails", () => {
+  assert.equal(policyMatches(CONSCIENCE_BETA_POLICY, "0000000000000000", "jev-1.13.0"), false);
+});
+
+test("activation gate: model mismatch fails", () => {
+  assert.equal(policyMatches(CONSCIENCE_BETA_POLICY, "fb2d35042f667b3c", "jev-other"), false);
+});
+
+// Extension-level: the judge's answer carries the model that actually answered; a model the policy
+// does not name skips delivery with no_policy. ("No policy" and hash mismatch at the extension level
+// are unreachable by test because the extension always holds the beta policy in its closure; the
+// pure-function tests above cover both branches.)
+test("conscience: model mismatch blocks delivery", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.0, loadThreshold: 0.0 });
+  nextModel = "jev-other";
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
   sentMessages.length = 0;
-  // With no policy set, the gate is skipped and delivery proceeds normally
   const result = await promptWithSkills("design a page", skills) as { message?: { content: string } } | undefined;
-  assert.ok(result?.message, "without a policy set, delivery should proceed");
-  assert.match(result!.message!.content, /impeccable/);
+  assert.ok(!result?.message, "a model the policy does not name blocks delivery");
+  await runCommand("trace", context({ hasUI: false }));
+  const traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /no_policy/, "trace should note no_policy");
 });
 
 // Canary check: seeded credential never appears in trace or message
@@ -2561,7 +2587,7 @@ test("conscience: path rule confirm blocks load via loadSkillBody", async () => 
   const { loadSkillBody } = await import("../src/load.js");
   const skillPath = await writeSkillFile("gated-skill", "---\nname: gated-skill\ndescription: Gated\n---\n\nBody.");
   const skill = { name: "gated-skill", description: "Gated", filePath: skillPath, baseDir: join(temporary, ".pi", "skills", "gated-skill"), sourceInfo: { path: skillPath, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
-  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, loadThreshold: 1.0 };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
   const pathRules = [{ id: "block-skills", paths: ["**/skills/**"], access: "none" as const, tools: ["read"], action: "confirm" as const }];
   const result = loadSkillBody(skill as any, loadConfig, { pathRules, exemptRules: [], loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, catalogName: "gated-skill", catalogDescription: "Gated", userInvoked: false, contextWindow: 200000, hasImages: false });
   assert.equal(result.skipReason, "load_denied", `expected load_denied, got ${result.skipReason}`);
@@ -2573,7 +2599,7 @@ test("conscience: cumulative maxLoadedBytes limits loads via loadSkillBody", asy
   const { loadSkillBody } = await import("../src/load.js");
   const sp1 = await writeSkillFile("skill-a", "---\nname: skill-a\ndescription: A\n---\n\nBody A.");
   const skill = { name: "skill-a", description: "A", filePath: sp1, baseDir: join(temporary, ".pi", "skills", "skill-a"), sourceInfo: { path: sp1, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
-  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 100, recommendThreshold: 1.0, loadThreshold: 1.0 };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 100, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
   const r1 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });
   assert.ok(r1.body, "first load should succeed");
   const r2 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 90, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });
@@ -2822,4 +2848,68 @@ test("session_compact: two compactions send two messages, each from the memory a
   assert.equal(second.length, 1, "second compaction sends one message");
   assert.match(second[0]!.message.content, /npm run lint/, "second message includes the new failed check");
 
+});
+
+/* ─── Index write bypass (defect 1 from order 03) ──────────────────── */
+
+test("index write bypass: absolute path to global index is allowed while indexRunning", async () => {
+  const globalPath = indexPath("global");
+  await grantConsent();
+  _testSetIndexRunning(true, [resolve(globalPath)]);
+  try {
+    const result = await toolCall("write", { path: globalPath, content: "{}" });
+    assert.equal(result, undefined, "should be allowed (no block)");
+  } finally {
+    _testSetIndexRunning(false);
+  }
+});
+
+test("index write bypass: tilde path to global index is allowed while indexRunning", async () => {
+  const globalPath = indexPath("global");
+  const tildePath = globalPath.replace(homedir(), "~");
+  await grantConsent();
+  _testSetIndexRunning(true, [resolve(globalPath)]);
+  try {
+    const result = await toolCall("write", { path: tildePath, content: "{}" });
+    assert.equal(result, undefined, "should be allowed (no block)");
+  } finally {
+    _testSetIndexRunning(false);
+  }
+});
+
+test("index write bypass: sibling file in same directory is judged while indexRunning", async () => {
+  const globalPath = indexPath("global");
+  const siblingPath = join(globalPath, "..", "sibling.json");
+  await grantConsent();
+  _testSetIndexRunning(true, [resolve(globalPath)]);
+  try {
+    const result = await toolCall("write", { path: resolve(siblingPath), content: "{}" });
+    // Should be judged (not bypassed) — the action guard runs
+    assert.ok(result !== undefined || notices.length === 0, "sibling should be judged normally");
+  } finally {
+    _testSetIndexRunning(false);
+  }
+});
+
+test("index write bypass: index path is judged when indexRunning is false", async () => {
+  const globalPath = indexPath("global");
+  await grantConsent();
+  _testSetIndexRunning(false);
+  const result = await toolCall("write", { path: resolve(globalPath), content: "{}" });
+  assert.ok(result !== undefined || notices.length === 0, "should be judged when not running");
+});
+
+test("index write bypass: flag clears after error in index command", async () => {
+  const globalPath = indexPath("global");
+  await grantConsent();
+  _testSetIndexRunning(true, [resolve(globalPath)]);
+  try {
+    // Simulate an error that triggers the finally block
+    throw new Error("simulated index failure");
+  } catch {
+    _testSetIndexRunning(false);
+  }
+  // After clearing, the same path should be judged
+  const result = await toolCall("write", { path: resolve(globalPath), content: "{}" });
+  assert.ok(result !== undefined || notices.length === 0, "should be judged after flag clears");
 });

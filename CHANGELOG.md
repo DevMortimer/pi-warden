@@ -8,6 +8,28 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.39.0
+
+### Docs
+- README quick start now carries the four setup commands (`/warden enable`, `/warden init`, `/warden index`, `/warden test`) and the beta note; `docs/commands.md` gains rows for `/warden init --force` and `/warden index`.
+- Conscience policy measurement on the per-project corpus with the split disposition gate: beta candidate policy record (89% pooled precision, 74/83; 95% gate not met), comparison against the first measurement and the remeasure, labelled-subset reproduction of the live-run gate numbers.
+- Conscience recommendation remeasurement after index + question changes: before-and-after table, labelled-subset comparison, research-role tool rate, candidate policy update.
+
+### Added
+- `/warden index` command: builds a local capability index with the session model. Entries carry `lead`, `useWhen`, `examples`, and `role` instead of bare names and descriptions. The conscience uses index entries when the source hash matches; bare descriptions are the fallback. Index files live at `~/.pi/agent/pi-warden/index/global.json` and `projects/<hash>.json`. Once-per-session nudge when the index is missing or stale.
+- `conscience.advanceThreshold` config key (default `0.70`): separate gate for the disposition question's P(advance), independent of the usefulness threshold.
+- `CONSCIENCE_BETA_POLICY` in `src/load.ts` (questionHash `fb2d35042f667b3c`, model `jev-1.13.0`, usefulness 0.80, advance 0.70), held in the extension's closure and passed to the activation gate; a test pins the question wording to the policy hash, and `questionHash` is computed over the disposition question plus one canonical candidate question so it no longer moves with batch shape.
+- Capability roles (`research`, `evidence`, `execution`, `delegation`, `review`, `conversation`) in index entries and candidate state; role-based guidance in Score questions.
+
+### Changed
+- Conscience defaults: `recommendThreshold` 1.0 → 0.80 (beta policy thresholds); still off by default — `conscience.enabled: true` is the one switch.
+- The replay script omits prompt excerpts from the selected-candidates table unless `PI_WARDEN_OWNER_REPORTS=1`, so committed reports carry no Linear ids or branch names; scrub greps include `CON-[0-9]+`.
+- Replay script `scripts/conscience-replay.mjs` gates delivery on `advanceThreshold` (default 0.70) and reports pi-warden status rows below the gate.
+- Conscience question wording reverted to baseline after four calibration iterations; the disposition gate, not wording, was the lever.
+
+### Fixed
+- The conscience activation gate now fails closed: with no active policy, or a policy whose hash or model does not match the request, no recommendation is delivered (traced `no_policy`). Previously an absent policy let delivery through, contradicting `docs/configuration.md`. The gate also compares the policy's model against the model that actually answered instead of the literal `"jev-latest"`.
+
 ## 0.38.3
 
 ### Fixed

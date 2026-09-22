@@ -35,13 +35,30 @@ export interface ConsciencePolicy {
   questionHash: string;
   model: string;
   recommendThreshold: number;
+  advanceThreshold: number;
   loadThreshold: number;
 }
 
-let activePolicy: ConsciencePolicy | null = null;
+/**
+ * Beta policy measured on 2026-09-22 (126 labelled rows + pooled tool precision 74/83): shipped
+ * off by default; `conscience.enabled: true` is the one switch. The questionHash pins the question
+ * wording — any wording change must re-measure before this constant may ship again.
+ */
+export const CONSCIENCE_BETA_POLICY: ConsciencePolicy = {
+  questionHash: "fb2d35042f667b3c",
+  model: "jev-1.13.0",
+  recommendThreshold: 0.80,
+  advanceThreshold: 0.70,
+  loadThreshold: 1.0,
+};
 
-export function setActivePolicy(policy: ConsciencePolicy | null): void {
-  activePolicy = policy;
+/**
+ * Pure activation-gate predicate: the policy matches when both the question hash and the model that
+ * actually answered equal the policy's. Callers hold the policy themselves — there is no module state.
+ */
+export function policyMatches(policy: ConsciencePolicy | null, questionHash: string, model: string): boolean {
+  if (!policy) return false;
+  return policy.questionHash === questionHash && policy.model === model;
 }
 
 /** Cache of file identities at candidate selection time (Rule 4 cross-call detection). */
@@ -60,15 +77,6 @@ export function recordFileIdentity(skillName: string, filePath: string): void {
 /** Clear the identity cache (called on new prompt). */
 export function clearFileIdentityCache(): void {
   fileIdentityCache.clear();
-}
-
-export function getActivePolicy(): ConsciencePolicy | null {
-  return activePolicy;
-}
-
-export function policyMatches(questionHash: string, model: string): boolean {
-  if (!activePolicy) return false;
-  return activePolicy.questionHash === questionHash && activePolicy.model === model;
 }
 
 /**

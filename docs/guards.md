@@ -46,13 +46,17 @@ One request stays well inside Jev's context window. The caps do the work: rule t
 
 ## Conscience
 
-The conscience coach assesses whether the agent is missing a useful skill or tool before it acts. Disabled by default (`conscience.enabled: false`) pending calibration; measurement in progress on recorded sessions.
+**Status: beta.** The conscience ships off by default; `conscience.enabled: true` is the one switch. It recommends only (names a skill or tool and asks the agent to load it; it never loads by itself — `loadThreshold` stays at 1.0). Measured on 2026-09-22 against the owner's labels: pooled tool precision 74/83 (89%) at the 0.80/0.70 gates, labelled precision 9/10, good picks survive 9/20, status-update noise 11/12 below the gate. Known limits: design and opinion asks are under-recommended (the five technical-thinking-partner rows never exceed 0.67 usefulness — the index description is the lever), and the judge sees only the latest prompt, not the conversation.
+
+The conscience coach assesses whether the agent is missing a useful skill or tool before it acts. Disabled by default (`conscience.enabled: false`).
 
 **Modes:** `recommend` (name a skill, ask the agent to load it) and `load` (supply the skill body from disk). Default `recommend`; `load` requires global consent and a trusted project.
 
 **How it works:** On each normal operator prompt, `before_agent_start` evaluates eligible skill and tool candidates via Jev. A selection passing the measured thresholds produces at most one custom message through the steer budget. Turn-end re-assessment triggers on tool failures. One reminder fires at `agent_end` if the capability remains unresolved.
 
-**Trace-only:** all assessments are traced regardless of delivery. No live Jev questions ship until calibration publishes a measured policy (`{ questionHash, model, thresholds }`). Without a matching policy, no recommendation message is sent to the agent regardless of the configured thresholds; the assessment is traced with `no_policy`.
+**Index:** `/warden index` builds a local capability index. Entries carry `lead`, `useWhen`, `examples`, and `role` instead of bare names and descriptions. The conscience uses index entries when the source hash matches; bare descriptions are the fallback. The per-candidate question judges the request, not the topic; a message that reports status without asking for anything is `no_gap`.
+
+**Activation gate:** delivery happens only when the active policy matches the current question hash and the model that actually answered. No policy, or a hash/model mismatch, means no recommendation message is sent regardless of the configured thresholds; the assessment is traced with `no_policy`. The shipped beta policy is `CONSCIENCE_BETA_POLICY` in `src/load.ts` (questionHash `fb2d35042f667b3c`, model `jev-1.13.0`, usefulness 0.80, advance 0.70); a test pins the question wording to that hash, so any wording change fails the build until the policy is re-measured. The hash is computed over the disposition question plus one canonical candidate question (opaque candidate ids are positional and excluded), so it is the same value for every batch shape; that normalised hash equals the concrete hash measured on the labelled rows (`fb2d35042f667b3c`).
 
 **What it sends to Jev:** current request (2000 redacted chars), up to four recent messages (500 chars each), and sanitized candidate metadata. Full skill instructions never go to Jev.
 
@@ -159,6 +163,45 @@ Headline: tool recommendation 84% precision (260/308 of tool-recommended turns u
 **Skill precision is unmeasured, not zero.** The label is "the agent used a skill first on its own, with no recommendation delivered". A skill the agent would have used anyway is not what a recommendation exists for; a skill it did not reach for is the target case, and this label scores every such case as a false positive. The 0% number therefore means the label cannot distinguish helpful from unhelpful skill selections; human labelling is required before skill precision can be stated.
 
 Candidate policy (not active): `{ questionHash: "1ee518cb4a54b980", model: "jev-1.13.0", recommendThreshold: 0.95, loadThreshold: 1.0 }`. No threshold met the gate; the guard stays disabled by default and trace-only. This is the candidate the next measurement will test, not an active policy. `loadThreshold` stays at 1.0 (trace-only) until the authored 240-scenario held-out set is measured per spec §7. Full tables: `eval/reports/2026-09-22-conscience-recommend/`.
+
+### Conscience remeasurement (2026-09-22, after index + question changes)
+
+Second measurement after crew-a's `feat/conscience-index`: index entries with `role`, request-not-topic clause, status-update-is-`no_gap` clause. Full tool catalog from the capability index (32 tools). n = 2114 turns across 4 projects (333 sessions), 2114 requests, about 9.0M input tokens.
+
+| metric | baseline | remeasure | delta |
+| --- | --- | --- | --- |
+| tool precision (≥0.80) | 88% (120 selected) | 92% (331 selected) | +4pp, +175% recall |
+| skill precision (≥0.80) | 0% (20 selected) | 10% (86 selected) | +10pp, +330% recall |
+| disposition accuracy | 63% | 60% | −3pp |
+| P(advance) AUC | 0.62 | 0.60 | −0.02 |
+| usefulness AUC | 0.60 | 0.62 | +0.02 |
+| unnecessary-suggestion (≥0.80) | 14% | 4% | −10pp |
+| research-role recommendation | unmeasured | 6% | new signal |
+| status-update no_gap | unmeasured | 42% | new signal |
+| best candidate threshold | 0.95 (91%, n=12) | 0.75 (90%, n=10) | lower, comparable |
+| question hash | 1ee518cb4a54b980 | fb2d35042f667b3c | changed |
+
+Candidate policy (not active): `{ questionHash: "fb2d35042f667b3c", model: "jev-1.13.0", recommendThreshold: 0.75, advanceThreshold: 0.70, loadThreshold: 1.0 }`. 90% precision on the labelled subset (n=10); does not meet the 95% gate. Full tables: `eval/reports/2026-09-22-conscience-remeasure/`.
+
+#### Disposition gate (2026-09-22)
+
+Four wording iterations on the disposition and Score question instructions against 126 labelled rows (20 y, 18 n, 88 unpicked, 12 pi-warden status prompts). None accepted:
+- Iteration 2 (`b36e19f`): marked explanations and opinion-asks as `no_gap`, which suppressed five technical-thinking-partner y-picks (max usefulness 0.67 in all runs; the index description is the lever, not the wording).
+- Iterations 3 and 4: broke the pi-warden status rows back to 4/12.
+
+The lever was not wording but the `pAdvance` gate on the four-way disposition probability. Good bug-report picks score 0.93–0.97 usefulness but 0.4–0.9 `pAdvance`; the 0.80 gate on a choice probability drops them.
+
+| wording | pAdvance gate | y survive /20 | n rescued /18 | new picks /88 | precision | status below gate /12 |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline (`fb2d350`) | 0.80 | 5 | 17 | 1 | 5/6 | 11 |
+| baseline | **0.70** | **9** | **17** | **4** | **9/10** | **11** |
+| iteration 2 (`b36e19f`) | 0.80 | 4 | 17 | 3 | 4/5 | 12 |
+| iteration 2 | 0.70 | 6 | 16 | 5 | 6/8 | 11 |
+| live run (baseline wording, advanceThreshold=0.70) | 0.70 | 9 | 17 | 2 | 9/10 | 11 |
+
+`conscience.advanceThreshold` (default 0.70) separates the disposition gate from the usefulness gate. The 12/20 y target was never reachable: the five technical-thinking-partner rows never exceed 0.67 usefulness in any iteration, even when disposition advances. That is a Score/index-description problem, out of scope here. 9/20 is the ceiling with the current index.
+
+Candidate policy (beta candidate): `{ questionHash: "fb2d35042f667b3c", model: "jev-1.13.0", recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }`. Pooled precision at this policy on the 2026-09-22 per-project corpus: 89% (74/83); on the owner-labelled subset 90% (9/10). The 95% precision gate with n ≥ 10 is not met. Full tables: `eval/reports/2026-09-22-conscience-policy/`.
 
 ### Path rules
 

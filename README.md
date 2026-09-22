@@ -14,9 +14,12 @@ Instead of interrupting you for every problem, Warden usually feeds the issue ba
 pi install npm:pi-warden
 ```
 
-1. `/warden enable` to activate. Paste a key from [console.typesafe.ai](https://console.typesafe.ai) if you have one (hidden input, saved owner-only), or skip for offline-only mode.
-2. `/warden test` to see one synthetic verdict.
-3. Work as usual. Status line shows verdicts; `ctrl+shift+w` opens the trace sidebar.
+1. `/warden enable` to turn judgments on. Paste a key from [console.typesafe.ai](https://console.typesafe.ai) (hidden input, saved owner-only), or skip for offline-only mode.
+2. `/warden init` to write a starter `pi-warden.md`. The rules guard enforces what you put there.
+3. `/warden index` (recommended) so the conscience knows your skills and tools from their real descriptions.
+4. `/warden test` to see one synthetic verdict, then work as usual. The status line shows verdicts; `ctrl+shift+w` opens the trace sidebar.
+
+The conscience is beta and off by default. Turn it on with `conscience.enabled: true` in the user config.
 
 Works without any key (offline guards: pattern list, runaway stop, sensitive-path notes, credential warnings). Requires Pi 0.85+, Node 22.19+.
 
@@ -32,6 +35,7 @@ Works without any key (offline guards: pattern list, runaway stop, sensitive-pat
 | **Security** | code and output | Hardcoded secrets, injection risks |
 | **Runaway** | reply stream | Stops replies that begin repeating themselves |
 | **Subagent triage** | async child reports | Keeps noisy background work from waking the parent |
+| **Conscience** (beta, off) | each operator prompt | Recommends a skill or tool from the capability index before the agent acts; enable with `conscience.enabled: true` |
 
 ## How intervention works
 
