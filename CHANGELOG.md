@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.38.3
+
 ### Fixed
 - `/warden config` keeps its panel handle and toggles shut, instead of stacking a second overlay against its own header hint.
 - A bare `/warden` runs `status` again, and `config set <key> <value>` / `get <key>` reach the setting — the argument split dropped the default action and kept only the word after the subcommand.
