@@ -50,7 +50,9 @@ const ui = {
     if (!options?.overlay) { keyPrompts++; return keyInput; }
     // Overlay: build the panel, drive it like the TUI would, and resolve when it closes itself.
     return new Promise(resolve => {
-      const panel = factory({ requestRender() { renders++; }, terminal: { rows: 40 } }, fakeTheme, {}, resolve) as { render(width: number): string[]; handleInput(data: string): void; dispose?(): void };
+      const slot = panelClosed.length;
+      panelClosed.push(false);
+      const panel = factory({ requestRender() { renders++; }, terminal: { rows: 40 } }, fakeTheme, {}, (value: unknown) => { panelClosed[slot] = true; resolve(value); }) as { render(width: number): string[]; handleInput(data: string): void; dispose?(): void };
       openPanels.push(panel);
     });
   },
@@ -64,6 +66,8 @@ let widgetComponent: { render(width: number): string[]; handleMouse?(event: unkn
 let widgetPlacement: string | undefined;
 const customCalls: Array<{ options?: Record<string, unknown> | undefined }> = [];
 const openPanels: Array<{ render(width: number): string[]; handleInput(data: string): void; dispose?(): void }> = [];
+/** Per overlay, whether the host's `done` ran — the signal the panel really closed rather than the command staying quiet. */
+const panelClosed: boolean[] = [];
 let renders = 0;
 const sessionManager = {
   getBranch: () => prompt === undefined ? [] : [
@@ -170,7 +174,7 @@ beforeEach(async () => {
   notices.length = 0; widgets.length = 0; confirms.length = 0;
   confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; prompt = "Run the test suite";
   keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0;
-  widgetComponent = undefined; widgetPlacement = undefined; customCalls.length = 0; openPanels.length = 0; renders = 0;
+  widgetComponent = undefined; widgetPlacement = undefined; customCalls.length = 0; openPanels.length = 0; panelClosed.length = 0; renders = 0;
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   await rm(configPath(), { force: true });
@@ -1672,6 +1676,57 @@ test("/warden config opens the interactive panel and saves on 's'", async () => 
   panel.handleInput("s");
   panel.handleInput("q");
   await new Promise(resolve => setTimeout(resolve, 0));
+});
+
+test("/warden config closes on the second call instead of stacking an overlay", async () => {
+  await grantConsent();
+  await runCommand("config");
+  assert.equal(customCalls.length, 1, "config opens an overlay");
+  assert.equal(panelClosed[0], false, "and it stays open");
+  await runCommand("config");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(panelClosed[0], true, "the second call closes it, which is what its header promises");
+  assert.equal(customCalls.length, 1, "without opening a second overlay");
+  await runCommand("config");
+  assert.equal(customCalls.length, 2, "and the next one opens it again");
+  await runCommand("config");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(panelClosed[1], true, "the reopened panel toggles shut too");
+});
+
+test("a new session closes a config panel left open", async () => {
+  await grantConsent();
+  await runCommand("config");
+  assert.equal(panelClosed[0], false, "open");
+  await sessionStart();
+  assert.equal(panelClosed[0], true, "session_start closes it alongside the trace sidebar");
+});
+
+test("bare /warden reports status", async () => {
+  await grantConsent();
+  await runCommand("");
+  assert.match(notices.at(-1)!.text, /^pi-warden: /, "empty args are the default action, not an unknown action");
+  assert.equal(notices.filter(notice => /Unknown action/.test(notice.text)).length, 0);
+});
+
+test("/warden config set and get keep the whole value", async () => {
+  await grantConsent();
+  await runCommand("config set widget.barMode live");
+  const saved = JSON.parse(await readFile(configPath(), "utf8")) as { widget: { barMode: string } };
+  assert.equal(saved.widget.barMode, "live", "the value survives, not just the word after 'set'");
+  assert.match(notices.at(-1)!.text, /Saved widget\.barMode = "live"\./);
+
+  await runCommand("config get widget.barMode");
+  assert.match(notices.at(-1)!.text, /widget\.barMode = "live"/);
+  assert.equal(customCalls.length, 0, "neither one is a reason to open the editor");
+});
+
+test("/warden config set or get with no key reports usage instead of opening the panel", async () => {
+  await grantConsent();
+  await runCommand("config set");
+  await runCommand("config get");
+  assert.equal(customCalls.length, 0, "an incomplete command is not a request for the panel");
+  assert.equal(notices.filter(notice => /Usage: \/warden config (set|get)/.test(notice.text)).length, 2);
 });
 
 test("the widget is a clickable component: a left click toggles a non-capturing right-hand sidebar, live-updating", async () => {
