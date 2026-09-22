@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { RulesConfig } from "./config.js";
 import { redact } from "./redact.js";
-import { RULES_FILE, FALLBACK_FILES } from "./rules.js";
+import { RuleStore, RULES_FILE, FALLBACK_FILES } from "./rules.js";
 
 /**
  * Resolved active rules file for escalation and context.
@@ -73,11 +74,22 @@ export function resolveRulesFile(cwd: string): ResolvedRulesFile | null {
   return null;
 }
 
-/** Returns missing status and the fallback source if pi-warden.md is absent. */
-export function checkPiWardenMissing(cwd: string): { missing: boolean; fallbackSource?: string } {
-  if (existsSync(join(cwd, "pi-warden.md"))) return { missing: false };
-  for (const candidate of RULES_CANDIDATES.slice(1)) {
-    if (existsSync(join(cwd, candidate.path))) return { missing: true, fallbackSource: candidate.source };
-  }
-  return { missing: true };
+const missingStore = new RuleStore();
+
+/**
+ * Whether the first-run "no project rules" notice should fire, and which document is being judged.
+ *
+ * RuleStore.loadTiered owns the resolution order, so ask it which tier answered instead of walking
+ * the filesystem here. Inferring one warns while the configured files are the ones in force, names a
+ * fallback document the config turned off, or names a `rules.files` entry after the file it points at.
+ */
+export function checkPiWardenMissing(
+  cwd: string,
+  config: Pick<RulesConfig, "files" | "fallback" | "maxChars">,
+): { missing: boolean; fallbackSource?: string | undefined } {
+  const { set, tier } = missingStore.loadTiered(cwd, config);
+  if (tier === "none") return { missing: true };
+  // A project that has a rules source of its own is not missing one, empty file or not: /warden init
+  // would name the file the project already has, and a pi-warden.md would shadow a bound `rules.files`.
+  return tier === "fallback" ? { missing: true, fallbackSource: set?.sources[0] } : { missing: false };
 }

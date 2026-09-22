@@ -6,6 +6,8 @@ import { after, before, test } from "node:test";
 import { authorize, aggregateLevel, escalateBlastRadius, escalateRulesViolation, isAuthEligible, isNegated, parseViolationJudgments, patternHitsToViolations, removeAuthorized, scopeMatches } from "../src/guard.js";
 import type { Authorization, EscalatedViolation, Violation } from "../src/guard.js";
 import { checkPiWardenMissing, extractRules, resolveRulesFile } from "../src/rules-file.js";
+import { defaultConfig } from "../src/config.js";
+import type { RulesConfig } from "../src/config.js";
 import { buildInitPrompt, buildProjectContext, detectProjectType, generateStarterRules, writeStarterRules } from "../src/init.js";
 
 let cwd: string;
@@ -425,10 +427,12 @@ test("extractRules: short content passes through unchanged", () => {
 // ---------------------------------------------------------------------------
 // checkPiWardenMissing: first-run warning support.
 
+const rulesConfig = (over: Partial<RulesConfig> = {}): RulesConfig => ({ ...defaultConfig().rules, ...over });
+
 test("checkPiWardenMissing: returns missing=false when pi-warden.md exists", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
   await writeFile(join(dir, "pi-warden.md"), "# Rules\n");
-  const result = checkPiWardenMissing(dir);
+  const result = checkPiWardenMissing(dir, rulesConfig());
   assert.equal(result.missing, false);
   await rm(dir, { recursive: true, force: true });
 });
@@ -436,7 +440,7 @@ test("checkPiWardenMissing: returns missing=false when pi-warden.md exists", asy
 test("checkPiWardenMissing: returns fallbackSource when pi-warden.md missing but AGENTS.md exists", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
   await writeFile(join(dir, "AGENTS.md"), "# Agents\n");
-  const result = checkPiWardenMissing(dir);
+  const result = checkPiWardenMissing(dir, rulesConfig());
   assert.equal(result.missing, true);
   assert.equal(result.fallbackSource, "AGENTS.md");
   await rm(dir, { recursive: true, force: true });
@@ -444,8 +448,72 @@ test("checkPiWardenMissing: returns fallbackSource when pi-warden.md missing but
 
 test("checkPiWardenMissing: returns no fallback when nothing exists", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
-  const result = checkPiWardenMissing(dir);
+  const result = checkPiWardenMissing(dir, rulesConfig());
   assert.equal(result.missing, true);
+  assert.equal(result.fallbackSource, undefined);
+  await rm(dir, { recursive: true, force: true });
+});
+
+// A bound `rules.files` is a real source, and the resolution order never reaches the README/CLAUDE/AGENTS
+// tier when one resolves. Warning there is noise that pushes the user toward creating a pi-warden.md,
+// which would shadow the configured files outright.
+test("checkPiWardenMissing: a resolved rules.files entry is not a fallback", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\n");
+  await writeFile(join(dir, "warden-local-rules.md"), "# Local rule\nBody.\n");
+  const result = checkPiWardenMissing(dir, rulesConfig({ files: [join(dir, "global-rules.md"), "warden-local-rules.md"] }));
+  assert.equal(result.missing, false);
+  assert.equal(result.fallbackSource, undefined);
+  await rm(dir, { recursive: true, force: true });
+});
+
+// The configured tier wins even when the file reads like a fallback document, so the tier cannot be
+// inferred from the name.
+test("checkPiWardenMissing: a rules.files entry named AGENTS.md is configured, not a fallback", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\n");
+  const result = checkPiWardenMissing(dir, rulesConfig({ files: ["AGENTS.md"] }));
+  assert.equal(result.missing, false);
+  assert.equal(result.fallbackSource, undefined);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("checkPiWardenMissing: still names the fallback when no configured file resolves", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\n");
+  const result = checkPiWardenMissing(dir, rulesConfig({ files: ["absent-rules.md"] }));
+  assert.equal(result.missing, true);
+  assert.equal(result.fallbackSource, "AGENTS.md");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("checkPiWardenMissing: fallback=false reaches no fallback document", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\n");
+  const result = checkPiWardenMissing(dir, rulesConfig({ fallback: false }));
+  assert.equal(result.missing, true);
+  assert.equal(result.fallbackSource, undefined);
+  await rm(dir, { recursive: true, force: true });
+});
+
+// A tier that answered means the project has a rules source of its own, whether or not the file says
+// anything yet. Nagging would name the file the project already has, and the notice's remedy is the
+// one thing that shadows a bound `rules.files`.
+test("checkPiWardenMissing: an empty pi-warden.md is still a project rules file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
+  await writeFile(join(dir, "pi-warden.md"), "");
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\n");
+  const result = checkPiWardenMissing(dir, rulesConfig());
+  assert.equal(result.missing, false);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("checkPiWardenMissing: an empty configured file is the configured tier, not a missing source", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
+  await writeFile(join(dir, "rules.md"), "");
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\n");
+  const result = checkPiWardenMissing(dir, rulesConfig({ files: ["rules.md"] }));
+  assert.equal(result.missing, false);
   assert.equal(result.fallbackSource, undefined);
   await rm(dir, { recursive: true, force: true });
 });

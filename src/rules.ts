@@ -36,6 +36,9 @@ export interface RuleSet {
 }
 
 export const RULES_FILE = "pi-warden.md";
+
+/** Which tier of the resolution order answered; `none` means no source resolved. */
+export type RulesTier = "root" | "configured" | "fallback" | "none";
 export const FALLBACK_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"];
 /** TypeSafe answers at most 32 questions per request; one is kept for the edit locator. */
 export const MAX_RULES = 31;
@@ -220,22 +223,27 @@ export class RuleStore {
     }
   }
 
-  /** The active rule set for a project, or undefined when no source exists. Never throws. */
-  load(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">): RuleSet | undefined {
+  /** Where a rule set came from; the order is the resolution order. */
+  loadTiered(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">): { set: RuleSet | undefined; tier: RulesTier } {
     const root = this.read(resolve(cwd, RULES_FILE));
-    if (root !== undefined) return ruleSet([RULES_FILE], [root], config.maxChars);
+    if (root !== undefined) return { set: ruleSet([RULES_FILE], [root], config.maxChars), tier: "root" };
     const configured = config.files.map(file => ({ file, text: this.read(resolve(cwd, file)) })).filter((entry): entry is { file: string; text: string } => entry.text !== undefined);
-    if (configured.length) return ruleSet(configured.map(entry => entry.file), configured.map(entry => entry.text), config.maxChars);
-    if (!config.fallback) return undefined;
+    if (configured.length) return { set: ruleSet(configured.map(entry => entry.file), configured.map(entry => entry.text), config.maxChars), tier: "configured" };
+    if (!config.fallback) return { set: undefined, tier: "none" };
     for (const file of FALLBACK_FILES) {
       const text = this.read(resolve(cwd, file));
       if (text !== undefined && text.trim()) {
         const redacted = redact(text);
-        if (isRuleShaped(text)) return { sources: [file], rules: [], aggregate: condense(redacted, config.maxChars), dropped: 0 };
-        return { sources: [file], rules: [], dropped: 0, proseOnly: true };
+        if (isRuleShaped(text)) return { set: { sources: [file], rules: [], aggregate: condense(redacted, config.maxChars), dropped: 0 }, tier: "fallback" };
+        return { set: { sources: [file], rules: [], dropped: 0, proseOnly: true }, tier: "fallback" };
       }
     }
-    return undefined;
+    return { set: undefined, tier: "none" };
+  }
+
+  /** The active rule set for a project, or undefined when no source exists. Never throws. */
+  load(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">): RuleSet | undefined {
+    return this.loadTiered(cwd, config).set;
   }
 }
 

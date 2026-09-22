@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- The first-run notice no longer names a fallback document when `rules.files` is what resolved. It was decided by whether `pi-warden.md` existed, so a project whose rules come from `rules.files` was told `AGENTS.md` was judging it while its own configured files were the ones in force — and the notice's remedy, creating a `pi-warden.md`, is the one thing that shadows those files. The notice now asks the rule store which tier answered and fires only when a fallback document really is in force, listing `rules.files` among the tiers it looked at.
 
 ## 0.40.1
 
