@@ -68,7 +68,7 @@ paths: src/**/*.ts
 Every exported function declares its return type.
 ```
 
-Jev judges every write and quotes violations back. Rules can be things no linter checks: "a TODO must name a ticket", "comments must not restate the code". Without `pi-warden.md`, the first of `README.md`/`CLAUDE.md`/`AGENTS.md` is judged instead. [Examples and config details.](docs/configuration.md)
+Jev judges every write and quotes violations back. Rules can be things no linter checks: "a TODO must name a ticket", "comments must not restate the code". Without `pi-warden.md`, the first of `AGENTS.md`/`CLAUDE.md`/`README.md` is judged instead. [Examples and config details.](docs/configuration.md)
 
 ## Does it actually help?
 
