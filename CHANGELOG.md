@@ -6,8 +6,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.40.1
+
 ### Fixed
+
 - An `rm` in a compound command (`rm -rf build && npm test`) no longer makes every word after it a separate target. Target extraction now runs per shell segment, so a compound command stops producing one Jev question per trailing token and no longer trips TypeSafe's 32-question limit on long command lines. A single `rm` naming more targets than the request budget still can; chunking is separate.
+- An `rm` followed by a newline and another command produced no targets at all, so it was never scoped; it now yields the targets of its own line.
 
 ## 0.40.0
 
