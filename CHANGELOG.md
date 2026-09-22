@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.39.1
+
 ### Changed
 - Bump `pi-typesafe` from `^0.6.1` to `^0.6.2`. Programmatic API is unchanged; the 0.6.2 tool schema now documents its own payload fields, and no pi-warden text duplicated it.
 
