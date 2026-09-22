@@ -270,6 +270,11 @@ test("a bound rules.files entry keeps the first-run notice away from the fallbac
     await sessionStart();
     await toolCall("bash", { command: "npm test" });
     assert.deepEqual(notices.slice(seen).filter(notice => /fallback rules|No rules file detected/.test(notice.text)), [], "the configured files are the rules in force, so there is nothing to notice");
+    // The escalation request carries the same content the rules guard judges with, not AGENTS.md.
+    const request = requests.find(candidate => "irreversible" in candidate.questions);
+    assert.match(String(request?.state.rules), /Global body/);
+    assert.match(String(request?.state.rules), /Local body/);
+    assert.equal(request?.state.rulesSource, `${global}, warden-local-rules.md`);
 
     // Control, so a notice that never fires for any reason cannot pass this test: with the files gone
     // the same session does name the fallback document.

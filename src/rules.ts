@@ -11,7 +11,7 @@ import { DEFAULT_TEMPLATES, renderTemplate, rulesTokens } from "./widget.js";
  * agent is steered, never held, with the violated rule. Path scoping and sensitive-path notes are code only.
  *
  * Sources, in order: `pi-warden.md` at the project root; else the files in `rules.files`; else, with `rules.fallback`, the
- * first of README.md, CLAUDE.md, AGENTS.md as one aggregate rule set. Files are re-read when their mtime or size changes.
+ * first of AGENTS.md, CLAUDE.md, README.md as one aggregate rule set. Files are re-read when their mtime or size changes.
  */
 
 export interface Rule {
@@ -39,6 +39,12 @@ export const RULES_FILE = "pi-warden.md";
 
 /** Which tier of the resolution order answered; `none` means no source resolved. */
 export type RulesTier = "root" | "configured" | "fallback" | "none";
+
+/**
+ * The parts of `rules` that decide which document is in force. A caller that cannot supply them gets
+ * the default fallback behaviour, the same as a project config that omits the keys.
+ */
+export type RulesSourceConfig = Pick<RulesConfig, "files" | "fallback">;
 export const FALLBACK_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"];
 /** TypeSafe answers at most 32 questions per request; one is kept for the edit locator. */
 export const MAX_RULES = 31;

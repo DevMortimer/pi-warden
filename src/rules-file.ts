@@ -1,26 +1,33 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { resolve } from "node:path";
 import type { RulesConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { RuleStore, RULES_FILE, FALLBACK_FILES } from "./rules.js";
+import type { RulesSourceConfig } from "./rules.js";
 
 /**
- * Resolved active rules file for escalation and context.
- * Resolution order: pi-warden.md → AGENTS.md → CLAUDE.md → README.md.
+ * The rules content for escalation and context. The order is the rules guard's: pi-warden.md alone, else the files in
+ * `rules.files`, in order, else the fallback names while `rules.fallback` is on. An empty document counts where the
+ * guard counts it: a configured file is a source whatever it holds, a fallback document has to say something.
  */
 
 export interface ResolvedRulesFile {
-  path: string;
   content: string;
+  /** The file name, or the configured names joined by commas, as the config spells them. */
   source: string;
 }
 
-const RULES_CANDIDATES = [
-  { path: RULES_FILE, source: RULES_FILE },
-  ...FALLBACK_FILES.map(f => ({ path: f, source: f })),
-];
-
 const MAX_CHARS = 16_000; // ~4000 tokens
+/** A rules file's text, or undefined when it is missing, unreadable, or a directory. */
+function readRules(path: string): string | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    // Unreadable or non-file entries (e.g., directories matching a candidate name) are skipped.
+    return undefined;
+  }
+}
 
 /** Token-aware truncation: extract heading blocks, cap at maxTokens (1 token ≈ 4 chars). */
 export function extractRules(content: string, maxTokens = 4000): string {
@@ -55,21 +62,43 @@ export function extractRules(content: string, maxTokens = 4000): string {
   return result.join("\n\n");
 }
 
-/** Resolve the active rules file. Returns the first existing file, or null. Content is redacted before it leaves this machine. */
-export function resolveRulesFile(cwd: string): ResolvedRulesFile | null {
-  for (const candidate of RULES_CANDIDATES) {
-    const fullPath = join(cwd, candidate.path);
-    if (existsSync(fullPath)) {
-      let raw: string;
-      try {
-        raw = readFileSync(fullPath, "utf8");
-      } catch {
-        // Unreadable or non-file entries (e.g., directories matching a candidate name) are skipped.
-        continue;
-      }
-      const content = raw.length > MAX_CHARS ? redact(extractRules(raw)) : redact(raw);
-      return { path: fullPath, content, source: candidate.source };
-    }
+/** Content is redacted before it leaves this machine, and capped once it is past the budget. */
+function redactAndCap(source: string, raw: string): ResolvedRulesFile {
+  return { content: raw.length > MAX_CHARS ? redact(extractRules(raw)) : redact(raw), source };
+}
+
+/**
+ * Resolve the rules content the escalation request carries. Returns null when the config reaches no document.
+ *
+ * `RuleStore` judges with the documents this returns, in this order, so the request names the rules in force. What
+ * differs is the cap: the request carries one budget for the whole field (`MAX_CHARS`) where the guard spends
+ * `rules.maxChars` per resolution.
+ */
+export function resolveRulesFile(
+  cwd: string,
+  config?: Partial<RulesSourceConfig>,
+): ResolvedRulesFile | null {
+  const root = resolve(cwd, RULES_FILE);
+  const rootContent = readRules(root);
+  if (rootContent !== undefined) return redactAndCap(RULES_FILE, rootContent);
+
+  const configured: { source: string; content: string }[] = [];
+  for (const entry of config?.files ?? []) {
+    const content = readRules(resolve(cwd, entry));
+    if (content !== undefined) configured.push({ source: entry, content });
+  }
+  if (configured.length) {
+    return redactAndCap(
+      configured.map(file => file.source).join(", "),
+      configured.map(file => file.content).join("\n\n"),
+    );
+  }
+
+  if (config?.fallback === false) return null;
+  for (const file of FALLBACK_FILES) {
+    const content = readRules(resolve(cwd, file));
+    // A blank fallback document is not a source: the store walks on to the next name, so this does too.
+    if (content?.trim()) return redactAndCap(file, content);
   }
   return null;
 }

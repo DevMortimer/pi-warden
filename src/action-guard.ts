@@ -1,6 +1,6 @@
-import type { ActionGuardConfig, RulesConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
+import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { evaluateAction, textApproves } from "./guard.js";
-import type { PreviousAction, TaskMessage, Verdict } from "./guard.js";
+import type { EvaluateOptions, PreviousAction, TaskMessage, Verdict } from "./guard.js";
 import type { Judge } from "pi-typesafe";
 
 /** One tool call as the agent proposed it. `id` is Pi's tool call id, stable across hooks and retries. */
@@ -29,8 +29,8 @@ export interface InspectOptions {
   signal?: AbortSignal | undefined;
   slop?: SlopGuardConfig | undefined;
   security?: SecurityConfig | undefined;
-  /** The rules guard's switch; off keeps the rules file content out of the action request. Omitted, it is sent as before. */
-  rules?: Pick<RulesConfig, "enabled"> | undefined;
+  /** The rules guard's switch, forwarded to `evaluateAction`: off keeps the rules content out of the request. */
+  rules?: EvaluateOptions["rules"];
   /** Calls allowed in the previous turn; the regret question about them rides this call's request, never a sibling's. */
   previousActions?: readonly PreviousAction[] | undefined;
 }

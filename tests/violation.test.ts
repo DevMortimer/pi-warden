@@ -375,6 +375,8 @@ test("parseViolationJudgments: noul answer at threshold boundary", () => {
 // ---------------------------------------------------------------------------
 // Rules file resolution.
 
+const rulesConfig = (over: Partial<RulesConfig> = {}): RulesConfig => ({ ...defaultConfig().rules, ...over });
+
 test("resolveRulesFile: pi-warden.md wins over fallbacks", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
   await writeFile(join(dir, "AGENTS.md"), "# Agents\nAlways test.\n");
@@ -408,6 +410,73 @@ test("resolveRulesFile: truncates large files using extractRules", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+// The escalation request sends the content resolved here, and the rules guard judges with `rules.files`.
+// A path that walks only pi-warden.md and the fallback names sends AGENTS.md prose while the guard
+// judges the configured rules.
+test("resolveRulesFile: every configured file rides along, in order", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  await writeFile(join(dir, "global-rules.md"), "# Global\nGlobal body.\n");
+  await writeFile(join(dir, "warden-local-rules.md"), "# Local\nLocal body.\n");
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\nNever configured.\n");
+  const resolved = resolveRulesFile(dir, rulesConfig({ files: ["global-rules.md", "warden-local-rules.md"] }));
+  assert.equal(resolved?.source, "global-rules.md, warden-local-rules.md");
+  assert.match(resolved?.content ?? "", /Global body/);
+  assert.match(resolved?.content ?? "", /Local body/);
+  assert.doesNotMatch(resolved?.content ?? "", /Never configured/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("resolveRulesFile: a root pi-warden.md still wins over configured files", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  await writeFile(join(dir, "pi-warden.md"), "# Project\nNo console.log.\n");
+  await writeFile(join(dir, "global-rules.md"), "# Global\nGlobal body.\n");
+  const resolved = resolveRulesFile(dir, rulesConfig({ files: ["global-rules.md"] }));
+  assert.equal(resolved?.source, "pi-warden.md");
+  assert.doesNotMatch(resolved?.content ?? "", /Global body/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("resolveRulesFile: fallback=false reaches no fallback document", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\nAlways test.\n");
+  assert.equal(resolveRulesFile(dir, rulesConfig({ fallback: false })), null);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("resolveRulesFile: a configured file that is missing falls through to the fallback", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\nAlways test.\n");
+  const resolved = resolveRulesFile(dir, rulesConfig({ files: ["gone.md"] }));
+  assert.equal(resolved?.source, "AGENTS.md");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("resolveRulesFile: a blank fallback document is not a source", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  await writeFile(join(dir, "AGENTS.md"), "   \n");
+  await writeFile(join(dir, "CLAUDE.md"), "# Claude\nAlways test.\n");
+  const resolved = resolveRulesFile(dir, rulesConfig());
+  assert.equal(resolved?.source, "CLAUDE.md");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("resolveRulesFile: a duplicate entry is carried as written, as the store judges it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  await writeFile(join(dir, "global-rules.md"), "# Global\nGlobal body.\n");
+  const resolved = resolveRulesFile(dir, rulesConfig({ files: ["global-rules.md", "global-rules.md"] }));
+  assert.equal(resolved?.source, "global-rules.md, global-rules.md");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("resolveRulesFile: a configured entry that is a directory falls through to the fallback", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rulesfile-"));
+  await mkdir(join(dir, "rules-here"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agents\nAlways test.\n");
+  const resolved = resolveRulesFile(dir, rulesConfig({ files: ["rules-here"] }));
+  assert.equal(resolved?.source, "AGENTS.md");
+  await rm(dir, { recursive: true, force: true });
+});
+
 // ---------------------------------------------------------------------------
 // extractRules: token-aware truncation.
 
@@ -426,8 +495,6 @@ test("extractRules: short content passes through unchanged", () => {
 
 // ---------------------------------------------------------------------------
 // checkPiWardenMissing: first-run warning support.
-
-const rulesConfig = (over: Partial<RulesConfig> = {}): RulesConfig => ({ ...defaultConfig().rules, ...over });
 
 test("checkPiWardenMissing: returns missing=false when pi-warden.md exists", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-missing-"));
