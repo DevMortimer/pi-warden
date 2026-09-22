@@ -31,7 +31,7 @@ import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
 import { redact } from "./redact.js";
-import { formatRules, pathNoteSteer, RulesGuard, rulesSteer } from "./rules.js";
+import { formatRules, pathNoteSteer, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
 import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from "./audit.js";
@@ -968,14 +968,17 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
     stats.inspected++;
-    // First-run warning: pi-warden.md missing, one time per session.
+    // First-run warning: no project rules file resolved, one time per session.
     if (!warnedMissingRules && config.rules.enabled) {
-      const { missing, fallbackSource } = checkPiWardenMissing(ctx.cwd);
+      const { missing, fallbackSource } = checkPiWardenMissing(ctx.cwd, config.rules);
       if (missing && ctx.hasUI) {
         warnedMissingRules = true;
+        // The tiers still in play, in resolution order: naming README/CLAUDE/AGENTS to someone who
+        // turned the fallback off would send them to a document pi-warden will not read.
+        const tiers = [RULES_FILE, "rules.files", ...(config.rules.fallback ? FALLBACK_FILES : [])].join(", ");
         const msg = fallbackSource
-          ? `No pi-warden.md detected. Using ${fallbackSource} as active fallback rules. Run /warden init to create project-specific rules.`
-          : `No rules file detected (pi-warden.md, README.md, CLAUDE.md, or AGENTS.md). Run /warden init to create project-specific rules.`;
+          ? `No pi-warden.md or rules.files entry here. Using ${fallbackSource} as active fallback rules. Run /warden init to create project-specific rules.`
+          : `No rules file detected (${tiers}). Run /warden init to create project-specific rules.`;
         ctx.ui.notify(msg, "warning");
       }
     }

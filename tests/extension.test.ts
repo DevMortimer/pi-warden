@@ -254,6 +254,39 @@ test("action rules context is disclosed, rides the request with the rules guard 
   } finally { await rm(rulesFile); }
 });
 
+// The reported false positive: the notice came from a filesystem walk of pi-warden.md and the fallback
+// names, so a project whose rules come from `rules.files` was told a fallback document was judging it.
+// The remedy it offers — write a root pi-warden.md — is the one thing that shadows those files.
+test("a bound rules.files entry keeps the first-run notice away from the fallback document", async () => {
+  const agents = join(temporary, "AGENTS.md");
+  const global = join(temporary, "global-rules.md");
+  const local = join(temporary, "warden-local-rules.md");
+  await writeFile(agents, "# Agents\nProject-wide policy.\n");
+  await writeFile(global, "# Global rule\nGlobal body.\n");
+  await writeFile(local, "# Local rule\nLocal body.\n");
+  const seen = notices.length;
+  try {
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true, files: [global, "warden-local-rules.md"] }, ...STACK_BAR }));
+    await sessionStart();
+    await toolCall("bash", { command: "npm test" });
+    assert.deepEqual(notices.slice(seen).filter(notice => /fallback rules|No rules file detected/.test(notice.text)), [], "the configured files are the rules in force, so there is nothing to notice");
+    // The escalation request carries the same content the rules guard judges with, not AGENTS.md.
+    const request = requests.find(candidate => "irreversible" in candidate.questions);
+    assert.match(String(request?.state.rules), /Global body/);
+    assert.match(String(request?.state.rules), /Local body/);
+    assert.equal(request?.state.rulesSource, `${global}, warden-local-rules.md`);
+
+    // Control, so a notice that never fires for any reason cannot pass this test: with the files gone
+    // the same session does name the fallback document.
+    await rm(global, { force: true });
+    await rm(local, { force: true });
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+    await sessionStart();
+    await toolCall("bash", { command: "npm test" });
+    assert.match(notices.at(-1)!.text, /Using AGENTS\.md as active fallback rules/);
+  } finally { await rm(agents, { force: true }); await rm(global, { force: true }); await rm(local, { force: true }); }
+});
+
 test("scope keeps recent task context after a side comment without turning history into approval", async () => {
   await grantConsent();
   const ctx = context({ sessionManager: {
