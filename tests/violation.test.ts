@@ -131,6 +131,12 @@ test("patternHitsToViolations: rm targets stop at shell operators", () => {
   assert.deepEqual(violations[0]!.scope?.paths, ["/tmp/build"]);
 });
 
+test("patternHitsToViolations: a multi-target rm keeps one violation per real target", () => {
+  const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
+  const violations = patternHitsToViolations(hits, "bash", { command: "rm -rf a b c" });
+  assert.deepEqual(violations.map(violation => violation.scope?.paths?.[0]), ["a", "b", "c"]);
+});
+
 test("patternHitsToViolations: every rm segment contributes its own targets", () => {
   const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
   const violations = patternHitsToViolations(hits, "bash", { command: "rm -rf a; rm -rf b c" });

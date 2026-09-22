@@ -1436,7 +1436,7 @@ export function isAuthEligible(severity: Severity): boolean {
 
 const RM_FAMILY_IDS = new Set(["rm", "rm-recursive", "rm-rf", "rm-recursive-dangerous-target", "find-delete"]); const RM_COMMAND_RE = /(?:^|[\s"'(])rm\s+(.*)$/i;
 
-/** Extract file targets from an rm command segment. */
+/** Extract file targets from every rm segment in a command. */
 function detectRmTargets(command: string): string[] {
   const targets: string[] = [];
   for (const segment of splitShell(command)) {
