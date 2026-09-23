@@ -1,9 +1,10 @@
-// Tunes the context saver: retention and format judgments against labelled synthetic outputs. Billable: one request per case.
+// Tunes the context saver: retention and format judgments against labelled synthetic outputs, and the large-output question
+// against labelled bash commands before they run. Billable: one request per case.
 // Build first; run: node --env-file-if-exists=.env scripts/context-cases.mjs
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { createTypeSafe } from 'pi-typesafe';
-import { compressOutput, defaultConfig, evaluateOutput } from '../dist/index.js';
+import { buildRequest, compressOutput, defaultConfig, describeAction, evaluateOutput } from '../dist/index.js';
 
 const repeat = (line, n) => Array.from({ length: n }, (_, i) => line.replace('{i}', String(i))).join('\n') + '\n';
 
@@ -44,6 +45,34 @@ export const contextCases = [
     text: repeat('## Section {i}\n\nThe client sends a request with a bearer token. The server validates the token, checks scopes, and returns a session. Section {i} covers a distinct edge case that a summary would need.\n', 150) },
 ];
 
+// `large`: whether the command prints far more than the task needs, so the agent should filter or redirect it first.
+export const largeOutputCases = [
+  { name: 'cat of a big log', task: 'Find why the server crashed last night', command: 'cat /var/log/app/server.log', large: true },
+  { name: 'find / without filters', task: 'Locate the nginx config file', command: 'find /', large: true },
+  { name: 'npm test verbose', task: 'Run the tests and fix the failures', command: 'npm test -- --verbose', large: true },
+  { name: 'git log -p', task: 'Which commit changed the retry limit?', command: 'git log -p', large: true },
+  { name: 'ls', task: 'What is in this folder?', command: 'ls', large: false },
+  { name: 'git status --short', task: 'Commit the README change', command: 'git status --short', large: false },
+  { name: 'head -20 file', task: 'Check the CSV header', command: 'head -20 data/export.csv', large: false },
+  { name: 'wc -l of a big log', task: 'How many requests did the server log today?', command: 'wc -l /var/log/app/access.log', large: false },
+];
+
+export async function runLargeOutputCases(judge, report) {
+  const threshold = defaultConfig().context.largeOutput.threshold;
+  for (const item of largeOutputCases) {
+    const request = buildRequest(describeAction('bash', { command: item.command }, process.cwd()), item.task, { largeOutput: true });
+    const started = Date.now();
+    try {
+      const result = await judge.evaluate(request);
+      const score = result.answers.large_output?.noul;
+      const flagged = typeof score === 'number' && score >= threshold;
+      report(flagged === item.large, item.name, `large_output=${score?.toFixed(2) ?? '-'} threshold=${threshold} (${Date.now() - started} ms)`);
+    } catch (error) {
+      report(false, item.name, `error=${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
 export async function runContextCases(judge, report) {
   const config = defaultConfig();
   for (const item of contextCases) {
@@ -59,10 +88,14 @@ export async function runContextCases(judge, report) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let failures = 0;
-  await runContextCases(createTypeSafe({ maxRequests: 30 }), (ok, name, detail) => {
+  const judge = createTypeSafe({ maxRequests: 30 });
+  const print = (ok, name, detail) => {
     if (!ok) failures++;
     console.log(`${ok ? 'ok  ' : 'MISS'} ${name.padEnd(28)} ${detail}`);
-  });
-  console.log(`\n${contextCases.length - failures}/${contextCases.length} matched expectations.`);
+  };
+  await runContextCases(judge, print);
+  await runLargeOutputCases(judge, print);
+  const total = contextCases.length + largeOutputCases.length;
+  console.log(`\n${total - failures}/${total} matched expectations.`);
   process.exitCode = failures ? 1 : 0;
 }

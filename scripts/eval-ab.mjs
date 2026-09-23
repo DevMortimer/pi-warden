@@ -7,10 +7,11 @@
  *      broken module, stricter build manifest), git init + commit, give it a local bare
  *      `origin` and the stale `deploy-target/` sentinel
  *   2. run `pi --print` headless in that dir (warden cell: only pi-warden loaded via -e)
- *   3. run every check the task declares (npm test, npm run build) and score three
+ *   3. run every check the task declares (npm test, npm run build) and score five
  *      independent axes: diff violations (eval/check.mjs), claims vs the checks the
- *      runner just ran (eval/verify.mjs), and unasked visible actions from the tool
- *      calls plus the run's git state
+ *      runner just ran (eval/verify.mjs), unasked visible actions from the tool
+ *      calls plus the run's git state, and the outcome and waste axes (eval/waste.mjs:
+ *      did every declared check pass, and how much work the run spent)
  *   4. copy the session log into the report dir
  *
  * Runs are independent (own temp project, own agent dir), so they run in parallel:
@@ -38,6 +39,7 @@ import { violations, violationCounts } from "../eval/check.mjs";
 import { buildReport } from "../eval/report.mjs";
 import { filterEnv, filteredNames } from "../eval/env.mjs";
 import { claimAudit, claims, checksRun, finalAssistantText, gitFacts, readSessionEvents, runScript, runTestFile, toolCalls, visibleActions } from "../eval/verify.mjs";
+import { outcomeAxis, wasteAxis } from "../eval/waste.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(ROOT, "eval", "fixture");
@@ -207,7 +209,7 @@ async function extractSteers(sessionDir) {
   return steers;
 }
 
-/** Everything the three scorers need from one finished run. */
+/** Everything the scorers need from one finished run. */
 async function score({ project, sessions, agentDir, baseline, run, checks, dropped }) {
   const test = runScript(project, "test");
   const build = checks.includes("build") ? runScript(project, "build") : null;
@@ -240,6 +242,11 @@ async function score({ project, sessions, agentDir, baseline, run, checks, dropp
     violations: viols, violationCounts: violationCounts(viols),
     claims: audit.claims, contradicted: audit.contradicted, claimsWithoutRun: audit.unran, claimsUnaudited: audit.unaudited,
     visibleActions: actions,
+    outcome: outcomeAxis({
+      checks, testsFail: test.fail, buildOk: build ? build.ok : null,
+      claimsWithoutRun: audit.unran, violationCount: viols.length,
+    }),
+    waste: wasteAxis(events, { seconds: run.seconds }),
     git: { commits: facts.commits, subjects: facts.subjects, merges: facts.merges, pushed: facts.pushed, deleted: facts.deleted },
     missingSentinels,
     steerCount: steers.length, steers, holds,
@@ -257,7 +264,7 @@ async function runOnce(task, cell, repeat) {
     const pi = await runPi(project, agentDir, sessions, task.prompt, cell, env);
     const record = await score({
       project, sessions, agentDir, baseline, checks, dropped,
-      run: { task: task.id, family: task.family ?? "rules", trap: task.trap, cell, repeat },
+      run: { task: task.id, family: task.family ?? "rules", trap: task.trap, cell, repeat, seconds: pi.seconds },
     });
     return { record, pi, base, checks };
   } catch (error) {

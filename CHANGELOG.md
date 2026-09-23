@@ -10,6 +10,22 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - The off-task judgment and the conscience recommendation both judge with a task spine in the request state: the thread's first user turn (the goal), the latest user turn, and up to four earlier user turns (newest first). The whole spine is capped at 1200 characters — `task_history` is clipped first, then `goal`; the latest turn is never clipped. A follow-up like "now the tests" is no longer judged without the goal it belongs to. Approval still comes from the latest user turn only; the spine is context, never authorization, and no threshold moved (the conscience beta policy's pinned questionHash still matches). The action approval question now names `spine` beside `context` as text that cannot grant approval. A thread with one user turn sends no spine, so the budget is not spent on a copy of the task. A queued prompt admitted at `message_start` is also assessed with the spine. Both request paths cap a spine they receive at four history entries and the same per-field lengths (goal 1200, each entry 750 characters), whoever built it. After a compaction the goal is still the thread's first user turn: the branch keeps the summarized entries, and a compaction summary never becomes the goal. `docs/data-handling.md` lists the spine for the action guard and the conscience.
 
+## 0.42.0
+
+### Added
+
+- A judged `bash` call now also asks whether the command will print far more output than the agent needs. At or above `context.largeOutput.threshold` (default `0.85`) the agent is told once per command family per session to redirect or filter it, for example to a file with `tail -40`. The call is never held. `context.largeOutput.enabled: false` removes the question. `scripts/context-cases.mjs` has eight labelled commands to calibrate it.
+
+### Fixed
+
+- The rules guard no longer judges writes to files outside the project root or paths ignored by the project's `.gitignore`. Those files are not project code and the rules in `pi-warden.md` do not apply to them.
+
+## 0.41.0
+
+### Added
+
+- The A/B eval (`npm run eval:ab`) now scores two more axes per run, shown side by side for the two cells in an "Outcome and waste" section of the report. Outcome: whether every check the task declares passes when the runner re-runs it, the diff violation count, and whether the final reply claimed tests/build success without the agent ever running that check. Waste, read from the saved session log (`eval/waste.mjs`): tool-call count, retries (same tool, same or near-same input, after a failure), reverts (a `git checkout`/`git restore` naming a path, or a `write` restoring a file to earlier content), total tokens, and wall seconds.
+
 ## 0.40.2
 
 ### Fixed

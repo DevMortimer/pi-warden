@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
+import { buildRequest, commandFamily, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -950,4 +950,74 @@ test("a hand-built spine with 50 history entries is capped to the per-field limi
   assert.ok(state.task_history[0]!.startsWith("0"), "the newest entries are kept");
   assert.ok(state.task_history.every(turn => turn.endsWith("… [1250 more chars]")), "each entry truncated at SPINE_HISTORY_LIMIT");
   assert.ok(state.goal.endsWith("… [3800 more chars]"), "goal truncated at SPINE_GOAL_LIMIT");
+});
+
+const largeOutputJudge = (largeOutput: number): Judge & { calls: Array<{ questions: Record<string, unknown> }> } => {
+  const calls: Array<{ questions: Record<string, unknown> }> = [];
+  return { calls, async evaluate(request) {
+    calls.push(request as never);
+    const result = answers(0.05, 0.05, "expected_step", 0.9, 0.05);
+    return { ...result, answers: { ...result.answers, ...("large_output" in (request as { questions: Record<string, unknown> }).questions ? { large_output: { type: "noul", noul: largeOutput } } : {}) } } as never;
+  } };
+};
+const largeOutputOn = { enabled: true, threshold: 0.85 };
+
+test("large output: above the threshold steers once per command family per session and never holds", async () => {
+  const config = defaultConfig().action;
+  const steered = new Set<string>();
+  const first = await evaluateAction({ tool: "bash", input: { command: "npm test -- --reporter=spec" }, cwd, task: "Run the tests and fix the failures" }, { config, judge: largeOutputJudge(0.92), largeOutput: largeOutputOn });
+  assert.equal(first.judgment?.largeOutput, 0.92);
+  assert.equal(first.largeOutputFamily, "npm test");
+  assert.equal(first.level, "allow", "the command is not held or warned");
+  assert.deepEqual(first.reasons, []);
+  const told = largeOutputNotice(first, steered);
+  assert.equal(told, "pi-warden: `npm test` commands may print far more than you need (large-output 0.92). This one runs unchanged.\nNext time, redirect and show the tail: `npm test … > /tmp/warden-npm-test.log 2>&1; tail -40 /tmp/warden-npm-test.log`.");
+  assert.ok(told!.split("\n").length <= 3);
+  const again = await evaluateAction({ tool: "bash", input: { command: "CI=1 npm test --verbose" }, cwd, task: "Run the tests and fix the failures" }, { config, judge: largeOutputJudge(0.97), largeOutput: largeOutputOn });
+  assert.equal(again.largeOutputFamily, "npm test");
+  assert.equal(largeOutputNotice(again, steered), undefined, "the second call in the same family is not steered");
+  const other = await evaluateAction({ tool: "bash", input: { command: "git log -p" }, cwd, task: "Why did the build break?" }, { config, judge: largeOutputJudge(0.9), largeOutput: largeOutputOn });
+  assert.equal(other.source, "read-only", "read-only commands skip the judge, so the question never rides them");
+  assert.equal(other.largeOutputFamily, undefined);
+});
+
+test("large output: below the threshold does not steer", async () => {
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: defaultConfig().action, judge: largeOutputJudge(0.84), largeOutput: largeOutputOn });
+  assert.equal(verdict.judgment?.largeOutput, 0.84);
+  assert.equal(verdict.largeOutputFamily, undefined);
+  assert.equal(largeOutputNotice(verdict, new Set()), undefined);
+});
+
+test("large output: non-bash tools never ask the question", async () => {
+  const config = { ...defaultConfig().action, tools: ["bash", "powershell", "write", "ctx_execute"] };
+  for (const [tool, input] of [["write", { path: "notes.txt", content: "hello" }], ["powershell", { command: "Get-Content big.log" }], ["ctx_execute", { language: "shell", code: "npm test" }]] as const) {
+    const probe = largeOutputJudge(0.99);
+    const verdict = await evaluateAction({ tool, input: { ...input }, cwd, task: "Run the tests" }, { config, judge: probe, largeOutput: largeOutputOn });
+    assert.equal(probe.calls.length, 1, tool);
+    assert.ok(!("large_output" in probe.calls[0]!.questions), `${tool} request carries no large_output question`);
+    assert.equal(verdict.largeOutputFamily, undefined, tool);
+  }
+  assert.ok(!("large_output" in buildRequest(describeAction("write", { path: "a.txt", content: "x" }, cwd), "task", { largeOutput: true }).questions));
+  assert.ok("large_output" in buildRequest(describeAction("bash", { command: "npm test" }, cwd), "task", { largeOutput: true }).questions);
+});
+
+test("large output: a disabled config never asks the question", async () => {
+  for (const largeOutput of [{ enabled: false, threshold: 0.85 }, undefined]) {
+    const probe = largeOutputJudge(0.99);
+    const verdict = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: defaultConfig().action, judge: probe, largeOutput });
+    assert.ok(!("large_output" in probe.calls[0]!.questions));
+    assert.equal(verdict.judgment?.largeOutput, undefined);
+    assert.equal(verdict.largeOutputFamily, undefined);
+  }
+  assert.deepEqual(defaultConfig().context.largeOutput, { enabled: true, threshold: 0.85 });
+});
+
+test("commandFamily names the head and, for tools with subcommands, the subcommand", () => {
+  assert.equal(commandFamily("npm test -- --verbose"), "npm test");
+  assert.equal(commandFamily("npm run build 2>&1"), "npm run build");
+  assert.equal(commandFamily("cd repo && git log -p"), "git log");
+  assert.equal(commandFamily("sudo /usr/bin/find / -name '*.log'"), "find");
+  assert.equal(commandFamily("FOO=1 cat big.log | wc -l"), "cat");
+  assert.equal(commandFamily("git"), "git");
+  assert.equal(commandFamily("   "), undefined);
 });
