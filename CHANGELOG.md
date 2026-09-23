@@ -9,6 +9,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Fixed
 
 - The rules guard no longer judges writes to files outside the project root or paths ignored by the project's `.gitignore`. Those files are not project code and the rules in `pi-warden.md` do not apply to them.
+- A write the action guard holds, denies, or the user declines no longer gets a rules or slop steer. The steer said "the content just written" about content that was never written. A confirm-dialog write gets the steer after the user allows it. An approved retry of a held write is judged again and gets its own steer. The trace still records the rule findings of the held write, marked as not told.
 
 ## 0.40.2
 
