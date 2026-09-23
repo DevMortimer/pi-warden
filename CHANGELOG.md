@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.44.0
+
 ### Added
 
 - `PI_WARDEN_TRACE_DIR`: with an absolute path, Warden appends its trace to `<path>/<session id>.jsonl`, one owner-only file per Pi session, so a host that runs Pi in RPC mode can read what the status line and the sidebar would show. Each line is a JSON object with `"v": 1` and a `kind`: `session` (session id, `~`-shortened working directory, Warden version, mode, time), `entry` (a numeric `id` unique in the file, time, and the trace entry as stored), or `amend` (the entry `id`, the added line, time). The 100-entry limit of the sidebar does not apply to the file. A write error is reported once and stops the file for the session; guards and tool calls do not change. Unset, empty, or relative: no file. `docs/configuration.md` lists the record format and `docs/data-handling.md` lists the file.
