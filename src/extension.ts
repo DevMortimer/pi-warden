@@ -71,6 +71,7 @@ import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from ".
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName, TraceEntry } from "./trace.js";
+import { TraceFile, traceDir, traceFilePath } from "./trace-file.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
 export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
@@ -266,6 +267,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let stats = freshStats();
   const widget = new Map<GuardName, string>();
   const trace = new Trace();
+  // The trace file for a host without the terminal UI; set per session when PI_WARDEN_TRACE_DIR is an absolute path.
+  let traceFile: TraceFile | undefined;
+  let unsubscribeTraceFile: (() => void) | undefined;
   let panel: PanelController | undefined;
   let configPanel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
@@ -379,11 +383,18 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   };
   /** Click, shortcut, and /warden trace all toggle the same sidebar. */
   const togglePanel = (ui: PanelUi | undefined, config: WardenConfig) => {
-    if (!ui) return;
-    if (panel) { panel.close(); return; }
+    if (!ui) return undefined;
+    if (panel) { panel.close(); return undefined; }
     const opened = openTracePanel(ui, trace, { width: config.widget.panelWidth });
     panel = opened;
     opened.closed.catch(() => undefined).finally(() => { if (panel === opened) panel = undefined; });
+    return opened;
+  };
+  /** The last 20 trace entries as text, newest last, for a host that cannot show the sidebar. */
+  const traceText = () => {
+    const entries = trace.entries();
+    const text = entries.length ? entries.slice(-20).map(entry => `${new Date(entry.at).toTimeString().slice(0, 8)} ${entry.guard}: ${entry.line}${entry.details.length ? `\n  ${entry.details.join("\n  ")}` : ""}`).join("\n") : "No guarded activity yet this session.";
+    return traceFile ? `${text}\nTrace file: ${traceFile.path}` : text;
   };
   /** The config overlay toggles the same way the sidebar does, so the hint in its header is true. */
   const toggleConfigPanel = (ui: PanelUi | undefined, config: WardenConfig) => {
@@ -598,7 +609,17 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     rulesGuard.reset();
     holds.reset();
     regretCandidates = [];
-    holdLog = new HoldLog(holdLogPath(typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid)));
+    const sessionId = typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid);
+    holdLog = new HoldLog(holdLogPath(sessionId));
+    unsubscribeTraceFile?.();
+    unsubscribeTraceFile = undefined;
+    traceFile = undefined;
+    const dir = traceDir();
+    if (dir) {
+      const warn = (text: string) => { if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true }); };
+      traceFile = new TraceFile(traceFilePath(dir, sessionId), dir, { sessionId, cwd: ctx.cwd, mode: loadConfig().mode }, warn);
+      unsubscribeTraceFile = trace.subscribe(traceFile.listener);
+    }
     arming.reset();
     attempts.reset();
     evidence = emptyEvidence();
@@ -1742,12 +1763,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "trace") {
-          if (!ctx.hasUI) {
-            const entries = trace.entries();
-            report(entries.length ? entries.slice(-20).map(entry => `${new Date(entry.at).toTimeString().slice(0, 8)} ${entry.guard}: ${entry.line}${entry.details.length ? `\n  ${entry.details.join("\n  ")}` : ""}`).join("\n") : "No guarded activity yet this session.");
-            return;
-          }
-          togglePanel(ctx.ui as unknown as PanelUi, config);
+          if (!ctx.hasUI) { report(traceText()); return; }
+          const opened = togglePanel(ctx.ui as unknown as PanelUi, config);
+          // RPC mode has a UI but settles custom() without building the component, so the sidebar never shows. hasUI
+          // is true there; only the host not asking for the component tells the two apart. Not awaited: in the
+          // terminal `closed` settles when the user closes the sidebar.
+          const fallback = () => { if (opened && !opened.built()) ctx.ui.notify(traceText(), "info"); };
+          void opened?.closed.then(fallback, fallback);
           return;
         }
         if (action === "recommend") {

@@ -223,6 +223,20 @@ It is a backstop for sanctioned work, not a boundary anyone hostile respects: ke
 | `OPENROUTER_API_KEY` | API key for the OpenRouter backend. Required when `typesafeBackend` is `"openrouter"`. |
 | `PI_WARDEN_ENABLED=1` | Grants consent for headless runs (same as `"typesafe": true`). |
 | `PI_WARDEN_MODE=steer\|confirm\|advise` | Overrides `mode`. |
+| `PI_WARDEN_TRACE_DIR=<absolute path>` | Appends the trace to `<path>/<session id>.jsonl`, one file per Pi session. For a host that runs Pi in RPC mode, where the status line and the sidebar never show. An empty or relative path turns it off. See [Trace file](#trace-file). |
+
+### Trace file
+
+With `PI_WARDEN_TRACE_DIR` set to an absolute path, Warden appends every trace event to `<path>/<session id>.jsonl`. The directory is created owner-only (`0700`) when it is missing; the file is owner-only (`0600`). A new or resumed session writes to its own file. The file keeps every event: the 100-entry limit of the sidebar does not apply. Each line is one JSON object with `"v": 1` and a `kind`:
+
+| `kind` | Written | Fields |
+| --- | --- | --- |
+| `session` | Once when the session opens the file | `sessionId`; `cwd` (the home directory shown as `~`, redacted); `wardenVersion`; `mode` (`steer`, `confirm`, or `advise`); `at` |
+| `entry` | For every trace event | `id` (a number, unique in the file; a reload continues the count); `at`; `guard`; `line` (the status-line text); `details` (the redacted detail lines the sidebar shows); `tokens` (the widget tokens, when the event has them) |
+| `amend` | When an outcome lands on an event that is still in the sidebar's 100 entries | `id` of the entry; `line` (the added detail line); `at` |
+
+`at` is an ISO 8601 timestamp. Lines are in trace order. A write error is reported once as a warning and stops the file for the rest of the session; guards and tool calls do not change. In RPC mode `/warden trace` sends the last 20 events as one text notification, newest last, with the path of this file when it is on.
+
 
 ## Status line and trace sidebar
 

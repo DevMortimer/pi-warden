@@ -10,7 +10,7 @@
 | `/warden mode steer\|confirm\|advise` | How holds are handled; without an argument, show the current mode |
 | `/warden config` | Open the user-config panel (`s` saves, `q` closes, and a second `/warden config` closes it the way `/warden trace` toggles the trace). `/warden config set <key> <value>` and `/warden config get <key>` change one key without the panel |
 | `/warden test` | One synthetic destructive action, its verdict, and what the agent would be told |
-| `/warden trace` | Toggle the trace sidebar (or print the last 20 events without a UI) |
+| `/warden trace` | Toggle the trace sidebar (or print the last 20 events without a UI, or as one notification in RPC mode, where the sidebar cannot show) |
 | `/warden init` | Scaffold a starter `pi-warden.md` with safety rules and project-type rules. Pass `--force` to overwrite an existing file. |
 | `/warden index` | Build the capability index with the session model: reads every installed skill file and tool description, writes sanitized entries to `~/.pi/agent/pi-warden/index/`. Re-running overwrites both files. |
 | `/warden audit` | Agent-driven workspace audit. Sends a prompt to the session model which reads source code, finds concrete Jev (TypeSafe) opportunities with file:line citations, produces measurable evidence, and writes an HTML report to `.pi-warden/audit-report.html`. Uses the session model; may take several minutes and use real tokens. |

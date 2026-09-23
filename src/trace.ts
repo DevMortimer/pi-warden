@@ -18,24 +18,30 @@ export interface TraceEntry {
   tokens?: Record<string, string | undefined> | undefined;
 }
 
+/** What changed, for a listener that keeps its own record (the trace file); the widget and the panel re-read entries(). */
+export type TraceEvent =
+  | { kind: "push"; entry: TraceEntry }
+  | { kind: "amend"; entry: TraceEntry; line: string }
+  | { kind: "clear" };
+
 /** Session memory of guard decisions; the widget shows the latest line per guard, the panel shows the history. */
 export class Trace {
   private readonly items: TraceEntry[] = [];
-  private readonly listeners = new Set<() => void>();
+  private readonly listeners = new Set<(event: TraceEvent) => void>();
 
   constructor(private readonly limit = 100) {}
 
   push(entry: TraceEntry): void {
     this.items.push(entry);
     if (this.items.length > this.limit) this.items.splice(0, this.items.length - this.limit);
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) listener({ kind: "push", entry });
   }
 
   /** Appends a detail line to an entry that is still in the trace, for an outcome that lands after the event. */
   amend(entry: TraceEntry, line: string): boolean {
     if (!this.items.includes(entry)) return false;
     entry.details.push(line);
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) listener({ kind: "amend", entry, line });
     return true;
   }
 
@@ -45,10 +51,10 @@ export class Trace {
 
   clear(): void {
     this.items.length = 0;
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) listener({ kind: "clear" });
   }
 
-  subscribe(listener: () => void): () => void {
+  subscribe(listener: (event: TraceEvent) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   }

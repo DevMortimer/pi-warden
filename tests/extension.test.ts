@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
@@ -3032,4 +3032,58 @@ test("index write bypass: flag clears after error in index command", async () =>
   // After clearing, the same path should be judged
   const result = await toolCall("write", { path: resolve(globalPath), content: "{}" });
   assert.ok(result !== undefined || notices.length === 0, "should be judged after flag clears");
+});
+
+test("/warden trace sends the trace as text when the host never builds the sidebar, and names the trace file", async () => {
+  await grantConsent();
+  const traceDir = join(temporary, "host-traces");
+  process.env.PI_WARDEN_TRACE_DIR = traceDir;
+  try {
+    await sessionStart();
+    await toolCall("bash", { command: "npm test" });
+    // RPC mode: hasUI is true, but custom() settles at once and never calls the factory.
+    const rpcUi = { ...ui, custom: async () => undefined };
+    notices.length = 0;
+    await runCommand("trace", context({ ui: rpcUi }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(notices.length, 1, "one block");
+    assert.equal(notices[0]!.level, "info");
+    assert.match(notices[0]!.text, /action: /);
+    assert.ok(notices[0]!.text.endsWith(`Trace file: ${join(traceDir, `${process.pid}.jsonl`)}`));
+    const records = await readLog(join(traceDir, `${process.pid}.jsonl`), 2, false);
+    assert.deepEqual(records.map(record => [record.kind, record.id]), [["session", undefined], ["entry", 1]]);
+  } finally {
+    delete process.env.PI_WARDEN_TRACE_DIR;
+  }
+  await sessionStart();
+
+  // The terminal path still opens the sidebar and sends no text.
+  notices.length = 0;
+  await runCommand("trace");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(customCalls.length, 1);
+  assert.equal(openPanels.length, 1);
+  assert.deepEqual(notices, []);
+  openPanels[0]!.handleInput("q");
+});
+
+test("no trace file is written when PI_WARDEN_TRACE_DIR is unset or relative", async () => {
+  const before = await readdir(temporary);
+  process.env.PI_WARDEN_TRACE_DIR = "relative-traces";
+  try {
+    await sessionStart();
+    await toolCall("bash", { command: "npm test" });
+    await new Promise(resolve => setTimeout(resolve, 20));
+  } finally {
+    delete process.env.PI_WARDEN_TRACE_DIR;
+  }
+  await sessionStart();
+  await toolCall("bash", { command: "npm test" });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(await readdir(temporary), before);
+  await assert.rejects(readdir(join(process.cwd(), "relative-traces")), { code: "ENOENT" });
+  notices.length = 0;
+  await runCommand("trace", context({ ui: { ...ui, custom: async () => undefined } }));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.ok(!notices[0]!.text.includes("Trace file:"));
 });

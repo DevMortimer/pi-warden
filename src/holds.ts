@@ -286,11 +286,15 @@ export function formatHolds(snapshot: HoldSnapshot, logPath?: string): string {
   return `Holds: ${parts.join("; ")}.${logPath ? ` Log: ${logPath}.` : ""}`;
 }
 
+/** The session id as a file name part: no separators or dots, so it cannot leave the directory it is joined to. */
+export function sessionFileId(sessionId: string): string {
+  return sessionId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) || String(process.pid);
+}
+
 /** Per-session file beside the user config: `<agent dir>/pi-warden/holds/<date>-<session>.jsonl`. */
 export function holdLogPath(sessionId: string, at = new Date()): string {
   const day = at.toISOString().slice(0, 10);
-  const safe = sessionId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) || String(process.pid);
-  return join(dirname(userConfigPath()), "holds", `${day}-${safe}.jsonl`);
+  return join(dirname(userConfigPath()), "holds", `${day}-${sessionFileId(sessionId)}.jsonl`);
 }
 
 /** Rewrites the session's records as JSON lines, owner-only, one write at a time so outcomes never interleave. */
