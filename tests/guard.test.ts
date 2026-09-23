@@ -924,6 +924,34 @@ test("rules.enabled false keeps the rules file out of the action request; true a
   await rm(project, { recursive: true, force: true });
 });
 
+/* ─── Task spine in the request state ───────────────────────────────── */
+
+test("buildRequest carries the task spine as goal and task_history beside task, and the spine never replaces task", () => {
+  const spine = { goal: "add a rate limiter", task: "now the tests", history: ["wire it into the app", "run the suite"] };
+  const request = buildRequest(describeAction("bash", { command: "npm test" }, cwd), "now the tests", { spine });
+  assert.deepEqual(request.state.spine, { goal: "add a rate limiter", task_history: ["wire it into the app", "run the suite"] });
+  assert.equal(request.state.task, "now the tests", "task stays the latest user turn, the approval evidence");
+});
+
+test("no spine, no field; the spine is redacted like every other state field", () => {
+  assert.ok(!("spine" in buildRequest(describeAction("bash", { command: "ls" }, cwd), "t").state), "no spine, no field");
+  const request = buildRequest(describeAction("bash", { command: "ls" }, cwd), "t", {
+    spine: { goal: "use TOKEN=supersecretvalue1 to log in", task: "t", history: [] },
+  });
+  const spineState = (request.state as Record<string, unknown>).spine as { goal: string };
+  assert.ok(!spineState.goal.includes("supersecretvalue1"), "goal leaves redacted");
+});
+
+test("a hand-built spine with 50 history entries is capped to the per-field limits", () => {
+  const spine = { goal: "g".repeat(5000), task: "t", history: Array.from({ length: 50 }, (_, i) => `${i}`.padEnd(2000, "h")) };
+  const request = buildRequest(describeAction("bash", { command: "ls" }, cwd), "t", { spine });
+  const state = (request.state as Record<string, unknown>).spine as { goal: string; task_history: string[] };
+  assert.equal(state.task_history.length, 4, "history count capped at SPINE_HISTORY_TURNS");
+  assert.ok(state.task_history[0]!.startsWith("0"), "the newest entries are kept");
+  assert.ok(state.task_history.every(turn => turn.endsWith("… [1250 more chars]")), "each entry truncated at SPINE_HISTORY_LIMIT");
+  assert.ok(state.goal.endsWith("… [3800 more chars]"), "goal truncated at SPINE_GOAL_LIMIT");
+});
+
 const largeOutputJudge = (largeOutput: number): Judge & { calls: Array<{ questions: Record<string, unknown> }> } => {
   const calls: Array<{ questions: Record<string, unknown> }> = [];
   return { calls, async evaluate(request) {

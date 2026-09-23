@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CONFIG_SCHEMA, defaultConfig } from "../src/config.js";
-import { completeConfig, EXPECTED_SCHEMA, shapeWarning } from "../src/shape.js";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { completeConfig, EXPECTED_SCHEMA, shapeWarning, taskSpine } from "../src/shape.js";
 
 test("a complete config passes through untouched", () => {
   const config = defaultConfig();
@@ -109,4 +110,89 @@ test("an action section without commandRules leaves them empty, never undefined"
   assert.ok(Array.isArray(result.config.action.commandDenyRules));
   assert.ok(Array.isArray(result.config.action.exemptRules));
   assert.doesNotThrow(() => result.config.action.commandRules.length + result.config.action.commandDenyRules.length + result.config.action.exemptRules.length);
+});
+
+/* ─── Task spine ────────────────────────────────────────────────────── */
+
+const userTurn = (text: string) => ({ type: "message", message: { role: "user", content: text } });
+
+test("one turn: no spine, so no goal repeats the task", () => {
+  assert.equal(taskSpine([userTurn("fix the login bug")]), undefined);
+  assert.equal(taskSpine([userTurn("fix the login bug")], "fix the login bug"), undefined, "the supplied copy of the only turn");
+  assert.equal(taskSpine([], "fix the login bug"), undefined, "a first prompt not yet in the branch");
+  assert.deepEqual(taskSpine([userTurn("fix the login bug"), userTurn("go")]), { goal: "fix the login bug", task: "go", history: [] });
+});
+
+test("after compaction the goal is still the first user turn, never the compaction summary", () => {
+  const session = SessionManager.inMemory("/project");
+  const user = (text: string) => session.appendMessage({ role: "user", content: text, timestamp: Date.now() } as never);
+  user("add a rate limiter");
+  user("wire it into the app");
+  const kept = user("now the tests");
+  user("run the suite");
+  session.appendCompaction("Summary: the user asked for something else entirely", kept, 50000);
+  user("check the coverage");
+  const branch = session.getBranch();
+  assert.ok(branch.some(entry => entry.type === "compaction"), "the branch carries the compaction entry");
+  const spine = taskSpine(branch as never);
+  assert.equal(spine?.goal, "add a rate limiter");
+  assert.equal(spine?.task, "check the coverage");
+  assert.deepEqual(spine?.history, ["run the suite", "now the tests", "wire it into the app"]);
+});
+
+test("no user turn: no spine", () => {
+  assert.equal(taskSpine([]), undefined);
+  assert.equal(taskSpine([userTurn("   ")]), undefined);
+  assert.equal(taskSpine(undefined), undefined);
+});
+
+test("six turns: goal is the first, task the latest, history the four between, newest first", () => {
+  const entries = ["one", "two", "three", "four", "five", "six"].map(userTurn);
+  const spine = taskSpine(entries);
+  assert.equal(spine?.goal, "one");
+  assert.equal(spine?.task, "six");
+  assert.deepEqual(spine?.history, ["five", "four", "three", "two"]);
+});
+
+test("oversized turns: history is clipped first, then goal, and task is never clipped", () => {
+  const goal = "g".repeat(500);
+  const task = "t".repeat(100);
+  const entries = [userTurn(goal), userTurn("a".repeat(400)), userTurn("b".repeat(400)), userTurn("c".repeat(400)), userTurn(task)];
+  const spine = taskSpine(entries);
+  assert.equal(spine?.task, task, "task untouched");
+  assert.equal(spine?.goal, goal, "goal untouched while history can still give way");
+  assert.deepEqual(spine?.history, ["c".repeat(400), "b".repeat(200)], "newest turns keep their text, the oldest give way");
+  assert.ok(spine!.goal.length + spine!.task.length + spine!.history.join("").length <= 1200);
+  // A goal that cannot fit even with an empty history is clipped; task still is not.
+  const huge = taskSpine([userTurn("h".repeat(2000)), userTurn("m".repeat(300)), userTurn("t".repeat(50))]);
+  assert.equal(huge?.task, "t".repeat(50));
+  assert.deepEqual(huge?.history, [], "history empties before the goal is touched");
+  assert.equal(huge?.goal, "h".repeat(1150), "goal clipped to the remaining budget");
+});
+
+test("non-text content parts are skipped and blank turns dropped", () => {
+  const entries = [
+    userTurn("build the search feature"),
+    { type: "message", message: { role: "user", content: [{ type: "image", data: "x" }, { type: "text", text: "now add tests" }] } },
+    { type: "message", message: { role: "user", content: [{ type: "image", data: "y" }] } },
+    { type: "model_change" },
+    userTurn("run the suite"),
+  ];
+  const spine = taskSpine(entries as never);
+  assert.equal(spine?.goal, "build the search feature");
+  assert.equal(spine?.task, "run the suite");
+  assert.deepEqual(spine?.history, ["now add tests"]);
+});
+
+test("a supplied latest turn replaces the branch copy instead of doubling", () => {
+  const entries = [userTurn("first goal"), userTurn("check the logs")];
+  assert.deepEqual(taskSpine(entries, "check the logs"), { goal: "first goal", task: "check the logs", history: [] });
+  // A prompt not yet in the branch keeps every earlier turn as history.
+  assert.deepEqual(taskSpine(entries, "new prompt"), { goal: "first goal", task: "new prompt", history: ["check the logs"] });
+});
+
+test("goal and history leave redacted; the raw task is bounded by the request paths", () => {
+  const spine = taskSpine([userTurn("use TOKEN=supersecretvalue1 to log in"), userTurn("go")]);
+  assert.ok(!spine?.goal.includes("supersecretvalue1"));
+  assert.equal(spine?.task, "go");
 });

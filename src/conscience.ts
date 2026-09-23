@@ -10,6 +10,8 @@ import type { Questions } from "pi-typesafe";
 import { createHash } from "node:crypto";
 import type { ConscienceConfig } from "./config.js";
 import { redact } from "./redact.js";
+import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./shape.js";
+import type { TaskSpine } from "./shape.js";
 import { fileContentHash, toolSourceHash } from "./hashing.js";
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
@@ -186,6 +188,8 @@ export function buildBatchQuestions(
 
 /**
  * Build the full state object for the judge request (spec §3 state contract).
+ * `spine`, when given, carries the task spine — the thread's goal and earlier user turns — beside `task`;
+ * scope context only, it never authorizes anything and it is not part of any question.
  */
 export function buildState(
   task: string,
@@ -193,6 +197,7 @@ export function buildState(
   activeSkills: string[],
   suppliedSkills: string[],
   batch: Array<{ opaqueId: string; candidate: Candidate }>,
+  spine?: TaskSpine | undefined,
 ): Record<string, unknown> {
   const candidates: Record<string, unknown> = {};
   for (const { opaqueId, candidate } of batch) {
@@ -204,6 +209,12 @@ export function buildState(
   return {
     task: sanitizeDescription(redact(task)),
     context: sanitizeDescription(redact(recentContext)),
+    // The spine's `task` is deliberately not repeated here: the `task` field above already carries it.
+    // Same per-field limits as the action request, for a spine built outside taskSpine.
+    ...(spine ? { spine: {
+      goal: sanitizeDescription(redact(spine.goal)).slice(0, SPINE_GOAL_LIMIT),
+      task_history: spine.history.slice(0, SPINE_HISTORY_TURNS).map(turn => sanitizeDescription(redact(turn)).slice(0, SPINE_HISTORY_LIMIT)),
+    } } : {}),
     active_skills: activeSkills,
     supplied_skills: suppliedSkills,
     candidates,
@@ -421,6 +432,7 @@ export async function assess(
   activeSkills: string[],
   suppliedSkills: string[],
   deps: ConscienceDeps,
+  spine?: TaskSpine | undefined,
 ): Promise<AssessmentResult> {
   const start = deps.now?.() ?? Date.now();
   const { config, judge, sharedTimeoutMs } = deps;
@@ -509,7 +521,7 @@ export async function assess(
       opaqueBatch, prompt, recentContext, activeSkills, suppliedSkills,
     );
     state_.hash = questionHash(questions);
-    const state = buildState(prompt, recentContext, activeSkills, suppliedSkills, opaqueBatch);
+    const state = buildState(prompt, recentContext, activeSkills, suppliedSkills, opaqueBatch, spine);
 
     const remaining = deadline - (deps.now?.() ?? Date.now());
     if (remaining <= 0) {

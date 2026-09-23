@@ -696,3 +696,45 @@ test("assess selects when both usefulness and pAdvance pass their thresholds", a
   assert.ok(result.usefulness >= 0.9);
   assert.ok(result.pAdvance >= 0.7);
 });
+
+/* ─── Task spine in the conscience state ────────────────────────────── */
+
+test("buildState carries the spine as goal and task_history beside task, and adding it does not move the beta policy hash", () => {
+  const batch = [{ opaqueId: "c1", candidate: { kind: "skill" as const, id: "impeccable", description: "UI design" } }];
+  const spine = { goal: "design a landing page", task: "now the tests", history: ["add the contact form"] };
+  const state = buildState("now the tests", "", [], [], batch, spine);
+  assert.deepEqual(state.spine, { goal: "design a landing page", task_history: ["add the contact form"] });
+  assert.equal(state.task, "now the tests");
+  // The hash is computed over the questions, exactly as assess builds them; a state field must not move it.
+  const { questions } = buildBatchQuestions(batch, "now the tests", "", [], []);
+  assert.equal(questionHash(questions), CONSCIENCE_BETA_POLICY.questionHash,
+    "the spine is a state field, not a question change: the policy pin still matches");
+});
+
+test("assess forwards the spine into the judge request state", async () => {
+  const judge = fakeJudge({
+    conscience_disposition: { type: "choice", confidence: 0.9, choice: "no_gap", probabilities: { advance: 0, awaiting_user: 0, no_gap: 0.9, unclear: 0.1 } },
+  });
+  let capturedState: Record<string, unknown> = {};
+  const capturingJudge: Judge = {
+    evaluate: async (req) => {
+      capturedState = req.state as Record<string, unknown>;
+      return (await judge.evaluate(req)) as never;
+    },
+  };
+  const spine = { goal: "design a landing page", task: "design a UI", history: [] };
+  await assess("design a UI", "", defaultSkills, defaultTools, [], [], defaultDeps(capturingJudge), spine);
+  const state = capturedState as Record<string, unknown>;
+  assert.deepEqual(state.spine, { goal: "design a landing page", task_history: [] });
+  assert.equal(state.task, "design a UI");
+});
+
+test("buildState caps a hand-built spine with 50 history entries like the action path", () => {
+  const batch = [{ opaqueId: "c1", candidate: { kind: "skill" as const, id: "impeccable", description: "UI design" } }];
+  const spine = { goal: "g".repeat(5000), task: "t", history: Array.from({ length: 50 }, (_, i) => `${i}`.padEnd(2000, "h")) };
+  const state = buildState("t", "", [], [], batch, spine).spine as { goal: string; task_history: string[] };
+  assert.equal(state.task_history.length, 4, "history count capped at SPINE_HISTORY_TURNS");
+  assert.ok(state.task_history[0]!.startsWith("0"), "the newest entries are kept");
+  assert.ok(state.task_history.every(turn => turn.length === 750), "each entry capped at SPINE_HISTORY_LIMIT");
+  assert.equal(state.goal.length, 1200, "goal capped at SPINE_GOAL_LIMIT");
+});

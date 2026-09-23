@@ -305,6 +305,27 @@ test("scope keeps recent task context after a side comment without turning histo
   assert.ok(!("approved" in requests.at(-1)!.questions));
 });
 
+test("a single-turn session sends no spine, so no goal repeats the task", async () => {
+  await grantConsent();
+  prompt = "Fix the login redirect";
+  await toolCall("bash", { command: "npm test" });
+  const state = requests.at(-1)!.state;
+  assert.equal(state.task, "Fix the login redirect");
+  assert.ok(!("spine" in state), "one user turn: no spine and no goal");
+});
+
+test("a multi-turn session sends the first turn as the spine goal", async () => {
+  await grantConsent();
+  const ctx = context({ sessionManager: { getBranch: () => [
+    { type: "message", message: { role: "user", content: "add a rate limiter" } },
+    { type: "message", message: { role: "user", content: "now the tests" } },
+  ] } });
+  await toolCall("bash", { command: "npm test" }, ctx);
+  const state = requests.at(-1)!.state;
+  assert.equal(state.task, "now the tests");
+  assert.deepEqual(state.spine, { goal: "add a rate limiter", task_history: [] });
+});
+
 test("unavailable full-output storage and cancellation do not remove content", async () => {
   await grantConsent();
   nextAnswers = { retention: "summary_only" };
@@ -2387,6 +2408,26 @@ test("conscience: ordinary read does not trigger read_observed", async () => {
   // The trace may or may not contain read_observed depending on whether the read matched.
   // What matters is that it did NOT match the skill file path.
   assert.ok(!traceText.includes("read_observed: impeccable") || !traceText.includes("src/index.ts"), "ordinary read should not match skill file");
+});
+
+test("conscience: a queued prompt is assessed with the task spine", async () => {
+  await writeConscienceConfig();
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "no_gap" };
+  const branch = [
+    { type: "message", message: { role: "user", content: "add a rate limiter" } },
+    { type: "message", message: { role: "user", content: "wire it into the app" } },
+  ];
+  const ctx = context({ sessionManager: { getBranch: () => branch } });
+  await promptWithSkills("wire it into the app", skills, ctx);
+  // The prompt admitted through before_agent_start; the next user message arrives queued.
+  await fire("message_start", { message: { role: "user", content: "wire it into the app" } }, ctx);
+  requests.length = 0;
+  await fire("message_start", { message: { role: "user", content: "now the tests" } }, ctx);
+  const state = requests.at(-1)?.state;
+  assert.ok(state, "the queued prompt was assessed");
+  assert.equal(state.task, "now the tests");
+  assert.deepEqual(state.spine, { goal: "add a rate limiter", task_history: ["wire it into the app"] });
 });
 
 // (n) origin_unknown on ambiguous provenance — placeholder for queued-prompt admission (third slice)

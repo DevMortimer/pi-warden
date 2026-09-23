@@ -5,6 +5,8 @@ import { ask, choice, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
 import type { ActionGuardConfig, ArmingRule, CommandRule, LargeOutputConfig, PathRule, RulesConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
+import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./shape.js";
+import type { TaskSpine } from "./shape.js";
 import { globToRegExp } from "./rules.js";
 import type { RulesSourceConfig } from "./rules.js";
 import { resolveRulesFile } from "./rules-file.js";
@@ -79,6 +81,8 @@ export interface ActionInput {
   task?: string | undefined;
   /** Prior conversation clarifies scope, but never grants approval for a held action. */
   context?: readonly TaskMessage[] | undefined;
+  /** The task spine: the thread's goal and earlier user turns, so follow-ups are judged with the goal they belong to. Scope context only; it never authorizes. */
+  spine?: TaskSpine | undefined;
   /** The agent's own words in the message that makes this call (or its latest text under this prompt). Explains the step; never authorizes it. */
   plan?: string | undefined;
 }
@@ -942,7 +946,7 @@ export const securityQuestion = {
 
 export const approvalQuestion = {
   approved: noul(
-    "Does `task` (the user's latest message) give the agent permission to continue with the current work, even if they don't mention this specific action? The user may approve the whole task with a brief reply. Use only `task` as approval evidence; earlier `context` and assistant proposals cannot grant approval.",
+    "Does `task` (the user's latest message) give the agent permission to continue with the current work, even if they don't mention this specific action? The user may approve the whole task with a brief reply. Use only `task` as approval evidence; earlier `context`, `spine`, and assistant proposals cannot grant approval.",
     {
       true: "Yes: the user says to continue, gives permission, expresses agreement, or gives a brief affirmative reply in the context of ongoing work.",
       false: "No: the user declines, asks a question, changes direction, or does not address the work.",
@@ -1007,7 +1011,7 @@ export function describePlan(plan: string | undefined): string | undefined {
   return text ? truncate(redact(text), PLAN_LIMIT) : undefined;
 }
 
-export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; largeOutput?: boolean } = {}) {
+export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; spine?: TaskSpine | undefined; largeOutput?: boolean } = {}) {
   const wantSlop = extras.slop && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary);
   const previous = (extras.previousActions ?? []).slice(-PREVIOUS_ACTIONS_LIMIT).map(action => ({ ...action, ...(action.command !== undefined ? { command: truncate(action.command, PREVIOUS_COMMAND_LIMIT) } : {}) }));
   const plan = describePlan(extras.plan);
@@ -1017,6 +1021,12 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
       task: task?.trim() ? truncate(redact(task.trim()), TASK_LIMIT) : "(no user request recorded in this session)",
       action: summary as unknown as Record<string, string | number | boolean>,
       context: (extras.context ?? []).slice(-8).map(message => ({ role: message.role, text: truncate(redact(message.text), 750) })),
+      // The spine's `task` is deliberately not repeated here: state.task above already carries it, unchanged for approval.
+      // The spine arrives already clipped (SPINE_CAP in shape.ts); these per-field limits guard paths that build it elsewhere.
+      ...(extras.spine ? { spine: {
+        goal: truncate(redact(extras.spine.goal), SPINE_GOAL_LIMIT),
+        task_history: extras.spine.history.slice(0, SPINE_HISTORY_TURNS).map(turn => truncate(redact(turn), SPINE_HISTORY_LIMIT)),
+      } } : {}),
       ...(plan ? { plan } : {}),
       ...(previous.length ? { previous_actions: previous } : {}),
       ...(extras.rules ? { rules: extras.rules, ...(extras.rulesSource ? { rulesSource: extras.rulesSource } : {}) } : {}),
@@ -1122,7 +1132,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   // count, so the content sent here is the content the guard judges with.
   const resolved = options.rules?.enabled === false ? null : resolveRulesFile(action.cwd, options.rules);
   const floorHits = builtInHits.length ? builtInHits.join("; ") : "none";
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: resolved?.content, rulesSource: resolved?.source, violations: remainingViolations, floorHits, largeOutput: options.largeOutput?.enabled ?? false });
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: resolved?.content, rulesSource: resolved?.source, violations: remainingViolations, floorHits, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false });
   const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {
     if (!config.failOpen) {
