@@ -6,42 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
-
-## 0.44.0
-
 ### Added
 
-- `PI_WARDEN_TRACE_DIR`: with an absolute path, Warden appends its trace to `<path>/<session id>.jsonl`, one owner-only file per Pi session, so a host that runs Pi in RPC mode can read what the status line and the sidebar would show. Each line is a JSON object with `"v": 1` and a `kind`: `session` (session id, `~`-shortened working directory, Warden version, mode, time), `entry` (a numeric `id` unique in the file, time, and the trace entry as stored), or `amend` (the entry `id`, the added line, time). The 100-entry limit of the sidebar does not apply to the file. A write error is reported once and stops the file for the session; guards and tool calls do not change. Unset, empty, or relative: no file. `docs/configuration.md` lists the record format and `docs/data-handling.md` lists the file.
-- `/warden trace` in RPC mode sends the last 20 trace entries as one text notification, newest last, with the trace file path when the file is on. RPC mode settles the overlay request without building the sidebar, so before this the command did nothing there. The terminal sidebar does not change.
-
-## 0.43.0
-
-### Changed
-
-- The off-task judgment and the conscience recommendation both judge with a task spine in the request state: the thread's first user turn (the goal), the latest user turn, and up to four earlier user turns (newest first). The whole spine is capped at 1200 characters — `task_history` is clipped first, then `goal`; the latest turn is never clipped. A follow-up like "now the tests" is no longer judged without the goal it belongs to. Approval still comes from the latest user turn only; the spine is context, never authorization, and no threshold moved (the conscience beta policy's pinned questionHash still matches). The action approval question now names `spine` beside `context` as text that cannot grant approval. A thread with one user turn sends no spine, so the budget is not spent on a copy of the task. A queued prompt admitted at `message_start` is also assessed with the spine. Both request paths cap a spine they receive at four history entries and the same per-field lengths (goal 1200, each entry 750 characters), whoever built it. After a compaction the goal is still the thread's first user turn: the branch keeps the summarized entries, and a compaction summary never becomes the goal. `docs/data-handling.md` lists the spine for the action guard and the conscience.
-
-## 0.42.1
-
-### Fixed
-
-- A write the action guard holds, denies, or the user declines no longer gets a rules or slop steer. The steer said "the content just written" about content that was never written. A confirm-dialog write gets the steer after the user allows it. An approved retry of a held write is judged again and gets its own steer. The trace still records the rule findings of the held write, marked as not told.
-
-## 0.42.0
-
-### Added
-
-- A judged `bash` call now also asks whether the command will print far more output than the agent needs. At or above `context.largeOutput.threshold` (default `0.85`) the agent is told once per command family per session to redirect or filter it, for example to a file with `tail -40`. The call is never held. `context.largeOutput.enabled: false` removes the question. `scripts/context-cases.mjs` has eight labelled commands to calibrate it.
-
-### Fixed
-
-- The rules guard no longer judges writes to files outside the project root or paths ignored by the project's `.gitignore`. Those files are not project code and the rules in `pi-warden.md` do not apply to them.
-
-## 0.41.0
-
-### Added
-
-- The A/B eval (`npm run eval:ab`) now scores two more axes per run, shown side by side for the two cells in an "Outcome and waste" section of the report. Outcome: whether every check the task declares passes when the runner re-runs it, the diff violation count, and whether the final reply claimed tests/build success without the agent ever running that check. Waste, read from the saved session log (`eval/waste.mjs`): tool-call count, retries (same tool, same or near-same input, after a failure), reverts (a `git checkout`/`git restore` naming a path, or a `write` restoring a file to earlier content), total tokens, and wall seconds.
+- A judge cooldown. After three consecutive timeout, network, or other failures, or one auth or configuration failure, pi-warden stops asking Jev for a minute instead of paying a full request timeout on every guarded action. One warning names the failure kind, the duration, and for an auth failure the fix; one info notice says when judgments resume. Guards run as they do with no judge configured, nothing is sent during the window, and `/warden status` counts the checks that ran without Jev. Configure with `judge.failuresBeforeCooldown` and `judge.cooldownMs`; state is per session. A request that hits pi-warden's own `timeoutMs` reaches the SDK as an abort, so it is told apart from a user's cancel by the signal's reason and counted as a timeout.
 
 ## 0.40.2
 

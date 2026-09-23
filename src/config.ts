@@ -209,14 +209,6 @@ export interface ContextConfig {
   formatConfidence: number;
   /** Append a compact evidence appendix to the summary during compaction. */
   compactAppendix: boolean;
-  /** Prevention before the call: a bash action request asks whether the command will print far more than the agent needs. Never holds. */
-  largeOutput: LargeOutputConfig;
-}
-
-export interface LargeOutputConfig {
-  enabled: boolean;
-  /** P(the command prints far more than the agent needs) at or above which the agent is steered once per command family per session. */
-  threshold: number;
 }
 
 export interface RunawayConfig {
@@ -229,6 +221,13 @@ export interface RunawayConfig {
   minChars: number;
   /** After stopping, start one follow-up turn that names the repeat and asks for the one next step; once per user prompt. */
   recover: boolean;
+}
+
+export interface JudgeConfig {
+  /** Consecutive timeout, network, or other failures before judgments pause; one auth or configuration failure is enough. */
+  failuresBeforeCooldown: number;
+  /** How long a failing judge is left alone; guards run pattern-only until the next request after it. */
+  cooldownMs: number;
 }
 
 export interface NotifyConfig {
@@ -344,6 +343,7 @@ export interface WardenConfig {
   context: ContextConfig;
   runaway: RunawayConfig;
   notify: NotifyConfig;
+  judge: JudgeConfig;
   /** Triage of async subagent reports: Jev separates what needs the agent awake from what is only context. */
   subagent: SubagentConfig;
   /** The status line above the editor and the trace panel. */
@@ -399,9 +399,10 @@ export function defaultConfig(): WardenConfig {
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7 },
     rules: { enabled: true, threshold: 0.7, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
-    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, largeOutput: { enabled: true, threshold: 0.85 } },
+    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
+    judge: { cooldownMs: 60000, failuresBeforeCooldown: 3 },
     subagent: { enabled: true, wake: true, threshold: 0.8, cooldownMs: 120000 },
     widget: defaultWidgetConfig(),
     steerVisible: false,
@@ -677,6 +678,12 @@ function applyNotify(base: NotifyConfig, raw: unknown, allowCommand: boolean): N
   return { enabled: boolean(raw.enabled, base.enabled), cooldownMs: cooldown, command };
 }
 
+function applyJudge(base: JudgeConfig, raw: unknown): JudgeConfig {
+  if (!isObject(raw)) return base;
+  const cooldown = typeof raw.cooldownMs === "number" && Number.isSafeInteger(raw.cooldownMs) && raw.cooldownMs >= 0 ? raw.cooldownMs : base.cooldownMs;
+  return { cooldownMs: cooldown, failuresBeforeCooldown: positiveInteger(raw.failuresBeforeCooldown, base.failuresBeforeCooldown) };
+}
+
 function applySubagent(base: SubagentConfig, raw: unknown): SubagentConfig {
   if (!isObject(raw)) return base;
   const cooldown = typeof raw.cooldownMs === "number" && Number.isSafeInteger(raw.cooldownMs) && raw.cooldownMs >= 0 ? raw.cooldownMs : base.cooldownMs;
@@ -757,13 +764,14 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "subagent"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent"> {
   return {
     rules: applyRules(base.rules, raw.rules),
     runaway: applyRunaway(base.runaway, raw.runaway),
     subagent: applySubagent(base.subagent, raw.subagent),
     // A project file may switch notifications off or on, but never names a command to run.
     notify: applyNotify(base.notify, raw.notify, source === "user"),
+    judge: applyJudge(base.judge, raw.judge),
     action: applyAction(base.action, raw.action, timeoutMs, source),
     stuck: applyStuck(base.stuck, raw.stuck),
     done: applyDone(base.done, raw.done),
@@ -780,10 +788,6 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
       recallTool: isRecallTool(raw.context.recallTool) ? raw.context.recallTool : base.context.recallTool,
       formatConfidence: probability(raw.context.formatConfidence, base.context.formatConfidence),
       compactAppendix: boolean(raw.context.compactAppendix, base.context.compactAppendix),
-      largeOutput: isObject(raw.context.largeOutput) ? {
-        enabled: boolean(raw.context.largeOutput.enabled, base.context.largeOutput.enabled),
-        threshold: probability(raw.context.largeOutput.threshold, base.context.largeOutput.threshold),
-      } : base.context.largeOutput,
     } : base.context,
   };
 }

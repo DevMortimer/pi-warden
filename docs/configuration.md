@@ -50,9 +50,10 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
   "security": { "enabled": true, "threshold": 0.7 },
   "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
   "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
-  "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7, "largeOutput": { "enabled": true, "threshold": 0.85 } },
+  "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7 },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
   "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
+  "judge": { "cooldownMs": 60000, "failuresBeforeCooldown": 3 },
   "subagent": { "enabled": true, "wake": true, "threshold": 0.8, "cooldownMs": 120000 },
   "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "steerVisible": false,
@@ -92,10 +93,10 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `stuck.*` | Window of tool results kept, failures before a check, cooldown between checks, same-strategy threshold. |
 | `done.*` | Completion-claim threshold and whether the agent gets a follow-up turn. |
 | `context.*` | Compression thresholds, retention confidence, duplicate size, recall tool. |
-| `context.largeOutput.enabled` | Add one question to each judged `bash` request: will the command print far more than the agent needs? Off keeps the question out of the request. Read-only commands (`cat`, `find`, `git log`) skip the judge, so the question does not ride them. |
-| `context.largeOutput.threshold` | P(large output) at or above which the agent is told, once per command family (`npm test`, `git log`, `find`) per session, to redirect or filter the command before it runs one like it again. The call is never held or warned. Default `0.85`. |
 | `runaway.*` | Repeat counts that abort a reply, minimum size, whether the agent gets one recovery turn. |
 | `notify.*` | Desktop notifications, cooldown, optional relay command (user file only). |
+| `judge.failuresBeforeCooldown` | Consecutive timeout, network, or other judge failures before judgments pause for the session (3). One auth or configuration failure pauses at once. |
+| `judge.cooldownMs` | How long a failing judge is left alone before the next action asks it again (60000). |
 | `subagent.enabled` | Read async subagent reports at all. `false` ignores them, as before 0.14. |
 | `subagent.wake` | Ask Jev whether a report that names trouble deserves a wake. `false` keeps the offline layer, which never wakes. |
 | `subagent.threshold` | P(report needs the agent awake) that wakes it. Conservative on purpose. |
@@ -223,20 +224,6 @@ It is a backstop for sanctioned work, not a boundary anyone hostile respects: ke
 | `OPENROUTER_API_KEY` | API key for the OpenRouter backend. Required when `typesafeBackend` is `"openrouter"`. |
 | `PI_WARDEN_ENABLED=1` | Grants consent for headless runs (same as `"typesafe": true`). |
 | `PI_WARDEN_MODE=steer\|confirm\|advise` | Overrides `mode`. |
-| `PI_WARDEN_TRACE_DIR=<absolute path>` | Appends the trace to `<path>/<session id>.jsonl`, one file per Pi session. For a host that runs Pi in RPC mode, where the status line and the sidebar never show. An empty or relative path turns it off. See [Trace file](#trace-file). |
-
-### Trace file
-
-With `PI_WARDEN_TRACE_DIR` set to an absolute path, Warden appends every trace event to `<path>/<session id>.jsonl`. The directory is created owner-only (`0700`) when it is missing; the file is owner-only (`0600`). A new or resumed session writes to its own file. The file keeps every event: the 100-entry limit of the sidebar does not apply. Each line is one JSON object with `"v": 1` and a `kind`:
-
-| `kind` | Written | Fields |
-| --- | --- | --- |
-| `session` | Once when the session opens the file | `sessionId`; `cwd` (the home directory shown as `~`, redacted); `wardenVersion`; `mode` (`steer`, `confirm`, or `advise`); `at` |
-| `entry` | For every trace event | `id` (a number, unique in the file; a reload continues the count); `at`; `guard`; `line` (the status-line text); `details` (the redacted detail lines the sidebar shows); `tokens` (the widget tokens, when the event has them) |
-| `amend` | When an outcome lands on an event that is still in the sidebar's 100 entries | `id` of the entry; `line` (the added detail line); `at` |
-
-`at` is an ISO 8601 timestamp. Lines are in trace order. A write error is reported once as a warning and stops the file for the rest of the session; guards and tool calls do not change. In RPC mode `/warden trace` sends the last 20 events as one text notification, newest last, with the path of this file when it is on.
-
 
 ## Status line and trace sidebar
 
