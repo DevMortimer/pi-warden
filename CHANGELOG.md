@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- The A/B eval (`npm run eval:ab`) now scores two more axes per run, shown side by side for the two cells in an "Outcome and waste" section of the report. Outcome: whether every check the task declares passes when the runner re-runs it, the diff violation count, and whether the final reply claimed tests/build success without the agent ever running that check. Waste, read from the saved session log (`eval/waste.mjs`): tool-call count, retries (same tool, same or near-same input, after a failure), reverts (a `git checkout`/`git restore` naming a path, or a `write` restoring a file to earlier content), total tokens, and wall seconds.
+
 
 ## 0.40.2
 
