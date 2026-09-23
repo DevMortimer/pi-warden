@@ -728,3 +728,13 @@ test("assess forwards the spine into the judge request state", async () => {
   assert.deepEqual(state.spine, { goal: "design a landing page", task_history: [] });
   assert.equal(state.task, "design a UI");
 });
+
+test("buildState caps a hand-built spine with 50 history entries like the action path", () => {
+  const batch = [{ opaqueId: "c1", candidate: { kind: "skill" as const, id: "impeccable", description: "UI design" } }];
+  const spine = { goal: "g".repeat(5000), task: "t", history: Array.from({ length: 50 }, (_, i) => `${i}`.padEnd(2000, "h")) };
+  const state = buildState("t", "", [], [], batch, spine).spine as { goal: string; task_history: string[] };
+  assert.equal(state.task_history.length, 4, "history count capped at SPINE_HISTORY_TURNS");
+  assert.ok(state.task_history[0]!.startsWith("0"), "the newest entries are kept");
+  assert.ok(state.task_history.every(turn => turn.length === 750), "each entry capped at SPINE_HISTORY_LIMIT");
+  assert.equal(state.goal.length, 1200, "goal capped at SPINE_GOAL_LIMIT");
+});

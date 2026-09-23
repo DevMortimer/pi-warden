@@ -865,13 +865,16 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         const judge = judgeFor(config);
         if (judge && cachedSkills.length > 0) {
           const myGeneration = conscienceGeneration;
-          const redactedText = redact(typeof event.message.content === "string" ? event.message.content : "").slice(0, 2000);
+          const prompt = typeof event.message.content === "string" ? event.message.content : "";
+          const redactedText = redact(prompt).slice(0, 2000);
+          const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
+          const spine = taskSpine(branch, prompt);
           let toolInfos: Array<{ name: string; description: string }> = [];
           try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
           const activeSkills = cachedSkills.map(s => s.name);
           const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
           try {
-            const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile });
+            const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile }, spine);
             if (conscienceGeneration !== myGeneration) return;
             record(ctx, config, "conscience", `queued prompt assessed → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.skipReason ?? "none"})`, ["trigger: message_start", `origin: queued`, `skipReason: ${result.skipReason ?? "none"}`]);
           } catch (err) { const cat = classifyConscienceError(err); if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }

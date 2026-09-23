@@ -110,11 +110,11 @@ export function shapeWarning(missing: readonly string[], loadedSchema: number | 
  * like "now the tests" is judged against the goal it belongs to, not on its words alone.
  */
 export interface TaskSpine {
-  /** The first user turn of the thread. Always present; the goal the latest turn belongs to. */
+  /** The first user turn of the thread, earlier than `task`; the goal the latest turn belongs to. */
   goal: string;
   /** The latest user turn, raw and unclipped: the request state already carries it as `task` (redacted, bounded) and approval reads only that field. */
   task: string;
-  /** Earlier user turns between goal and task, newest first; empty when goal and task are the same turn. */
+  /** Earlier user turns between goal and task, newest first; empty when the goal is the turn just before task. */
   history: string[];
 }
 
@@ -122,6 +122,9 @@ export interface TaskSpine {
 export const SPINE_CAP = 1200;
 /** Earlier turns the spine keeps, between goal and task. */
 export const SPINE_HISTORY_TURNS = 4;
+/** Per-field limits the request paths apply to a spine they receive, whoever built it. */
+export const SPINE_GOAL_LIMIT = 1200;
+export const SPINE_HISTORY_LIMIT = 750;
 
 /** The slice of a Pi session entry the spine reads; structural, so shape.ts needs no host types. */
 export interface BranchMessageEntry {
@@ -154,7 +157,9 @@ export function userTurnTexts(entries: readonly (BranchMessageEntry | undefined 
  * redacted here; `task` stays raw because both request paths redact and bound it themselves. `latest`
  * supplies the latest turn when the branch does not carry it yet (the conscience passes the prompt it is
  * about to send); when the branch already carries it, that copy is dropped from `history`. No user turn at
- * all: no spine. Scope context only — the spine never authorizes an action.
+ * all, or the latest turn is the first: no spine, so the budget is not spent on a copy of `task`. Only
+ * `message` entries count, so a compaction entry and its summary never become the goal; Pi's getBranch
+ * still returns the entries a compaction summarized. Scope context only — the spine never authorizes an action.
  */
 export function taskSpine(entries: readonly (BranchMessageEntry | undefined | null)[] | undefined, latest?: string): TaskSpine | undefined {
   const turns = userTurnTexts(entries);
@@ -165,7 +170,8 @@ export function taskSpine(entries: readonly (BranchMessageEntry | undefined | nu
   const earlier = supplied
     ? (last === task ? turns.slice(0, -1) : turns)
     : turns.slice(0, -1);
-  let goal = redact(earlier[0] ?? task);
+  if (!earlier.length) return undefined;
+  let goal = redact(earlier[0]!);
   let history = earlier.slice(1).slice(-SPINE_HISTORY_TURNS).reverse().map(redact);
   let budget = SPINE_CAP - goal.length - task.length;
   const kept: string[] = [];

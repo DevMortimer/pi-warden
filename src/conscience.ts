@@ -10,6 +10,7 @@ import type { Questions } from "pi-typesafe";
 import { createHash } from "node:crypto";
 import type { ConscienceConfig } from "./config.js";
 import { redact } from "./redact.js";
+import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./shape.js";
 import type { TaskSpine } from "./shape.js";
 import { fileContentHash, toolSourceHash } from "./hashing.js";
 
@@ -209,9 +210,10 @@ export function buildState(
     task: sanitizeDescription(redact(task)),
     context: sanitizeDescription(redact(recentContext)),
     // The spine's `task` is deliberately not repeated here: the `task` field above already carries it.
+    // Same per-field limits as the action request, for a spine built outside taskSpine.
     ...(spine ? { spine: {
-      goal: sanitizeDescription(redact(spine.goal)),
-      task_history: spine.history.map(turn => sanitizeDescription(redact(turn))),
+      goal: sanitizeDescription(redact(spine.goal)).slice(0, SPINE_GOAL_LIMIT),
+      task_history: spine.history.slice(0, SPINE_HISTORY_TURNS).map(turn => sanitizeDescription(redact(turn)).slice(0, SPINE_HISTORY_LIMIT)),
     } } : {}),
     active_skills: activeSkills,
     supplied_skills: suppliedSkills,

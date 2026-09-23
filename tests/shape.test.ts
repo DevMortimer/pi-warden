@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CONFIG_SCHEMA, defaultConfig } from "../src/config.js";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { completeConfig, EXPECTED_SCHEMA, shapeWarning, taskSpine } from "../src/shape.js";
 
 test("a complete config passes through untouched", () => {
@@ -115,9 +116,28 @@ test("an action section without commandRules leaves them empty, never undefined"
 
 const userTurn = (text: string) => ({ type: "message", message: { role: "user", content: text } });
 
-test("the spine of one turn: goal equals task, history empty", () => {
-  const spine = taskSpine([userTurn("fix the login bug")]);
-  assert.deepEqual(spine, { goal: "fix the login bug", task: "fix the login bug", history: [] });
+test("one turn: no spine, so no goal repeats the task", () => {
+  assert.equal(taskSpine([userTurn("fix the login bug")]), undefined);
+  assert.equal(taskSpine([userTurn("fix the login bug")], "fix the login bug"), undefined, "the supplied copy of the only turn");
+  assert.equal(taskSpine([], "fix the login bug"), undefined, "a first prompt not yet in the branch");
+  assert.deepEqual(taskSpine([userTurn("fix the login bug"), userTurn("go")]), { goal: "fix the login bug", task: "go", history: [] });
+});
+
+test("after compaction the goal is still the first user turn, never the compaction summary", () => {
+  const session = SessionManager.inMemory("/project");
+  const user = (text: string) => session.appendMessage({ role: "user", content: text, timestamp: Date.now() } as never);
+  user("add a rate limiter");
+  user("wire it into the app");
+  const kept = user("now the tests");
+  user("run the suite");
+  session.appendCompaction("Summary: the user asked for something else entirely", kept, 50000);
+  user("check the coverage");
+  const branch = session.getBranch();
+  assert.ok(branch.some(entry => entry.type === "compaction"), "the branch carries the compaction entry");
+  const spine = taskSpine(branch as never);
+  assert.equal(spine?.goal, "add a rate limiter");
+  assert.equal(spine?.task, "check the coverage");
+  assert.deepEqual(spine?.history, ["run the suite", "now the tests", "wire it into the app"]);
 });
 
 test("no user turn: no spine", () => {

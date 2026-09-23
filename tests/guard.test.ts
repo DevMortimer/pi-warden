@@ -941,3 +941,13 @@ test("no spine, no field; the spine is redacted like every other state field", (
   const spineState = (request.state as Record<string, unknown>).spine as { goal: string };
   assert.ok(!spineState.goal.includes("supersecretvalue1"), "goal leaves redacted");
 });
+
+test("a hand-built spine with 50 history entries is capped to the per-field limits", () => {
+  const spine = { goal: "g".repeat(5000), task: "t", history: Array.from({ length: 50 }, (_, i) => `${i}`.padEnd(2000, "h")) };
+  const request = buildRequest(describeAction("bash", { command: "ls" }, cwd), "t", { spine });
+  const state = (request.state as Record<string, unknown>).spine as { goal: string; task_history: string[] };
+  assert.equal(state.task_history.length, 4, "history count capped at SPINE_HISTORY_TURNS");
+  assert.ok(state.task_history[0]!.startsWith("0"), "the newest entries are kept");
+  assert.ok(state.task_history.every(turn => turn.endsWith("… [1250 more chars]")), "each entry truncated at SPINE_HISTORY_LIMIT");
+  assert.ok(state.goal.endsWith("… [3800 more chars]"), "goal truncated at SPINE_GOAL_LIMIT");
+});
