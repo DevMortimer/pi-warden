@@ -1572,7 +1572,7 @@ test("the request carries the latest user prompt and a redacted action summary",
   const body = requests.at(-1) as { state: { task: string; action: Record<string, unknown> }; questions: Record<string, unknown> } | undefined;
   assert.ok(body);
   assert.equal(body.state.task, "Deploy the thing with TOKEN=[redacted] please", "redaction covers both the task and action");
-  assert.deepEqual(Object.keys(body.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "visible"]);
+  assert.deepEqual(Object.keys(body.questions).sort(), ["irreversible", "large_output", "mutates", "off_task", "scope", "should_proceed", "visible"]);
   assert.equal(body.state.action.tool, "bash");
   assert.ok(!String(body.state.action.command).includes("abc.def.ghi"));
   assert.ok(String(body.state.action.command).includes("[redacted]"));

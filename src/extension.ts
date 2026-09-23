@@ -19,7 +19,7 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, offTaskSteer, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import { evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
@@ -315,6 +315,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const secretsSeen = new Set<string>();
   // Subagent report entries already triaged, by session entry id; the wake window outlives one scan.
   const subagentSeen = new Set<string>();
+  // Command families already steered toward filtered output this session: one steer per family.
+  const largeOutputSteered = new Set<string>();
   const wakePolicy = new WakePolicy(0);
   const runaway = new RunawayMonitor();
   // Runs stopped by the runaway guard for the current user prompt; the first one gets a recovery turn, later ones wait for the user.
@@ -610,6 +612,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     compressionLearner.reset();
     secretsSeen.clear();
     subagentSeen.clear();
+    largeOutputSteered.clear();
     wakePolicy.reset();
     steerRepeats.reset();
     steersThisRun = 0;
@@ -1017,7 +1020,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx) },
-      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined },
+      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined },
     );
     if (verdict.source === "skipped") return;
     // Arming check: if any armed rule's command regex matches this call, inject a hit into the verdict.
@@ -1131,6 +1134,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (verdict.shouldProceedSteer && !verdict.shouldProceedTraceOnly) {
       noteGuards.add("action");
       notes.push(shouldProceedMessage(verdict));
+    }
+    const largeOutput = largeOutputNotice(verdict, largeOutputSteered);
+    if (largeOutput) {
+      noteGuards.add("action");
+      notes.push(largeOutput);
     }
     if (verdict.slopSymptoms?.length && verdict.slopReasons) {
       stats.slop++;

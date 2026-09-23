@@ -8,15 +8,23 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Fixed
 
-- The rules guard no longer judges writes to files outside the project root or paths ignored by the project's `.gitignore`. Those files are not project code and the rules in `pi-warden.md` do not apply to them.
 - A write the action guard holds, denies, or the user declines no longer gets a rules or slop steer. The steer said "the content just written" about content that was never written. A confirm-dialog write gets the steer after the user allows it. An approved retry of a held write is judged again and gets its own steer. The trace still records the rule findings of the held write, marked as not told.
+
+## 0.42.0
+
+### Added
+
+- A judged `bash` call now also asks whether the command will print far more output than the agent needs. At or above `context.largeOutput.threshold` (default `0.85`) the agent is told once per command family per session to redirect or filter it, for example to a file with `tail -40`. The call is never held. `context.largeOutput.enabled: false` removes the question. `scripts/context-cases.mjs` has eight labelled commands to calibrate it.
+
+### Fixed
+
+- The rules guard no longer judges writes to files outside the project root or paths ignored by the project's `.gitignore`. Those files are not project code and the rules in `pi-warden.md` do not apply to them.
 
 ## 0.41.0
 
 ### Added
 
 - The A/B eval (`npm run eval:ab`) now scores two more axes per run, shown side by side for the two cells in an "Outcome and waste" section of the report. Outcome: whether every check the task declares passes when the runner re-runs it, the diff violation count, and whether the final reply claimed tests/build success without the agent ever running that check. Waste, read from the saved session log (`eval/waste.mjs`): tool-call count, retries (same tool, same or near-same input, after a failure), reverts (a `git checkout`/`git restore` naming a path, or a `write` restoring a file to earlier content), total tokens, and wall seconds.
-
 
 ## 0.40.2
 
