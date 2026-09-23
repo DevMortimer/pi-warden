@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
-import type { ActionGuardConfig, ArmingRule, CommandRule, PathRule, RulesConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
+import type { ActionGuardConfig, ArmingRule, CommandRule, LargeOutputConfig, PathRule, RulesConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { globToRegExp } from "./rules.js";
 import type { RulesSourceConfig } from "./rules.js";
@@ -126,6 +126,8 @@ export interface Judgment {
   visible?: number;
   /** P(action is safe to proceed without asking). Inverted: low = hold. */
   shouldProceed?: number;
+  /** P(the command prints far more than the agent needs); bash only, never holds. */
+  largeOutput?: number;
   model: string;
   elapsedMs: number;
 }
@@ -176,6 +178,8 @@ export interface Verdict {
   offTaskTraceOnly?: boolean;
   /** Index of the trace-only off-task diagnostic; later reasons append, and any prepend must adjust this index. */
   offTaskTraceOnlyReasonIndex?: number;
+  /** Command family of a bash call at or above the large-output threshold; the agent is steered once per family per session. */
+  largeOutputFamily?: string;
   /** Answers to the caller's own `questions`: P(yes) for a noul, the picked option for a choice, the level for a score. */
   extra?: Record<string, number | string>;
   /** Safe TypeSafe error message when the judge could not answer. */
@@ -192,6 +196,8 @@ export interface EvaluateOptions {
   signal?: AbortSignal | undefined;
   /** Adds quality questions for write/edit content to the same request. */
   slop?: SlopGuardConfig | undefined;
+  /** Adds the large-output question to a bash request. */
+  largeOutput?: LargeOutputConfig | undefined;
   security?: SecurityConfig | undefined;
   /**
    * The rules guard's switch. The rules the active config resolves ride every judged action request, so
@@ -293,6 +299,25 @@ function headOf(segment: string): string | undefined {
   while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || WRAPPERS.has(tokens[index]!))) index++;
   const head = tokens[index];
   return head ? head.replace(/^.*\//, "") : undefined;
+}
+
+/** Tools whose first word names what runs: `git log` and `git status` print very different amounts. */
+const SUBCOMMAND_HEADS = new Set(["git", "npm", "pnpm", "yarn", "bun", "cargo", "go", "docker", "kubectl"]);
+
+/**
+ * The command family the large-output steer is remembered by: the head of the first segment that is not a `cd`, plus the
+ * subcommand for tools that have one (`git log`, `npm test`, `npm run build`). Undefined when no head can be read.
+ */
+export function commandFamily(command: string): string | undefined {
+  const segment = splitShell(command).find(part => { const head = headOf(part); return head !== undefined && head !== "cd" && head !== "pushd"; });
+  const head = segment ? headOf(segment) : undefined;
+  if (!segment || !head) return undefined;
+  if (!SUBCOMMAND_HEADS.has(head)) return head;
+  const tokens = segment.trim().split(/\s+/);
+  const rest = tokens.slice(tokens.findIndex(token => token.replace(/^.*\//, "") === head) + 1).filter(token => !token.startsWith("-"));
+  const word = (token: string | undefined) => token !== undefined && /^[A-Za-z][\w:.-]*$/.test(token);
+  if (!word(rest[0])) return head;
+  return rest[0] === "run" && word(rest[1]) ? `${head} run ${rest[1]}` : `${head} ${rest[0]}`;
 }
 
 /**
@@ -849,6 +874,17 @@ export const visibleQuestion = {
   ),
 };
 
+/** Bash only. Prevention before the call; the context saver still compresses whatever does print. Steers, never holds. */
+export const largeOutputQuestion = {
+  large_output: noul(
+    "Will `action` print far more output than the agent needs for `task`: thousands of lines, whole large files, full logs, unfiltered recursive listings, or verbose test and build runs, where a filtered, counted, or tailed view would answer the question?",
+    {
+      true: "Yes: it prints an entire large file or log, lists a whole tree without filters, shows every commit with its patch, or runs a verbose suite or build with no filter, and `task` needs only a summary, a count, the failures, or a few matching lines.",
+      false: "No: the output is short by nature (a status, a short listing, a bounded head or tail, a count), it is already filtered or redirected, or `task` needs the full text.",
+    },
+  ),
+};
+
 /** Asked only when the agent said something before the call; an empty plan cannot be contradicted. */
 export const intentQuestion = {
   intent_mismatch: noul(
@@ -971,7 +1007,7 @@ export function describePlan(plan: string | undefined): string | undefined {
   return text ? truncate(redact(text), PLAN_LIMIT) : undefined;
 }
 
-export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string } = {}) {
+export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; largeOutput?: boolean } = {}) {
   const wantSlop = extras.slop && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary);
   const previous = (extras.previousActions ?? []).slice(-PREVIOUS_ACTIONS_LIMIT).map(action => ({ ...action, ...(action.command !== undefined ? { command: truncate(action.command, PREVIOUS_COMMAND_LIMIT) } : {}) }));
   const plan = describePlan(extras.plan);
@@ -987,7 +1023,7 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
       ...(extras.floorHits ? { floor_hits: extras.floorHits } : {}),
 
     },
-    questions: { ...shouldProceedQuestion, ...questions, ...(summary.command !== undefined ? visibleQuestion : {}), ...(plan ? intentQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary) ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}), ...violationQuestions, ...(extras.questions ?? {}) },
+    questions: { ...shouldProceedQuestion, ...questions, ...(summary.command !== undefined ? visibleQuestion : {}), ...(plan ? intentQuestion : {}), ...(extras.largeOutput && summary.tool === "bash" ? largeOutputQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary) ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}), ...violationQuestions, ...(extras.questions ?? {}) },
   };
 }
 
@@ -1086,7 +1122,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   // count, so the content sent here is the content the guard judges with.
   const resolved = options.rules?.enabled === false ? null : resolveRulesFile(action.cwd, options.rules);
   const floorHits = builtInHits.length ? builtInHits.join("; ") : "none";
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: resolved?.content, rulesSource: resolved?.source, violations: remainingViolations, floorHits });
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: resolved?.content, rulesSource: resolved?.source, violations: remainingViolations, floorHits, largeOutput: options.largeOutput?.enabled ?? false });
   const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {
     if (!config.failOpen) {
@@ -1102,7 +1138,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     }
     return withPlan({ level, source: "error", summary, patterns, reasons, error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) });
   }
-  const answers = result.answers as typeof result.answers & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk" | "regretted" | "intent_mismatch" | "visible", { type: string; noul?: number }>> & { regret_target?: { type: string; choice?: string } };
+  const answers = result.answers as typeof result.answers & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk" | "regretted" | "intent_mismatch" | "visible" | "large_output", { type: string; noul?: number }>> & { regret_target?: { type: string; choice?: string } };
   const judgment: Judgment = {
     irreversible: answers.irreversible.noul,
     offTask: answers.off_task.noul,
@@ -1115,6 +1151,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   if (typeof answers.mutates?.noul === "number") judgment.mutates = answers.mutates.noul;
   if (plan && typeof answers.intent_mismatch?.noul === "number") judgment.intentMismatch = answers.intent_mismatch.noul;
   if (summary.command !== undefined && typeof answers.visible?.noul === "number") judgment.visible = answers.visible.noul;
+  if (options.largeOutput?.enabled && action.tool === "bash" && typeof answers.large_output?.noul === "number") judgment.largeOutput = answers.large_output.noul;
   if (typeof answers.regretted?.noul === "number") {
     judgment.regretted = answers.regretted.noul;
     if (typeof answers.regret_target?.choice === "string") judgment.regretTarget = answers.regret_target.choice;
@@ -1217,6 +1254,11 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   if (mismatch) verdict.intentMismatch = true;
   if (offTaskSteer) verdict.offTaskSteer = true;
   if (offTaskTraceOnly) verdict.offTaskTraceOnly = true;
+  // Large output steers and never changes the level: the saver compresses what prints, this asks the agent to print less.
+  if (judgment.largeOutput !== undefined && judgment.largeOutput >= options.largeOutput!.threshold && view) {
+    const family = commandFamily(view.command);
+    if (family) verdict.largeOutputFamily = family;
+  }
   if (shouldProceedSteer) verdict.shouldProceedSteer = true;
   if (shouldProceedTraceOnlyReasonIndex !== undefined) {
     verdict.shouldProceedTraceOnly = true;
@@ -1305,6 +1347,25 @@ export function shouldProceedMessage(verdict: Verdict): string {
 export function offTaskSteer(verdict: Verdict): string {
   const score = verdict.judgment?.offTask;
   return `pi-warden: this ${verdict.summary.tool} call looks unrelated to the user's request${score === undefined ? "" : ` (off-task ${percent(score)})`}. It ran. If it serves the request, say how in at most one short sentence; otherwise return to what the user asked for, or ask before widening the work. Do not restate session state or re-answer notices you have already addressed.`;
+}
+
+/** What the agent reads the first time a command family is judged noisy: the family and one concrete way to print less. */
+export function largeOutputSteer(verdict: Verdict): string {
+  const family = verdict.largeOutputFamily ?? verdict.summary.tool;
+  const score = verdict.judgment?.largeOutput;
+  const log = `/tmp/warden-${family.replace(/[^A-Za-z0-9]+/g, "-")}.log`;
+  return [
+    `pi-warden: \`${family}\` commands may print far more than you need${score === undefined ? "" : ` (large-output ${percent(score)})`}. This one runs unchanged.`,
+    `Next time, redirect and show the tail: \`${family} … > ${log} 2>&1; tail -40 ${log}\`.`,
+  ].join("\n");
+}
+
+/** The large-output steer for this verdict, once per command family per session; `steered` is the session's memory. */
+export function largeOutputNotice(verdict: Verdict, steered: Set<string>): string | undefined {
+  const family = verdict.largeOutputFamily;
+  if (!family || steered.has(family)) return undefined;
+  steered.add(family);
+  return largeOutputSteer(verdict);
 }
 
 /** Offline stand-in for the approval question when TypeSafe is not available. */
