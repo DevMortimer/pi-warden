@@ -1,4 +1,4 @@
-import type { ActionGuardConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
+import type { ActionGuardConfig, LargeOutputConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { evaluateAction, textApproves } from "./guard.js";
 import type { EvaluateOptions, PreviousAction, TaskMessage, Verdict } from "./guard.js";
 import type { Judge } from "pi-typesafe";
@@ -29,6 +29,8 @@ export interface InspectOptions {
   signal?: AbortSignal | undefined;
   slop?: SlopGuardConfig | undefined;
   security?: SecurityConfig | undefined;
+  /** Adds the large-output question to bash requests. */
+  largeOutput?: LargeOutputConfig | undefined;
   /** The rules guard's switch, forwarded to `evaluateAction`: off keeps the rules content out of the request. */
   rules?: EvaluateOptions["rules"];
   /** Calls allowed in the previous turn; the regret question about them rides this call's request, never a sibling's. */
@@ -61,7 +63,7 @@ export class ActionGuard {
     const retryAfterHold = this.holdPending && this.lastHoldPrompt !== task;
     const judgeCall = (tool: string, input: Record<string, unknown>, previousActions?: readonly PreviousAction[]) => evaluateAction(
       { tool, input, cwd: options.cwd, task, context: conversation.context, plan: conversation.plan },
-      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, rules: options.rules, retryAfterHold, previousActions },
+      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, largeOutput: options.largeOutput, rules: options.rules, retryAfterHold, previousActions },
     );
     // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
     if (options.judge && !retryAfterHold) {

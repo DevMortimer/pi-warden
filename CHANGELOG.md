@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- A judged `bash` call now also asks whether the command will print far more output than the agent needs. At or above `context.largeOutput.threshold` (default `0.85`) the agent is told once per command family per session to redirect or filter it, for example to a file with `tail -40`. The call is never held. `context.largeOutput.enabled: false` removes the question. `scripts/context-cases.mjs` has eight labelled commands to calibrate it.
 
 ## 0.40.2
 

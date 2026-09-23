@@ -197,3 +197,15 @@ test("a prejudgment is used once and does not survive the turn; reset clears the
   assert.equal(verdict.level, "confirm", "after reset there is no hold to approve");
   assert.ok(!askedApproval(judge));
 });
+
+test("the large-output question rides bash requests through the guard when the context config enables it", async () => {
+  const judge = stubJudge();
+  const guard = new ActionGuard();
+  const largeOutput = defaultConfig().context.largeOutput;
+  await guard.inspect(bash("b1", "npm test"), under("Run the tests"), { ...options(judge), largeOutput });
+  assert.ok("large_output" in judge.requests.at(-1)!.questions);
+  await guard.inspect({ id: "w1", tool: "write", input: { path: "notes.txt", content: "hello" } }, under("Run the tests"), { ...options(judge), largeOutput });
+  assert.ok(!("large_output" in judge.requests.at(-1)!.questions), "non-bash tools never ask");
+  await guard.inspect(bash("b2", "npm run build"), under("Run the tests"), { ...options(judge), largeOutput: { ...largeOutput, enabled: false } });
+  assert.ok(!("large_output" in judge.requests.at(-1)!.questions), "disabled config never asks");
+});

@@ -50,7 +50,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
   "security": { "enabled": true, "threshold": 0.7 },
   "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
   "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
-  "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7 },
+  "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7, "largeOutput": { "enabled": true, "threshold": 0.85 } },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
   "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
   "subagent": { "enabled": true, "wake": true, "threshold": 0.8, "cooldownMs": 120000 },
@@ -92,6 +92,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `stuck.*` | Window of tool results kept, failures before a check, cooldown between checks, same-strategy threshold. |
 | `done.*` | Completion-claim threshold and whether the agent gets a follow-up turn. |
 | `context.*` | Compression thresholds, retention confidence, duplicate size, recall tool. |
+| `context.largeOutput.enabled` | Add one question to each judged `bash` request: will the command print far more than the agent needs? Off keeps the question out of the request. Read-only commands (`cat`, `find`, `git log`) skip the judge, so the question does not ride them. |
+| `context.largeOutput.threshold` | P(large output) at or above which the agent is told, once per command family (`npm test`, `git log`, `find`) per session, to redirect or filter the command before it runs one like it again. The call is never held or warned. Default `0.85`. |
 | `runaway.*` | Repeat counts that abort a reply, minimum size, whether the agent gets one recovery turn. |
 | `notify.*` | Desktop notifications, cooldown, optional relay command (user file only). |
 | `subagent.enabled` | Read async subagent reports at all. `false` ignores them, as before 0.14. |
