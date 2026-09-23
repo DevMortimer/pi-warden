@@ -1230,6 +1230,52 @@ test("rules: a write in a project with pi-warden.md gets its own request beside 
   }
 });
 
+test("a held write gets no rules or slop steer; the approved retry is judged again and gets its own", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, ...STACK_BAR }));
+  const rulesFile = join(temporary, "pi-warden.md");
+  try {
+    await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
+    const findings = { slop_stub: 0.92, slop_hedging: 0.1, slop_comments: 0.1, slop_dead: 0.1, "rule_no-console-statements": "violation" };
+    const input = { path: join(temporary, "src", "held.ts"), content: "export const held = () => { console.log(1); return null; };" };
+    nextAnswers = { irreversible: 0.95, off_task: 0.05, scope: "expected_step", ...findings };
+    const held = await toolCall("write", input);
+    assert.equal(held?.block, true);
+    assert.doesNotMatch(held?.reason ?? "", /just written/);
+    assert.ok(!sentMessages.some(message => /just written/.test(message.message.content)), "no steer about content that was never written");
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /agent not told: the write was held/);
+
+    sentMessages.length = 0;
+    await newPrompt("yes, go ahead");
+    nextAnswers = { irreversible: 0.95, off_task: 0.05, scope: "expected_step", approved: 0.95, ...findings };
+    assert.equal(await toolCall("write", input), undefined);
+    assert.equal(sentMessages.length, 1);
+    assert.match(sentMessages[0]!.message.content, /^pi-warden: the content just written to src\/held\.ts has stub or placeholder code[\s\S]*\n\npi-warden: the content just written to src\/held\.ts violates project rule from pi-warden\.md: "No console statements" \(0\.80\)[^;]/, "first hit: the held write did not count");
+  } finally {
+    await rm(rulesFile, { force: true });
+  }
+});
+
+test("a confirm-dialog write gets its rules and slop steer only after the user allows it", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, mode: "confirm", rules: { enabled: true }, ...STACK_BAR }));
+  const rulesFile = join(temporary, "pi-warden.md");
+  try {
+    await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
+    nextAnswers = { irreversible: 0.95, off_task: 0.05, scope: "expected_step", slop_stub: 0.92, slop_hedging: 0.1, slop_comments: 0.1, slop_dead: 0.1, "rule_no-console-statements": "violation" };
+    const input = { path: join(temporary, "src", "dialog.ts"), content: "export const dialog = () => { console.log(1); return null; };" };
+    confirmResult = false;
+    assert.equal((await toolCall("write", input))?.block, true);
+    assert.equal(confirms.length, 1);
+    assert.ok(!sentMessages.some(message => /just written/.test(message.message.content)), "a declined write drops the steer");
+    confirmResult = true;
+    assert.equal(await toolCall("write", input), undefined);
+    assert.equal(sentMessages.length, 1);
+    assert.match(sentMessages[0]!.message.content, /^pi-warden: the content just written to src\/dialog\.ts has stub[\s\S]*violates project rule from pi-warden\.md: "No console statements"/);
+  } finally {
+    await rm(rulesFile, { force: true });
+  }
+});
+
 test("prose: the final reply is scored against the audience and the agent is nudged for the next turn on a trend", async () => {
   await grantConsent();
   await newPrompt("explain the bug");

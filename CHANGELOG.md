@@ -10,6 +10,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - The off-task judgment and the conscience recommendation both judge with a task spine in the request state: the thread's first user turn (the goal), the latest user turn, and up to four earlier user turns (newest first). The whole spine is capped at 1200 characters — `task_history` is clipped first, then `goal`; the latest turn is never clipped. A follow-up like "now the tests" is no longer judged without the goal it belongs to. Approval still comes from the latest user turn only; the spine is context, never authorization, and no threshold moved (the conscience beta policy's pinned questionHash still matches). The action approval question now names `spine` beside `context` as text that cannot grant approval. A thread with one user turn sends no spine, so the budget is not spent on a copy of the task. A queued prompt admitted at `message_start` is also assessed with the spine. Both request paths cap a spine they receive at four history entries and the same per-field lengths (goal 1200, each entry 750 characters), whoever built it. After a compaction the goal is still the thread's first user turn: the branch keeps the summarized entries, and a compaction summary never becomes the goal. `docs/data-handling.md` lists the spine for the action guard and the conscience.
 
+## 0.42.1
+
+### Fixed
+
+- A write the action guard holds, denies, or the user declines no longer gets a rules or slop steer. The steer said "the content just written" about content that was never written. A confirm-dialog write gets the steer after the user allows it. An approved retry of a held write is judged again and gets its own steer. The trace still records the rule findings of the held write, marked as not told.
+
 ## 0.42.0
 
 ### Added
