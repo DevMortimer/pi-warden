@@ -147,12 +147,15 @@ export interface PanelController {
 
 /**
  * Open the trace as a right-hand sidebar. Pi's public UI API offers floating overlays but no side dock that narrows the
- * transcript, so the sidebar covers the right part of the screen; `nonCapturing` keeps the editor focused.
+ * transcript, so the sidebar covers the right part of the screen; `nonCapturing` keeps the editor focused. `built()` says
+ * whether the host ever asked for the component: a host without a terminal UI (RPC mode) settles `closed` without asking.
  */
-export function openTracePanel(ui: PanelUi, trace: Trace, options: { width?: string | number } = {}): PanelController {
+export function openTracePanel(ui: PanelUi, trace: Trace, options: { width?: string | number } = {}): PanelController & { built(): boolean } {
   let close: () => void = () => {};
   let unfocus: () => void = () => {};
+  let built = false;
   const closed = ui.custom<void>((tui, theme, _keybindings, done) => {
+    built = true;
     close = () => done();
     const panel = new TracePanel(trace, theme, { close, unfocus: () => unfocus() }, () => tui.requestRender());
     const rows = tui.terminal?.rows;
@@ -163,7 +166,7 @@ export function openTracePanel(ui: PanelUi, trace: Trace, options: { width?: str
     overlayOptions: { anchor: "right-center", width: options.width ?? "40%", minWidth: 44, maxHeight: "100%", nonCapturing: true },
     onHandle: (handle: { unfocus(): void }) => { unfocus = () => handle.unfocus(); },
   });
-  return { closed, close: () => close() };
+  return { closed, close: () => close(), built: () => built };
 }
 
 interface ConfigEntry {
