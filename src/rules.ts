@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { ask, choice } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge } from "pi-typesafe";
@@ -448,6 +449,16 @@ export interface RulesOptions {
   signal?: AbortSignal | undefined;
 }
 
+/** Check whether a project-relative path is ignored by the project's gitignore rules. Uses `git check-ignore -q` run from `cwd`. Returns false when git is unavailable or the path cannot be checked. */
+export function gitIgnored(projectRel: string, cwd: string): boolean {
+  try {
+    execFileSync("git", ["check-ignore", "-q", projectRel], { cwd, timeout: 2000, stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Why a write or edit is not judged against the rules: nothing to judge, no rules, or a path the config keeps out. */
 export function skipReason(target: RulesTarget | undefined, set: RuleSet | undefined, config: RulesConfig): string | undefined {
   if (!target) return "nothing to judge or outside the project";
@@ -573,6 +584,18 @@ export class RulesGuard {
 
   inspect(call: RulesCallRef, siblings: readonly RulesCallRef[], options: Omit<RulesOptions, "set">): Promise<RulesVerdict> {
     const set = this.store.load(options.cwd, options.config);
+    // A write or edit to a gitignored path is not project code; the rules in pi-warden.md do not apply.
+    // Only check when a rule set exists — no set means no rules file and skipReason already handles that.
+    if (set) {
+      const rawPath = typeof call.input.path === "string" ? call.input.path : undefined;
+      if (rawPath) {
+        const rel = projectPath(rawPath, options.cwd);
+        if (rel && gitIgnored(rel, options.cwd)) {
+          const verdict: RulesVerdict = { source: "skipped", tool: call.tool as "write" | "edit", path: rel, sources: set.sources, asked: 0, aggregate: false, findings: [], skippedReason: "gitignored by the project" };
+          return Promise.resolve(verdict);
+        }
+      }
+    }
     const judgeCall = (tool: string, input: Record<string, unknown>) => evaluateRules(tool, input, { ...options, set });
     if (options.judge) {
       for (const sibling of siblings) {

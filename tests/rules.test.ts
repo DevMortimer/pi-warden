@@ -6,7 +6,8 @@ import { after, before, test } from "node:test";
 import { defaultConfig } from "../src/config.js";
 import type { RulesConfig } from "../src/config.js";
 import type { Judge } from "pi-typesafe";
-import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeRuleSet, describeTarget, evaluateRules, isRuleShaped, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
+import { execFileSync } from "node:child_process";
+import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeRuleSet, describeTarget, evaluateRules, gitIgnored, isRuleShaped, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
 import type { RulesVerdict, RuleSet } from "../src/rules.js";
 
 let cwd: string;
@@ -353,4 +354,63 @@ test("pi-warden.md with no headings still yields one rule (exempt from prose che
   const rules = parseRules(noHeadingDoc);
   assert.equal(rules.length, 0, "parseRules returns nothing for no headings");
   assert.equal(isRuleShaped(noHeadingDoc), false, "prose check says not rule-shaped");
+});
+
+test("outside-project target is skipped by the rules guard and traced", async () => {
+  const judge = stubJudge({});
+  const guard = new RulesGuard();
+  const config = rulesConfig();
+  await writeFile(join(cwd, "pi-warden.md"), RULES_MD);
+  const call = { id: "o1", tool: "write", input: { path: "/tmp/outside.ts", content: "console.log(1)" } };
+  const verdict = await guard.inspect(call, [call], { cwd, config, judge, timeoutMs: 1000 });
+  assert.equal(verdict.source, "skipped");
+  assert.match(verdict.skippedReason!, /outside the project/);
+  assert.equal(verdict.findings.length, 0);
+});
+
+test("gitignored target is skipped by the rules guard", async () => {
+  const gitDir = await mkdtemp(join(tmpdir(), "pi-warden-rules-gitignore-"));
+  try {
+    execFileSync("git", ["init"], { cwd: gitDir, stdio: "pipe" });
+    await writeFile(join(gitDir, ".gitignore"), ".local/\nbuild/\n");
+    await writeFile(join(gitDir, "pi-warden.md"), "# No console\nDo not use console.log.\n");
+    const judge = stubJudge({});
+    const guard = new RulesGuard();
+    const config = rulesConfig();
+    const call = { id: "g1", tool: "write", input: { path: ".local/cache.json", content: "data" } };
+    const verdict = await guard.inspect(call, [call], { cwd: gitDir, config, judge, timeoutMs: 1000 });
+    assert.equal(verdict.source, "skipped");
+    assert.match(verdict.skippedReason!, /gitignored/);
+    assert.equal(verdict.findings.length, 0);
+  } finally {
+    await rm(gitDir, { recursive: true, force: true });
+  }
+});
+
+test("in-project non-gitignored target is still judged by the rules guard", async () => {
+  const judge = stubJudge({ "no-console-statements": 0.9 });
+  const guard = new RulesGuard();
+  const config = rulesConfig();
+  await writeFile(join(cwd, "pi-warden.md"), RULES_MD);
+  const call = { id: "j1", tool: "write", input: { path: "src/a.ts", content: "console.log(1)" } };
+  const verdict = await guard.inspect(call, [call], { cwd, config, judge, timeoutMs: 1000 });
+  assert.equal(verdict.source, "typesafe");
+  assert.ok(verdict.findings.length > 0, "should have findings for in-project target");
+});
+
+test("no rule set means gitIgnored is not called, even for a gitignored path", async () => {
+  const noRulesDir = await mkdtemp(join(tmpdir(), "pi-warden-rules-no-set-"));
+  try {
+    // No rules file in this directory and no git repo: git check-ignore would fail if called.
+    const judge = stubJudge({});
+    const guard = new RulesGuard();
+    const config = rulesConfig({ fallback: false });
+    const call = { id: "n1", tool: "write", input: { path: ".local/cache.json", content: "data" } };
+    const verdict = await guard.inspect(call, [call], { cwd: noRulesDir, config, judge, timeoutMs: 1000 });
+    assert.equal(verdict.source, "skipped");
+    assert.match(verdict.skippedReason!, /no rules file/, "should skip for no rules, not gitignored");
+    assert.equal(judge.requests.length, 0, "judge should not be called");
+  } finally {
+    await rm(noRulesDir, { recursive: true, force: true });
+  }
 });

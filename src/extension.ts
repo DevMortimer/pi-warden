@@ -1157,6 +1157,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
           notes.push(told);
         }
+      } else {
+        record(ctx, config, "rules", formatRules(rules, config.widget.rules), [`${rules.tool} ${rules.path}: ${rules.skippedReason}`]);
       }
       const hits = rulesGuard.notesFor(verdict.summary.location === "inside_project" ? verdict.summary.path : undefined, config.rules.sensitivePaths);
       if (hits.length && verdict.summary.path) {
