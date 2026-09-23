@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.42.1
+
+### Fixed
+
+- A write the action guard holds, denies, or the user declines no longer gets a rules or slop steer. The steer said "the content just written" about content that was never written. A confirm-dialog write gets the steer after the user allows it. An approved retry of a held write is judged again and gets its own steer. The trace still records the rule findings of the held write, marked as not told.
+
 ## 0.42.0
 
 ### Added

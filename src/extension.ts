@@ -1069,6 +1069,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // Notes for the agent about the content it just wrote: slop, rule violations, and sensitive paths arrive as one message.
     const notes: string[] = [];
     const noteGuards = new Set<SteerGuard>();
+    /** Slop and rule findings say "just written", so they wait until the call proceeds. A held, denied, or declined write
+     * never lands and drops them; an approved retry is judged again and brings its own. They go between the action notes
+     * and the sensitive-path notes, the order of the combined message. */
+    const contentNotes: Array<(proceeds: boolean) => { guard: SteerGuard; text: string } | undefined> = [];
+    const pathNotes: string[] = [];
     /** Sensitive-path notes ride with the combined steer for this call; their trace waits for the delivery result. */
     const pathNoteTraces: Array<(delivered: boolean) => void> = [];
     if (verdict.judgment?.securityRisk !== undefined && verdict.judgment.securityRisk >= config.security.threshold) {
@@ -1137,26 +1142,32 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     if (verdict.slopSymptoms?.length && verdict.slopReasons) {
       stats.slop++;
-      noteGuards.add("action");
-      for (const symptom of verdict.slopSymptoms) slopCounts[symptom]++;
+      const symptoms = verdict.slopSymptoms;
       const where = verdict.summary.path ?? event.toolName;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · slop · ${where}: ${verdict.slopReasons.join("; ")}`, "warning");
-      notes.push(slopSteer(where, verdict.slopSymptoms, slopCounts));
+      contentNotes.push(proceeds => {
+        if (!proceeds) return undefined;
+        for (const symptom of symptoms) slopCounts[symptom]++;
+        return { guard: "action", text: slopSteer(where, symptoms, slopCounts) };
+      });
     }
     if (rulesCheck) {
       const rules = await rulesCheck;
       if (rules.source !== "skipped") {
         stats.ruleChecks++;
         if (rules.error) noteError(ctx, rules.error, rules.errorCode);
-        const told = rules.findings.length ? rulesSteer(rules, rulesGuard.count(rules)) : undefined;
-        record(ctx, config, "rules", formatRules(rules, config.widget.rules), rulesDetails(rules, told));
         holds.recordRules({ source: rules.source, path: rules.path, findings: rules.findings.map(f => ({ name: f.name, violation: f.violation })), ...(rules.error ? { error: rules.error } : {}) });
-        if (told) {
+        if (rules.findings.length) {
           stats.ruleViolations++;
-          noteGuards.add("rules");
           if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
-          notes.push(told);
         }
+        contentNotes.push(proceeds => {
+          const told = proceeds && rules.findings.length ? rulesSteer(rules, rulesGuard.count(rules)) : undefined;
+          const details = rulesDetails(rules, told);
+          if (!proceeds && rules.findings.length) details.push("agent not told: the write was held");
+          record(ctx, config, "rules", formatRules(rules, config.widget.rules), details);
+          return told ? { guard: "rules", text: told } : undefined;
+        });
       } else {
         record(ctx, config, "rules", formatRules(rules, config.widget.rules), [`${rules.tool} ${rules.path}: ${rules.skippedReason}`]);
       }
@@ -1171,16 +1182,27 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           if (delivered && ctx.hasUI && config.notices) ctx.ui.notify(`warden · sensitive path · ${verdict.summary.path} (${hits.map(hit => hit.glob).join(", ")}); the agent was given the note`, "warning");
         });
         noteGuards.add("rules");
-        notes.push(told);
+        pathNotes.push(told);
       }
     }
-    if (notes.length) {
-      const delivered = steer(config, [...noteGuards], notes.join("\n\n"));
-      for (const traceNote of pathNoteTraces) traceNote(delivered);
-      pathNoteTraces.length = 0;
-    }
+    /** Sends the combined steer once the call's fate is known; `proceeds` is false when the call does not run. */
+    const deliverNotes = (proceeds: boolean) => {
+      for (const contentNote of contentNotes) {
+        const note = contentNote(proceeds);
+        if (!note) continue;
+        noteGuards.add(note.guard);
+        notes.push(note.text);
+      }
+      notes.push(...pathNotes);
+      if (notes.length) {
+        const delivered = steer(config, [...noteGuards], notes.join("\n\n"));
+        for (const traceNote of pathNoteTraces) traceNote(delivered);
+        pathNoteTraces.length = 0;
+      }
+    };
     const warnSteer = (reasons: readonly string[]) => reasons.length > 0 && steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${reasons.join("; ")}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`);
     if (verdict.level === "warn") {
+      deliverNotes(true);
       stats.warned++;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
       else if (!ctx.hasUI) {
@@ -1191,13 +1213,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       return undefined;
     }
     if (verdict.level === "deny") {
+      deliverNotes(false);
       stats.held++;
       track(true, "declined", "deny");
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · blocked ${event.toolName}: ${verdict.reasons.join("; ")}`, "error");
       notifyDesktop(ctx, config, `Blocked ${event.toolName}: ${verdict.reasons.join("; ")}. A deny rule matched; the call never ran.`);
       return { block: true, reason: `pi-warden blocked this ${event.toolName} call (${deliveryReasons.join("; ")}). A deny rule matched; this command is not allowed to run. Ask the user if this is genuinely required.` };
     }
-    if (verdict.level !== "confirm") { track(false); return undefined; }
+    if (verdict.level !== "confirm") { deliverNotes(true); track(false); return undefined; }
 
     const reasons = verdict.reasons.join("; ");
     const deliveredReasons = deliveryReasons.join("; ");
@@ -1208,12 +1231,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (dialogRule && ctx.hasUI) {
       notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
       const allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {});
+      deliverNotes(allowed);
       if (allowed) { track(true, "approved", "dialog"); return undefined; }
       stats.held++;
       track(true, "declined", "dialog");
       return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${deliveredReasons}). Do not retry it unchanged; ask the user how to proceed.` };
     }
     if (mode === "advise") {
+      deliverNotes(true);
       stats.warned++;
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
       else if (!ctx.hasUI) warnSteer(deliveryReasons);
@@ -1223,11 +1248,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (mode === "confirm") {
       notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
       const allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {});
+      deliverNotes(allowed);
       if (allowed) { track(true, "approved", "dialog"); return undefined; }
       stats.held++;
       track(true, "declined", "dialog");
       return { block: true, reason: `pi-warden: the user declined this ${event.toolName} call (${deliveredReasons}). Do not retry it unchanged; ask the user how to proceed.` };
     }
+    deliverNotes(false);
     stats.held++;
     actionGuard.hold(task);
     track(true);
