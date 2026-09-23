@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- The rules guard no longer judges writes to files outside the project root or paths ignored by the project's `.gitignore`. Those files are not project code and the rules in `pi-warden.md` do not apply to them.
 
 ## 0.40.2
 
