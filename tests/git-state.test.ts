@@ -51,6 +51,19 @@ test("git reset --hard holds when the status check fails or the command is not p
   }
 });
 
+test("git reset --hard with -C, --git-dir, or --work-tree holds, even on a clean tree", () => {
+  assert.equal(severity("git reset --hard", repo, "git-reset-hard"), "risky", "the tree is clean");
+  const held = [
+    `git -C ${repo} reset --hard`, "git -C . reset --hard HEAD~1", `git -C "${repo}" reset --hard`, "git --git-dir=.git reset --hard",
+    "git --git-dir .git reset --hard", "git --work-tree=. reset --hard", "git --work-tree . --git-dir=.git reset --hard",
+    "git -c core.quotepath=off reset --hard", "git --no-pager -C . reset --hard",
+  ];
+  for (const command of held) assert.equal(severity(command, repo, "git-reset-hard"), "destructive", command);
+  for (const command of ["git -C . reset --soft HEAD~1", "git -C . log --oneline", "grep -rn \"git -C x reset --hard\" docs/"]) {
+    assert.equal(severity(command, repo, "git-reset-hard"), undefined, command);
+  }
+});
+
 test("git push --force-with-lease warns only for a named or current branch that is not the default", () => {
   for (const command of ["git push --force-with-lease", "git push --force-with-lease origin feature", "git push --force-with-lease origin HEAD", "git push -u --force-with-lease origin feature", "git push --force-with-lease=feature origin HEAD:refs/heads/feature"]) {
     assert.equal(safeLeasePush(command, repo), true, command);

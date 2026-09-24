@@ -13,9 +13,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 - Both relaxations read only a plain single `git reset` or `git push` command. A `cd`, `-C`, quote, variable, or second command keeps the hold.
 - The conscience no longer sends its `agent_end` reminder when the run ended with a final text reply. The agent has answered; a reminder then started a new turn to revisit a finished answer.
 
+### Fixed
+
+- `git reset --hard` with global options before `reset` (`git -C dir`, `--git-dir`, `--work-tree`, `-c key=value`) is held. Before, the pattern needed `reset` right after `git`, so `git -C dir reset --hard` was neither held nor warned.
+
 ### Tests
 
-- A clean and a changed tree for `reset --hard`, and a failed status check. Lease pushes to a feature branch, to `main`, `master`, and the remote HEAD branch, with plain `--force`, with a bare push that tracks the default branch, and outside a repository. A conscience run that ended with a final reply sends no reminder.
+- A clean and a changed tree for `reset --hard`, and a failed status check. Lease pushes to a feature branch, to `main`, `master`, and the remote HEAD branch, with plain `--force`, with a bare push that tracks the default branch, and outside a repository. A conscience run that ended with a final reply sends no reminder. `reset --hard` with `-C`, `--git-dir`, `--work-tree`, and `-c` on a clean tree is held.
 
 ## 0.59.4
 

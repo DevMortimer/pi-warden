@@ -274,7 +274,8 @@ const SECRET_EXPANSION = new RegExp(String.raw`\$\{?${SECRET_NAME}(?!\w)`, "i");
 export const SHELL_RULES: Rule[] = [
   { id: "git-force-push", severity: "destructive", label: "git force push", test: /\bgit\s+push\b[^\n;&|]*\s(?:-f|--force)(?![-\w])/ },
   { id: "git-force-with-lease", severity: "destructive", label: "git push --force-with-lease", test: /\bgit\s+push\b[^\n;&|]*--force-with-lease/ },
-  { id: "git-reset-hard", severity: "destructive", label: "git reset --hard", test: /\bgit\s+reset\b[^\n;&|]*--hard/ },
+  // Global options before the subcommand (`-C dir`, `--git-dir=x`, `--work-tree x`) point the reset at another tree.
+  { id: "git-reset-hard", severity: "destructive", label: "git reset --hard", test: /\bgit(?:\s+-[-\w.]*(?:=\S*)?(?:\s+(?:"[^"]*"|'[^']*'|[^-\s]\S*))?)*\s+reset\b[^\n;&|]*--hard/ },
   { id: "git-clean", severity: "destructive", label: "git clean (removes untracked files)", test: /\bgit\s+clean\b[^\n;&|]*\s-[a-zA-Z]*[fFxX]/ },
   { id: "git-checkout-discard", severity: "risky", label: "git checkout/restore discards working changes", test: /\bgit\s+checkout\s+(?:--\s+\S|(?:\.|\*)(?=\s|$))|\bgit\s+restore\b(?:(?![^\n;&|]*--staged)|(?=[^\n;&|]*(?:--worktree|\s-\w*W)))/ },
   { id: "git-branch-force-delete", severity: "risky", label: "git branch -D", test: /\bgit\s+branch\b[^\n;&|]*\s-D\b/ },
