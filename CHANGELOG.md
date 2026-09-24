@@ -11,6 +11,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 - With masking on, the credential banner in a tool result is sent only when a value was masked, and its text is unchanged. A credential-shaped value that was detected but not masked is recorded in the trace as `possible credentials, none masked (traced)` and is not announced to the agent. With `security.maskOutput: false` the value is in the agent's context, so the generic notice stays. In one week of sessions, 510 of 527 credential banners were the generic "Possible credentials in this output" text that pointed at no value, and agents disputed 49 of them. The prompt-injection notice is unchanged.
 - Masking now covers every value the offline credential check detects: URL passwords (`postgres://user:pass@host`), `Authorization` header and `Bearer` values, `ghu_`/`ghs_`/`ghr_` GitHub tokens, `xoxr-`/`xoxs-` Slack tokens, and `AIza` keys. Before, these were announced but left readable in the tool result.
 
+## 0.54.0
+
+### Changed
+
+- The action guard's read-only fast path, which skips the Jev judgment, now also accepts `sed -n` with one print command (`sed -n '10,20p' f`, `sed -n '/a/,/b/p' f`), `git worktree list`, `git stash list`, and `git merge-base`. For `sed`, the only accepted options are ones that cannot write or run anything: no `-i`, no `-f`, and no option after the first operand. The script must be literal, with no variable expansion and no `w`, `W`, `e`, or `r` command. In one week of real sessions, `sed -n` line ranges were almost all of the read-only commands that still went to Jev; about a third of them got a `warn`. The fast path now also rejects `<(...)` process substitution and git's `--output` and `-O`/`--open-files-in-pager`, which run a command, write a file, or open a pager program.
+- The read-only fast path accepts a leading variable assignment (`LC_ALL=C sort f`) only for `LANG`, `LC_*`, `TZ`, `NO_COLOR`, `TERM`, `COLUMNS`, and `FORCE_COLOR`. Any other assignment, such as `PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, `IFS`, `PAGER`, or `GIT_*`, can change what the command runs or loads, so the call goes to Jev.
+
 ## 0.53.0
 
 ### Added
