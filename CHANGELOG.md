@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- An intent mismatch on a call with no visible effect is trace-only: the trace, the warn notice, and the status line (`N off plan (M trace-only)`) record it, and the agent gets no steer. A commit, push, merge, tag, reset, pull request, release, or publish still steers; visibility is decided in code (`isVisibleCommand`), not by the judge. The steer reaches the agent only after the call ran: on 275 recorded intent-mismatch steers over 7 days, 275 arrived after the call, and a strict course change (the agent asked the user, reverted, or changed approach) followed 8% of them. New `action.intentTraceOnly` sets which mismatches are trace-only: `"invisible"` (default), `"all"`, or `"none"` (every mismatch steers, as before).
 
 ## 0.58.0
 

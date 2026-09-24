@@ -51,6 +51,8 @@ export interface ActionGuardConfig {
   intentMismatch: number;
   /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
   visibleMismatch: number;
+  /** Which intent mismatches stay in the trace without a steer: "invisible" (default) a call with no visible effect (not a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`), "all" every one, "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. */
+  intentTraceOnly: "invisible" | "all" | "none";
   /** Low P(should_proceed) is trace-only unless steer is enabled; hold is the inclusive threshold, not a blocking decision. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
   shouldProceed: { hold: number; steer: boolean };
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
@@ -430,6 +432,7 @@ export function defaultConfig(): WardenConfig {
       offTask: { warn: 0.6, steer: 0.85 },
       intentMismatch: 0.9,
       visibleMismatch: 0.8,
+      intentTraceOnly: "invisible",
       shouldProceed: { hold: 0.6, steer: false },
       feedbackLog: true,
       commandRules: [],
@@ -670,6 +673,7 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     offTask: offTaskThreshold(raw.offTask, base.offTask),
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
     visibleMismatch: Math.min(probability(raw.visibleMismatch, base.visibleMismatch), probability(raw.intentMismatch, base.intentMismatch)),
+    intentTraceOnly: raw.intentTraceOnly === "invisible" || raw.intentTraceOnly === "all" || raw.intentTraceOnly === "none" ? raw.intentTraceOnly : base.intentTraceOnly,
     shouldProceed: {
       hold: probability((raw.shouldProceed as { hold?: number } | undefined)?.hold, base.shouldProceed.hold),
       steer: boolean((raw.shouldProceed as { steer?: boolean } | undefined)?.steer, base.shouldProceed.steer),

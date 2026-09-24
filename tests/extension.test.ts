@@ -1157,7 +1157,7 @@ test("plan: a call right after a text-only message is judged against that messag
   assert.equal(planOf(assistantEntry({ type: "thinking", thinking: "hmm" }), assistantEntry(cleanCall)), undefined, "a message with no text right before is no plan");
 });
 
-test("the agent's plan comes from the message that makes the call or the text-only message right before it, and a mismatch steers", async () => {
+test("the agent's plan comes from the message that makes the call or the text-only message right before it, and a mismatch is traced", async () => {
   await grantConsent();
   prompt = "Verify the RPC endpoint end to end";
   const branch = (...tail: Array<Record<string, unknown>>) => context({ sessionManager: { getBranch: () => [
@@ -1186,9 +1186,8 @@ test("the agent's plan comes from the message that makes the call or the text-on
   sentMessages.length = 0;
   assert.equal(await toolCall("bash", { command: "npm run clean" }, earlier), undefined, "a mismatch warns; it never holds");
   assert.equal(requests.at(-1)!.state.plan, "Let me first list what is in build/ before removing anything.");
-  const steerSent = sentMessages.find(sent => sent.message.customType === "pi-warden-steer");
-  assert.match(steerSent?.message.content ?? "", /^pi-warden: this bash call does something different from what you said you were about to do \(intent mismatch 0\.91\)\. It ran\./);
-  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan\)$/);
+  assert.ok(!sentMessages.some(sent => sent.message.customType === "pi-warden-steer"), "npm run clean has no visible effect: trace-only by default");
+  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only, no visible effect\)$/);
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+bash · .*off plan$/, "the mismatch leads the line as a warn chip");
 
   // A tool-calls-only message after an earlier tool call: the text before that call described it, so no plan, no question.
@@ -1211,11 +1210,45 @@ test("the agent's plan comes from the message that makes the call or the text-on
 
   await runCommand("status");
   const status = notices.at(-1)!.text;
-  assert.match(status, /1 off plan/);
-  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action\);/);
+  assert.match(status, /1 off plan \(1 trace-only\)/);
+  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action, trace-only: invisible\);/);
   const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
   const lines = await readLog(logPath, 4, false);
   assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined], [0, undefined]], "planChars says how often the agent called without a word");
+});
+
+test("intentTraceOnly: an invisible mismatch is traced without a steer, a visible one steers; \"none\" and \"all\" set every call", async () => {
+  prompt = "Verify the RPC endpoint end to end";
+  const plan = "Let me first list what is in build/ before removing anything.";
+  const branch = (command: string) => context({ hasUI: false, sessionManager: { getBranch: () => [
+    { type: "message", message: { role: "user", content: prompt } },
+    assistantEntry({ type: "text", text: plan }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command } }),
+  ] } });
+  const intentSteers = () => sentMessages.filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content));
+  const run = async (intentTraceOnly: string | undefined, command: string) => {
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, ...(intentTraceOnly ? { intentTraceOnly } : {}) }, ...STACK_BAR }));
+    await sessionStart(context({ hasUI: false }));
+    sentMessages.length = 0;
+    nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, visible: 0.2, intent_mismatch: 0.91, should_proceed: 1.0 };
+    assert.equal(await toolCall("bash", { command }, branch(command)), undefined, "a mismatch never holds");
+    return intentSteers().length;
+  };
+
+  // Default "invisible": no steer, no headless warn notice, and one trace line that names the mismatch.
+  assert.equal(await run(undefined, "npm run clean"), 0);
+  assert.ok(!sentMessages.some(sent => /ran with a warning/.test(sent.message.content)), "the headless warn steer drops the trace-only reason too");
+  await runCommand("trace", context({ hasUI: false }));
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.equal(trace.match(/intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only, no visible effect\)/g)?.length, 1);
+
+  // A push is visible: the steer still reaches the agent.
+  assert.equal(await run(undefined, "git push origin main"), 1);
+  // "none" restores the steer on every mismatch; "all" sends none, visible calls included.
+  assert.equal(await run("none", "npm run clean"), 1);
+  assert.equal(await run("all", "git push origin main"), 0);
+  assert.equal(await run("all", "npm run clean"), 0);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /1 off plan \(1 trace-only\)/);
 });
 
 test("plan: a text-less git push after an earlier plan and an earlier tool call is judged against that plan", async () => {
