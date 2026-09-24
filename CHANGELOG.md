@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.48.0
+
+### Added
+
+- `PI_WARDEN_HOST_PATHS`: a `:`-separated list of absolute directories outside the project where the host lets its agent write. A `write` or `edit` in one of them, after `..` and symlinks are resolved, is not held or warned by the outside-project rule; command rules, path rules, deny rules, sensitive paths, secrets, and Jev still apply. Relative entries, empty entries, and `/` are ignored. Environment only; no config file can set it.
+
 ## 0.47.1
 
 ### Fixed

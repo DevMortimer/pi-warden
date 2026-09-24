@@ -222,6 +222,11 @@ export interface EvaluateOptions {
   questions?: Questions | undefined;
   /** Real paths the agent created under the temp directory in this session (`PatternOptions.scratch`). */
   scratch?: ScratchRecords | undefined;
+  /**
+   * Real paths of host directories (`hostPaths()`). A write or edit in one is not held by the outside-project rule;
+   * every other check still applies.
+   */
+  hostPaths?: readonly string[] | undefined;
 }
 
 const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2, deny: 3 };
@@ -506,6 +511,30 @@ export function realTarget(path: string): string | undefined {
       head = parent;
     }
   }
+}
+
+/**
+ * Host paths: directories outside the project where the host lets its agent write, from `PI_WARDEN_HOST_PATHS` only (a
+ * `:`-separated list). Relative entries, empty entries, and a filesystem root are ignored. Each entry is kept as its real
+ * path, so a target is compared after `..` and symlinks are resolved on both sides.
+ */
+export const HOST_PATHS_ENV = "PI_WARDEN_HOST_PATHS";
+
+export function hostPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const roots = new Set<string>();
+  for (const entry of (env[HOST_PATHS_ENV] ?? "").split(":")) {
+    if (!entry || !isAbsolute(entry)) continue;
+    const real = realTarget(entry);
+    if (real && dirname(real) !== real) roots.add(real);
+  }
+  return [...roots];
+}
+
+/** Whether a target lies in a host path, after `..` and symlinks are resolved. An unresolvable target is not in one. */
+function inHostPath(target: string, roots: readonly string[]): boolean {
+  if (!roots.length) return false;
+  const real = realTarget(target);
+  return real !== undefined && roots.some(root => real === root || real.startsWith(root + sep));
 }
 
 /** The temp root a real path lies strictly under; a temp root itself has none. */
@@ -1357,7 +1386,9 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       reasons.push(`${hit.severity}: ${hit.label}`);
     }
   }
-  if (summary.location === "outside_project") {
+  const inHost = summary.location === "outside_project" && typeof action.input.path === "string"
+    && inHostPath(resolve(action.cwd, action.input.path), options.hostPaths ?? []);
+  if (summary.location === "outside_project" && !inHost) {
     if (evidenceMode) {
       const pathNote = action.tool === "write" && summary.exists
         ? `overwrites an existing file outside the project ${summary.path ?? ""}`

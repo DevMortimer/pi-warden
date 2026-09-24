@@ -20,7 +20,7 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import { createdScratch, evaluateAction, formatVerdictTokens, higher, hostPaths, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
@@ -277,6 +277,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // The trace file for a host without the terminal UI; set per session when PI_WARDEN_TRACE_DIR is an absolute path.
   let traceFile: TraceFile | undefined;
   let unsubscribeTraceFile: (() => void) | undefined;
+  // Directories outside the project the host lets its agent write; set per session from PI_WARDEN_HOST_PATHS.
+  let sessionHostPaths: string[] = [];
   let panel: PanelController | undefined;
   let configPanel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
@@ -686,6 +688,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     judgmentsReported.clear();
     judgmentsHeadless = !ctx.hasUI;
     judgmentsNotify = text => { if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true }); };
+    sessionHostPaths = hostPaths();
     const dir = traceDir();
     if (dir) {
       const warn = (text: string) => { if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true }); };
@@ -1129,7 +1132,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx), spine: taskSpine(ctx.sessionManager.getBranch()) },
-      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch },
+      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch, hostPaths: sessionHostPaths },
     );
     if (verdict.source === "skipped") return;
     // Arming check: if any armed rule's command regex matches this call, inject a hit into the verdict.
