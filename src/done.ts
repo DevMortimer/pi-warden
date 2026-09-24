@@ -90,13 +90,17 @@ function shellSegments(command: string): string[] {
   return command.split(/\n|;|&&|\|\||\||&/).map(part => part.trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "")).filter(Boolean);
 }
 
+const BROWSER_HEADS = new Set(["chrome", "chromium", "google-chrome"]);
+
 /**
  * Heads that also run work the user never sees. `flutter test` shows the UI only for integration or golden tests, and
  * `idb` only through its `screenshot` and `ui` subcommands; `idb list-targets` or a unit test proves nothing on screen.
+ * A browser binary shows the page only when a command word asks for it (`chrome --headless --screenshot`), not for `--version`.
  */
 function headShows(head: string, args: readonly string[]): boolean {
   if (/(?:^|\s)flutter test$/.test(head)) return args.some(arg => /(?:^|\/)integration_test(?:\/|$)/.test(arg) || arg.includes("golden"));
   if (head === "idb") return args.some(arg => arg === "screenshot" || arg === "ui");
+  if (BROWSER_HEADS.has(head)) return false;
   return true;
 }
 
