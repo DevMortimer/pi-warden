@@ -5,6 +5,12 @@ const REPLACEMENT = "[redacted]";
 /** Credential-key names that appear in assignments and config values: `api_key=`, `password:`, `secret`, etc. */
 const CREDENTIAL_KEYS = /(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|private[_-]?key|passw(?:or)?d|passphrase|token|secret|credentials?)/i.source;
 
+/**
+ * `&` ends an unquoted value only as a separator: before another `name=` (a URL query), a second `&` (`&&`), or
+ * whitespace or the end. Otherwise it is part of the value, as in a password.
+ */
+const VALUE_AMPERSAND = String.raw`&(?![a-z_][\w.-]*=|&|\s|$)`;
+
 /** Best-effort credential scrubbing for text that leaves the machine. Ordered: multi-token shapes before bare tokens. */
 const RULES: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, REPLACEMENT],
@@ -12,7 +18,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(bearer\s+)\S+/gi, `$1${REPLACEMENT}`],
   // Quoted values can hold spaces (passphrases), so a quoted value is redacted whole before the unquoted rule.
   [new RegExp(`((?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*)(["'])[^"'\\n]*\\2`, "gi"), `$1$2${REPLACEMENT}$2`],
-  [new RegExp(`((?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?)([^\\s"'&;]+)`, "gi"), `$1${REPLACEMENT}`],
+  [new RegExp(`((?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?)((?:[^\\s"'&;]|${VALUE_AMPERSAND})+)`, "gi"), `$1${REPLACEMENT}`],
   // Any scheme, not just http(s): database and broker URLs (postgres://, mysql://, redis://, amqp://) carry passwords too.
   [/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, `$1${REPLACEMENT}@`],
   [/\bsk-[A-Za-z0-9_-]{8,}/g, REPLACEMENT],
@@ -47,7 +53,7 @@ const TOKEN_SHAPES: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
 ];
 /** `api_key=value`, `PASSWORD: value`: a credential-key name assigned a value. */
-const CREDENTIAL_ASSIGNMENT = new RegExp(`(?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?([^\\s"'&;,)]+)`, "gi");
+const CREDENTIAL_ASSIGNMENT = new RegExp(`(?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?((?:[^\\s"'&;,)]|${VALUE_AMPERSAND})+)`, "gi");
 /** Assignments and headers whose value must still look like a secret. */
 const ASSIGNMENTS: RegExp[] = [
   CREDENTIAL_ASSIGNMENT,

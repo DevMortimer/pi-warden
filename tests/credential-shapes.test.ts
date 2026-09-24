@@ -84,3 +84,26 @@ test("a bare token= outside a signed URL still counts, and so does a signed-URL 
   // Redaction before anything leaves the machine is unchanged.
   assert.ok(!redact(`https://objects.storagehost.net/f.pdf?se=2026-09-24&token=${opaque}`).includes(opaque));
 });
+
+test("a credential value containing & is redacted whole; & as a separator still ends the value", () => {
+  const password = ["Tr0ub4dor", "&3xK9"].join("");
+  const line = `DB_PASSWORD=${password}`;
+  assert.equal(redact(line), "DB_PASSWORD=[redacted]");
+  assert.deepEqual(findSecrets(line), [password]);
+  assert.deepEqual(maskSecrets(line), { text: "DB_PASSWORD=[redacted]", masked: 1 });
+  // A URL query: only the token is redacted, the next parameter stays.
+  const token = ["abc123", "def456"].join("");
+  const query = `https://x.test/cb?token=${token}&next=/home`;
+  assert.equal(redact(query), "https://x.test/cb?token=[redacted]&next=/home");
+  assert.deepEqual(findSecrets(query), [token]);
+  assert.equal(maskSecrets(query).text, "https://x.test/cb?token=[redacted]&next=/home");
+  // A shell `&&` after the value is kept.
+  const key = ["k7Rm2Qx9", "Lp4Ns8Vt"].join("");
+  const chained = `API_KEY=${key} && npm test`;
+  assert.equal(redact(chained), "API_KEY=[redacted] && npm test");
+  assert.deepEqual(findSecrets(chained), [key]);
+  assert.equal(maskSecrets(chained).text, "API_KEY=[redacted] && npm test");
+  const tight = `API_KEY=${key}&&npm test`;
+  assert.equal(redact(tight), "API_KEY=[redacted]&&npm test");
+  assert.equal(maskSecrets(tight).text, "API_KEY=[redacted]&&npm test");
+});
