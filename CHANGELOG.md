@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.59.2
+
 ### Changed
 
 - The `large_output` score of a judged `bash` call is now recorded. The action trace entry shows it (`large-output 0.12` in the details, a `largeOutput` template token), and the holds database keeps it in `scores`. The hold signature still hashes only the irreversible score and the reasons, so hold matching is unchanged. Before, the question never steered in field use and nothing showed whether it scored low or was never asked.
