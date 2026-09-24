@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.59.3
+
 ### Fixed
 
 - The conscience no longer recommends a tool that cannot run on this platform. `powershell`, `pwsh`, and `cmd` are dropped from the tool candidates when the platform is not Windows, and a tool whose description says Windows-only or macOS-only is dropped on the other platforms. Skills are not filtered. In a run on macOS the conscience recommended `tool:powershell` at P(useful) 0.91; its end-of-run reminder then made the agent spend a turn checking for `pwsh` and answer about PowerShell instead of the task. The reminder re-runs the same assessment, so it can no longer name such a tool either.
