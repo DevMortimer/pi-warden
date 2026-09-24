@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- `/warden rules` prints the active parsed rule ids, path scopes and source files, plus the dropped count and `rules.exclude` patterns, so the local rule set can be inspected without sending anything to Jev.
 
 ## 0.45.0
 

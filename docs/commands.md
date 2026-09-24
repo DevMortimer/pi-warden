@@ -5,6 +5,7 @@
 | Command | Effect |
 | --- | --- |
 | `/warden status` | Guard state, consent and key source, session counts, steers sent per guard, thresholds, context saver totals, hold precision, rules source, config paths, last verdicts |
+| `/warden rules` | List the active parsed rules, their path scopes and source files, plus the dropped count and `rules.exclude` patterns. This is local-only and sends nothing to Jev. |
 | `/warden enable` | Data notice, key prompt if none is stored, consent saved |
 | `/warden disable` | Stop Jev judgments; pattern checks continue |
 | `/warden mode steer\|confirm\|advise` | How holds are handled; without an argument, show the current mode |

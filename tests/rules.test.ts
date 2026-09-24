@@ -7,7 +7,7 @@ import { defaultConfig } from "../src/config.js";
 import type { RulesConfig } from "../src/config.js";
 import type { Judge } from "pi-typesafe";
 import { execFileSync } from "node:child_process";
-import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeRuleSet, describeTarget, evaluateRules, gitIgnored, isRuleShaped, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
+import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeRuleSet, formatRuleSetDetails, describeTarget, evaluateRules, gitIgnored, isRuleShaped, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
 import type { RulesVerdict, RuleSet } from "../src/rules.js";
 
 let cwd: string;
@@ -413,4 +413,56 @@ test("no rule set means gitIgnored is not called, even for a gitignored path", a
   } finally {
     await rm(noRulesDir, { recursive: true, force: true });
   }
+});
+
+test("formatRuleSetDetails: root rules show ids and scopes", () => {
+  const set: RuleSet = {
+    sources: ["pi-warden.md"],
+    rules: [
+      { id: "no-secrets", name: "No secrets", body: "", paths: ["src/**"] },
+      { id: "tests-before-done", name: "Tests before done", body: "", paths: [] },
+    ],
+    dropped: 0,
+  };
+  assert.equal(formatRuleSetDetails(set, "root"), [
+    "Rules in force: pi-warden.md (2 rules, 0 dropped)",
+    "1. no-secrets paths: src/**",
+    "2. tests-before-done paths: (all)",
+  ].join("\n"));
+});
+
+test("formatRuleSetDetails: configured rules name each source", () => {
+  const set: RuleSet = {
+    sources: ["rules/code.md", "rules/docs.md"],
+    rules: [
+      { id: "typed-code", name: "Typed code", body: "", paths: ["src/**"], source: "rules/code.md" },
+      { id: "links-work", name: "Links work", body: "", paths: ["docs/**"], source: "rules/docs.md" },
+    ],
+    dropped: 0,
+  };
+  const text = formatRuleSetDetails(set, "configured", ["dist/**", "*.lock"]);
+  assert.match(text, /^Rules in force: rules\.files: rules\/code\.md, rules\/docs\.md \(2 rules, 0 dropped\)/);
+  assert.match(text, /1\. typed-code \[rules\/code\.md\] paths: src\/\*\*/);
+  assert.match(text, /2\. links-work \[rules\/docs\.md\] paths: docs\/\*\*/);
+  assert.match(text, /Excluded from Jev by rules\.exclude: dist\/\*\*, \*\.lock$/);
+});
+
+test("formatRuleSetDetails: fallback aggregate names its condensed size", () => {
+  const set: RuleSet = { sources: ["README.md"], rules: [], aggregate: "Always write tests.", dropped: 0 };
+  assert.equal(formatRuleSetDetails(set, "fallback"),
+    "Rules in force: README.md judged as one aggregate rule (prose only; 19 condensed chars)");
+});
+
+test("formatRuleSetDetails: empty set uses the first-run remedy", () => {
+  assert.equal(formatRuleSetDetails(undefined, "none"),
+    "No rules file detected. Run /warden init to create project-specific rules.");
+});
+
+test("formatRuleSetDetails: dropped count is always visible", () => {
+  const set: RuleSet = {
+    sources: ["pi-warden.md"],
+    rules: [{ id: "first", name: "First", body: "", paths: [] }],
+    dropped: 7,
+  };
+  assert.match(formatRuleSetDetails(set, "root"), /\(1 rule, 7 dropped\)/);
 });
