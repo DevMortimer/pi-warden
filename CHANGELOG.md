@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.60.0
+
 ### Changed
 
 - `git reset --hard` warns instead of holding when the working tree is clean: `git status --porcelain` in the call's directory prints nothing. The check runs once with a 2-second timeout; a failed or timed-out check holds.
