@@ -734,6 +734,38 @@ test("the context saver keeps a ledger: candidates, compressions, token-turns, r
   assert.match(notices.at(-1)!.text, /no tool output large enough to consider this session/);
 });
 
+test("a saving made under one prompt keeps counting token-turns under the next prompt", async () => {
+  await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
+  nextAnswers = { retention: "summary_only" };
+  const result = await toolResult("bash", { command: "npm test" }, "progress complete\n".repeat(2000), false) as { content: Array<{ text: string }> };
+  const path = result.content[0]!.text.match(/Full output: (.+)/)![1]!;
+  try {
+    await fire("turn_end", { turnIndex: 1, message: {}, toolResults: [] });
+    await newPrompt("Now fix the lint errors");
+    await fire("turn_end", { turnIndex: 1, message: {}, toolResults: [] });
+    await runCommand("status");
+    const [, tokens, tokenTurns] = notices.at(-1)!.text.match(/\(~(\d+) tokens\), ~(\d+) token-turns spared over 2 turns/)!;
+    assert.ok(Number(tokens) > 0);
+    assert.equal(Number(tokenTurns), Number(tokens) * 2, "the removal stays out of context under the second prompt too");
+  } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
+});
+
+test("the trace records a non-zero token-turns ledger line after a compression and a finished turn", async () => {
+  await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
+  nextAnswers = { retention: "summary_only" };
+  const result = await toolResult("bash", { command: "npm test" }, "progress complete\n".repeat(2000), false) as { content: Array<{ text: string }> };
+  const path = result.content[0]!.text.match(/Full output: (.+)/)![1]!;
+  try {
+    await fire("turn_end", { turnIndex: 1, message: {}, toolResults: [] });
+    await runCommand("trace", context({ hasUI: false }));
+    const lines = [...sentMessages.at(-1)!.message.content.matchAll(/~(\d+) token-turns spared over (\d+) turns/g)];
+    assert.ok(lines.length > 0, "the trace carries a ledger line");
+    const [, tokenTurns, turns] = lines.at(-1)!;
+    assert.equal(turns, "1");
+    assert.ok(Number(tokenTurns) > 0, `the latest ledger line counts the finished turn: ${lines.at(-1)![0]}`);
+  } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
+});
+
 test("an identical repeated result becomes a duplicate note with a stored copy, without a Jev request", async () => {
   await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
   nextAnswers = { retention: "all" };

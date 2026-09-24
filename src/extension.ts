@@ -365,6 +365,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
+  /** The trace entry of this turn's latest saving; its ledger line was written before the turn counted, so turn_end adds one that has. */
+  let savingEntry: TraceEntry | undefined;
   // Learns which compression strategies work best per tool, so the next call skips the judge when confident.
   const compressionLearner = new CompressionLearner();
 
@@ -750,6 +752,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       try { await rm(dir, { recursive: true, force: true }); } catch (err) { console.warn("pi-warden: temp cleanup failed:", err); }
     }
     ledger.reset();
+    savingEntry = undefined;
     compressionLearner.reset();
     secretsSeen.clear();
     subagentSeen.clear();
@@ -1065,6 +1068,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Every turn that runs after a compression is a turn that did not carry the removed text.
   pi.on("turn_end", async (_event, ctx) => {
     ledger.turnEnd();
+    if (savingEntry) trace.amend(savingEntry, `at turn end: ${formatLedger(ledger.snapshot())}`);
+    savingEntry = undefined;
     actionGuard.turnEnd();
     rulesGuard.turnEnd();
     // ── Conscience: re-assess on unconsumed triggers ──
@@ -1552,7 +1557,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
           ledger.duplicate(bytesSaved);
           ledger.remember(key, earlier.tool, storedPath);
-          record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: "duplicate", bytesSaved: String(bytesSaved) }), [
+          savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: "duplicate", bytesSaved: String(bytesSaved) }), [
             `identical to an earlier ${earlier.tool} result; saved ${bytesSaved} bytes; full output: ${storedPath}`,
             formatLedger(ledger.snapshot()),
           ]);
@@ -1588,7 +1593,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
               ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(blockText) });
               storedPath = path;
               compressionLearner.record(event.toolName, verdict.retention, verdict.format, false);
-              record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: verdict.retention, bytesSaved: String(bytesSaved) }), [
+              savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: verdict.retention, bytesSaved: String(bytesSaved) }), [
                 `text block ${textIndex} of ${blockVerdicts.length}: retention ${verdict.retention}; confidence ${verdict.confidence?.toFixed(2)}; format ${verdict.format ?? "generic"}${verdict.formatConfidence === undefined ? "" : ` (${verdict.formatConfidence.toFixed(2)})`}; saved ${bytesSaved} bytes; full output: ${path}`,
                 formatLedger(ledger.snapshot()),
               ]);
@@ -1612,7 +1617,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(text) });
             storedPath = path;
             compressionLearner.record(event.toolName, output.retention, output.format, false);
-            record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
+            savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
               `retention: ${output.retention}; confidence ${output.confidence?.toFixed(2)}; format ${output.format ?? "generic"}${output.formatConfidence === undefined ? "" : ` (${output.formatConfidence.toFixed(2)})`}; ${output.model}; ${output.elapsedMs} ms`,
               `saved ${bytesSaved} bytes; full output: ${path}`,
               formatLedger(ledger.snapshot()),

@@ -22,6 +22,27 @@ test("the ledger counts candidates, compressions, token-turns, and first recalls
   assert.deepEqual(ledger.snapshot(), { large: 0, compressed: 0, duplicates: 0, bytesSaved: 0, turns: 0, tokenTurnsSaved: 0, recalls: 0, recallsFull: 0 });
 });
 
+test("token-turns are removed tokens times the turns the removal has been in effect", () => {
+  const ledger = new ContextLedger();
+  ledger.record("/tmp/pi-warden-output-e/output.txt", 4_000);
+  ledger.turnEnd();
+  ledger.turnEnd();
+  ledger.turnEnd();
+  assert.equal(ledger.snapshot().tokenTurnsSaved, 3_000);
+});
+
+test("a whole-file recall puts the output back in context, so its bytes stop counting toward token-turns; a scoped recall does not", () => {
+  for (const [kind, expected] of [["full", 1_000], ["scoped", 3_000]] as const) {
+    const ledger = new ContextLedger();
+    ledger.record("/tmp/pi-warden-output-f/output.txt", 4_000);
+    ledger.turnEnd();
+    ledger.noteAccess("cat /tmp/pi-warden-output-f/output.txt", kind);
+    ledger.turnEnd();
+    ledger.turnEnd();
+    assert.equal(ledger.snapshot().tokenTurnsSaved, expected, kind);
+  }
+});
+
 test("duplicates are remembered by content key, keep the first stored copy, and count separately from compressions", () => {
   const ledger = new ContextLedger();
   assert.equal(ledger.duplicateOf("k1"), undefined);

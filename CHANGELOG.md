@@ -9,6 +9,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Added
 - Rules, slop, and security judge code that a `bash` command writes to a file, as if it were a `write`: heredocs into `cat` or `tee` (quoted or unquoted delimiter, `<<-`), here-strings, and `echo`/`printf` with `>` or `>>`. Each target in a chain is judged on its own, before the command runs, with the same `.gitignore` and outside-project skip as a `write`; an append judges only the appended text. An authoring form whose text cannot be read (`$VAR` or `$(...)` in the body, a pipe into `tee`) and `sed -i`, `patch`, and `git apply` are not judged, and the trace says why; a program's output sent to a file (`cmd > log`) is not judged and leaves no trace note. See `docs/guards.md` → Rules.
 
+## 0.52.2
+
+### Fixed
+
+- The context saver's trace now shows how many token-turns a saving spared. The ledger line of a compression or a dropped duplicate is written before the turn that carries it ends, so it nearly always read `~0 token-turns spared over 0 turns`. When a turn with a saving ends, its latest context entry in the trace gets a second line, `at turn end: Context saver: …`, with the counts that include that turn. Token-turns are the removed tokens (bytes / 4) times the turns the removal has been in effect, summed over the session; a new prompt does not reset them. A whole-file recall puts a stored output back into context, so from the next turn on its bytes no longer count toward token-turns; a scoped recall does not change the count. `/warden status` is unchanged.
+
 ## 0.52.1
 
 ### Fixed
