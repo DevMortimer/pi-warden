@@ -1665,33 +1665,76 @@ test("done-check: an unverified completion claim after file changes gets one fol
   await fire("agent_start", {});
   await toolResult("edit", { path: "src/parser.ts", edits: [] }, "ok", false);
   await agentEnd("Done now.");
-  assert.equal(networkCalls, 1, "at most one nudge per user prompt");
+  assert.equal(networkCalls, 2, "the continuation's claim is judged again");
+  assert.equal(sentMessages.length, 1, "at most one nudge per user prompt");
 
   await newPrompt("and the formatter");
   await toolResult("edit", { path: "src/format.ts", edits: [] }, "ok", false);
   await toolResult("bash", { command: "npm test" }, "31 passing", false);
   await agentEnd("Formatter updated; tests pass.");
-  assert.equal(networkCalls, 1, "a passing check means no done-check request");
+  assert.equal(networkCalls, 2, "a passing check means no done-check request");
 
   await newPrompt("and the linter");
   await toolResult("edit", { path: "src/lint.ts", edits: [] }, "ok", false);
   await toolResult("bash", { command: "npm test" }, "1 failing", true);
   nextAnswers = { claims_done: 0.85, claims_verified: 0.8, verification_applies: 0.9, outcome: "complete" };
   await agentEnd("All done and tests pass.");
-  assert.equal(networkCalls, 2);
+  assert.equal(networkCalls, 3);
   assert.match(sentMessages.at(-1)!.message.content, /1 failed check and no passing one\. The last check that ran failed: npm test/);
 
   await newPrompt("and docs");
   await toolResult("edit", { path: "README.md", edits: [] }, "ok", false);
   nextAnswers = { claims_done: 0.9, claims_verified: 0.1, verification_applies: 0.9, outcome: "blocked" };
   await agentEnd("I updated the README; do you also want the changelog touched?");
-  assert.equal(networkCalls, 3);
+  assert.equal(networkCalls, 4);
   assert.equal(sentMessages.length, 2, "a question to the user is not an unverified claim");
 
   await newPrompt("delete the scratch files");
   await toolResult("bash", { command: "rm -rf /tmp/scratch" }, "", false);
   await agentEnd("Deleted /tmp/scratch.");
-  assert.equal(networkCalls, 3, "shell side effects alone are not code changes");
+  assert.equal(networkCalls, 4, "shell side effects alone are not code changes");
+});
+
+test("done-check: the run a done-check nudge starts keeps the evidence that caused it", async () => {
+  await grantConsent();
+  await newPrompt("fix the parser bug");
+  await toolResult("edit", { path: "src/parser.ts", edits: [] }, "ok", false);
+  nextAnswers = { claims_done: 0.92, claims_verified: 0.1, verification_applies: 0.9, outcome: "complete" };
+  await agentEnd("Fixed the parser bug.");
+  assert.equal(sentMessages.length, 1, "the unverified claim is nudged");
+
+  // The nudge starts a new run; a second claim with no check is judged against the carried edit.
+  await fire("agent_start", {});
+  await agentEnd("Done.");
+  assert.equal(networkCalls, 2, "the carried edit still needs a check");
+  assert.deepEqual(requests.at(-1)!.state.run, { file_changes: 1, checks_run: [] });
+  assert.match(widgets.at(-1)!.at(-1)!, /^UNVERIFIED\s+done\s+done-check · 1 changes · 0\/0 checks passed/);
+  assert.equal(sentMessages.length, 1, "no second nudge for the same prompt");
+
+  // A passing check in the continuation verifies the carried edit.
+  await fire("agent_start", {});
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  await agentEnd("Tests pass; the parser bug is fixed.");
+  assert.equal(networkCalls, 2, "the passing check covers the carried edit: no done-check");
+
+  // A new user prompt starts with empty evidence.
+  await newPrompt("explain the parser");
+  await agentEnd("The parser reads tokens left to right.");
+  assert.equal(networkCalls, 2, "no changes in this prompt: nothing to verify");
+});
+
+test("done-check: a new user prompt after a nudge starts with empty evidence", async () => {
+  await grantConsent();
+  await newPrompt("fix the parser bug");
+  await toolResult("edit", { path: "src/parser.ts", edits: [] }, "ok", false);
+  nextAnswers = { claims_done: 0.92, claims_verified: 0.1, verification_applies: 0.9, outcome: "complete" };
+  await agentEnd("Fixed the parser bug.");
+  assert.equal(sentMessages.length, 1);
+
+  // The user answers before the nudge's run starts: the user prompt resets the evidence.
+  await newPrompt("never mind, explain the parser");
+  await agentEnd("Done: the parser reads tokens left to right.");
+  assert.equal(networkCalls, 1, "the earlier edit is not carried into a new user prompt");
 });
 
 test("done-check: an edit after a passing run makes the run unverified again", async () => {

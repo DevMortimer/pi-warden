@@ -312,6 +312,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let fullOutputs = new Map<string, { text: string; path?: string }>();
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
+  /** True from a delivered warden follow-up that starts a turn until the next run starts: that run keeps the evidence. */
+  let wardenContinuation = false;
   let warnedFallback = false;
   let warnedMissingRules = false;
   /** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
@@ -606,6 +608,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     steersThisRun++;
     const { display, ...delivery } = options ?? { deliverAs: "steer" as const };
     pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: display ?? config.steerVisible }, delivery);
+    if (delivery.triggerTurn) wardenContinuation = true;
     return true;
   };
   /**
@@ -697,6 +700,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     attempts.reset();
     evidence = emptyEvidence();
     doneNudged = false;
+    wardenContinuation = false;
     prose.reset();
     // Clean up temp output dirs from the previous session.
     for (const dir of ledger.storedPaths()) {
@@ -744,6 +748,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     attempts = new AttemptWindow(config.stuck.window);
     fullOutputs = new Map();
     doneNudged = false;
+    wardenContinuation = false;
     steersThisRun = 0;
     finals.reset();
     runaway.reset();
@@ -1007,9 +1012,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     ctx.abort();
   });
 
-  // Each low-level run collects its own evidence of changes and checks.
+  // Each low-level run collects its own evidence of changes and checks. A run that a warden follow-up started continues
+  // the previous run's work, so it keeps that evidence: the changes behind a done-check nudge still need a passing check.
   pi.on("agent_start", async () => {
-    evidence = emptyEvidence();
+    if (!wardenContinuation) evidence = emptyEvidence();
+    wardenContinuation = false;
   });
 
   // Every turn that runs after a compression is a turn that did not carry the removed text.
@@ -1761,7 +1768,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const proseCheck = config.slop.enabled && config.slop.prose.enabled && finalMessage.length >= config.slop.prose.minChars
       ? evaluateProse(task, finalMessage, { config: config.slop.prose, judge, timeoutMs: config.timeoutMs, signal: ctx.signal })
       : undefined;
-    const doneCheck = config.done.enabled && !doneNudged && needsDoneCheck(evidence)
+    const doneCheck = config.done.enabled && needsDoneCheck(evidence)
       ? evaluateDone(task, finalMessage, evidence, { config: config.done, judge, timeoutMs: config.timeoutMs, signal: ctx.signal })
       : undefined;
     if (proseCheck) {
@@ -1782,7 +1789,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     stats.doneChecks++;
     const verdict = await doneCheck;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
-    const nudge = verdict.unverified && config.done.nudge ? doneNudge(verdict) : undefined;
+    // At most one nudge per user prompt; a later unverified claim is still judged and recorded.
+    const nudge = verdict.unverified && config.done.nudge && !doneNudged ? doneNudge(verdict) : undefined;
     record(ctx, config, "done", formatDone(verdict, config.widget.done), doneDetails(verdict, finalMessage, nudge));
     if (!verdict.unverified) return;
     stats.unverified++;
