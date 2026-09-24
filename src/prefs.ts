@@ -264,8 +264,11 @@ const SPECIFIC_REFERENCE = new RegExp([
 /**
  * Markers of a preference that weakens a safeguard: skipping tests, checks, reviews, or confirmations, turning warden
  * off, or pushing, deploying, or deleting without asking. Such a preference is listed, never injected. `asked` weakens
- * when the user asks for it ("skip the tests"); `refused` weakens when the user forbids it ("don't run the tests",
- * "never ask before pushing"). "Never skip the tests" keeps the check, so `asked` markers do not count in a prohibition.
+ * when the user asks for it ("skip the tests"); `refused` weakens when the user forbids the verification itself ("don't
+ * run the tests", "never ask before pushing", "don't review it"). "Never skip the tests" keeps the check, so `asked`
+ * markers do not count in a prohibition. A prohibition of a harmful action is a safety preference, not a weakened check:
+ * "never check in secrets", "never test in production", and "don't commit to main" are injected. So a verification verb
+ * (check, verify, review, test) counts only when the clause ends after it, or a verification object follows it.
  */
 export const WEAKENS_CHECK: { readonly asked: readonly RegExp[]; readonly refused: readonly RegExp[] } = {
   asked: [
@@ -275,7 +278,8 @@ export const WEAKENS_CHECK: { readonly asked: readonly RegExp[]; readonly refuse
   ],
   refused: [
     /^(?:don['’]?t|do\s+not|never|stop)\s+(?:(?:ever|even|bother(?:ing)?|need|have|to)\s+){0,2}(?:run\w*|writ\w*|add\w*|wait\w*(?:\s+for)?|do\w*|us(?:e|ing)|call\w*|request\w*)\s+(?:(?:the|any|a)\s+)?(?:[\w-]+\s+)?(?:tests?|checks?|lint\w*|reviews?|verif\w*|typecheck\w*|ci|warden)\b/i,
-    /^(?:don['’]?t|do\s+not|never|stop)\s+(?:ask\w*|confirm\w*|check\w*|verif\w*|review\w*|test\w*)\b/i,
+    /^(?:don['’]?t|do\s+not|never|stop)\s+(?:(?:ever|even|bother(?:ing)?|need|have|to)\s+){0,2}(?:ask\w*|confirm\w*)\b/i,
+    /^(?:don['’]?t|do\s+not|never|stop)\s+(?:(?:ever|even|bother(?:ing)?|need|have|to)\s+){0,2}(?:check|verify|review|test)(?:s|ed|es|ied|ing)?(?=\s*$|\s+(?:before|after|first|anything|again|it|them|that|this|my|your|each|every|(?:the\s+)?(?:code|build|changes?|output|results?|diffs?|work|pr|pull\s+requests?|commits?))\b)/i,
   ],
 };
 

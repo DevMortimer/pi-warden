@@ -90,19 +90,30 @@ test("rule 5: last seen within 30 days, and no later message of the opposite pol
   assert.equal(statusOf(opposite, "Always squash commits"), "not injected: contradicted by a later message");
 });
 
-test("rule 6: a preference that weakens a check is listed, never injected; the markers live in one constant", () => {
+test("rule 6: a preference that skips, disables, or avoids a check is listed, never injected; the markers live in one constant", () => {
   for (const clause of [
-    "Always skip the tests before pushing", "Don't run the tests", "Never ask before pushing", "Always push without asking",
-    "Always commit with --no-verify", "Always disable warden in this repo", "Don't wait for the review", "Always delete old branches without confirmation",
+    "Always skip the tests before pushing", "Don't run the tests", "Don't run the live tests", "Don't run the checks", "Never ask before pushing",
+    "Never ask for a review", "Don't wait for the review", "Don't review the diff", "Don't check the output", "Never verify before pushing",
+    "Always commit with --no-verify", "Always disable warden in this repo", "Always push without asking", "Always deploy without asking",
+    "Always delete old branches without confirmation", "Stop testing it",
   ]) assert.equal(classifyClause(clause), "weakens", clause);
-  for (const clause of ["Never skip the tests", "Never push without asking", "Always run the checks before a commit", "Dont run subagents do the review yourself"]) {
-    assert.equal(classifyClause(clause), "standing", clause);
-  }
-  assert.equal(classifyClause("Don't ever run the tests"), "weakens");
   assert.ok(WEAKENS_CHECK.asked.length > 0 && WEAKENS_CHECK.refused.length > 0);
-  const items = evaluate([...thrice("Always skip the tests before pushing"), ...thrice("Never skip the tests")]);
+  const items = evaluate([...thrice("Always skip the tests before pushing"), ...thrice("Don't run the live tests")]);
   assert.equal(statusOf(items, "Always skip the tests before pushing"), "not injected: weakens a check");
-  assert.equal(statusOf(items, "Never skip the tests"), WAS_INJECTED);
+  assert.equal(statusOf(items, "Don't run the live tests"), "not injected: weakens a check");
+});
+
+test("rule 6: a prohibition of a harmful action is a safety preference and is injected", () => {
+  const safety = [
+    "Never check in secrets", "Never force-push the release branch", "Don't commit to main", "Never test in production", "Never skip the tests",
+    "Never push without asking", "Always run the checks before a commit", "Dont run subagents do the review yourself",
+  ];
+  for (const clause of safety) assert.equal(classifyClause(clause), "standing", clause);
+  assert.equal(classifyClause("Don't ever run the tests"), "weakens");
+  const injected = ["Never check in secrets", "Never force-push the release branch", "Don't commit to main", "Never test in production", "Never push without asking"];
+  const items = evaluate(injected.flatMap(thrice));
+  for (const clause of injected) assert.equal(statusOf(items, clause), WAS_INJECTED, clause);
+  assert.match(prefsMessage(items)!, /- "Never check in secrets" \(3 sessions\)/);
 });
 
 test("rule 7: at most five items and 400 characters; the closing sentence is exact", () => {
