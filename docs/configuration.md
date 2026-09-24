@@ -47,7 +47,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "threshold": 0.7,
     "prose": { "enabled": true, "audience": "technical", "threshold": 0.7, "trend": 2, "minChars": 200 }
   },
-  "security": { "enabled": true, "threshold": 0.7 },
+  "security": { "enabled": true, "threshold": 0.7, "maskOutput": true },
   "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
   "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7, "largeOutput": { "enabled": true, "threshold": 0.85 } },
@@ -90,6 +90,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `rules.*` | Rules source, threshold, path globs, sensitive-path notes. See [guards.md → Rules](guards.md#rules). |
 | `slop.*` | Code slop threshold and reply (prose) checks. `prose.audience` is `technical`, `plain`, or free text. |
 | `security.threshold` | Written-code risk and tool-output injection threshold. |
+| `security.maskOutput` | Default `true`. Before the model sees a tool result, replace high-confidence credential values in its text blocks with `[redacted]`: private key blocks, `sk-` keys, `ghp_`, `gho_` and `github_pat_` tokens, `AKIA` keys, `xoxa-`/`xoxb-`/`xoxp-` Slack tokens, JWTs, and `KEY=value` assignments whose name is a credential key and whose value looks like a secret. Test fixtures, documented examples (`AKIAIOSFODNN7EXAMPLE`), and the query signatures of signed URLs stay readable. The banner says how many values were masked. Images and other parts are not changed. `false`, or `security.enabled: false`, shows the value and only announces it. User file only: a project file cannot turn masking off. Masking runs even with the security guard off (`security.enabled: false`); only the user's `security.maskOutput: false` stops it. |
 | `stuck.*` | Window of tool results kept, failures before a check, cooldown between checks, same-strategy threshold. |
 | `done.*` | Completion-claim threshold and whether the agent gets a follow-up turn. |
 | `context.*` | Compression thresholds, retention confidence, duplicate size, recall tool. |

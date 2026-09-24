@@ -5,6 +5,12 @@ const REPLACEMENT = "[redacted]";
 /** Credential-key names that appear in assignments and config values: `api_key=`, `password:`, `secret`, etc. */
 const CREDENTIAL_KEYS = /(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|private[_-]?key|passw(?:or)?d|passphrase|token|secret|credentials?)/i.source;
 
+/**
+ * `&` ends an unquoted value only as a separator: before another `name=` (a URL query), a second `&` (`&&`), or
+ * whitespace or the end. Otherwise it is part of the value, as in a password.
+ */
+const VALUE_AMPERSAND = String.raw`&(?![a-z_][\w.-]*=|&|\s|$)`;
+
 /** Best-effort credential scrubbing for text that leaves the machine. Ordered: multi-token shapes before bare tokens. */
 const RULES: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, REPLACEMENT],
@@ -12,7 +18,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(bearer\s+)\S+/gi, `$1${REPLACEMENT}`],
   // Quoted values can hold spaces (passphrases), so a quoted value is redacted whole before the unquoted rule.
   [new RegExp(`((?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*)(["'])[^"'\\n]*\\2`, "gi"), `$1$2${REPLACEMENT}$2`],
-  [new RegExp(`((?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?)([^\\s"'&;]+)`, "gi"), `$1${REPLACEMENT}`],
+  [new RegExp(`((?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?)((?:[^\\s"'&;]|${VALUE_AMPERSAND})+)`, "gi"), `$1${REPLACEMENT}`],
   // Any scheme, not just http(s): database and broker URLs (postgres://, mysql://, redis://, amqp://) carry passwords too.
   [/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, `$1${REPLACEMENT}@`],
   [/\bsk-[A-Za-z0-9_-]{8,}/g, REPLACEMENT],
@@ -46,9 +52,11 @@ const TOKEN_SHAPES: RegExp[] = [
   /\bAIza[0-9A-Za-z_-]{30,}/g,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
 ];
+/** `api_key=value`, `PASSWORD: value`: a credential-key name assigned a value. */
+const CREDENTIAL_ASSIGNMENT = new RegExp(`(?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?((?:[^\\s"'&;,)]|${VALUE_AMPERSAND})+)`, "gi");
 /** Assignments and headers whose value must still look like a secret. */
 const ASSIGNMENTS: RegExp[] = [
-  new RegExp(`(?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?([^\\s"'&;,)]+)`, "gi"),
+  CREDENTIAL_ASSIGNMENT,
   /authorization\s*[:=]\s*(?:basic|bearer|token)?\s*([^\s"']+)/gi,
   /\bbearer\s+([^\s"']+)/gi,
   /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:([^\s/@]+)@/gi,
@@ -127,11 +135,49 @@ export function syntheticish(value: string): boolean {
   return hasSequenceRun(text) || hasSequenceRun(body) || isRepetitive(body);
 }
 
-/** Split credentials into the ones worth announcing and the stand-ins that are only traced. */
-export function partitionSecrets(secrets: readonly string[]): { real: string[]; synthetic: string[] } {
+/** An `https://` URL; its query is read for the parameters of a signed URL. */
+const HTTPS_URL = /https:\/\/[^\s"'<>`]+/g;
+/** The expiry that makes a URL a short-lived signed URL. */
+const SIGNED_EXPIRY = /[?&](?:X-Amz-Expires|X-Goog-Expires|Expires|se)=/i;
+/** The query signature of a signed URL: S3 (including temporary-credential session tokens) and GCS presigned URLs, CloudFront, and storage `token=` links. */
+const SIGNED_PARAM = /[?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|X-Goog-Signature|X-Goog-Credential|Signature|token)=([^&#]*)/gi;
+
+/** Start and end offsets of every signature parameter value in a signed `https://` URL in `text`. */
+function signedUrlSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (const url of text.matchAll(HTTPS_URL)) {
+    if (!SIGNED_EXPIRY.test(url[0])) continue;
+    for (const param of url[0].matchAll(SIGNED_PARAM)) {
+      const end = url.index + param.index + param[0].length;
+      spans.push([end - param[1]!.length, end]);
+    }
+  }
+  return spans;
+}
+
+/**
+ * True when every occurrence of `value` in `text` sits inside the query signature of a signed URL. Such a URL expires
+ * within minutes and grants one object; issue-tracker and storage API responses are full of them.
+ */
+function signedUrlOnly(value: string, spans: ReadonlyArray<[number, number]>, text: string): boolean {
+  if (!spans.length) return false;
+  let found = false;
+  for (let index = text.indexOf(value); index !== -1; index = text.indexOf(value, index + 1)) {
+    if (!spans.some(([start, end]) => index >= start && index + value.length <= end)) return false;
+    found = true;
+  }
+  return found;
+}
+
+/**
+ * Split credentials into the ones worth announcing and the stand-ins that are only traced. With `text`, a value found
+ * only in the query signature of a signed URL is a stand-in too.
+ */
+export function partitionSecrets(secrets: readonly string[], text?: string): { real: string[]; synthetic: string[] } {
   const real: string[] = [];
   const synthetic: string[] = [];
-  for (const value of secrets) (syntheticish(value) ? synthetic : real).push(value);
+  const spans = text === undefined ? [] : signedUrlSpans(text);
+  for (const value of secrets) (syntheticish(value) || signedUrlOnly(value, spans, text ?? "") ? synthetic : real).push(value);
   return { real, synthetic };
 }
 
@@ -141,6 +187,32 @@ export function findSecrets(text: string): string[] {
   for (const shape of TOKEN_SHAPES) for (const match of text.matchAll(shape)) found.add(match[0]);
   for (const rule of ASSIGNMENTS) for (const match of text.matchAll(rule)) if (match[1] && looksLikeSecretValue(match[1])) found.add(match[1]);
   return [...found];
+}
+
+/**
+ * Token shapes precise enough to mask in a tool result: private key blocks, `sk-` keys, `ghp_`, `gho_` and
+ * `github_pat_` tokens, `AKIA` keys, `xoxa-`/`xoxb-`/`xoxp-` Slack tokens, and JWTs. The other shapes are announced only.
+ */
+const MASKED_TOKEN = /^(?:-----BEGIN|sk-|ghp_|gho_|github_pat_|AKIA|xox[abp]-|eyJ)/;
+
+/**
+ * `text` with every high-confidence credential value replaced by `[redacted]`: a masked token shape, or a
+ * credential-key assignment whose value looks like a secret. Stand-ins (`syntheticish`, signed URL signatures) stay readable.
+ */
+export function maskSecrets(text: string): { text: string; masked: number } {
+  const values = new Set<string>();
+  for (const shape of TOKEN_SHAPES) for (const match of text.matchAll(shape)) if (MASKED_TOKEN.test(match[0])) values.add(match[0]);
+  for (const match of text.matchAll(CREDENTIAL_ASSIGNMENT)) if (match[1] && looksLikeSecretValue(match[1])) values.add(match[1]);
+  const { real } = partitionSecrets([...values], text);
+  let out = text;
+  let masked = 0;
+  // Longest first, so a value that contains another is replaced whole.
+  for (const value of real.sort((a, b) => b.length - a.length)) {
+    if (!out.includes(value)) continue;
+    out = out.split(value).join(REPLACEMENT);
+    masked++;
+  }
+  return { text: out, masked };
 }
 
 /** A short, stable id for a set of secrets; the values themselves never leave `findSecrets`. */

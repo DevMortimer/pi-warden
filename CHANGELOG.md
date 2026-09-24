@@ -10,6 +10,26 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - `/warden trace` sends the trace as text whenever `PI_WARDEN_TRACE_DIR` is set to an absolute path (the host asked for the trace file), whether or not the host built the sidebar. Before this, the text went out only when the sidebar component was never built, so a host without a terminal UI that builds components would get no trace.
 
+## 0.50.0
+
+### Added
+
+- Credentials in a tool result are masked before the model sees them, not only announced. High-confidence values in the text blocks (private key blocks, `sk-` keys including `sk-proj-`, `ghp_`, `gho_` and `github_pat_` tokens, `AKIA` keys, `xoxa-`/`xoxb-`/`xoxp-` Slack tokens, JWTs, and credential-key assignments whose value looks like a secret) become `[redacted]` before any other rewrite, so compressed excerpts, duplicate notes, and stored full output hold the masked text too. Fixture and documentation stand-ins stay readable. The banner says "N value(s) masked in this output as [redacted]" and tells the agent to check presence without printing the value. A value already announced this session is still masked, without a second banner. `security.maskOutput` (default `true`) turns it off; masking is local and still runs when `security.enabled` is `false`, which only switches off the banner and the security judgments.
+- Built-in pattern `printenv-secret` (destructive): `printenv NAME`, or `echo $NAME` / `echo "${NAME}"`, where the name contains `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, or `PASSWD` in any case, including inside `ssh … "…"` and `fly ssh console -C "…"`. The label tells the agent to check that the variable is set without printing it (`test -n "$NAME" && echo set`, `printenv NAME | wc -c`); those checks, `${NAME:+set}`, `${#NAME}`, bare `printenv`, and `env` are not held. A double-quoted string that expands such a variable is no longer blanked as data text for the pattern rules. Like every built-in pattern, it holds on its own when no judge answers or with `action.floor: "level"`; in the default evidence mode it is evidence for Jev. Exemptable by id.
+
+### Fixed
+
+- Signed URLs no longer raise "Possible credentials". A value found only in the query signature of an `https://` URL that also carries an expiry (`X-Amz-Expires`, `X-Goog-Expires`, `Expires`, or `se=`) counts as a stand-in: the `X-Amz-Signature`, `X-Amz-Credential`, `X-Goog-Signature`, `X-Goog-Credential`, `Signature`, and `token` parameters of S3 and GCS presigned URLs and storage links. It is traced once, with no banner and no masking in the result; redaction of what leaves the machine is unchanged. A `token=` outside such a URL, or a value that also appears on its own, still counts. Before this, nearly every read of an issue tracker's API raised the notice, because its responses carry signed upload URLs. `partitionSecrets` takes the text as an optional second argument for this check.
+- A credential value containing `&` is redacted whole: `DB_PASSWORD=Tr0ub4dor&3xK9` no longer leaves `&3xK9` in what goes to Jev, the trace, or the masked result. `&` still ends a value before another `name=` (a URL query), before a second `&`, and before whitespace or the end.
+- `security.maskOutput` is read from the user file only: a repository's `.pi/pi-warden.json` cannot turn off masking of credentials in its own agent's output.
+- `X-Amz-Security-Token` counts as a signed-URL parameter, so an S3 presigned URL made with temporary credentials no longer raises "Possible credentials".
+
+## 0.49.0
+
+### Added
+
+- The action guard reads which database a `psql`, `mysql`, `mariadb`, or `supabase` command targets (`sqlTarget`): loopback, hosted, or unknown. A loopback `DELETE FROM … WHERE …` warns (`sql-delete-local`) instead of holding; `DROP`, `TRUNCATE`, and a `DELETE` with no `WHERE` or an always-true one (`WHERE true`, `WHERE 1=1`, `WHERE 'a'='a'`, `WHERE NOT false`) still hold on loopback. SQL in a heredoc fed to a database client is now checked for `DROP`, `TRUNCATE`, and `DELETE FROM` on every target, as `-c` SQL is; before, such a heredoc was treated as data and got no hit. A hosted target (Supabase, Neon, RDS, PlanetScale, or a supabase `--linked` or non-local `--target`) warns as elevated (`sql-hosted`), and a write statement against it holds (`sql-hosted-write`). A hosted Postgres command wrapped as `BEGIN READ ONLY; … ROLLBACK;` is quiet; a `COMMIT` anywhere voids that. A variable host such as `$DATABASE_URL`, and SQL from `-f` or a pipe, keep the plain SQL hits. See docs/guards.md.
+
 ## 0.48.1
 
 ### Fixed
