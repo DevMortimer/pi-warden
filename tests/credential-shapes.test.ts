@@ -112,3 +112,26 @@ test("an S3 presigned URL made with temporary credentials is not a credential", 
   const sessionToken = ["IQoJb3JpZ2luX2VjEJr%2F%2F%2F%2F%2FwEaCXVzLWVhc3QtMSJHMEUCIQDx7Kp2Rm9", "Lq4Tz8Wn3Vb6Hd1Jc5Ys0GaKu2Re7Nt4Mx9Lp3Vz8Hq1Wd6Bj5Cf0Ys2Tg7Nk%3D"].join("");
   assertSignedUrl("s3 temporary", `https://uploads.s3.us-east-1.amazonaws.com/team/a1/shot.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${["ASIA3M7QZ2", "PRT9LVXW8Y"].join("")}%2F20260924%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260924T101010Z&X-Amz-Expires=3600&X-Amz-Security-Token=${sessionToken}&X-Amz-SignedHeaders=host&X-Amz-Signature=${signature}`);
 });
+
+test("every value findSecrets reports is masked: URL passwords, Authorization and Bearer values, and all token shapes", () => {
+  // Split so repository secret scanners do not read a fixture as a live key.
+  const password = ["Vq7mZ2rK", "9xLp4Tn8"].join("");
+  const header = ["Hd3Jc5Ys0Ga", "Ku2Re7Nt4Mx9"].join("");
+  const bearer = ["Rt9Vk4Np8W", "d3Hz6Jc1Qx"].join("");
+  const shapes = [["ghs_", "Qx7Lm2Rt9Vk4Np8Wd3Hz6Jc1"].join(""), ["AIza", "Sy7Lm2Rt9Vk4Np8Wd3Hz6Jc1Qx7Lm2R"].join(""), ["xoxs-", "7342-Qx7Lm2Rt9Vk"].join("")];
+  const cases = [
+    `redis://worker:${password}@cache.internal:6379`,
+    `Authorization: ${header}`,
+    `curl -H "Authorization: Bearer ${bearer}"`,
+    ...shapes,
+  ];
+  for (const text of cases) {
+    const found = partitionSecrets(findSecrets(text), text).real;
+    assert.ok(found.length > 0, `${text}: detected`);
+    const masked = maskSecrets(text);
+    assert.ok(masked.masked >= 1, `${text}: masked`);
+    for (const value of found) assert.ok(!masked.text.includes(value), `${text}: no detected value survives`);
+    assert.deepEqual(partitionSecrets(findSecrets(masked.text), masked.text).real, [], `${text}: nothing left to announce`);
+  }
+  assert.equal(maskSecrets(cases[0]!).text, "redis://worker:[redacted]@cache.internal:6379");
+});
