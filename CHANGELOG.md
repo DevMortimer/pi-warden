@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.47.1
+
 ### Fixed
 
 - A done-check nudge no longer clears the evidence that caused it. A run that a warden follow-up starts (done-check nudge, runaway recovery, subagent wake) keeps the changes and checks of the run before it, so the agent must still show a passing check. A later "done" with no check in that run is judged and recorded as unverified; the one-nudge-per-prompt bound stays. A user prompt still starts with empty evidence.
