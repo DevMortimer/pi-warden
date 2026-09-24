@@ -1,0 +1,82 @@
+{
+  "window": {
+    "since": "2026-09-20T16:00:00.000Z",
+    "until": "2026-09-24T09:00:00.000Z"
+  },
+  "sessions": 397,
+  "entries": 63031,
+  "bashCalls": 20574,
+  "unreadableLines": 0,
+  "holds": {
+    "judged": 19695,
+    "levels": {
+      "confirm": 143,
+      "allow": 15165,
+      "warn": 4387
+    },
+    "held": 143,
+    "outcomes": {
+      "approved": 10,
+      "unlabelled": 99,
+      "replanned": 33,
+      "declined": 1
+    },
+    "reasons": {
+      "judged irreversible": 5,
+      "force push": 4,
+      "recursive rm (absolute or temp path)": 94,
+      "other": 8,
+      "file outside the project": 23,
+      "git reset --hard": 9
+    }
+  },
+  "heldResultsInSessions": 169,
+  "steers": {
+    "total": 624,
+    "byKind": {
+      "rules": 195,
+      "intent mismatch": 160,
+      "credential notice": 105,
+      "done-check": 47,
+      "needs user input": 47,
+      "stuck": 24,
+      "prose trend": 15,
+      "slop": 14,
+      "other": 13,
+      "runaway": 2,
+      "prompt injection": 2
+    }
+  },
+  "doneCheckFollowUp": {
+    "ranCheck": 35,
+    "noCheck": 12
+  },
+  "rulesByName": {
+    "Do not bump version in a feature or fix commit": 42,
+    "House prose": 40,
+    "Nothing that leaves the machine carries a secret or unshown path": 36,
+    "A new Jev question ships with a measurement": 16,
+    "Errors are not swallowed": 13,
+    "Comments explain why, not what": 12,
+    "Config is additive": 7,
+    "TypeScript and Python discipline": 6,
+    "Tests carry intent": 5,
+    "No partial implementations": 4,
+    "Public text has no local traces": 3,
+    "Verification before done": 3,
+    "Waits are bounded": 2,
+    "Steers never hold": 2,
+    "No error escapes a thread": 1,
+    "Hooks and claimers return at once": 1,
+    "No tool or AI attribution lines": 1,
+    "Do not run destructive commands that erase uncommitted work": 1
+  },
+  "conscience": {
+    "tool": 57,
+    "skill": 13,
+    "coreTool": 55
+  },
+  "contextSaver": {
+    "compressedResults": 143
+  }
+}

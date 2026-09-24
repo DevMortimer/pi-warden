@@ -9,6 +9,12 @@ Scoring is `eval/check.mjs` (diff rules) plus `eval/verify.mjs` (claims vs the c
 runner runs, and unasked visible actions). Both are mechanical and independent of the
 guard.
 
+## Field usage
+
+Not batches: counts from real Pi sessions, produced by `scripts/field-usage.mjs`.
+
+- [2026-09-24-field-usage](2026-09-24-field-usage/README.md): four days, 397 sessions, 19,695 judged actions, what worked and what was noise.
+
 ## Checker changes and re-scoring
 
 A batch is scored once, by the runner, with the checkers of that day. When a checker is

@@ -6,6 +6,8 @@ pi-warden supervises Pi while it works, catching risky actions, ignored rules, s
 
 Instead of interrupting you for every problem, Warden usually feeds the issue back to the agent so it can correct itself and keep going.
 
+**In four days of real work: 19,695 actions judged, 143 held (0.7%), 624 corrections sent to the agent. After a "done" with no test behind it, the agent ran one 74% of the time.** [Field report and the script that produced it.](eval/reports/2026-09-24-field-usage/)
+
 ![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
 ## Install
@@ -40,7 +42,7 @@ Works without any key (offline guards: pattern list, runaway stop, sensitive-pat
 ## How intervention works
 
 1. **Read-only? Skip.** `git status`, `ls`, `read` means no request and no trace entry.
-2. **Known-dangerous pattern? Catch it locally.** Force push, `git reset --hard`, recursive `rm`, SQL `DROP` held instantly.
+2. **Known-dangerous pattern? Catch it locally.** Force push, `git reset --hard`, recursive `rm`, SQL `DROP` held instantly. An agent deleting temp-directory scratch it created in the same session is not held (macOS and Windows).
 3. **Needs judgment?** Warden evaluates the action in context.
 4. **Steer or hold.** Most issues go back to the agent so it can correct itself. Irreversible actions can be stopped before they run.
 
@@ -52,6 +54,7 @@ In the default `steer` mode, Warden talks to the agent rather than interrupting 
 - **Custom policies**: command, path, and arming rules for your own workflow.
 - **Context saver** trims oversized tool output while keeping the full result retrievable.
 - **Multiple judgment backends**: TypeSafe by default, with OpenRouter support.
+- **Honest about being off**: when judgments cannot run (no consent, no key, a rejected key, budget spent) Warden says so once, with the fix. A failing backend is paused after repeated errors instead of costing a timeout per action.
 - **Full traceability**: inspect what Warden saw, decided, and told the agent.
 - **Desktop alerts** for events that need you.
 
@@ -72,6 +75,19 @@ Jev judges every write and quotes violations back. Rules can be things no linter
 
 ## Does it actually help?
 
+### In daily use
+
+Four days of the maintainer's own work, 397 sessions ([report](eval/reports/2026-09-24-field-usage/), [raw numbers](eval/reports/2026-09-24-field-usage/usage.json), `scripts/field-usage.mjs` to run it on your own logs):
+
+- **Done-check:** 47 nudges; in 35 the agent then ran a test or build.
+- **Holds:** 143 of 19,695 actions. Of the 44 with a recorded outcome, the agent took a safer route 33 times.
+- **Rules:** 195 corrections naming a project rule, including a process wait with no timeout and a home path in a public test fixture.
+- **Context:** about 123,000 tokens of oversized output trimmed in the traced sessions, and no agent needed the full output back.
+
+The report also lists what was noise that week (scratch deletes, credential notices on source code, two over-broad rules) and what changed because of it.
+
+### In benchmarks
+
 In 150 paired agent runs, the control setup violated the tested project rule **6 times**. With Warden: **0**.
 
 An overnight stability run covered **13,952 guard cases across 109 cycles** with no score drift.
@@ -86,7 +102,7 @@ These are project-maintained benchmarks, not universal claims. Raw reports and r
 
 ## Privacy
 
-Depending on the configured judgment backend, Warden sends to your provider: a redacted summary of each guarded call, the agent's plan, up to eight redacted prior messages, and redacted tool-output samples. Secrets are stripped before anything leaves the machine. [Full details.](docs/data-handling.md) Security work — pentesting, incident response, CTF — has its own configuration recipe for keeping samples local and for the friction that credentials and lab setups cause: [Recipe: security work](docs/configuration.md#recipe-security-work).
+Depending on the configured judgment backend, Warden sends to your provider: a redacted summary of each guarded call, the agent's plan, up to eight redacted prior messages, the task spine (your first request in the thread and up to four earlier ones, capped at 1,200 characters), and redacted tool-output samples. Secrets are stripped before anything leaves the machine. [Full details.](docs/data-handling.md) Security work — pentesting, incident response, CTF — has its own configuration recipe for keeping samples local and for the friction that credentials and lab setups cause: [Recipe: security work](docs/configuration.md#recipe-security-work).
 
 ## Documentation
 

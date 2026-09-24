@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Docs
+
+- Field usage report for 2026-09-21 to 2026-09-24 (`eval/reports/2026-09-24-field-usage/`) and `scripts/field-usage.mjs`, which reads Pi session logs and the holds database and prints aggregate counts only. README leads with the field numbers, names the task spine under Privacy, and notes the scratch-delete exemption and the judgments-off notice.
 
 ## 0.47.0
 
