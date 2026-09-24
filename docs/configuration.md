@@ -68,7 +68,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `enabled` | Master switch for the extension. |
 | `typesafe` | Consent to send requests to TypeSafe. Set by `/warden enable`; only the user file or `PI_WARDEN_ENABLED=1` can grant it. |
 | `typesafeBackend` | The judgment service: `"typesafe"` (default) or `"openrouter"`. User file only — a project must not redirect judgments. |
-| `mode` | `steer` (hold goes back to the agent), `confirm` (dialog for you), `advise` (never holds). |
+| `mode` | `steer` (hold goes back to the agent), `confirm` (dialog for you), `advise` (never holds). User file only; a project's `.pi/pi-warden.json` cannot change it, by design. |
 | `timeoutMs` | Per-request timeout. On timeout the call is allowed with a warning when `action.failOpen` is true. |
 | `maxRequests` | Per-session request budget. When spent, pi-warden says so once and continues with offline checks. |
 | `action.tools` | Tools the action guard inspects. Add your own shell-like tools here. |

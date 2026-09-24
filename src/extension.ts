@@ -1902,8 +1902,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const opened = togglePanel(ctx.ui as unknown as PanelUi, config);
           // RPC mode has a UI but settles custom() without building the component, so the sidebar never shows. hasUI
           // is true there; only the host not asking for the component tells the two apart. Not awaited: in the
-          // terminal `closed` settles when the user closes the sidebar.
-          const fallback = () => { if (opened && !opened.built()) ctx.ui.notify(traceText(), "info"); };
+          // terminal `closed` settles when the user closes the sidebar. A host that asked for the trace file has no
+          // terminal UI, so it gets the text whether or not the component was built.
+          const fallback = () => { if (opened && (traceDir() || !opened.built())) ctx.ui.notify(traceText(), "info"); };
           void opened?.closed.then(fallback, fallback);
           return;
         }
