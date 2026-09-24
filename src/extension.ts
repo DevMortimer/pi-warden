@@ -23,6 +23,8 @@ import type { RunEvidence } from "./done.js";
 import { createdScratch, evaluateAction, formatVerdictTokens, higher, hostPaths, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
+import { shellWrites } from "./shell-writes.js";
+import type { ShellWrite } from "./shell-writes.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import { initSchema, recordHold, recordOutcome, toHoldRecord, holdStats, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
@@ -33,6 +35,7 @@ import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js
 import type { SearchTool } from "./recall.js";
 import { maskSecrets, redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
+import type { RulesVerdict } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
 import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from "./audit.js";
@@ -60,9 +63,9 @@ import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName, TraceEntry } from "./trace.js";
 import { TraceFile, judgmentsState, traceDir, traceFilePath } from "./trace-file.js";
-import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
+import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, rulesTokens, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -1165,10 +1168,16 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
     }
     // The rules request carries the written content and the rule text, so it goes out beside the action request, not inside it.
-    const rulesCheck = config.rules.enabled && (event.toolName === "write" || event.toolName === "edit")
-      ? rulesGuard.inspect(call, siblings, { cwd: ctx.cwd, config: config.rules, judge, timeoutMs: config.timeoutMs, signal: ctx.signal })
+    const rulesOptions = { cwd: ctx.cwd, config: config.rules, judge, timeoutMs: config.timeoutMs, signal: ctx.signal };
+    // A bash command that writes literal content to a file is judged as a `write` of that content, before it runs, so a
+    // heredoc gets the checks a `write` gets.
+    const shell = event.toolName === "bash" && typeof (event.input as Record<string, unknown>).command === "string"
+      ? shellWrites((event.input as Record<string, unknown>).command as string, { home: homedir() })
       : undefined;
-    rulesCheck?.catch(() => undefined);
+    const rulesChecks: Array<{ check: Promise<RulesVerdict>; shellWrite?: ShellWrite }> = !config.rules.enabled ? []
+      : event.toolName === "write" || event.toolName === "edit" ? [{ check: rulesGuard.inspect(call, siblings, rulesOptions) }]
+      : (shell?.writes ?? []).map((shellWrite, index) => ({ shellWrite, check: rulesGuard.inspect({ id: `${event.toolCallId}#write${index}`, tool: "write", input: { path: shellWrite.path, content: shellWrite.content } }, siblings, rulesOptions) }));
+    for (const { check } of rulesChecks) check.catch(() => undefined);
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx, isVisibleAction(event.toolName, event.input as Record<string, unknown>)), spine: taskSpine(ctx.sessionManager.getBranch()) },
@@ -1295,7 +1304,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (verdict.slopSymptoms?.length && verdict.slopReasons) {
       stats.slop++;
       const symptoms = verdict.slopSymptoms;
-      const where = verdict.summary.path ?? event.toolName;
+      const where = verdict.summary.path ?? (shell?.writes.length ? shell.writes.map(write => write.path).join(", ") : event.toolName);
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · slop · ${where}: ${verdict.slopReasons.join("; ")}`, "warning");
       contentNotes.push(proceeds => {
         if (!proceeds) return undefined;
@@ -1303,8 +1312,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         return { guard: "action", text: slopSteer(where, symptoms, slopCounts) };
       });
     }
-    if (rulesCheck) {
-      const rules = await rulesCheck;
+    for (const { check, shellWrite } of rulesChecks) {
+      const rules = await check;
+      // The trace names the shell form, and an append as an append: only the appended text was judged.
+      const shellNote = shellWrite ? [`from bash: ${shellWrite.via} ${shellWrite.append ? "appended to (only the appended text is judged)" : "written to"} ${rules.path}`] : [];
+      const rulesLine = shellWrite ? renderTemplate(config.widget.rules, { ...rulesTokens(rules), tool: `bash ${shellWrite.append ? "append" : "write"}` }) : formatRules(rules, config.widget.rules);
       if (rules.source !== "skipped") {
         stats.ruleChecks++;
         if (rules.error) noteError(ctx, rules.error, rules.errorCode);
@@ -1318,14 +1330,20 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }
         contentNotes.push(proceeds => {
           const told = proceeds && rules.findings.length ? rulesSteer(rules, rulesGuard.count(rules)) : undefined;
-          const details = rulesDetails(rules, told);
+          const details = [...shellNote, ...rulesDetails(rules, told)];
           if (!proceeds && rules.findings.length) details.push("agent not told: the write was held");
-          record(ctx, config, "rules", formatRules(rules, config.widget.rules), details);
+          record(ctx, config, "rules", rulesLine, details);
           return told ? { guard: "rules", text: told } : undefined;
         });
       } else {
-        record(ctx, config, "rules", formatRules(rules, config.widget.rules), [`${rules.tool} ${rules.path}: ${rules.skippedReason}`]);
+        record(ctx, config, "rules", rulesLine, [...shellNote, `${rules.tool} ${rules.path}: ${rules.skippedReason}`]);
       }
+    }
+    if (config.rules.enabled && shell?.skips.length) {
+      const paths = shell.skips.flatMap(skip => (skip.path ? [skip.path] : []));
+      record(ctx, config, "rules", renderTemplate(config.widget.rules, { guard: "rules", tool: "bash", path: paths.length ? paths.join(", ") : "file change", status: "skipped" }), shell.skips.map(skip => `shell write not judged${skip.path ? ` (${skip.path})` : ""}: ${skip.reason}`));
+    }
+    if (config.rules.enabled && (event.toolName === "write" || event.toolName === "edit")) {
       const hits = rulesGuard.notesFor(verdict.summary.location === "inside_project" ? verdict.summary.path : undefined, config.rules.sensitivePaths);
       if (hits.length && verdict.summary.path) {
         stats.pathNotes++;
