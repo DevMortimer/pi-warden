@@ -1,11 +1,14 @@
 /**
  * Standing preferences: corrections the user repeated in earlier sessions of the same project. Code only, no Jev
- * request, no model call. Pi keeps each project's sessions as JSONL files in one directory; the scan reads the newest of
- * them, keeps the imperative clauses of messages a human typed, groups near-duplicates, and keeps the groups that span
- * two or more sessions. Nothing is written anywhere.
+ * request, no model call. Pi keeps each working directory's sessions as JSONL files in one directory; the scan reads the
+ * newest sessions of the project's directory and of the directories whose sessions ran in another worktree of the same
+ * repository, keeps the imperative clauses of messages a human typed, groups near-duplicates, and keeps the groups that
+ * span two or more sessions. Nothing is written anywhere.
  */
-import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { open, readdir, readFile, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { redact } from "./redact.js";
 
 /**
@@ -19,6 +22,17 @@ export const MAX_PREFS = 10;
 export const CLAUSE_CHARS = 160;
 export const MESSAGE_CHARS = 600;
 export const SIMILARITY = 0.6;
+/**
+ * The same preference in other words ("don't spawn subagents", "do the review yourself, no subagents") shares its
+ * subject word and little else. A word in fewer than RARE_SHARE of the user's typed messages is a subject; two clauses
+ * that share one, with at least RARE_OVERLAP of their other content words in common, are one preference. On real data,
+ * a subject like "subagent" sat in 1 to 2% of messages and "commit" near 5%, so the share alone would merge
+ * "commit and push" with "commit and bump the version"; the overlap floor keeps them apart.
+ */
+export const RARE_SHARE = 0.05;
+export const RARE_OVERLAP = 0.3;
+/** Reading stops after this long; the newest sessions come first, so a slow disk loses only the oldest. */
+export const SCAN_BUDGET_MS = 250;
 /** Longer user messages are pasted orders, reports, or logs; a correction typed by hand is short. */
 const HUMAN_MAX_CHARS = 2000;
 /** Buffer search instead of parsing every line: user messages are a small share of a session file's bytes. */
@@ -40,10 +54,22 @@ export interface StandingPref {
   lastAt: number;
 }
 
+/** How often each word appears in the user's typed messages: the yardstick for a rare word. */
+export interface WordCounts {
+  messages: number;
+  words: Map<string, number>;
+}
+
+export function emptyWordCounts(): WordCounts {
+  return { messages: 0, words: new Map() };
+}
+
 export interface PrefsScan {
   prefs: StandingPref[];
   /** Session files read. */
   scanned: number;
+  /** Session directories searched: this worktree's and those of the repository's other worktrees. */
+  directories: number;
   ms: number;
 }
 
@@ -52,15 +78,26 @@ export interface ScanOptions {
   dir: string;
   /** The current session file; it is not an earlier session. */
   exclude?: string | undefined;
+  /** The session's working directory. Inside a git repository, sessions of its other worktrees are read too. */
+  cwd?: string | undefined;
   maxSessions?: number;
   maxAgeDays?: number;
   now?: number;
+  budgetMs?: number;
 }
+
+/** "From Lead agent:" or "Heads up from the Planner:": another agent's message delivered as a user turn. */
+const SENDER_LINE = /^[^\n]{0,40}\b[Ff]rom (?:the )?[A-Z][\w-]*(?: [\w-]+)?:/;
+/** "Added by the owner:", "Owner change:": an agent passing the user's words on; the user said them once, elsewhere. */
+const ON_BEHALF = /\b(?:by|from) the owner\b|^owner\b[^\n:]{0,30}:/im;
+/** `PROJECT: …` / `BRANCH: …` field lines: the header block of an order or report. */
+const HEADER_FIELD = /^\W*[A-Z][A-Z']{2,}(?: [A-Z']+)*:\s/gm;
 
 /**
  * A message a person typed, not one relayed into the prompt: a skill block or tagged paste (`<name ...>`), a document
- * with markdown headings, a report whose first line carries `FIELD:` labels or `·` separators, or anything longer
- * than a hand-typed correction.
+ * with markdown headings, an order or report with a header block of `FIELD:` lines or a first line with `FIELD:`
+ * labels or `·` separators, a message from another agent or passed on for the user, or anything longer than a
+ * hand-typed correction.
  */
 export function isHumanTyped(text: string): boolean {
   const trimmed = text.trim();
@@ -70,6 +107,8 @@ export function isHumanTyped(text: string): boolean {
   if (/<([a-z][\w-]*)[^>]*>[\s\S]*<\/\1>/i.test(trimmed)) return false;
   const first = trimmed.split("\n", 1)[0]!;
   if (/\b[A-Z]{2,}:\s/.test(first) || /\s·\s/.test(first)) return false;
+  if (SENDER_LINE.test(first) || ON_BEHALF.test(trimmed)) return false;
+  if ((trimmed.match(HEADER_FIELD) ?? []).length >= 2) return false;
   return true;
 }
 
@@ -98,9 +137,12 @@ const REPEATED = new RegExp(String.raw`\bi\s+(?:said|told\s+you)\b[,:]?\s+(?:to\
  */
 const NOT_A_PREFERENCE = /^(?:worry|mind|panic|like|know|think|see|care|get|understand|remember|want|need|have|feel|recall)\b|^(?!always\b)(?:[a-z]+[^s\W]s|[a-z]+[^e\W]ed)\b/i;
 
-/** Two content words at least: "don't order" or "never main" is a fragment, not a preference. */
+/** "Don't commit yet", "never mind the tests for now": a hold on this task, lifted later, not a standing preference. */
+const TEMPORARY = /\b(?:yet|for\s+now|right\s+now|today|this\s+time|at\s+the\s+moment)\b/i;
+
+/** Two content words at least ("don't order" or "never main" is a fragment), and not a temporary hold. */
 function substantive(clause: string): boolean {
-  return tokens(clause).filter(word => word !== "not").length >= 2;
+  return !TEMPORARY.test(clause) && tokens(clause).filter(word => word !== "not").length >= 2;
 }
 
 function sentences(text: string): string[] {
@@ -142,6 +184,8 @@ const STOP_WORDS = new Set([
   "very", "really", "always", "ever", "next", "time", "now", "anymore", "yourself", "itself", "them", "they",
   // Generic verbs: "don't use the cache", "don't run the cache", and "don't let it make a cache" are one preference.
   "use", "run", "let", "make", "get",
+  // Filler: rare enough to pass for a subject word, and says nothing about one.
+  "stuff", "thing", "anything", "everything", "something", "nothing", "though", "first", "actually", "even",
 ]);
 const NEGATION = /^(?:don['’]?t|do\s+not|never|stop|no|not)\b/i;
 
@@ -168,30 +212,46 @@ export function jaccard(a: readonly string[], b: readonly string[]): number {
 }
 
 interface Group {
-  tokens: string[];
+  members: string[][];
+  negated: boolean;
   text: string;
   sessions: Set<string>;
   lastAt: number;
 }
 
 /**
- * Near-duplicate clauses form one group (token-set Jaccard at or above SIMILARITY with the group's newest wording).
- * A group seen in MIN_SESSIONS or more distinct sessions is a standing preference; the list is ranked by session count,
- * then recency.
+ * Two clauses of the same polarity are one preference when their words mostly match (Jaccard at or above SIMILARITY),
+ * or when they share a rare word and RARE_OVERLAP of their content words. Without counts, the clauses themselves are
+ * the yardstick.
  */
-export function groupPreferences(candidates: readonly PrefCandidate[], minSessions = MIN_SESSIONS, max = MAX_PREFS): StandingPref[] {
+function samePreference(a: readonly string[], b: readonly string[], rare: (word: string) => boolean): boolean {
+  if (jaccard(a, b) >= SIMILARITY) return true;
+  const left = a.filter(word => word !== "not");
+  const right = b.filter(word => word !== "not");
+  return left.some(word => rare(word) && right.includes(word)) && jaccard(left, right) >= RARE_OVERLAP;
+}
+
+/**
+ * Clauses that are the same preference as any member of a group join it; opposite polarity never does, since "never X"
+ * and "always X" share most words. A group seen in MIN_SESSIONS or more distinct sessions is a standing preference;
+ * the list is ranked by session count, then recency.
+ */
+export function groupPreferences(candidates: readonly PrefCandidate[], counts?: WordCounts, minSessions = MIN_SESSIONS, max = MAX_PREFS): StandingPref[] {
+  const yardstick = counts?.messages ? counts : emptyWordCounts();
+  if (!counts?.messages) for (const candidate of candidates) countWords(yardstick, tokens(candidate.clause));
+  const rare = (word: string) => (yardstick.words.get(word) ?? 0) < RARE_SHARE * yardstick.messages;
   const groups: Group[] = [];
   for (const candidate of [...candidates].sort((a, b) => b.at - a.at)) {
     const words = tokens(candidate.clause);
     if (!words.length) continue;
     const negated = words.includes("not");
-    // "never X" and "always X" share most words; opposite polarity is never the same preference.
-    const group = groups.find(existing => existing.tokens.includes("not") === negated && jaccard(existing.tokens, words) >= SIMILARITY);
+    const group = groups.find(existing => existing.negated === negated && existing.members.some(member => samePreference(member, words, rare)));
     if (group) {
+      group.members.push(words);
       group.sessions.add(candidate.session);
       group.lastAt = Math.max(group.lastAt, candidate.at);
     } else {
-      groups.push({ tokens: words, text: candidate.clause, sessions: new Set([candidate.session]), lastAt: candidate.at });
+      groups.push({ members: [words], negated, text: candidate.clause, sessions: new Set([candidate.session]), lastAt: candidate.at });
     }
   }
   return groups
@@ -201,14 +261,22 @@ export function groupPreferences(candidates: readonly PrefCandidate[], minSessio
     .map(group => ({ text: group.text, sessions: group.sessions.size, lastAt: group.lastAt }));
 }
 
+function countWords(counts: WordCounts, words: readonly string[]): void {
+  counts.messages++;
+  for (const word of new Set(words)) counts.words.set(word, (counts.words.get(word) ?? 0) + 1);
+}
+
 function messageText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content.filter((part): part is { type: "text"; text: string } => part?.type === "text" && typeof part.text === "string").map(part => part.text).join("\n");
 }
 
-/** Preference candidates in one session file's user messages. Only `message` entries with role `user` are read. */
-export function candidatesInSession(data: Buffer, session: string, fallbackAt: number): PrefCandidate[] {
+/**
+ * Preference candidates in one session file's user messages. Only `message` entries with role `user` are read. Every
+ * typed message also adds its words to `counts`, when given.
+ */
+export function candidatesInSession(data: Buffer, session: string, fallbackAt: number, counts?: WordCounts): PrefCandidate[] {
   const found: PrefCandidate[] = [];
   let from = 0;
   for (;;) {
@@ -228,41 +296,106 @@ export function candidatesInSession(data: Buffer, session: string, fallbackAt: n
     if (entry.type !== "message" || entry.message?.role !== "user") continue;
     const parsed = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
     const at = Number.isFinite(parsed) ? parsed : fallbackAt;
-    for (const clause of extractPreferences(messageText(entry.message.content))) found.push({ clause, session, at });
+    const text = messageText(entry.message.content);
+    if (counts && isHumanTyped(text)) countWords(counts, tokens(text));
+    for (const clause of extractPreferences(text)) found.push({ clause, session, at });
   }
   return found;
 }
 
-/** Reads the newest earlier sessions of this project (at most maxSessions, none older than maxAgeDays). Read-only. */
+/** Worktree roots of the repository that holds `cwd`, from one `git worktree list`. */
+export function worktreeRoots(cwd: string, timeoutMs = 2000): Promise<string[]> {
+  return new Promise(resolve => {
+    execFile("git", ["-C", cwd, "worktree", "list", "--porcelain"], { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      // Not a repository, or no git on this machine: the project is its own session directory only.
+      if (error) resolve([]);
+      else resolve(stdout.split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice("worktree ".length)));
+    });
+  });
+}
+
+/** True when `cwd` is a worktree root or a directory inside one that is not a nested repository of its own. */
+export function inWorktree(cwd: string, roots: readonly string[]): boolean {
+  return roots.some(root => {
+    const path = relative(root, cwd);
+    if (path === "") return true;
+    if (path.startsWith("..") || isAbsolute(path)) return false;
+    for (let dir = cwd; dir !== root && dir !== dirname(dir); dir = dirname(dir)) if (existsSync(join(dir, ".git"))) return false;
+    return true;
+  });
+}
+
+/** The `cwd` of a session directory, from the header line of one of its files. */
+async function sessionCwd(dir: string): Promise<string | undefined> {
+  const names = (await readdir(dir).catch(() => [] as string[])).filter(name => name.endsWith(".jsonl"));
+  for (const name of names.slice(0, 3)) {
+    const file = await open(join(dir, name), "r").catch(() => undefined);
+    if (!file) continue;
+    try {
+      const { buffer, bytesRead } = await file.read(Buffer.alloc(4096), 0, 4096, 0);
+      const header = JSON.parse(buffer.toString("utf8", 0, bytesRead).split("\n", 1)[0]!) as { type?: unknown; cwd?: unknown };
+      if (header.type === "session" && typeof header.cwd === "string") return header.cwd;
+    } catch {
+      // A header cut at 4 KB or an empty file: try the next file of the directory.
+      continue;
+    } finally {
+      await file.close();
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Pi files sessions by working directory, so each worktree of a repository has its own session directory. The sibling
+ * directories whose sessions ran in a worktree of the same repository belong to the project too.
+ */
+export async function projectSessionDirs(dir: string, cwd: string | undefined): Promise<string[]> {
+  const roots = cwd ? await worktreeRoots(cwd) : [];
+  if (!roots.length) return [dir];
+  const parent = dirname(dir);
+  const siblings = (await readdir(parent, { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory() && join(parent, entry.name) !== dir);
+  const found = await Promise.all(siblings.map(async entry => {
+    const path = join(parent, entry.name);
+    const where = await sessionCwd(path);
+    return where && inWorktree(where, roots) ? path : undefined;
+  }));
+  return [dir, ...found.filter((path): path is string => path !== undefined)];
+}
+
+/**
+ * Reads the newest earlier sessions of this project and its worktrees (at most maxSessions, none older than
+ * maxAgeDays). Read-only.
+ */
 export async function scanPreferences(options: ScanOptions): Promise<PrefsScan> {
   const started = performance.now();
   const now = options.now ?? Date.now();
   const oldest = now - (options.maxAgeDays ?? MAX_AGE_DAYS) * 86_400_000;
-  let names: string[];
-  try {
-    names = (await readdir(options.dir)).filter(name => name.endsWith(".jsonl"));
-  } catch {
-    // No session directory yet (a first session, or an in-memory session): no earlier sessions to learn from.
-    return { prefs: [], scanned: 0, ms: performance.now() - started };
-  }
   const exclude = options.exclude ? basename(options.exclude) : undefined;
+  const directories = await projectSessionDirs(options.dir, options.cwd);
   const files: Array<{ path: string; mtime: number }> = [];
-  for (const name of names) {
-    if (name === exclude) continue;
-    const path = join(options.dir, name);
-    const info = await stat(path).catch(() => undefined);
-    if (info?.isFile() && info.mtimeMs >= oldest) files.push({ path, mtime: info.mtimeMs });
+  for (const dir of directories) {
+    // No session directory yet (a first session, or an in-memory session): nothing earlier to learn from there.
+    const names = (await readdir(dir).catch(() => [] as string[])).filter(name => name.endsWith(".jsonl") && name !== exclude);
+    const infos = await Promise.all(names.map(async name => {
+      const path = join(dir, name);
+      const info = await stat(path).catch(() => undefined);
+      return info?.isFile() && info.mtimeMs >= oldest ? { path, mtime: info.mtimeMs } : undefined;
+    }));
+    for (const info of infos) if (info) files.push(info);
   }
   files.sort((a, b) => b.mtime - a.mtime);
   const candidates: PrefCandidate[] = [];
+  const counts = emptyWordCounts();
   let scanned = 0;
+  const deadline = started + (options.budgetMs ?? SCAN_BUDGET_MS);
   for (const file of files.slice(0, options.maxSessions ?? MAX_SESSIONS)) {
+    if (performance.now() > deadline) break;
     const data = await readFile(file.path).catch(() => undefined);
     if (!data) continue;
     scanned++;
-    candidates.push(...candidatesInSession(data, basename(file.path), file.mtime));
+    candidates.push(...candidatesInSession(data, basename(file.path), file.mtime, counts));
   }
-  return { prefs: groupPreferences(candidates), scanned, ms: performance.now() - started };
+  return { prefs: groupPreferences(candidates, counts), scanned, directories: directories.length, ms: performance.now() - started };
 }
 
 const day = (at: number) => new Date(at).toISOString().slice(0, 10);
@@ -273,7 +406,7 @@ export function formatPrefs(scan: PrefsScan): string {
     return `No standing preferences: nothing was repeated in ${MIN_SESSIONS} or more of the last ${scan.scanned} session${scan.scanned === 1 ? "" : "s"} of this project.`;
   }
   return [
-    `Standing preferences (repeated in ${MIN_SESSIONS}+ of the last ${scan.scanned} sessions of this project):`,
+    `Standing preferences (repeated in ${MIN_SESSIONS}+ of the last ${scan.scanned} sessions of this project${scan.directories > 1 ? ` and its worktrees` : ""}):`,
     ...scan.prefs.map((pref, index) => `${index + 1}. ${pref.text} (${pref.sessions} sessions, last ${day(pref.lastAt)})`),
     PREFS_HINT,
   ].join("\n");

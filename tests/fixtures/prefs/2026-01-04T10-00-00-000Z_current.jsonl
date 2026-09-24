@@ -1,2 +1,2 @@
 {"type":"session","version":3,"id":"current","timestamp":"2026-01-04T10:00:00.000Z","cwd":"/project"}
-{"type":"message","id":"d1","parentId":null,"timestamp":"2026-01-04T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Always run the linter first please."}],"timestamp":0}}
+{"type":"message","id":"d1","parentId":null,"timestamp":"2026-01-04T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Always run the linter before pushing please."}],"timestamp":0}}

@@ -402,7 +402,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
     const dir = typeof manager.getSessionDir === "function" ? manager.getSessionDir() : undefined;
     const exclude = typeof manager.getSessionFile === "function" ? manager.getSessionFile() : undefined;
-    return prefsScan = dir ? scanPreferences({ dir, exclude }) : Promise.resolve({ prefs: [], scanned: 0, ms: 0 });
+    return prefsScan = dir ? scanPreferences({ dir, exclude, cwd: ctx.cwd }) : Promise.resolve({ prefs: [], scanned: 0, directories: 0, ms: 0 });
   };
 
   // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
