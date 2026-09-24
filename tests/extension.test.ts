@@ -1655,6 +1655,33 @@ test("rules: a heredoc or echo write in bash is judged as a write before the cal
   }
 });
 
+test("rules: appends to one file in one bash call are one rules request; past five files the rest are skipped", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, ...STACK_BAR }));
+  const rulesFile = join(temporary, "pi-warden.md");
+  try {
+    await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
+    nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step" };
+    requests.length = 0;
+    const appends = Array.from({ length: 40 }, (_, index) => `echo 'line ${index}' >> notes.md`).join("\n");
+    await toolCall("bash", { command: appends });
+    const rules = requests.filter(request => "rule_no-console-statements" in request.questions);
+    assert.equal(rules.length, 1, "40 appends to one file are one rules request");
+    assert.equal(rules[0]!.state.content, Array.from({ length: 40 }, (_, index) => `line ${index}\n`).join(""));
+
+    requests.length = 0;
+    const files = Array.from({ length: 7 }, (_, index) => `echo 'part ${index}' > part${index}.md`).join("\n");
+    await toolCall("bash", { command: files });
+    const capped = requests.filter(request => "rule_no-console-statements" in request.questions);
+    assert.deepEqual(capped.map(request => request.state.path), ["part0.md", "part1.md", "part2.md", "part3.md", "part4.md"]);
+    await runCommand("trace", context({ hasUI: false }));
+    const trace = sentMessages.at(-1)!.message.content;
+    assert.match(trace, /shell write not judged \(part5\.md\): only the first 5 files a command writes are judged/);
+    assert.match(trace, /shell write not judged \(part6\.md\): only the first 5 files a command writes are judged/);
+  } finally {
+    await rm(rulesFile, { force: true });
+  }
+});
+
 test("a held write gets no rules or slop steer; the approved retry is judged again and gets its own", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");

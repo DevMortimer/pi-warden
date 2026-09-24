@@ -8,7 +8,7 @@ import type { Judge } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
 import { buildRequest, describeAction } from "../src/guard.js";
 import { RulesGuard } from "../src/rules.js";
-import { shellWrites } from "../src/shell-writes.js";
+import { mergeWrites, shellWrites } from "../src/shell-writes.js";
 
 const only = (command: string) => {
   const scan = shellWrites(command, { home: "/home/me" });
@@ -114,6 +114,44 @@ test("a program's output or a file's content sent to a file is neither a write n
 test("truncation and descriptor-only commands are neither writes nor skips", () => {
   assert.deepEqual(shellWrites("> empty.txt; : > other.txt"), { writes: [], skips: [] });
   assert.deepEqual(shellWrites("ls -la && npm test"), { writes: [], skips: [] });
+});
+
+test("exec > file sends the later commands' output to the file", () => {
+  assert.deepEqual(only("exec > f; echo x"), { path: "f", content: "x\n", append: false, via: "echo" });
+  assert.deepEqual(shellWrites("exec > f\necho a\nnpm test\necho b").writes.map(write => [write.content, write.append]), [["a\n", false], ["b\n", true]], "the file stays open, so later text appends");
+  assert.deepEqual(shellWrites("exec > /dev/null; echo x"), { writes: [], skips: [] });
+  assert.deepEqual(only("exec > f; echo x > g"), { path: "g", content: "x\n", append: false, via: "echo" }, "an own redirect wins");
+});
+
+test("a redirected { ...; } or ( ... ) group writes the text its commands print", () => {
+  assert.deepEqual(only("{ echo x; } > f"), { path: "f", content: "x\n", append: false, via: "echo" });
+  assert.deepEqual(only("(echo x) > f"), { path: "f", content: "x\n", append: false, via: "echo" });
+  assert.deepEqual(only("{ echo a; printf 'b\\n'; } >> f; echo c"), { path: "f", content: "a\nb\n", append: true, via: "echo" });
+  assert.deepEqual(shellWrites("{ echo a; echo b > g; } > f").writes.map(write => [write.path, write.content]), [["g", "b\n"], ["f", "a\n"]], "a command with its own redirect prints nothing into the group");
+  skipped("(echo x; npm test) > f", /also runs a program/);
+  assert.deepEqual(shellWrites("(cd app && npm test) > log"), { writes: [], skips: [] }, "a group of programs is output");
+});
+
+test("env before the command is a wrapper", () => {
+  assert.deepEqual(only("env echo x > f"), { path: "f", content: "x\n", append: false, via: "echo" });
+  assert.deepEqual(only("env -i -u HOME A=1 echo x > f"), { path: "f", content: "x\n", append: false, via: "echo" });
+});
+
+test("a /dev/.. target is normalized before the device test", () => {
+  assert.deepEqual(only("echo x > /dev/../tmp/p/f"), { path: "/dev/../tmp/p/f", content: "x\n", append: false, via: "echo" });
+  assert.deepEqual(shellWrites("echo x > //dev/null"), { writes: [], skips: [] });
+});
+
+test("a partly quoted heredoc delimiter ends at the unquoted word and keeps the body literal", () => {
+  assert.deepEqual(only("cat > f <<E\"OF\"\n$HOME\nEOF\necho done"), { path: "f", content: "$HOME\n", append: false, via: "heredoc" });
+  assert.deepEqual(only("cat > f <<'E'OF\na\nEOF"), { path: "f", content: "a\n", append: false, via: "heredoc" });
+  assert.deepEqual(only("cat > f <<E\\OF\n$x\nEOF"), { path: "f", content: "$x\n", append: false, via: "heredoc" });
+});
+
+test("mergeWrites joins appends by path and lets a truncating write replace", () => {
+  const w = (path: string, content: string, append: boolean) => ({ path, content, append, via: "echo" as const });
+  assert.deepEqual(mergeWrites([w("a", "1\n", true), w("b", "x\n", false), w("a", "2\n", true)]), [w("a", "1\n2\n", true), w("b", "x\n", false)]);
+  assert.deepEqual(mergeWrites([w("a", "1\n", true), w("a", "2\n", false), w("a", "3\n", true)]), [w("a", "2\n3\n", false)]);
 });
 
 test("the extraction is deterministic", () => {
