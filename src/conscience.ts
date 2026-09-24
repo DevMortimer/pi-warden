@@ -8,6 +8,7 @@ import type { Skill } from "@earendil-works/pi-coding-agent";
 import { choice, noul, score } from "pi-typesafe";
 import type { Questions } from "pi-typesafe";
 import { createHash } from "node:crypto";
+import type { JudgmentsOffReason } from "./backend.js";
 import type { ConscienceConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./shape.js";
@@ -81,6 +82,8 @@ export interface AssessmentResult {
 export type SkipReason =
   | "disabled"
   | "no_consent"
+  | "no_key"
+  | "key_rejected"
   | "no_match"
   | "already_supplied"
   | "awaiting_user"
@@ -374,6 +377,8 @@ export interface Judge {
 
 export interface ConscienceDeps {
   judge: Judge | undefined;
+  /** Why `judge` is undefined, as the extension computed it; the skip reason. `no_consent` when not given. */
+  judgmentsOff?: JudgmentsOffReason | undefined;
   config: ConscienceConfig;
   /** Shared timeout from WardenConfig. The effective deadline is min(conscience.timeoutMs, sharedTimeoutMs). */
   sharedTimeoutMs: number;
@@ -441,7 +446,7 @@ export async function assess(
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: "disabled" };
   }
   if (!judge) {
-    return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: "no_consent" };
+    return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: deps.judgmentsOff ?? "no_consent" };
   }
 
   const { candidates, skillOverflow, toolOverflow } = eligibleCandidates(skills, tools, config, activeSkills, suppliedSkills, deps.globalIndex, deps.projectIndex);

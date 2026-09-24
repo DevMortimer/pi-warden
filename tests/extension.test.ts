@@ -682,9 +682,10 @@ test("without consent, only pattern checks run: risky warns, destructive is held
   await writeFile(configPath(), JSON.stringify({  notices: true, rules: { enabled: false }, ...STACK_BAR }));
   assert.equal(await toolCall("bash", { command: "rm -rf dist" }), undefined);
   assert.equal(networkCalls, 0);
-  assert.equal(notices.length, 1);
-  assert.match(notices[0]!.text, /rm -rf on a project path/);
-  assert.equal(notices[0]!.level, "warning");
+  assert.equal(notices.length, 2);
+  assert.equal(notices[0]!.text, "warden: Jev judgments are off (no consent). Run /warden enable.");
+  assert.match(notices[1]!.text, /rm -rf on a project path/);
+  assert.equal(notices[1]!.level, "warning");
 
   const held = await toolCall("bash", { command: "git push --force origin main" });
   assert.equal(held?.block, true, "steer mode holds without a dialog");
@@ -3330,4 +3331,146 @@ test("judge cooldown: a new session trusts the judge again", async () => {
   const asked = networkCalls;
   await toolCall("bash", { command: "npm run lint" });
   assert.ok(networkCalls > asked);
+});
+
+/** A saved 403 in pi-typesafe's auth-state record: the key in effect was rejected by the backend. */
+const rejectKey = async () => {
+  await mkdir(join(temporary, "agent", "pi-typesafe"), { recursive: true });
+  await writeFile(join(temporary, "agent", "pi-typesafe", "auth-state.json"), JSON.stringify({ lastFailure: { code: "http", status: 403, message: "rejected", at: "2026-01-01T00:00:00.000Z" } }));
+};
+const judgmentsOff = () => notices.filter(notice => notice.text.includes("Jev judgments are off")).map(notice => notice.text);
+
+test("judgments off: each reason is said once per session with its fix, and working judgments say nothing", async () => {
+  await writeFile(configPath(), JSON.stringify({ rules: { enabled: false }, ...STACK_BAR }));
+  await toolCall("bash", { command: "npm test" });
+  await toolCall("bash", { command: "npm run lint" });
+  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (no consent). Run /warden enable."], "once per session, not per call");
+
+  await grantConsent();
+  const savedTestKey = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  try {
+    notices.length = 0;
+    await sessionStart();
+    await toolCall("bash", { command: "npm test" });
+    await toolCall("bash", { command: "npm run lint" });
+    assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (no key for typesafe). Set TYPESAFE_API_KEY or run /typesafe login."]);
+  } finally {
+    process.env.TYPESAFE_API_KEY = savedTestKey;
+  }
+
+  await rejectKey();
+  notices.length = 0;
+  await sessionStart();
+  await toolCall("bash", { command: "npm test" });
+  await toolCall("bash", { command: "npm run lint" });
+  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (the key in TYPESAFE_API_KEY was rejected). Check the key, then run /warden status."]);
+  assert.ok(!judgmentsOff()[0]!.includes("offline-test-key"), "the notice never names the key");
+  assert.equal(networkCalls, 0);
+
+  await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
+  notices.length = 0;
+  await sessionStart();
+  await toolCall("bash", { command: "npm test" });
+  assert.equal(networkCalls, 1);
+  assert.deepEqual(judgmentsOff(), [], "a session with working judgments shows no notice");
+});
+
+test("judgments off: no key on OpenRouter names only its variable, since /typesafe login stores no OpenRouter key", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: "openrouter", rules: { enabled: false }, ...STACK_BAR }));
+  const savedOpenRouter = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  try {
+    await toolCall("bash", { command: "npm test" });
+    assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (no key for openrouter). Set OPENROUTER_API_KEY."]);
+    assert.equal(networkCalls, 0);
+  } finally {
+    if (savedOpenRouter !== undefined) process.env.OPENROUTER_API_KEY = savedOpenRouter;
+  }
+});
+
+test("judgments off: a rejected key saved by /typesafe login is named as that key, and the notice never shows it", async () => {
+  await grantConsent();
+  const savedTestKey = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  try {
+    await rejectKey();
+    await writeFile(join(temporary, "agent", "pi-typesafe", "auth.json"), JSON.stringify({ apiKey: "stored-test-key-0123456789" }), { mode: 0o600 });
+    await sessionStart();
+    await toolCall("bash", { command: "npm test" });
+    await toolCall("bash", { command: "npm run lint" });
+    assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (the key saved by /typesafe login was rejected). Run /typesafe login."]);
+    assert.ok(!judgmentsOff()[0]!.includes("stored-test-key"));
+    assert.equal(networkCalls, 0);
+  } finally {
+    process.env.TYPESAFE_API_KEY = savedTestKey;
+  }
+});
+
+test("judgments off: a headless session gets one status message instead of a UI notice", async () => {
+  await writeFile(configPath(), JSON.stringify({ rules: { enabled: false }, ...STACK_BAR }));
+  const headless = context({ hasUI: false });
+  await sessionStart(headless);
+  sentMessages.length = 0;
+  notices.length = 0;
+  await toolCall("bash", { command: "npm test" }, headless);
+  await toolCall("bash", { command: "npm run lint" }, headless);
+  const status = sentMessages.filter(sent => sent.message.content.includes("Jev judgments are off"));
+  assert.equal(status.length, 1);
+  assert.equal(status[0]!.message.customType, "pi-warden-status");
+  assert.equal(status[0]!.message.content, "warden: Jev judgments are off (no consent). Set PI_WARDEN_ENABLED=1.");
+  assert.equal((status[0]!.message as { display?: boolean }).display, true);
+  assert.deepEqual(judgmentsOff(), []);
+});
+
+test("judgments off: the budget keeps its own notice and adds no second message", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, maxRequests: 1, rules: { enabled: false }, ...STACK_BAR }));
+  await toolCall("bash", { command: "npm test" });
+  await toolCall("bash", { command: "npm run lint" });
+  await toolCall("bash", { command: "npm run build" });
+  assert.equal(networkCalls, 1);
+  assert.deepEqual(judgmentsOff(), []);
+});
+
+test("the trace file's session line carries the judgment state and a later change adds a judgments line", async () => {
+  const traceDir = join(temporary, "judgment-traces");
+  process.env.PI_WARDEN_TRACE_DIR = traceDir;
+  try {
+    await grantConsent();
+    await rejectKey();
+    await sessionStart();
+    await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
+    await toolCall("bash", { command: "npm test" });
+    const records = await readLog(join(traceDir, `${process.pid}.jsonl`), 3, false);
+    assert.deepEqual(records.map(record => [record.kind, record.judgments]), [["session", "off:key_rejected"], ["judgments", "on"], ["entry", undefined]]);
+
+    await rm(configPath(), { force: true });
+    await sessionStart();
+    await toolCall("bash", { command: "npm test" });
+    const next = await readLog(join(traceDir, `${process.pid}.jsonl`), 5, false);
+    assert.deepEqual(next.slice(3).map(record => [record.kind, record.judgments]), [["session", "off:no_consent"], ["entry", undefined]], "no judgments line while the state holds");
+  } finally {
+    delete process.env.PI_WARDEN_TRACE_DIR;
+  }
+});
+
+test("conscience: a rejected key traces key_rejected, and missing consent still traces no_consent", async () => {
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  await writeConscienceConfig();
+  await rejectKey();
+  sentMessages.length = 0;
+  await promptWithSkills("design a landing page", skills);
+  await runCommand("trace", context({ hasUI: false }));
+  let traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /skipReason: key_rejected/);
+  assert.ok(!traceText.includes("no_consent"));
+
+  await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
+  await writeFile(configPath(), JSON.stringify({ conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] } }, ...STACK_BAR }));
+  await sessionStart();
+  sentMessages.length = 0;
+  await promptWithSkills("design a landing page", skills);
+  await runCommand("trace", context({ hasUI: false }));
+  traceText = sentMessages.at(-1)!.message.content;
+  assert.match(traceText, /skipReason: no_consent/);
 });

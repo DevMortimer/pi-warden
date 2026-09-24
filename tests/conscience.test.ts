@@ -528,6 +528,14 @@ test("assess returns no_consent when judge is undefined", async () => {
   assert.equal(result.skipReason, "no_consent");
 });
 
+test("assess names why no judge was available when the caller says", async () => {
+  for (const reason of ["no_consent", "no_key", "key_rejected", "budget"] as const) {
+    const result = await assess("test", "", [], [], [], [], { ...defaultDeps(undefined), judgmentsOff: reason });
+    assert.equal(result.skipReason, reason);
+    assert.equal(result.requestCount, 0);
+  }
+});
+
 test("assess returns no_match when no eligible candidates", async () => {
   const result = await assess("test", "", [], [], [], [], defaultDeps(dispositionJudge("advance")));
   assert.equal(result.skipReason, "no_match");

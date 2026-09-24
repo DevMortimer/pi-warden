@@ -10,7 +10,8 @@ const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ 
 import { authState, createTypeSafe, describeAuth } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
-import { backendHost, disclosureFor, judgeOptions, keyEnvFor, resolveBackend } from "./backend.js";
+import { backendHost, disclosureFor, judgeOptions, keyEnvFor, loginStoresKey, resolveBackend } from "./backend.js";
+import type { JudgmentBackend, JudgmentsOffReason } from "./backend.js";
 import { ActionGuard } from "./action-guard.js";
 import type { ToolCallRef } from "./action-guard.js";
 import { ArmingTracker, unparseableArmingRules } from "./arming.js";
@@ -58,7 +59,7 @@ import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from ".
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
 import type { GuardName, TraceEntry } from "./trace.js";
-import { TraceFile, traceDir, traceFilePath } from "./trace-file.js";
+import { TraceFile, judgmentsState, traceDir, traceFilePath } from "./trace-file.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, SENTENCE_TEMPLATES, statusWidget, TOKEN_NAMES } from "./widget.js";
 
 export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
@@ -149,6 +150,21 @@ export function assistantPlan(ctx: ExtensionContext): string | undefined {
     if (text.trim()) return text.trim();
   }
   return undefined;
+}
+
+/**
+ * The once-per-session notice: why Jev judgments are off and what turns them on. `rejectedEnv` is the environment
+ * variable that holds a rejected key, or undefined when the rejected key is the one `/typesafe login` saved. Never
+ * names a key value or a path.
+ */
+export function judgmentsOffText(reason: Exclude<JudgmentsOffReason, "budget">, backend: JudgmentBackend, headless: boolean, rejectedEnv?: string): string {
+  switch (reason) {
+    case "no_consent": return `warden: Jev judgments are off (no consent). ${headless ? "Set PI_WARDEN_ENABLED=1." : "Run /warden enable."}`;
+    case "no_key": return `warden: Jev judgments are off (no key for ${backend}). Set ${keyEnvFor(backend)}${loginStoresKey(backend) ? " or run /typesafe login" : ""}.`;
+    case "key_rejected": return rejectedEnv
+      ? `warden: Jev judgments are off (the key in ${rejectedEnv} was rejected). Check the key, then run /warden status.`
+      : "warden: Jev judgments are off (the key saved by /typesafe login was rejected). Run /typesafe login.";
+  }
 }
 
 function activeMode(config: WardenConfig, hasUI: boolean): WardenMode {
@@ -365,11 +381,34 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     return config;
   };
   const consentGiven = (config: WardenConfig) => config.typesafe || process.env.PI_WARDEN_ENABLED === "1";
+  /** Why no judge is available, or undefined when one is. The notice, the trace file, and the conscience all use it. */
+  const judgmentsOffReason = (config: WardenConfig): JudgmentsOffReason | undefined => {
+    if (!consentGiven(config)) return "no_consent";
+    if (budgetExhausted) return "budget";
+    const auth = authState({ backend: config.typesafeBackend });
+    if (auth.usable) return undefined;
+    // No key in effect, or one whose last request came back 401 or 403.
+    return auth.source === undefined ? "no_key" : "key_rejected";
+  };
+  // Where the judgments-off notice goes: the session's UI, or a status message for a headless session.
+  let judgmentsNotify: ((text: string) => void) | undefined;
+  let judgmentsHeadless = false;
+  const judgmentsReported = new Set<JudgmentsOffReason>();
+  /** Say once per session and reason that judgments are off, and record the state in the trace file. */
+  const noteJudgments = (config: WardenConfig, reason: JudgmentsOffReason | undefined) => {
+    traceFile?.judgments(judgmentsState(reason));
+    // The budget has its own notice in noteError.
+    if (reason === undefined || reason === "budget" || judgmentsReported.has(reason)) return;
+    judgmentsReported.add(reason);
+    const auth = reason === "key_rejected" ? authState({ backend: config.typesafeBackend }) : undefined;
+    judgmentsNotify?.(judgmentsOffText(reason, config.typesafeBackend, judgmentsHeadless, auth?.kind === "environment" ? auth.keyName : undefined));
+  };
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
   /** A consent flag is not proof that judgments happen; check the key state for the chosen backend. */
   const judgeFor = (config: WardenConfig): TypeSafe | undefined => {
-    if (!consentGiven(config) || budgetExhausted) return undefined;
-    if (!authState({ backend: config.typesafeBackend }).usable) return undefined;
+    const off = judgmentsOffReason(config);
+    noteJudgments(config, off);
+    if (off) return undefined;
     judgeConfig = config;
     // Absent, exactly as with no judge configured, so no guard needs to know a cooldown exists.
     if (cooldown.active()) { stats.cooldownSkips++; return undefined; }
@@ -641,10 +680,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     unsubscribeTraceFile?.();
     unsubscribeTraceFile = undefined;
     traceFile = undefined;
+    judgmentsReported.clear();
+    judgmentsHeadless = !ctx.hasUI;
+    judgmentsNotify = text => { if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true }); };
     const dir = traceDir();
     if (dir) {
       const warn = (text: string) => { if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true }); };
-      traceFile = new TraceFile(traceFilePath(dir, sessionId), dir, { sessionId, cwd: ctx.cwd, mode: loadConfig().mode }, warn);
+      const opening = loadConfig();
+      traceFile = new TraceFile(traceFilePath(dir, sessionId), dir, { sessionId, cwd: ctx.cwd, mode: opening.mode, judgments: judgmentsState(judgmentsOffReason(opening)) }, warn);
       unsubscribeTraceFile = trace.subscribe(traceFile.listener);
     }
     arming.reset();
@@ -799,7 +842,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); judgeModel = r.model; return { answers: r.answers as Record<string, unknown> }; } } : undefined;
           const result = await assess(
             redactedPrompt, recentContext, skills, toolInfos, activeSkills, suppliedSkills,
-            { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile },
+            { judge: judgeAdapter, judgmentsOff: judgmentsOffReason(config), config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile },
             spine,
           );
           // Check generation after await

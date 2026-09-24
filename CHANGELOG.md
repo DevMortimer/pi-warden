@@ -10,6 +10,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - A recursive `rm` whose every target is scratch the agent created in this session under the OS temp directory (`mkdir`, `mktemp`, a `write`, or a temp directory a command printed and created) warns as `rm-session-scratch` instead of holding as destructive. Targets are resolved through `..` and symlinks first; a temp root, a wildcard, a variable, a substitution, `sudo` or another privilege prefix, content older than the directory it sits in, or any target that was not created this session (or was replaced since) keeps the hold. The created paths live in memory and reset on `session_start`.
 
+## 0.46.0
+
+### Added
+
+- When a guard would ask Jev but cannot, Warden says so once per session and reason, with the fix: `warden: Jev judgments are off (no consent). Run /warden enable.` (`Set PI_WARDEN_ENABLED=1.` headless), `(no key for <backend>). Set <key variable>.` (with ` or run /typesafe login` on the TypeSafe backend, the only one login stores a key for), or for a rejected key `(the key saved by /typesafe login was rejected). Run /typesafe login.` or `(the key in <key variable> was rejected). Check the key, then run /warden status.` A headless session gets a status message. A spent request budget keeps its own warning. Before this, judgments stopped silently.
+- Trace file: the `session` line has `judgments` (`on`, or `off:<reason>` with reason `no_consent`, `no_key`, `key_rejected`, or `budget`), and a `judgments` line records a later change.
+
+### Fixed
+
+- The conscience traces why no judge was available (`no_consent`, `no_key`, `key_rejected`, or `budget`). Before this, it traced `no_consent` whenever the judge was missing, also when consent was given and the saved key was rejected.
+
 ## 0.45.0
 
 ### Added
