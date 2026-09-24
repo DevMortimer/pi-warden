@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { bornAfter, buildRequest, commandFamily, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
+import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -268,6 +268,31 @@ test("session scratch: a tree past the walk budget is not scratch", async () => 
     assert.equal(bornAfter(realpathSync(base), born, { entries: 100, deadline: Date.now() - 1 }), false, "time bound");
     assert.equal(bornAfter(join(base, "missing"), born), false, "a missing root");
   } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: without birth time, mktemp beside a listing records nothing", async () => {
+  const base = await scratchBase();
+  try {
+    const existing = realpathSync(await mkdtemp(join(base, "existing-")));
+    const made = realpathSync(await mkdtemp(join(base, "tmp.")));
+    const noBirth = () => 0;
+    const listing = createdScratch("bash", { command: `mktemp -d; ls -d ${base}/*` }, `${made}\n${existing}\n`, Date.now() - 1000, [], noBirth);
+    assert.equal(listing.size, 0);
+    const scratch = new Map(listing);
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${existing}` }, cwd, { scratch })), "the pre-existing directory stays destructive");
+    assert.deepEqual([...createdScratch("bash", { command: "mktemp -d" }, `${made}\n`, Date.now() - 1000, [], noBirth).keys()], [made], "mktemp alone");
+    assert.deepEqual([...createdScratch("bash", { command: "d=$(mktemp -d) && echo \"$d\"" }, `${made}\n`, Date.now() - 1000, [], noBirth).keys()], [made], "an assignment and an echo of it");
+    assert.equal(createdScratch("bash", { command: "mktemp -d; echo done" }, `${made}\ndone\n`, Date.now() - 1000, [], noBirth).size, 0, "anything else in the command");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: mktempOnly accepts only commands that make temp paths and print them", () => {
+  assert.equal(mktempOnly("mktemp -d"), 1);
+  assert.equal(mktempOnly("mktemp -d -t probe.XXXXXX"), 1);
+  assert.equal(mktempOnly("a=$(mktemp -d); b=\"$(mktemp)\"; echo $a ${b}"), 2);
+  for (const command of ["mktemp -u", "mktemp --dry-run", "mktemp -d; ls /tmp", "a=$(mktemp -d); echo $HOME", "echo /tmp/x", "mktemp -d $TMPDIR/x.XXXX", "a=$(mktemp -d) && cp -r ~/src $a"]) {
+    assert.equal(mktempOnly(command), 0, command);
+  }
 });
 
 test("session scratch: a parent escape out of a recorded directory stays destructive", async () => {

@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
@@ -602,15 +603,16 @@ function tempPathsIn(text: string, roots: readonly string[]): string[] {
  * when it now exists as itself (not through a symlink). For a shell command, absolute temp paths printed in its output
  * also count, bounded: the first 20 such paths only, each must exist under a temp root as a real directory or file, and
  * its birth time must fall in a later millisecond than `started` (`Date.now()` when the call began). Where the file
- * system reports no birth time, only a whole output line of a command that runs `mktemp` counts.
+ * system reports no birth time, a printed path counts only from a command that does nothing but run `mktemp` and print
+ * what it made (`mktempOnly`). `birthtime` reads a file's birth time in milliseconds, 0 when the file system has none.
  */
-export function createdScratch(tool: string, input: Record<string, unknown>, output: string, started: number, candidates: readonly string[]): Map<string, ScratchIdentity> {
+export function createdScratch(tool: string, input: Record<string, unknown>, output: string, started: number, candidates: readonly string[], birthtime = (stats: Stats) => stats.birthtimeMs): Map<string, ScratchIdentity> {
   const found: string[] = [];
   for (const path of candidates) {
     try { if (realpathSync(path) === path) found.push(path); } catch { /* not created */ }
   }
   const command = tool === "bash" ? commandOf(tool, input)?.command : undefined;
-  if (command) found.push(...printedScratch(command, output, started));
+  if (command) found.push(...printedScratch(command, output, started, birthtime));
   const created = new Map<string, ScratchIdentity>();
   for (const path of found) {
     const identity = scratchIdentity(path);
@@ -619,10 +621,39 @@ export function createdScratch(tool: string, input: Record<string, unknown>, out
   return created;
 }
 
-function printedScratch(command: string, output: string, started: number): string[] {
+/** Arguments of a `mktemp` that creates something: literal words only, and no `-u`/`--dry-run`. */
+const MKTEMP_ARGS = String.raw`((?:\s+[^\s$\`<>()"']+)*)`;
+const MKTEMP_ALONE = new RegExp(String.raw`^mktemp${MKTEMP_ARGS}$`);
+const MKTEMP_ASSIGN = new RegExp(String.raw`^([A-Za-z_]\w*)=("?)\$\(\s*mktemp${MKTEMP_ARGS}\s*\)\2$`);
+const ECHO_VARS = /^echo((?:\s+"?\$\{?[A-Za-z_]\w*\}?"?)+)$/;
+
+/**
+ * How many paths a command that only makes temp files may print: each segment is a bare `mktemp`, an assignment
+ * `name=$(mktemp …)`, or an `echo` of names assigned that way. 0 for any other command.
+ */
+export function mktempOnly(command: string): number {
+  const assigned = new Set<string>();
+  let made = 0;
+  for (const segment of splitShell(command)) {
+    const alone = MKTEMP_ALONE.exec(segment);
+    const assign = alone ? undefined : MKTEMP_ASSIGN.exec(segment);
+    const args = alone?.[1] ?? assign?.[3];
+    if (args !== undefined) {
+      if (/(?:^|\s)(?:-[a-zA-Z]*u[a-zA-Z]*|--dry-run)(?=\s|$)/.test(args)) return 0;
+      if (assign) assigned.add(assign[1]!);
+      made++;
+      continue;
+    }
+    const echo = ECHO_VARS.exec(segment);
+    if (!echo || ![...echo[1]!.matchAll(/\$\{?([A-Za-z_]\w*)/g)].every(name => assigned.has(name[1]!))) return 0;
+  }
+  return made;
+}
+
+function printedScratch(command: string, output: string, started: number, birthtime: (stats: Stats) => number): string[] {
   const created: string[] = [];
-  const mktemp = splitShell(command).some(segment => headOf(segment) === "mktemp" || /\$\(\s*mktemp\b|`\s*mktemp\b/.test(segment));
-  const lines = new Set(output.split("\n").map(line => line.trim()));
+  const made = mktempOnly(command);
+  const lines = output.split("\n").map(line => line.trim()).filter(Boolean);
   const roots = tempRoots();
   for (const path of tempPathsIn(output, roots)) {
     if (path.split("/").includes("..")) continue;
@@ -631,7 +662,8 @@ function printedScratch(command: string, output: string, started: number): strin
       if (!tempRootOf(real, roots)) continue;
       const stats = statSync(real);
       if (!stats.isDirectory() && !stats.isFile()) continue;
-      const born = stats.birthtimeMs > 0 ? Math.floor(stats.birthtimeMs) > started : mktemp && lines.has(path);
+      const birth = birthtime(stats);
+      const born = birth > 0 ? Math.floor(birth) > started : made > 0 && lines.length <= made && lines.includes(path);
       if (born) created.push(real);
     } catch { /* gone or unreadable */ }
   }
