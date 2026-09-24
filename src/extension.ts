@@ -1449,7 +1449,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // sees them. Detection below still reads the original text, so the banner names what was masked. Masking is local
     // and sends nothing, so it runs with the security guard off; only the user's `security.maskOutput` stops it.
     const rawTexts = event.content.filter(part => part.type === "text").map(part => part.text ?? "");
-    const masking = config.security.maskOutput ? rawTexts.map(maskSecrets) : [];
+    const maskOutput = config.security.maskOutput;
+    const masking = maskOutput ? rawTexts.map(maskSecrets) : [];
     const maskedCount = masking.reduce((sum, block) => sum + block.masked, 0);
     let maskIndex = 0;
     const maskedContent = maskedCount ? event.content.map(part => part.type === "text" ? { ...part, text: masking[maskIndex++]!.text } : part) : event.content;
@@ -1528,13 +1529,22 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const secretRepeat = output.secret && secretValues.length > 0 && unseenSecrets.length === 0;
     // Per-block banners are computed before secretsSeen is updated, so a block whose values were all announced
     // earlier stays quiet while a block with a new value earns the banner.
+    // With masking on, a new credential-shaped value that was not masked earns a trace line, not a banner.
+    let unmaskedSecret = false;
     const blockNotices = multiBlock ? blockVerdicts.map((verdict, index) => {
       const values = verdict.secretIds ?? (verdict.secret && verdict.secretId !== undefined ? [verdict.secretId] : []);
       const repeat = verdict.secret && values.length > 0 && values.every(id => secretsSeen.has(id));
-      return securityNotice(repeat ? { ...verdict, secret: false } : verdict, masking[index]?.masked);
+      if (maskOutput && verdict.secret && !repeat && !masking[index]?.masked) unmaskedSecret = true;
+      return securityNotice(repeat ? { ...verdict, secret: false } : verdict, masking[index]?.masked, maskOutput);
     }) : [];
+    if (maskOutput && !multiBlock && output.secret && !secretRepeat && maskedCount === 0) unmaskedSecret = true;
     if (unseenSecrets.length) for (const id of unseenSecrets) secretsSeen.add(id);
-    const notice = multiBlock ? blockNotices.find(banner => banner !== undefined) : securityNotice(secretRepeat ? { ...output, secret: false } : output, maskedCount);
+    const notice = multiBlock ? blockNotices.find(banner => banner !== undefined) : securityNotice(secretRepeat ? { ...output, secret: false } : output, maskedCount, maskOutput);
+    if (unmaskedSecret) {
+      record(ctx, config, "security", renderTemplate(config.widget.security, { tool: event.toolName, injection: output.injection?.toFixed(2), exfiltration: output.exfiltration?.toFixed(2), status: "possible credentials, none masked (traced)" }), [
+        "credential-shaped values in this output were detected but none was masked; traced, not announced to the agent",
+      ]);
+    }
     // Fixture and documentation stand-ins (`devtok_`, `sk-synthetic-`, an alphabet run) earn one trace line and nothing else:
     // no banner in the result and no steer. Most credential steers in the benchmark were these values read from a test file.
     const unseenSynthetic = (output.syntheticIds ?? []).filter((id) => !secretsSeen.has(id));

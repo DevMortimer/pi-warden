@@ -502,12 +502,27 @@ test("source code that names secretIds is untouched by masking", async () => {
   assert.equal(await toolResult("read", { path: "src/extension.ts" }, source, false), undefined);
 });
 
-test("security.maskOutput false leaves the result text unchanged", async () => {
+test("security.maskOutput false leaves the result text unchanged and keeps the generic banner", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: false, security: { maskOutput: false }, ...STACK_BAR }));
   const key = projectKey();
   const result = await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, key, false) as { content: Array<{ text: string }> };
   assert.ok(result.content[0]!.text.includes(key), "the value is shown as before");
   assert.match(result.content[0]!.text, /Possible credentials in this output: do not echo or commit them; use redacted values/, "today's banner");
+  await runCommand("trace", context({ hasUI: false }));
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.doesNotMatch(trace, /none masked \(traced\)/, "announced, so not trace-only");
+  assert.ok(!trace.includes(key.slice(0, 20)), "the trace is redacted");
+});
+
+test("URL passwords, Authorization and Bearer values are masked, so their notice names a masked value", async () => {
+  const password = ["Vq7mZ2rK", "9xLp4Tn8"].join("");
+  const token = ["Hd3Jc5Ys0Ga", "Ku2Re7Nt4Mx9"].join("");
+  const text = `DATABASE_URL: postgres://app:${password}@db.internal:5432/app\nAuthorization: ${token}\ncurl -H "Bearer ${token}x"`;
+  const result = await toolResult("bash", { command: "cat deploy.log" }, text, false) as { content: Array<{ text: string }> };
+  const shown = result.content[0]!.text;
+  assert.ok(!shown.includes(password) && !shown.includes(token), shown);
+  assert.match(shown, /postgres:\/\/app:\[redacted\]@db\.internal/);
+  assert.ok(shown.startsWith("pi-warden: Possible credentials in this output: 3 values masked in this output as [redacted]"), shown);
 });
 
 test("a project file with security.enabled false still masks a real-shaped key in a tool result", async () => {
