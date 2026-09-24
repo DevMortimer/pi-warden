@@ -1507,13 +1507,22 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const secretRepeat = output.secret && secretValues.length > 0 && unseenSecrets.length === 0;
     // Per-block banners are computed before secretsSeen is updated, so a block whose values were all announced
     // earlier stays quiet while a block with a new value earns the banner.
+    // A new credential-shaped value that was not masked (masking is off) earns a trace line, not a banner.
+    let unmaskedSecret = false;
     const blockNotices = multiBlock ? blockVerdicts.map((verdict, index) => {
       const values = verdict.secretIds ?? (verdict.secret && verdict.secretId !== undefined ? [verdict.secretId] : []);
       const repeat = verdict.secret && values.length > 0 && values.every(id => secretsSeen.has(id));
+      if (verdict.secret && !repeat && !masking[index]?.masked) unmaskedSecret = true;
       return securityNotice(repeat ? { ...verdict, secret: false } : verdict, masking[index]?.masked);
     }) : [];
+    if (!multiBlock && output.secret && !secretRepeat && maskedCount === 0) unmaskedSecret = true;
     if (unseenSecrets.length) for (const id of unseenSecrets) secretsSeen.add(id);
     const notice = multiBlock ? blockNotices.find(banner => banner !== undefined) : securityNotice(secretRepeat ? { ...output, secret: false } : output, maskedCount);
+    if (unmaskedSecret) {
+      record(ctx, config, "security", renderTemplate(config.widget.security, { tool: event.toolName, injection: output.injection?.toFixed(2), exfiltration: output.exfiltration?.toFixed(2), status: "possible credentials, none masked (traced)" }), [
+        "credential-shaped values in this output were not masked; traced, not announced to the agent",
+      ]);
+    }
     // Fixture and documentation stand-ins (`devtok_`, `sk-synthetic-`, an alphabet run) earn one trace line and nothing else:
     // no banner in the result and no steer. Most credential steers in the benchmark were these values read from a test file.
     const unseenSynthetic = (output.syntheticIds ?? []).filter((id) => !secretsSeen.has(id));
