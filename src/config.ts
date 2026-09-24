@@ -178,7 +178,7 @@ export const DEFAULT_UI_FILES = [
 
 export function defaultVisualTools(): VisualToolsConfig {
   return {
-    commands: ["agent-browser", "playwright", "npx playwright", "flutter test", "fvm flutter test", "idb", "xcrun simctl io"],
+    commands: ["agent-browser", "playwright", "npx playwright", "flutter test", "fvm flutter test", "idb", "xcrun simctl io", "chrome", "chromium", "google-chrome"],
     commandWords: ["screenshot"],
     tools: ["screenshot", "take_snapshot", "navigate"],
     images: ["png", "jpg", "jpeg", "webp"],

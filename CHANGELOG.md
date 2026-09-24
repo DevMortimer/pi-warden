@@ -12,6 +12,33 @@ How to keep this current: add the entry in the same pull request as the change, 
 - `/warden prefs` shows each item as injected or the rule that kept it out ("not injected: seen in 2 sessions", "not injected: weakens a check"). `/warden prefs forget <n>` drops an item for the project for good, rewordings included; the key is kept in pi-warden's data folder.
 - New agent tool `warden_remember`: after a user correction, or a stuck, repeat, or done-check steer, within the last 5 assistant turns of the run, the agent can record one standing lesson (at most 160 characters) for the project. The same rules apply; a lesson that repeats a stored lesson or a listed preference confirms it instead of adding one. A lesson is injected only once confirmed (recorded again in a later session, or said by the user), after your preferences, marked `(agent lesson)`, and expires after 30 days without a confirmation. Lessons are stored with the date and session id under pi-warden's data folder, never in a rules file or a session file. Preference and lesson text goes to the session model only, never to TypeSafe.
 
+## 0.60.0
+
+### Changed
+
+- `git reset --hard` warns instead of holding when the working tree is clean: `git status --porcelain` in the call's directory prints nothing. The check runs once with a 2-second timeout; a failed or timed-out check holds.
+- `git push --force-with-lease` now holds by default. It warns only when every target branch is named in the command or is the current branch, no target is `main`, `master`, or the remote's HEAD branch, and the command has no plain `--force`/`-f`. A `+` or delete refspec, `--all`, `--mirror`, `--tags`, an unknown flag, a detached HEAD, or `push.default=matching` on a bare push keeps the hold.
+- Both relaxations read only a plain single `git reset` or `git push` command. A `cd`, `-C`, quote, variable, or second command keeps the hold.
+- The conscience no longer sends its `agent_end` reminder when the run ended with a final text reply. The agent has answered; a reminder then started a new turn to revisit a finished answer.
+
+### Fixed
+
+- `git reset --hard` with global options before `reset` (`git -C dir`, `--git-dir`, `--work-tree`, `-c key=value`) is held. Before, the pattern needed `reset` right after `git`, so `git -C dir reset --hard` was neither held nor warned.
+- `git push --force`, `-f`, and `--force-with-lease` with the same global options before `push` (`git -C dir push --force`) are held. The push patterns had the same gap.
+
+### Tests
+
+- A clean and a changed tree for `reset --hard`, and a failed status check. Lease pushes to a feature branch, to `main`, `master`, and the remote HEAD branch, with plain `--force`, with a bare push that tracks the default branch, and outside a repository. A conscience run that ended with a final reply sends no reminder. `reset --hard` with `-C`, `--git-dir`, `--work-tree`, and `-c` on a clean tree is held. `push --force`, `-f`, and `--force-with-lease` with those options are held.
+
+## 0.59.5
+
+### Fixed
+
+- Shell writes that gave neither a judged write nor a skip are now judged. `exec > f; echo x` judges the text the later commands print into `f`; a redirected `{ echo x; } > f` or `(echo x) > f` group judges the text its commands print, and a group that also runs a program is skipped with a reason; `env echo x > f` treats `env` as a wrapper; a target such as `/dev/../tmp/p/f` is normalized before the `/dev/` test; a partly quoted heredoc delimiter (`<<E"OF"`) ends at `EOF` and keeps the body literal, as in bash.
+- One bash command no longer starts one rules request per write. Writes to the same file are joined into one request (40 `>>` appends to one file are one request), and past five files a command writes, the rest are recorded in the trace as skipped. The action request lists each file once.
+- The done-check no longer counts `grep -rn screenshot src`, `idb list-targets`, or `flutter test test/unit/x_test.dart` as visual proof. A `done.visualTools.commandWords` word counts only after a `commands` head, `flutter test` counts only for an `integration_test/` or golden path (or `--update-goldens`), and `idb` only for its `screenshot` or `ui` subcommand. `chrome`, `chromium`, and `google-chrome` are now `commands` heads that count with a screenshot flag (`chrome --headless --screenshot=…`), so a headless-browser screenshot is proof and `chromium --version` is not.
+- The conscience now drops camelCase destructive tools (`deleteIssue`, `dropTable`, `mcp__db__truncateTable`) and tools whose name or leading description verb is `kill`, `force`, `uninstall`, `revoke`, `erase`, or `clear` (`kill_process`, `force_push`, `uninstall_package`).
+
 ## 0.59.4
 
 ### Fixed

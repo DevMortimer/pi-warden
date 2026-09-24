@@ -53,7 +53,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "enabled": true, "claimsDone": 0.7, "nudge": true, "uiProof": true,
     "uiFiles": ["**/*.{css,scss,sass,less,html,htm,vue,svelte,jsx,tsx,astro,dart}", "**/web/**/*.js", "**/public/**/*.js", "!**/*.{test,spec}.*", "!**/*_test.dart", "!**/{test,tests,__tests__}/**"],
     "visualTools": {
-      "commands": ["agent-browser", "playwright", "npx playwright", "flutter test", "fvm flutter test", "idb", "xcrun simctl io"],
+      "commands": ["agent-browser", "playwright", "npx playwright", "flutter test", "fvm flutter test", "idb", "xcrun simctl io", "chrome", "chromium", "google-chrome"],
       "commandWords": ["screenshot"],
       "tools": ["screenshot", "take_snapshot", "navigate"],
       "images": ["png", "jpg", "jpeg", "webp"]
@@ -105,7 +105,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `done.*` | Completion-claim threshold and whether the agent gets a follow-up turn. |
 | `done.uiProof` | Default `true`. After a change to a `done.uiFiles` path, only a `done.visualTools` call after that change counts as proof; passing tests and builds do not. `false` restores the test/build/lint-only rule. |
 | `done.uiFiles` | Globs for files whose change shows on screen, matched against `write`/`edit` paths and files a `bash` command writes. `{a,b}` alternatives work; a glob that starts with `!` excludes. The defaults exclude test files. |
-| `done.visualTools` | What counts as looking at the result, case-insensitive, successful calls only. `commands`: heads of a shell command segment. `commandWords`: a word that stands alone as a shell argument or flag (`idb screenshot`, `--screenshot`); quoted messages, heredoc bodies, and paths such as `screenshots/` do not count. `tools`: text in a tool name, or in the `tool` an MCP proxy (`mcp`, `mcp__…`) calls. `images`: extensions whose `read` counts. |
+| `done.visualTools` | What counts as looking at the result, case-insensitive, successful calls only. `commands`: heads of a shell command segment; `flutter test` counts only for an `integration_test/` or golden path (or `--update-goldens`), `idb` only for its `screenshot` or `ui` subcommand, and `chrome`, `chromium`, or `google-chrome` only with a `commandWords` flag (`--headless --screenshot`). `commandWords`: a word that stands alone as an argument or flag after a `commands` head (`idb screenshot`, `flutter test --screenshot`); the same word after another command (`grep -rn screenshot src`), quoted messages, heredoc bodies, and paths such as `screenshots/` do not count. `tools`: text in a tool name, or in the `tool` an MCP proxy (`mcp`, `mcp__…`) calls. `images`: extensions whose `read` counts. |
 | `context.*` | Compression thresholds, retention confidence, duplicate size, recall tool. |
 | `context.largeOutput.enabled` | Add one question to each judged `bash` request: will the command print far more than the agent needs? Off keeps the question out of the request. Read-only commands (`cat`, `find`, `git log`) skip the judge, so the question does not ride them. |
 | `context.largeOutput.threshold` | P(large output) at or above which the agent is told, once per command family (`npm test`, `git log`, `find`) per session, to redirect or filter the command before it runs one like it again. The call is never held or warned. Default `0.85`. |
@@ -126,7 +126,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `conscience.skills.exclude` | Case-sensitive skill names to exclude; `*` is the only wildcard. Default `[]`. |
 | `conscience.tools.enabled` | Suggest tools including evidence/research tools; never execute or enable them directly. Default `true`. |
 | `conscience.tools.exclude` | Case-sensitive tool names to exclude; `*` is the only wildcard. Default `[]`. |
-| `conscience.skipTools` | Exact tool names the conscience never recommends: core tools the agent already uses on nearly every turn. Skills are never skipped by this list. `[]` makes every tool a candidate again. Default `["read", "bash", "edit", "write", "grep", "find", "ls"]`. Independent of this key, a tool whose name has a destructive part (`delete`, `drop`, `destroy`, `remove`, `purge`, `wipe`, `reset`, `truncate`) or whose description starts with one is never a candidate. |
+| `conscience.skipTools` | Exact tool names the conscience never recommends: core tools the agent already uses on nearly every turn. Skills are never skipped by this list. `[]` makes every tool a candidate again. Default `["read", "bash", "edit", "write", "grep", "find", "ls"]`. Independent of this key, a tool whose name has a destructive part (`delete`, `drop`, `destroy`, `remove`, `purge`, `wipe`, `reset`, `truncate`, `kill`, `force`, `uninstall`, `revoke`, `erase`, `clear`; a camelCase name such as `deleteIssue` is split into words) or whose description starts with one is never a candidate. |
 | `conscience.timeoutMs` | Total wall-clock deadline for one assessment (ms). Effective deadline is `min(conscience.timeoutMs, timeoutMs)`. Range 100–10000. Default `3000`. |
 | `conscience.maxAssessments` | Max assessments per admitted operator prompt, including the initial. Range 1–10. Default `3`. |
 | `conscience.maxNudges` | Max new guidance deliveries per admitted operator prompt. Range 1–5. Default `2`. |
