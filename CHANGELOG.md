@@ -11,6 +11,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 - The action guard's read-only fast path, which skips the Jev judgment, now also accepts `sed -n` with one print command (`sed -n '10,20p' f`, `sed -n '/a/,/b/p' f`), `git worktree list`, `git stash list`, and `git merge-base`. For `sed`, the only accepted options are ones that cannot write or run anything: no `-i`, no `-f`, and no option after the first operand. The script must be literal, with no variable expansion and no `w`, `W`, `e`, or `r` command. In one week of real sessions, `sed -n` line ranges were almost all of the read-only commands that still went to Jev; about a third of them got a `warn`. The fast path now also rejects `<(...)` process substitution and git's `--output` and `-O`/`--open-files-in-pager`, which run a command, write a file, or open a pager program.
 - The read-only fast path accepts a leading variable assignment (`LC_ALL=C sort f`) only for `LANG`, `LC_*`, `TZ`, `NO_COLOR`, `TERM`, `COLUMNS`, and `FORCE_COLOR`. Any other assignment, such as `PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, `IFS`, `PAGER`, or `GIT_*`, can change what the command runs or loads, so the call goes to Jev.
 
+## 0.53.0
+
+### Added
+- Rules, slop, and security judge code that a `bash` command writes to a file, as if it were a `write`: heredocs into `cat` or `tee` (quoted or unquoted delimiter, `<<-`), here-strings, and `echo`/`printf` with `>` or `>>`. Each target in a chain is judged on its own, before the command runs, with the same `.gitignore` and outside-project skip as a `write`; an append judges only the appended text. An authoring form whose text cannot be read (`$VAR` or `$(...)` in the body, a pipe into `tee`) and `sed -i`, `patch`, and `git apply` are not judged, and the trace says why; a program's output sent to a file (`cmd > log`) is not judged and leaves no trace note. See `docs/guards.md` → Rules.
+
 ## 0.52.2
 
 ### Fixed
