@@ -3387,6 +3387,35 @@ test("/warden trace sends the trace as text when the host never builds the sideb
   openPanels[0]!.handleInput("q");
 });
 
+test("/warden trace sends the text when a host asked for the trace file, even if the sidebar was built", async () => {
+  await grantConsent();
+  const traceDir = join(temporary, "host-traces-built");
+  process.env.PI_WARDEN_TRACE_DIR = traceDir;
+  try {
+    await sessionStart();
+    await toolCall("bash", { command: "npm test" });
+    notices.length = 0;
+    await runCommand("trace");
+    assert.equal(openPanels.length, 1, "the sidebar was built");
+    openPanels[0]!.handleInput("q");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(notices.length, 1, "one block");
+    assert.equal(notices[0]!.level, "info");
+    assert.match(notices[0]!.text, /action: /);
+  } finally {
+    delete process.env.PI_WARDEN_TRACE_DIR;
+  }
+
+  // Without the variable, a host that never builds the sidebar still gets the text.
+  await sessionStart();
+  await toolCall("bash", { command: "npm test" });
+  notices.length = 0;
+  await runCommand("trace", context({ ui: { ...ui, custom: async () => undefined } }));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(notices.length, 1, "one block");
+  assert.match(notices[0]!.text, /action: /);
+});
+
 test("no trace file is written when PI_WARDEN_TRACE_DIR is unset or relative", async () => {
   const before = await readdir(temporary);
   process.env.PI_WARDEN_TRACE_DIR = "relative-traces";
