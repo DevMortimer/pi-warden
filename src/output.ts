@@ -179,7 +179,7 @@ export interface OutputOptions {
 
 export async function evaluateOutput(tool: string, text: string, task: string | undefined, options: OutputOptions, compressionLearner?: CompressionLearner): Promise<OutputVerdict> {
   const secrets = options.security.enabled ? findSecrets(text) : [];
-  const { real, synthetic } = partitionSecrets(secrets);
+  const { real, synthetic } = partitionSecrets(secrets, text);
   const verdict: OutputVerdict = { secret: real.length > 0, suspicious: false, retention: "all" };
   if (real.length) {
     verdict.secretId = secretFingerprint(real);

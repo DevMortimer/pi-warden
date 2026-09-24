@@ -129,11 +129,49 @@ export function syntheticish(value: string): boolean {
   return hasSequenceRun(text) || hasSequenceRun(body) || isRepetitive(body);
 }
 
-/** Split credentials into the ones worth announcing and the stand-ins that are only traced. */
-export function partitionSecrets(secrets: readonly string[]): { real: string[]; synthetic: string[] } {
+/** An `https://` URL; its query is read for the parameters of a signed URL. */
+const HTTPS_URL = /https:\/\/[^\s"'<>`]+/g;
+/** The expiry that makes a URL a short-lived signed URL. */
+const SIGNED_EXPIRY = /[?&](?:X-Amz-Expires|X-Goog-Expires|Expires|se)=/i;
+/** The query signature of a signed URL: S3 and GCS presigned URLs, CloudFront, and storage `token=` links. */
+const SIGNED_PARAM = /[?&](?:X-Amz-Signature|X-Amz-Credential|X-Goog-Signature|X-Goog-Credential|Signature|token)=([^&#]*)/gi;
+
+/** Start and end offsets of every signature parameter value in a signed `https://` URL in `text`. */
+function signedUrlSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (const url of text.matchAll(HTTPS_URL)) {
+    if (!SIGNED_EXPIRY.test(url[0])) continue;
+    for (const param of url[0].matchAll(SIGNED_PARAM)) {
+      const end = url.index + param.index + param[0].length;
+      spans.push([end - param[1]!.length, end]);
+    }
+  }
+  return spans;
+}
+
+/**
+ * True when every occurrence of `value` in `text` sits inside the query signature of a signed URL. Such a URL expires
+ * within minutes and grants one object; issue-tracker and storage API responses are full of them.
+ */
+function signedUrlOnly(value: string, spans: ReadonlyArray<[number, number]>, text: string): boolean {
+  if (!spans.length) return false;
+  let found = false;
+  for (let index = text.indexOf(value); index !== -1; index = text.indexOf(value, index + 1)) {
+    if (!spans.some(([start, end]) => index >= start && index + value.length <= end)) return false;
+    found = true;
+  }
+  return found;
+}
+
+/**
+ * Split credentials into the ones worth announcing and the stand-ins that are only traced. With `text`, a value found
+ * only in the query signature of a signed URL is a stand-in too.
+ */
+export function partitionSecrets(secrets: readonly string[], text?: string): { real: string[]; synthetic: string[] } {
   const real: string[] = [];
   const synthetic: string[] = [];
-  for (const value of secrets) (syntheticish(value) ? synthetic : real).push(value);
+  const spans = text === undefined ? [] : signedUrlSpans(text);
+  for (const value of secrets) (syntheticish(value) || signedUrlOnly(value, spans, text ?? "") ? synthetic : real).push(value);
   return { real, synthetic };
 }
 
@@ -153,17 +191,18 @@ const MASKED_TOKEN = /^(?:-----BEGIN|sk-|ghp_|gho_|github_pat_|AKIA|xox[abp]-|ey
 
 /**
  * `text` with every high-confidence credential value replaced by `[redacted]`: a masked token shape, or a
- * credential-key assignment whose value looks like a secret. Stand-ins (`syntheticish`) stay readable.
+ * credential-key assignment whose value looks like a secret. Stand-ins (`syntheticish`, signed URL signatures) stay readable.
  */
 export function maskSecrets(text: string): { text: string; masked: number } {
   const values = new Set<string>();
   for (const shape of TOKEN_SHAPES) for (const match of text.matchAll(shape)) if (MASKED_TOKEN.test(match[0])) values.add(match[0]);
   for (const match of text.matchAll(CREDENTIAL_ASSIGNMENT)) if (match[1] && looksLikeSecretValue(match[1])) values.add(match[1]);
+  const { real } = partitionSecrets([...values], text);
   let out = text;
   let masked = 0;
   // Longest first, so a value that contains another is replaced whole.
-  for (const value of [...values].sort((a, b) => b.length - a.length)) {
-    if (syntheticish(value) || !out.includes(value)) continue;
+  for (const value of real.sort((a, b) => b.length - a.length)) {
+    if (!out.includes(value)) continue;
     out = out.split(value).join(REPLACEMENT);
     masked++;
   }

@@ -509,6 +509,17 @@ test("security.maskOutput false leaves the result text unchanged", async () => {
   assert.match(result.content[0]!.text, /Possible credentials in this output: do not echo or commit them; use redacted values/, "today's banner");
 });
 
+test("an API response with S3 presigned upload URLs earns no credential notice and is not masked", async () => {
+  const accessKey = ["AKIA3M7QZ2", "PRT9LVXW8Y"].join("");
+  const signature = ["9c4e1a7b2f8d3e6a0b5c9d2e7f1a4b8c", "3d6e0f2a5b9c1d4e7f8a2b6c0d3e5f91"].join("");
+  const url = `https://uploads.s3.us-east-1.amazonaws.com/team/a1/shot.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${accessKey}%2F20260924%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260924T101010Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=${signature}`;
+  const body = JSON.stringify({ issue: { title: "Crash on save", attachments: [{ url }] } });
+  assert.equal(await toolResult("mcp", { tool: "get_issue" }, body, false), undefined, "content untouched: no banner, no masking");
+  assert.equal(sentMessages.filter(sent => /credentials/.test(sent.message.content)).length, 0);
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /credential-shaped stand-in \(traced\)/, "traced once as a stand-in");
+});
+
 test("fixture-shaped credentials from a test file are traced once and never steered", async () => {
   await grantConsent();
   const testOutput = 'export const DEV_TOKEN = "devtok_9f8e7d6c5b4a3210";\nassert.equal(TOKEN, "sk-synthetic-0123456789abcdef");';
