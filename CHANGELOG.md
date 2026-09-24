@@ -6,7 +6,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- The compaction evidence appendix lists what already failed, so the agent does not retry it after compaction. `### Tried and failed` holds up to five distinct failed calls from the stuck guard's attempt window, oldest first, each with the last line of its output that names the error (runner tallies such as "Found 1 error." are skipped), at most 160 characters per entry. `### Verification` names the last passing check and says whether code was written or edited after it (`code changed since last passing check: yes/no`), or says that no check has passed yet when code was changed. The stuck section shows failures out of the attempt window instead of an always-empty same-strategy score and a bare tool name.
+- When the appendix is over its 2 000-character cap, lower-value sections shrink first: saved outputs to the three newest, then held actions, then the active task, stuck state, and older checks. The failed attempts and the verification line are kept whole.
+
+### Fixed
+
+- Saved full outputs in the compaction appendix show the tool that produced them and their real size. Before this, every entry read `unknown → path (0 bytes)`.
 
 ## 0.50.1
 
