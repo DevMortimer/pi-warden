@@ -53,6 +53,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7, "largeOutput": { "enabled": true, "threshold": 0.85 } },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
   "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
+  "judge": { "cooldownMs": 60000, "failuresBeforeCooldown": 3 },
   "subagent": { "enabled": true, "wake": true, "threshold": 0.8, "cooldownMs": 120000 },
   "widget": { "enabled": true, "placement": "aboveEditor", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "steerVisible": false,
@@ -96,6 +97,8 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `context.largeOutput.threshold` | P(large output) at or above which the agent is told, once per command family (`npm test`, `git log`, `find`) per session, to redirect or filter the command before it runs one like it again. The call is never held or warned. Default `0.85`. |
 | `runaway.*` | Repeat counts that abort a reply, minimum size, whether the agent gets one recovery turn. |
 | `notify.*` | Desktop notifications, cooldown, optional relay command (user file only). |
+| `judge.failuresBeforeCooldown` | Consecutive timeout, network, or other judge failures before judgments pause for the session (3). One auth or configuration failure pauses at once. |
+| `judge.cooldownMs` | How long a failing judge is left alone before the next action asks it again (60000), capped at 600000 (10 minutes). |
 | `subagent.enabled` | Read async subagent reports at all. `false` ignores them, as before 0.14. |
 | `subagent.wake` | Ask Jev whether a report that names trouble deserves a wake. `false` keeps the offline layer, which never wakes. |
 | `subagent.threshold` | P(report needs the agent awake) that wakes it. Conservative on purpose. |

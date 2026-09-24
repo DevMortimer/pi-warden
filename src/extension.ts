@@ -47,21 +47,8 @@ import { fileContentHash } from "./hashing.js";
 import type { IndexFile } from "./index-cmd.js";
 import type { IntegrationErrorCode } from "pi-typesafe";
 
-/** Classify a conscience assessment error into a safe category (spec §6: never exception bodies). */
-function classifyConscienceError(err: unknown): string {
-  if (err && typeof err === "object" && "code" in err) {
-    const code = (err as { code: string }).code as IntegrationErrorCode;
-    if (code === "timeout") return "timeout";
-    if (code === "http" || code === "connection" || code === "response") return "network";
-    if (code === "configuration" || code === "validation") return "configuration";
-    if (code === "budget" || code === "aborted") return "other";
-  }
-  const msg = err instanceof Error ? err.message : String(err);
-  if (/timeout|timed out/i.test(msg)) return "timeout";
-  if (/auth|key|credential|401|403/i.test(msg)) return "auth";
-  if (/network|fetch|connect|ECONNREFUSED|ENOTFOUND/i.test(msg)) return "network";
-  return "other";
-}
+import { classifyJudgeError, cooldownFailureKind, JudgeCooldown } from "./judge-cooldown.js";
+import type { CooldownEvent } from "./judge-cooldown.js";
 import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
@@ -82,8 +69,8 @@ const CONFIRM_TEXT_LIMIT = 500;
 /** Which guard spent the user's attention. The status line reports one count per guard. */
 export type SteerGuard = "action" | "rules" | "security" | "stuck" | "done" | "prose" | "runaway" | "subagent" | "conscience";
 
-interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number; restatements: number }
-const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, steers: 0, steersSkipped: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0, restatements: 0 });
+interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; cooldownSkips: number; steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number; restatements: number }
+const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, cooldownSkips: 0, steers: 0, steersSkipped: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0, restatements: 0 });
 
 /**
  * One steer message can carry notes from more than one guard, so the per-guard numbers may add up to more than the
@@ -263,6 +250,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // fail-closes (no delivery) until the policy is re-measured.
   const consciencePolicy = CONSCIENCE_BETA_POLICY;
   let client: TypeSafe | undefined;
+  const cooldown = new JudgeCooldown();
+  let judgeConfig: WardenConfig | undefined;
+  /** Where cooldown notices go; unset headless, where a failure is already silent (see noteError). */
+  let noticeUi: { notify(text: string, level: "info" | "warning"): void } | undefined;
   let budgetExhausted = false;
   let stats = freshStats();
   const widget = new Map<GuardName, string>();
@@ -374,7 +365,36 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const judgeFor = (config: WardenConfig): TypeSafe | undefined => {
     if (!consentGiven(config) || budgetExhausted) return undefined;
     if (!authState({ backend: config.typesafeBackend }).usable) return undefined;
-    return client ??= createTypeSafe(judgeOptions(config));
+    judgeConfig = config;
+    // Absent, exactly as with no judge configured, so no guard needs to know a cooldown exists.
+    if (cooldown.active()) { stats.cooldownSkips++; return undefined; }
+    return client ??= watched(createTypeSafe(judgeOptions(config)));
+  };
+  /** Every guard reaches the backend through `evaluate`, so this one seam sees each failure and each success. */
+  const watched = (typesafe: TypeSafe): TypeSafe => new Proxy(typesafe, {
+    get(target, prop, receiver) {
+      if (prop !== "evaluate") return Reflect.get(target, prop, receiver);
+      return async (...args: Parameters<TypeSafe["evaluate"]>) => {
+        try {
+          const result = await target.evaluate(...args);
+          tellCooldown(cooldown.success());
+          return result;
+        } catch (err) {
+          const kind = cooldownFailureKind(err, args[1]?.signal);
+          if (kind) tellCooldown(cooldown.failure(kind, judgeConfig?.judge ?? defaultConfig().judge));
+          throw err;
+        }
+      };
+    },
+  });
+  const tellCooldown = (event: CooldownEvent | undefined) => {
+    if (!event || !noticeUi) return;
+    if (event.type === "recovered") { noticeUi.notify("warden: judgments resumed.", "info"); return; }
+    const seconds = Math.round(event.ms / 1000);
+    const remedy = event.kind === "auth"
+      ? ` Set ${keyEnvFor(judgeConfig?.typesafeBackend ?? "typesafe")} or run /warden enable.`
+      : event.kind === "configuration" ? " /warden status shows the backend setup." : "";
+    noticeUi.notify(`warden: judgments paused for ${seconds}s after a ${event.kind} failure; pattern checks run alone until then.${remedy}`, "warning");
   };
   const noteError = (ctx: ExtensionContext, message: string, code: string | undefined) => {
     stats.errors++;
@@ -593,6 +613,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
+    noticeUi = ctx.hasUI ? ctx.ui : undefined;
+    cooldown.reset();
     if (_event.reason === "reload" || _event.reason === "new") conscienceGeneration++;
     client = undefined;
     budgetExhausted = false;
@@ -664,6 +686,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // user is never a restatement.
   pi.on("before_agent_start", async (event, ctx) => {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
+    noticeUi = ctx.hasUI ? ctx.ui : undefined;
     const config = configFor(ctx);
     attempts = new AttemptWindow(config.stuck.window);
     fullOutputs = new Map();
@@ -854,7 +877,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             record(ctx, config, "conscience", "selected but budget exhausted", ["trigger: before_agent_start", `skipReason: budget`]);
           }
         } catch (err) {
-          const category = classifyConscienceError(err);
+          const category = classifyJudgeError(err);
           if (!warnedErrorCategories.has(category)) {
             warnedErrorCategories.add(category);
             console.warn(`pi-warden: conscience ${category}`);
@@ -901,7 +924,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile }, spine);
             if (conscienceGeneration !== myGeneration) return;
             record(ctx, config, "conscience", `queued prompt assessed → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.skipReason ?? "none"})`, ["trigger: message_start", `origin: queued`, `skipReason: ${result.skipReason ?? "none"}`]);
-          } catch (err) { const cat = classifyConscienceError(err); if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
+          } catch (err) { const cat = classifyJudgeError(err); if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
         } else {
           record(ctx, config, "conscience", `queued prompt: no judge or no skills`, ["trigger: message_start", `origin: queued`, "skipReason: catalog_unavailable"]);
         }
@@ -1750,7 +1773,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             : `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, ${ls.labeled} labeled, ${ls.declined + ls.replanned} stood (${ls.declined + ls.replanned}/${ls.labeled}), ${ls.allowed} allowed (${ls.accepted} accepted, ${ls.regretted} regretted).`;
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}${config.typesafeBackend !== "typesafe" ? ` (${config.typesafeBackend})` : ""}; ${auth.text}`,
-            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan, ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}. Steer budget: ${config.steerBudget === 0 ? "off" : `${config.steerBudget} per run`}.`,
+            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan, ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors, ${stats.cooldownSkips} checks without Jev during a judge cooldown; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}. Steer budget: ${config.steerBudget === 0 ? "off" : `${config.steerBudget} per run`}.`,
             formatSteers(stats),
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),

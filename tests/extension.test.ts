@@ -31,6 +31,10 @@ let nextAnswers: Record<string, number | string> = { irreversible: 0.1, off_task
 /** Model string the mock judge reports. Defaults to the beta policy's model so conscience delivery tests pass its gate. */
 let nextModel = "jev-1.13.0";
 let failNetwork = false;
+/** Hang until the request's own deadline aborts it, as a dead backend does. */
+let hangNetwork = false;
+/** Answer every judgment with this HTTP status, e.g. 401 for a revoked key. */
+let failStatus: number | undefined;
 const sentMessages: Array<{ message: { customType: string; content: string }; options?: Record<string, unknown> }> = [];
 const sentUserMessages: Array<string> = [];
 const requests: Array<{ state: Record<string, unknown>; questions: Record<string, { type: string }> }> = [];
@@ -134,6 +138,13 @@ before(async () => {
     }
     networkCalls++;
     if (failNetwork) return new Response("upstream body must not leak", { status: 503 });
+    if (hangNetwork) return new Promise<Response>((_, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      if (signal.aborted) reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+    if (failStatus !== undefined) return new Response("upstream body must not leak", { status: failStatus });
     const body = JSON.parse(String(init?.body)) as { state: Record<string, unknown>; questions: Record<string, { type: string; criteria?: unknown }> };
     requests.push(body);
     // Answer every asked question from nextAnswers so slop, approval, stuck, and done requests all work with one mock.
@@ -177,7 +188,7 @@ before(async () => {
 
 beforeEach(async () => {
   notices.length = 0; widgets.length = 0; confirms.length = 0;
-  confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; prompt = "Run the test suite";
+  confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; hangNetwork = false; failStatus = undefined; prompt = "Run the test suite";
   keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0;
   widgetComponent = undefined; widgetPlacement = undefined; customCalls.length = 0; openPanels.length = 0; panelClosed.length = 0; renders = 0;
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
@@ -3100,4 +3111,111 @@ test("no trace file is written when PI_WARDEN_TRACE_DIR is unset or relative", a
   await runCommand("trace", context({ ui: { ...ui, custom: async () => undefined } }));
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(!notices[0]!.text.includes("Trace file:"));
+});
+
+// Judge cooldown: a dead backend costs one notice, not one timeout per action.
+const cooldownConfig = (judge: { cooldownMs?: number; failuresBeforeCooldown?: number } = {}) =>
+  writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, timeoutMs: 50, judge, ...STACK_BAR }));
+const paused = () => notices.filter(notice => /judgments paused/.test(notice.text));
+const resumed = () => notices.filter(notice => /judgments resumed/.test(notice.text));
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+test("judge cooldown: three timeouts pause the judge; the fourth action is pattern-only and sends nothing", async () => {
+  await cooldownConfig();
+  hangNetwork = true;
+  for (const command of ["npm test", "npm run lint", "npm run build"]) assert.equal(await toolCall("bash", { command }), undefined, "each failure still fails open");
+  const asked = networkCalls;
+  assert.equal(paused().length, 1, "one notice when the cooldown starts");
+  assert.match(paused()[0]!.text, /timeout failure/, "the notice names the failure kind");
+  assert.match(paused()[0]!.text, /60s/, "and the duration");
+
+  assert.equal(await toolCall("bash", { command: "npm run typecheck" }), undefined);
+  assert.equal(networkCalls, asked, "no request is made while cooled down");
+  assert.equal(paused().length, 1, "nothing is said per action while cooled down");
+});
+
+test("judge cooldown: a success between failures resets the counter", async () => {
+  await cooldownConfig();
+  failStatus = 503;
+  await toolCall("bash", { command: "npm test" });
+  await toolCall("bash", { command: "npm run lint" });
+  failStatus = undefined;
+  await toolCall("bash", { command: "npm run build" });
+  failStatus = 503;
+  await toolCall("bash", { command: "npm run typecheck" });
+  await toolCall("bash", { command: "npm run format" });
+  assert.equal(paused().length, 0, "two failures after a success are not three in a row");
+  const asked = networkCalls;
+  await toolCall("bash", { command: "npm run docs" });
+  assert.ok(networkCalls > asked, "the judge is still asked");
+});
+
+test("judge cooldown: one auth failure pauses at once and the notice names the remedy", async () => {
+  await cooldownConfig();
+  failStatus = 401;
+  await toolCall("bash", { command: "npm test" });
+  assert.equal(paused().length, 1);
+  assert.match(paused()[0]!.text, /auth failure/);
+  assert.match(paused()[0]!.text, /TYPESAFE_API_KEY/, "names the backend's key variable");
+  assert.match(paused()[0]!.text, /\/warden enable/);
+  assert.ok(!paused()[0]!.text.includes("upstream body"), "upstream error bodies stay out of the UI");
+  const asked = networkCalls;
+  await toolCall("bash", { command: "npm run lint" });
+  assert.equal(networkCalls, asked);
+});
+
+test("judge cooldown: after cooldownMs the judge is asked again, and recovery is announced exactly once", async () => {
+  await cooldownConfig({ cooldownMs: 40, failuresBeforeCooldown: 1 });
+  failStatus = 503;
+  await toolCall("bash", { command: "npm test" });
+  assert.equal(paused().length, 1);
+  await sleep(60);
+  failStatus = undefined;
+  const asked = networkCalls;
+  await toolCall("bash", { command: "npm run lint" });
+  assert.ok(networkCalls > asked, "the first action after the window asks the judge");
+  assert.equal(resumed().length, 1, "one recovery notice");
+  assert.equal(resumed()[0]!.level, "info");
+  await toolCall("bash", { command: "npm run build" });
+  assert.equal(resumed().length, 1, "later successes stay quiet");
+});
+
+test("judge cooldown: a failed probe after the window reopens it without a second notice", async () => {
+  await cooldownConfig({ cooldownMs: 40, failuresBeforeCooldown: 1 });
+  failStatus = 503;
+  await toolCall("bash", { command: "npm test" });
+  await sleep(60);
+  await toolCall("bash", { command: "npm run lint" });
+  const asked = networkCalls;
+  await toolCall("bash", { command: "npm run build" });
+  assert.equal(networkCalls, asked, "the window is open again");
+  assert.equal(paused().length, 1, "the user was already told");
+});
+
+test("judge cooldown: while active, no guard sends anything to the backend, and status counts the skips", async () => {
+  await cooldownConfig({ failuresBeforeCooldown: 1 });
+  await newPrompt("explain the bug");
+  failStatus = 503;
+  await toolCall("bash", { command: "npm test" });
+  assert.equal(paused().length, 1);
+  const asked = networkCalls;
+  const sent = requests.length;
+  await toolCall("write", { path: "src/a.ts", content: "export const a = 1;\n" });
+  await toolResult("read", {}, "safe operational output\n".repeat(1000), false);
+  await agentEnd("Great question! Let me walk you through it. ".repeat(6));
+  assert.equal(networkCalls, asked, "no guard reached the transport");
+  assert.equal(requests.length, sent, "no content left the machine");
+  await runCommand("status", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /[1-9]\d* checks without Jev during a judge cooldown/);
+});
+
+test("judge cooldown: a new session trusts the judge again", async () => {
+  await cooldownConfig({ failuresBeforeCooldown: 1 });
+  failStatus = 503;
+  await toolCall("bash", { command: "npm test" });
+  await sessionStart();
+  failStatus = undefined;
+  const asked = networkCalls;
+  await toolCall("bash", { command: "npm run lint" });
+  assert.ok(networkCalls > asked);
 });

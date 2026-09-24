@@ -49,6 +49,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, largeOutput: { ...off, threshold: 1 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
+    // A stale config module leaves the judge trusted: never pausing is today's behaviour, not a new failure mode.
+    judge: section("judge", { failuresBeforeCooldown: Number.MAX_SAFE_INTEGER, cooldownMs: 0 }),
     subagent: section("subagent", { ...off, wake: false, threshold: 1, cooldownMs: 0 }),
     widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
     learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 }),
