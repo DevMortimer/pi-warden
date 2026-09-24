@@ -499,6 +499,33 @@ test("isReadOnlyCommand recognises inspection-only shell lines", () => {
   }
 });
 
+test("isReadOnlyCommand accepts print-only sed -n and git list forms, and rejects their writing twins", () => {
+  const accepted = [
+    "sed -n 10,20p src/a.ts", "sed -n '10,20p' a.ts | head", "sed -n '$p' a", "sed -n '/^## Unreleased/,/^## 0.1.0/p' CHANGELOG.md",
+    "sed -ne '1p' a", "sed -n '/x/,+3p' f", "sed -n \"1p\" f", "git worktree list --porcelain", "git stash list",
+    "git merge-base HEAD origin/main", "git branch --show-current",
+  ];
+  for (const command of accepted) assert.equal(isReadOnlyCommand(command), true, command);
+  const rejected = [
+    "sed -i 's/a/b/' f", "sed -n -i 1p f", "sed -ni 1p f", "sed -n 1p f -i", "sed -n --in-place 1p f", "sed -n 'w out' f",
+    "sed -n '1w out' f", "sed -n '1W out' f", "sed -n '1e rm x' f", "sed -n 's/a/b/w out' f", "sed -n '1r x' f", "sed 1p f",
+    "sed -n -f script.sed f", "sed -n -e 1p -e '1w x' f", "sed -n \"$n,${m}p\" f", "sed -n $p f", "sed -n /a*/p f",
+    "git worktree remove x", "git worktree add ../x", "git stash", "git stash pop", "git stash drop",
+    "git log --output=x", "git stash list --output=x", "git diff --output x", "git grep -O foo", "git grep --open-files-in-pager=vim x",
+    "cat <(touch x)", "awk '{system(\"rm x\")}' f", "awk '{print $1}' f", "npm ls", "node --version",
+  ];
+  for (const command of rejected) assert.equal(isReadOnlyCommand(command), false, command);
+});
+
+test("isReadOnlyCommand accepts leading assignments only for locale, time zone, and output-format variables", () => {
+  for (const command of ["LANG=C sort f", "LC_ALL=C grep -n x f", "TZ=UTC date", "NO_COLOR=1 git log -3", "TERM=dumb COLUMNS=80 ls", "FORCE_COLOR=0 cat f", "LC_ALL=C sed -n 1p f"]) {
+    assert.equal(isReadOnlyCommand(command), true, command);
+  }
+  for (const command of ["PATH=/tmp/evil ls", "LD_PRELOAD=x.so cat f", "DYLD_INSERT_LIBRARIES=x.dylib cat f", "BASH_ENV=x ls", "ENV=x ls", "IFS=/ ls", "PAGER=sh git log", "GIT_EXTERNAL_DIFF=x git diff", "LESSOPEN='|x %s' less f", "LANG=C PATH=/tmp ls", "lang=C ls", "E=/tmp/x"]) {
+    assert.equal(isReadOnlyCommand(command), false, command);
+  }
+});
+
 test("describeAction summarises tool input without leaking secrets or absolute paths", () => {
   const bash = describeAction("bash", { command: "export TOKEN=sk-live-0123456789abcdef && ls" }, cwd);
   assert.equal(bash.tool, "bash");
