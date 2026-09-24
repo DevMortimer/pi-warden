@@ -30,8 +30,11 @@ export interface RuleSet {
   rules: Rule[];
   /** Fallback documents have no rule headings: one question judges the content against this whole text. */
   aggregate?: string;
-  /** Rules past the request cap, dropped in file order. */
-  dropped: number;
+  /**
+   * Unscoped rules past the request cap: they are dropped for every file. The cap applies per write after path scoping,
+   * so a write can drop more than this when scoped rules also match it.
+   */
+  alwaysDropped: number;
   /** Fallback document with no rule-shaped sections: prose only, skip judgment. */
   proseOnly?: boolean;
 }
@@ -241,8 +244,8 @@ export class RuleStore {
       const text = this.read(resolve(cwd, file));
       if (text !== undefined && text.trim()) {
         const redacted = redact(text);
-        if (isRuleShaped(text)) return { set: { sources: [file], rules: [], aggregate: condense(redacted, config.maxChars), dropped: 0 }, tier: "fallback" };
-        return { set: { sources: [file], rules: [], dropped: 0, proseOnly: true }, tier: "fallback" };
+        if (isRuleShaped(text)) return { set: { sources: [file], rules: [], aggregate: condense(redacted, config.maxChars), alwaysDropped: 0 }, tier: "fallback" };
+        return { set: { sources: [file], rules: [], alwaysDropped: 0, proseOnly: true }, tier: "fallback" };
       }
     }
     return { set: undefined, tier: "none" };
@@ -259,9 +262,10 @@ function ruleSet(sources: string[], texts: string[], maxChars: number): RuleSet 
   const rules = texts.flatMap(text => parseRules(text)).map(rule => ({ ...rule, id: slug(rule.id, used), body: redact(rule.body) }));
   if (!rules.length) {
     const text = texts.join("\n\n").trim();
-    return text ? { sources, rules: [], aggregate: condense(redact(text), maxChars), dropped: 0 } : undefined;
+    return text ? { sources, rules: [], aggregate: condense(redact(text), maxChars), alwaysDropped: 0 } : undefined;
   }
-  return { sources, rules: rules.slice(0, MAX_RULES), dropped: Math.max(0, rules.length - MAX_RULES) };
+  const unscoped = rules.filter(rule => !rule.paths.length).length;
+  return { sources, rules, alwaysDropped: Math.max(0, unscoped - MAX_RULES) };
 }
 
 /** Rules that apply to a path: unscoped rules plus those whose `paths` match. */
@@ -274,7 +278,7 @@ export function describeRuleSet(set: RuleSet | undefined): string {
   const where = set.sources.join(", ");
   if (set.proseOnly) return `no rules found in ${where} (prose only)`;
   if (set.aggregate !== undefined && !set.rules.length) return `${where} (no rule headings: judged as one document)`;
-  return `${where} (${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}${set.dropped ? `, ${set.dropped} beyond the ${MAX_RULES}-question cap ignored` : ""})`;
+  return `${where} (${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}${set.alwaysDropped ? `, ${set.alwaysDropped} unscoped past the ${MAX_RULES}-question cap for every file` : ""})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -371,8 +375,11 @@ export function ruleQuestion(rule: Rule) {
   return choice(`${FRAME}\nRule: ${rule.name}\n${rule.body ? clip(rule.body, RULE_BODY_LIMIT) : "(no further detail beyond the heading)"}`, OUTCOMES);
 }
 
+/** The rules asked about for a write: scoped to its path first, then cut to the request cap in file order. */
 export function buildRulesRequest(target: RulesTarget, set: RuleSet) {
-  const applicable = rulesFor(set, target.path);
+  const scoped = rulesFor(set, target.path);
+  const applicable = scoped.slice(0, MAX_RULES);
+  const dropped = scoped.length - applicable.length;
   const questions: Record<string, ReturnType<typeof choice>> = {};
   for (const rule of applicable) questions[`rule_${rule.id}`] = ruleQuestion(rule);
   if (set.aggregate !== undefined && !set.rules.length) {
@@ -402,6 +409,8 @@ export function buildRulesRequest(target: RulesTarget, set: RuleSet) {
     },
     questions,
     applicable,
+    dropped,
+    ...(dropped ? { firstDropped: scoped[MAX_RULES]!.id } : {}),
   };
 }
 
@@ -424,8 +433,11 @@ export interface RulesVerdict {
   path: string;
   tool: "write" | "edit";
   sources: string[];
-  /** Rules asked about, after path scoping; 1 for an aggregate document. */
+  /** Rules asked about, after path scoping and the cap; 1 for an aggregate document. */
   asked: number;
+  /** Rules that apply to the path but were past the request cap, and the id of the first of them. */
+  dropped?: number;
+  firstDropped?: string;
   aggregate: boolean;
   scores?: RuleScore[];
   /** Violations at or above the threshold, strongest first. */
@@ -485,7 +497,7 @@ export async function evaluateRules(tool: string, input: Record<string, unknown>
   if (!options.judge) return skipped(target, tool, shownPath, set, "TypeSafe judgments are off");
   const request = buildRulesRequest(target, set);
   const aggregate = set.aggregate !== undefined && !set.rules.length;
-  const base = { tool: target.tool, path: target.path, sources: set.sources, asked: aggregate ? 1 : request.applicable.length, aggregate };
+  const base = { tool: target.tool, path: target.path, sources: set.sources, asked: aggregate ? 1 : request.applicable.length, aggregate, ...(request.firstDropped ? { dropped: request.dropped, firstDropped: request.firstDropped } : {}) };
   const result = await ask(options.judge, { state: request.state, questions: request.questions }, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { source: "error", ...base, findings: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   const answers = result.answers as Record<string, { type: string; choice?: string; probabilities?: Record<string, number> } | undefined>;
@@ -581,6 +593,7 @@ export class RulesGuard {
   private readonly prejudged = new Map<string, Prejudged>();
   private readonly counts = new Map<string, number>();
   private readonly noted = new Set<string>();
+  private capNoted = false;
 
   inspect(call: RulesCallRef, siblings: readonly RulesCallRef[], options: Omit<RulesOptions, "set">): Promise<RulesVerdict> {
     const set = this.store.load(options.cwd, options.config);
@@ -628,6 +641,13 @@ export class RulesGuard {
     });
   }
 
+  /** The notice for the first write this session that had rules past the cap; undefined after that. */
+  capNotice(verdict: RulesVerdict): string | undefined {
+    if (this.capNoted || !verdict.dropped || !verdict.firstDropped) return undefined;
+    this.capNoted = true;
+    return `warden · rules · ${verdict.path}: ${verdict.dropped} rule${verdict.dropped === 1 ? "" : "s"} from ${verdict.sources.join(", ")} not judged, past the ${MAX_RULES}-question cap, starting with ${verdict.firstDropped}. A \`paths:\` line on a rule keeps it out of requests for other files. Shown once per session.`;
+  }
+
   describe(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">): string {
     return describeRuleSet(this.store.load(cwd, config));
   }
@@ -640,5 +660,6 @@ export class RulesGuard {
     this.prejudged.clear();
     this.counts.clear();
     this.noted.clear();
+    this.capNoted = false;
   }
 }

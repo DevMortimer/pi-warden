@@ -134,15 +134,40 @@ test("RuleStore: root pi-warden.md wins, then configured files, then the first f
   assert.equal(store.load(cwd, rulesConfig())?.rules.length, 5);
 });
 
-test("the rule cap keeps the first 31 rules and reports the rest", async () => {
+test("the rule cap applies after path scoping: 28 unscoped rules and 12 docs rules send 28 questions for a source write", async () => {
   const store = new RuleStore();
-  const many = Array.from({ length: 40 }, (_, index) => `# Rule ${index}\nBody ${index}.`).join("\n\n");
+  const docs = Array.from({ length: 12 }, (_, index) => `# Docs rule ${index + 1}\npaths: docs/**\nBody ${index + 1}.`);
+  const code = Array.from({ length: 28 }, (_, index) => `# Code rule ${index + 1}\nBody ${index + 1}.`);
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-rules-cap-"));
-  await writeFile(join(dir, "pi-warden.md"), many);
-  const set = store.load(dir, rulesConfig());
-  assert.equal(set?.rules.length, MAX_RULES);
-  assert.equal(set?.dropped, 9);
-  await rm(dir, { recursive: true, force: true });
+  try {
+    await writeFile(join(dir, "pi-warden.md"), [...docs, ...code].join("\n\n"));
+    const set = store.load(dir, rulesConfig());
+    assert.equal(set?.rules.length, 40, "every parsed rule is kept");
+    assert.equal(set?.alwaysDropped, 0);
+    const request = buildRulesRequest(describeTarget("write", { path: "src/x.ts", content: "x" }, dir)!, set!);
+    assert.equal(Object.keys(request.questions).filter(key => key.startsWith("rule_")).length, 28);
+    assert.equal(request.dropped, 0);
+    assert.equal(request.firstDropped, undefined);
+    assert.equal(describeRuleSet(set), "pi-warden.md (40 rules)");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the rule cap drops unscoped rules past 31 in file order and names the first one dropped", async () => {
+  const store = new RuleStore();
+  const many = Array.from({ length: 40 }, (_, index) => `# Rule ${index + 1}\nBody ${index + 1}.`).join("\n\n");
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rules-cap-"));
+  try {
+    await writeFile(join(dir, "pi-warden.md"), many);
+    const set = store.load(dir, rulesConfig());
+    assert.equal(set?.rules.length, 40);
+    assert.equal(set?.alwaysDropped, 9);
+    const request = buildRulesRequest(describeTarget("write", { path: "src/x.ts", content: "x" }, dir)!, set!);
+    assert.equal(Object.keys(request.questions).filter(key => key.startsWith("rule_")).length, MAX_RULES);
+    assert.equal(request.dropped, 9);
+    assert.equal(request.firstDropped, set!.rules[31]!.id);
+    assert.equal(request.firstDropped, "rule-32");
+    assert.equal(describeRuleSet(set), "pi-warden.md (40 rules, 9 unscoped past the 31-question cap for every file)");
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("describeTarget: a write is sampled and redacted; an edit carries each new text with the current file around the old text", () => {
@@ -163,7 +188,7 @@ test("describeTarget: a write is sampled and redacted; an edit carries each new 
 });
 
 test("buildRulesRequest: one Choice per applicable rule, the rule text in the question, the code in the state, a locator for two or more edits", () => {
-  const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules(RULES_MD), dropped: 0 };
+  const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules(RULES_MD), alwaysDropped: 0 };
   const target = describeTarget("edit", { path: "src/user.ts", edits: [{ oldText: "  return row;", newText: "  console.log(row);" }, { oldText: "import", newText: "// TODO fix" }] }, cwd)!;
   const request = buildRulesRequest(target, set);
   const keys = Object.keys(request.questions);
@@ -179,13 +204,13 @@ test("buildRulesRequest: one Choice per applicable rule, the rule text in the qu
   assert.ok(!("rule_explicit-return-types" in scoped.questions), "paths: src/**/*.ts excludes docs");
   assert.ok(!(LOCATOR_QUESTION in scoped.questions), "no locator for a write");
 
-  const aggregate = buildRulesRequest(describeTarget("write", { path: "src/a.ts", content: "x" }, cwd)!, { sources: ["AGENTS.md"], rules: [], aggregate: "Always write tests.", dropped: 0 });
+  const aggregate = buildRulesRequest(describeTarget("write", { path: "src/a.ts", content: "x" }, cwd)!, { sources: ["AGENTS.md"], rules: [], aggregate: "Always write tests.", alwaysDropped: 0 });
   assert.deepEqual(Object.keys(aggregate.questions), [AGGREGATE_QUESTION]);
   assert.equal(aggregate.state.rules, "Always write tests.");
 });
 
 test("skipReason names exclude, skip, path scoping, and missing rules", () => {
-  const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules("# Only TS\npaths: **/*.ts\nBody."), dropped: 0 };
+  const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules("# Only TS\npaths: **/*.ts\nBody."), alwaysDropped: 0 };
   const target = describeTarget("write", { path: "src/a.ts", content: "x" }, cwd)!;
   assert.equal(skipReason(target, set, rulesConfig()), undefined);
   assert.match(skipReason(target, set, rulesConfig({ exclude: ["src/**"] }))!, /rules\.exclude \(src\/\*\*\)/);
@@ -196,7 +221,7 @@ test("skipReason names exclude, skip, path scoping, and missing rules", () => {
 });
 
 test("evaluateRules: violations at or above the threshold become findings, strongest first, with the located edit; compliant rules do not", async () => {
-  const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules(RULES_MD), dropped: 0 };
+  const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules(RULES_MD), alwaysDropped: 0 };
   const judge = stubJudge({ "no-console-statements": 0.91, "todo-comments-need-a-reference": 0.72, "explicit-return-types": 0.69 }, "edit_2");
   const verdict = await evaluateRules("edit", { path: "src/user.ts", edits: [{ oldText: "  return row;", newText: "  console.log(row);" }, { oldText: "import", newText: "// TODO fix" }] }, { cwd, config: rulesConfig(), set, judge, timeoutMs: 1000 });
   assert.equal(verdict.source, "typesafe");
@@ -213,7 +238,7 @@ test("evaluateRules: violations at or above the threshold become findings, stron
 });
 
 test("evaluateRules: an aggregate document yields one finding named after the file; skips and errors are reported, not thrown", async () => {
-  const set: RuleSet = { sources: ["AGENTS.md"], rules: [], aggregate: "Never use console.log.", dropped: 0 };
+  const set: RuleSet = { sources: ["AGENTS.md"], rules: [], aggregate: "Never use console.log.", alwaysDropped: 0 };
   const verdict = await evaluateRules("write", { path: "src/a.ts", content: "console.log(1)" }, { cwd, config: rulesConfig(), set, judge: stubJudge({ [AGGREGATE_QUESTION]: 0.8 }), timeoutMs: 1000 });
   assert.equal(verdict.aggregate, true);
   assert.equal(verdict.asked, 1);
@@ -334,7 +359,7 @@ test("RuleStore: a fallback README with no rule-shaped sections returns proseOnl
 });
 
 test("evaluateRules: a prose-only fallback set skips with prose reason and does not ask Jev", async () => {
-  const set: RuleSet = { sources: ["README.md"], rules: [], dropped: 0, proseOnly: true };
+  const set: RuleSet = { sources: ["README.md"], rules: [], alwaysDropped: 0, proseOnly: true };
   const judge = stubJudge({});
   const verdict = await evaluateRules("write", { path: "src/a.ts", content: "x" }, { cwd, config: rulesConfig(), set, judge, timeoutMs: 1000 });
   assert.equal(verdict.source, "skipped");
@@ -343,9 +368,9 @@ test("evaluateRules: a prose-only fallback set skips with prose reason and does 
 });
 
 test("describeRuleSet: proseOnly set shows 'no rules found in X (prose only)'", () => {
-  const proseOnly: RuleSet = { sources: ["README.md"], rules: [], dropped: 0, proseOnly: true };
+  const proseOnly: RuleSet = { sources: ["README.md"], rules: [], alwaysDropped: 0, proseOnly: true };
   assert.match(describeRuleSet(proseOnly), /no rules found in README\.md \(prose only\)/);
-  const aggregate: RuleSet = { sources: ["AGENTS.md"], rules: [], aggregate: "Always write tests.", dropped: 0 };
+  const aggregate: RuleSet = { sources: ["AGENTS.md"], rules: [], aggregate: "Always write tests.", alwaysDropped: 0 };
   assert.match(describeRuleSet(aggregate), /no rule headings: judged as one document/);
 });
 
