@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.58.0
+
 ### Changed
 
 - The conscience no longer recommends core tools the agent already uses. In a week of field use, 75 of 144 recommendations named `read`, `bash`, or `edit`, which tells the agent nothing new; one read "use bash instead of bash". New key `conscience.skipTools`, default `["read", "bash", "edit", "write", "grep", "find", "ls"]`, removes those tools from the candidate list before the judge is asked. Skills are never removed by this key; `skipTools: []` restores the earlier behaviour. The question wording is unchanged, so the beta policy hash still matches.
