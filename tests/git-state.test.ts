@@ -64,6 +64,22 @@ test("git reset --hard with -C, --git-dir, or --work-tree holds, even on a clean
   }
 });
 
+test("git push --force and --force-with-lease with -C, --git-dir, or --work-tree hold", () => {
+  assert.equal(severity("git push --force-with-lease origin feature", repo, "git-force-with-lease"), "risky", "the plain form warns");
+  for (const options of [`-C ${repo}`, "-C .", `-C "${repo}"`, "--git-dir=.git", "--git-dir .git", "--work-tree=.", "-c push.default=simple", "--no-pager -C ."]) {
+    const lease = `git ${options} push --force-with-lease origin feature`;
+    assert.equal(severity(lease, repo, "git-force-with-lease"), "destructive", lease);
+    for (const force of ["--force", "-f"]) {
+      const command = `git ${options} push ${force} origin feature`;
+      assert.equal(severity(command, repo, "git-force-push"), "destructive", command);
+    }
+  }
+  for (const command of ["git -C . push origin feature", "git -C . log --force-with-lease", "grep -rn \"git -C x push --force\" docs/"]) {
+    const ids = matchPatterns("bash", { command }, repo).map(hit => hit.id);
+    assert.ok(!ids.includes("git-force-push") && !ids.includes("git-force-with-lease"), command);
+  }
+});
+
 test("git push --force-with-lease warns only for a named or current branch that is not the default", () => {
   for (const command of ["git push --force-with-lease", "git push --force-with-lease origin feature", "git push --force-with-lease origin HEAD", "git push -u --force-with-lease origin feature", "git push --force-with-lease=feature origin HEAD:refs/heads/feature"]) {
     assert.equal(safeLeasePush(command, repo), true, command);
