@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- Standing preferences. `/warden prefs` lists the corrections and preferences you repeated in two or more earlier sessions of this project ("never bump the version in a feature commit", "keep replies short"), each with its session count and last date, and suggests adding the ones worth keeping to `pi-warden.md` as rules. The scan reads only the messages you typed in the project's own session files (not tool output, extension messages, pasted reports, or questions), at most the 200 newest sessions of the last 30 days, groups near-duplicates by word overlap, and keeps the 10 most repeated. It runs in code, once per session start, and never writes a file. New keys `prefs.enabled` (default `true`) and `prefs.inject` (default `false`): with `inject` on, the list goes to the agent as one context message at session start (at most 600 characters, not a steer, no steer budget spent).
 
 ## 0.58.0
 

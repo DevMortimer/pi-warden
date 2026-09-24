@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"b","timestamp":"2026-01-02T10:00:00.000Z","cwd":"/project"}
+{"type":"message","id":"b1","parentId":null,"timestamp":"2026-01-02T10:00:01.000Z","message":{"role":"user","content":"ok. dont open pull requests, leave the branch local","timestamp":0}}
+{"type":"message","id":"b2","parentId":null,"timestamp":"2026-01-02T10:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"looks good. From now on, write commit messages in the imperative mood."}],"timestamp":0}}
+{"type":"message","id":"b3","parentId":null,"timestamp":"2026-01-02T10:00:03.000Z","message":{"role":"user","content":[{"type":"text","text":"i don't know why the build broke"}],"timestamp":0}}
+{"type":"message","id":"b4","parentId":null,"timestamp":"2026-01-02T10:00:04.000Z","message":{"role":"user","content":[{"type":"text","text":"STATUS REPORT   FROM: worker-1\nNever push to main. Always run the formatter before committing."}],"timestamp":0}}

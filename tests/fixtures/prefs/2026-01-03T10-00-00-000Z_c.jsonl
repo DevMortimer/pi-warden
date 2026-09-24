@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"c","timestamp":"2026-01-03T10:00:00.000Z","cwd":"/project"}
+{"type":"message","id":"c1","parentId":null,"timestamp":"2026-01-03T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"from now on write commit messages in imperative mood"}],"timestamp":0}}
+{"type":"message","id":"c2","parentId":null,"timestamp":"2026-01-03T10:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"and never paste the api_key=zzzz9999yyyy8888 value into the chat log!"}],"timestamp":0}}
+{"type":"message","id":"c3","parentId":null,"timestamp":"2026-01-03T10:00:03.000Z","message":{"role":"user","content":[{"type":"text","text":"Stop adding emoji to the changelog entries."}],"timestamp":0}}
+{"type":"message","id":"c4","parentId":null,"timestamp":"2026-01-03T10:00:04.000Z","message":{"role":"user","content":[{"type":"text","text":"Always run the linter first."}],"timestamp":0}}
+{"type":"message","id":"c5","message":{"role":"user","content":"never use tabs for indenta

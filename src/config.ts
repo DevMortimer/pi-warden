@@ -306,6 +306,13 @@ export function isRecallTool(value: unknown): value is RecallTool {
 
 export type WardenMode = "steer" | "confirm" | "advise";
 
+export interface PrefsConfig {
+  /** Read this project's earlier session files for preferences the user repeated (`/warden prefs`). Local, code only. */
+  enabled: boolean;
+  /** At session start, send the standing preferences to the agent as one context message. Off by default. */
+  inject: boolean;
+}
+
 export interface LearningConfig {
   /** Enable adaptive thresholds based on learning data. */
   adaptiveThresholds: boolean;
@@ -406,11 +413,13 @@ export interface WardenConfig {
   learning: LearningConfig;
   /** Broad-consideration coach: recommends or loads skills and tools before the agent acts. */
   conscience: ConscienceConfig;
+  /** Standing preferences: corrections the user repeated in earlier sessions of this project. */
+  prefs: PrefsConfig;
 }
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 7;
+export const CONFIG_SCHEMA = 8;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -470,6 +479,7 @@ export function defaultConfig(): WardenConfig {
       advanceThreshold: 0.70,
       loadThreshold: 1.0,
     },
+    prefs: { enabled: true, inject: false },
   };
 }
 
@@ -879,7 +889,13 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     steerBudget: typeof raw.steerBudget === "number" && Number.isInteger(raw.steerBudget) && raw.steerBudget >= 0 ? raw.steerBudget : base.steerBudget,
     learning: applyLearning(base.learning, raw.learning),
     conscience: applyConscience(base.conscience, raw.conscience),
+    prefs: applyPrefs(base.prefs, raw.prefs),
   };
+}
+
+function applyPrefs(base: PrefsConfig, raw: unknown): PrefsConfig {
+  if (!isObject(raw)) return base;
+  return { enabled: boolean(raw.enabled, base.enabled), inject: boolean(raw.inject, base.inject) };
 }
 
 function applyLearning(base: LearningConfig, raw: unknown): LearningConfig {
@@ -923,7 +939,7 @@ function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig
 /** Project files may tune the guards but cannot grant TypeSafe consent, change the mode, or raise budgets. */
 export function applyProjectOverrides(base: WardenConfig, raw: unknown): WardenConfig {
   if (!isObject(raw)) return base;
-  return { ...base, enabled: boolean(raw.enabled, base.enabled), ...applyGuards(base, raw, base.timeoutMs, "project") };
+  return { ...base, enabled: boolean(raw.enabled, base.enabled), ...applyGuards(base, raw, base.timeoutMs, "project"), prefs: applyPrefs(base.prefs, raw.prefs) };
 }
 
 export interface LoadOptions {

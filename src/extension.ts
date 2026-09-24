@@ -59,6 +59,8 @@ import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
 import { buildCompactSnapshot, compactAppendix } from "./compact.js";
+import { formatPrefs, prefsMessage, scanPreferences } from "./prefs.js";
+import type { PrefsScan } from "./prefs.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
@@ -392,6 +394,16 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Desktop notifier, probed on first use; undefined after the probe means this machine has no route to the desktop.
   let notifier: Promise<NotifierName | undefined> | undefined;
   let lastNotifiedAt = 0;
+  /** One scan of the earlier sessions per session start, shared by the injection and `/warden prefs`. */
+  let prefsScan: Promise<PrefsScan> | undefined;
+  const PREFS_TYPE = `${PACKAGE_NAME}-prefs`;
+  const standingPrefs = (ctx: ExtensionContext | ExtensionCommandContext): Promise<PrefsScan> => {
+    if (prefsScan) return prefsScan;
+    const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
+    const dir = typeof manager.getSessionDir === "function" ? manager.getSessionDir() : undefined;
+    const exclude = typeof manager.getSessionFile === "function" ? manager.getSessionFile() : undefined;
+    return prefsScan = dir ? scanPreferences({ dir, exclude }) : Promise.resolve({ prefs: [], scanned: 0, ms: 0 });
+  };
 
   // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
   let shapeReported = false;
@@ -771,6 +783,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     searchTool = undefined;
     notifier = undefined;
     lastNotifiedAt = 0;
+    prefsScan = undefined;
     // Load capability indexes (once per session, overwritten on every /warden index run).
     globalIndexFile = readIndex(indexPath("global")) ?? undefined;
     projectIndexFile = readIndex(indexPath("project", ctx.cwd)) ?? undefined;
@@ -783,6 +796,19 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       warnedFallback = true;
       const msg = "warden: confirm mode requires a UI; falling back to steer mode for this session.";
       if (ctx.hasUI) ctx.ui.notify(msg, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: msg, display: true });
+    }
+    const opening = configFor(ctx);
+    if (opening.enabled && opening.prefs.enabled && opening.prefs.inject) {
+      // A resumed or reloaded session already carries the message; sending it again would repeat it in the context.
+      const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
+      if (branch.some(entry => entry.type === "custom_message" && entry.customType === PREFS_TYPE)) return;
+      try {
+        const message = prefsMessage((await standingPrefs(ctx)).prefs);
+        // Not a steer; one message per session; do not spend a steer unit.
+        if (message) pi.sendMessage({ customType: PREFS_TYPE, content: message, display: opening.steerVisible });
+      } catch (error) {
+        console.warn("pi-warden: standing preferences scan failed:", error instanceof Error ? error.message : String(error));
+      }
     }
   });
 
@@ -1906,9 +1932,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     });
   }
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index"];
+  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs"];
   pi.registerCommand("warden", {
-    description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, and a synthetic guard test",
+    description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
       return matches.length ? matches : null;
@@ -1962,6 +1988,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           // terminal UI, so it gets the text whether or not the component was built.
           const fallback = () => { if (opened && (traceDir() || !opened.built())) ctx.ui.notify(traceText(), "info"); };
           void opened?.closed.then(fallback, fallback);
+          return;
+        }
+        if (action === "prefs") {
+          if (!config.enabled || !config.prefs.enabled) { report(`Standing preferences are off (${config.enabled ? "prefs.enabled" : "enabled"} is false); no session files were read.`); return; }
+          report(formatPrefs(await standingPrefs(ctx)));
           return;
         }
         if (action === "recommend") {

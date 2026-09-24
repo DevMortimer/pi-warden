@@ -12,6 +12,7 @@
 | `/warden test` | One synthetic destructive action, its verdict, and what the agent would be told |
 | `/warden trace` | Toggle the trace sidebar (or print the last 20 events without a UI, or as one notification in RPC mode, where the sidebar cannot show) |
 | `/warden init` | Scaffold a starter `pi-warden.md` with safety rules and project-type rules. Pass `--force` to overwrite an existing file. |
+| `/warden prefs` | Standing preferences: corrections and preferences you repeated in 2 or more earlier sessions of this project, up to 10, each with its session count and last date. Read-only; add the ones you want to keep to `pi-warden.md` as rules. Reads this project's session files on this machine only, once per session start; no Jev request. `prefs.inject` also sends the list to the agent at session start. |
 | `/warden index` | Build the capability index with the session model: reads every installed skill file and tool description, writes sanitized entries to `~/.pi/agent/pi-warden/index/`. Re-running overwrites both files. |
 | `/warden audit` | Agent-driven workspace audit. Sends a prompt to the session model which reads source code, finds concrete Jev (TypeSafe) opportunities with file:line citations, produces measurable evidence, and writes an HTML report to `.pi-warden/audit-report.html`. Uses the session model; may take several minutes and use real tokens. |
 
