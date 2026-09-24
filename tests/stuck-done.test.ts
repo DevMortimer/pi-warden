@@ -227,10 +227,23 @@ test("quickRepeat stays quiet after a change, on a changed error, and for pollin
   window.push(makeAttempt("bash", { command: "npm test" }, text("1 failing"), true));
   assert.equal(window.quickRepeat(), undefined, "a command that is not read-only may have changed state");
   window.push(makeAttempt("edit", { path: "src/a.ts", oldText: "x", newText: "y" }, text("oldText not found"), true));
+  window.push(makeAttempt("bash", { command: "npm test" }, text("1 failing"), true));
+  assert.equal(window.quickRepeat(), undefined, "a failed edit is not provably read-only either");
   window.push(makeAttempt("bash", { command: "npm test" }, text("2 failing"), true));
   assert.equal(window.quickRepeat(), undefined, "a changed error is progress");
+  window.push(makeAttempt("grep", { pattern: "parse", path: "src" }, text("src/a.ts:1: parse"), false));
+  window.push(makeAttempt("ls", { path: "src" }, text("a.ts"), false));
   window.push(makeAttempt("bash", { command: "npm test" }, text("2 failing"), true));
-  assert.ok(window.quickRepeat(), "a failed edit changed nothing, so the same failure repeats");
+  assert.ok(window.quickRepeat(), "built-in read tools change nothing, so the same failure repeats");
+
+  window.reset();
+  window.push(makeAttempt("read", { path: "src/a.ts" }, text("const a = 1;"), false));
+  window.push(makeAttempt("mcp", { tool: "chrome_devtools_navigate", args: { url: "http://localhost:3000" } }, text("ok"), false));
+  window.push(makeAttempt("read", { path: "src/a.ts" }, text("const a = 1;"), false));
+  assert.equal(window.quickRepeat(), undefined, "an MCP call may have changed state");
+  window.push(makeAttempt("ctx_execute", { language: "javascript", code: "console.log(1)" }, text("1"), false));
+  window.push(makeAttempt("read", { path: "src/a.ts" }, text("const a = 1;"), false));
+  assert.equal(window.quickRepeat(), undefined, "a script call may have changed state");
 
   window.reset();
   window.push(makeAttempt("bash", { command: "sleep 5" }, text(""), false));

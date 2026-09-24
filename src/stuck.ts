@@ -17,7 +17,7 @@ export interface Attempt {
   failed: boolean;
   /** Tail of the tool output, redacted, where the error usually is. */
   output: string;
-  /** The call may have changed files or state: a successful write or edit, or any command that is not read-only. */
+  /** The call may have changed files or state: every call that is not provably read-only, failed or not. */
   changes: boolean;
   /** A `read`, or a shell command that `isReadOnlyCommand` accepts. */
   readOnly: boolean;
@@ -88,6 +88,9 @@ function normaliseOutput(text: string): string {
 }
 
 /** Waiting, watching, and status checks print the same thing until something outside the agent changes. */
+/** Pi's built-in tools that only read files. */
+const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
 const POLL_COMMAND = /\b(?:sleep|watch|wait)\b|\bgh\s+(?:run|pr)\s+(?:watch|checks|view|list)\b|\bgit\s+status\b|\btail\s+-[fF]\b|\b(?:ps|pgrep)\b/;
 
 export function makeAttempt(tool: string, input: Record<string, unknown>, content: ReadonlyArray<{ type: string; text?: string }>, failed: boolean): Attempt {
@@ -105,8 +108,8 @@ export function makeAttempt(tool: string, input: Record<string, unknown>, conten
     call: redact(head(call, CALL_LIMIT)),
     failed,
     output: redact(tail(text, OUTPUT_LIMIT)),
-    // A failed write or edit leaves the file as it was; a failed command may have done part of its work.
-    changes: (tool === "write" || tool === "edit") ? !failed : view !== undefined && !readOnlyCommand,
+    // MCP tools, scripts, and unknown tools can change state that the next call reads.
+    changes: !READ_TOOLS.has(tool) && !readOnlyCommand,
     readOnly: tool === "read" || readOnlyCommand,
     poll: command !== undefined && POLL_COMMAND.test(command),
   };
