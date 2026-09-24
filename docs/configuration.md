@@ -114,6 +114,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `conscience.skills.exclude` | Case-sensitive skill names to exclude; `*` is the only wildcard. Default `[]`. |
 | `conscience.tools.enabled` | Suggest tools including evidence/research tools; never execute or enable them directly. Default `true`. |
 | `conscience.tools.exclude` | Case-sensitive tool names to exclude; `*` is the only wildcard. Default `[]`. |
+| `conscience.skipTools` | Exact tool names the conscience never recommends: core tools the agent already uses on nearly every turn. Skills are never skipped by this list. `[]` makes every tool a candidate again. Default `["read", "bash", "edit", "write", "grep", "find", "ls"]`. Independent of this key, a tool whose name has a destructive part (`delete`, `drop`, `destroy`, `remove`, `purge`, `wipe`, `reset`, `truncate`) or whose description starts with one is never a candidate. |
 | `conscience.timeoutMs` | Total wall-clock deadline for one assessment (ms). Effective deadline is `min(conscience.timeoutMs, timeoutMs)`. Range 100–10000. Default `3000`. |
 | `conscience.maxAssessments` | Max assessments per admitted operator prompt, including the initial. Range 1–10. Default `3`. |
 | `conscience.maxNudges` | Max new guidance deliveries per admitted operator prompt. Range 1–5. Default `2`. |

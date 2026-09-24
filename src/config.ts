@@ -310,6 +310,8 @@ export interface ConscienceConfig {
   skills: ConscienceSkillConfig;
   /** Tool suggestion settings. */
   tools: ConscienceToolConfig;
+  /** Exact tool names never recommended: core tools the agent already uses. Skills are never skipped by this list. */
+  skipTools: string[];
   /** Total wall-clock deadline for one assessment (ms). Effective deadline is min(this, shared timeoutMs). */
   timeoutMs: number;
   /** Max assessments per admitted operator prompt, including the initial. */
@@ -425,6 +427,7 @@ export function defaultConfig(): WardenConfig {
       enabled: false,
       skills: { mode: "recommend", exclude: [] },
       tools: { enabled: true, exclude: [] },
+      skipTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
       timeoutMs: 3000,
       maxAssessments: 3,
       maxNudges: 2,
@@ -860,6 +863,7 @@ function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig
       enabled: boolean(toolsRaw?.enabled, base.tools.enabled),
       exclude: Array.isArray(toolsRaw?.exclude) ? toolsRaw.exclude.filter((x: unknown) => typeof x === "string") : base.tools.exclude,
     },
+    skipTools: Array.isArray(raw.skipTools) ? raw.skipTools.filter((x: unknown) => typeof x === "string") : base.skipTools,
     timeoutMs: Math.max(100, Math.min(10000, typeof raw.timeoutMs === "number" ? raw.timeoutMs : base.timeoutMs)),
     maxAssessments: Math.max(1, Math.min(10, typeof raw.maxAssessments === "number" ? raw.maxAssessments : base.maxAssessments)),
     maxNudges: Math.max(1, Math.min(5, typeof raw.maxNudges === "number" ? raw.maxNudges : base.maxNudges)),

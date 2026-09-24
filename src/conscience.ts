@@ -269,6 +269,26 @@ function isExcluded(id: string, exclude: string[]): boolean {
   return false;
 }
 
+/**
+ * Name parts that mark a tool as destructive. A recommendation to run such a tool is never worth the risk
+ * of the agent calling it on a prompt that only mentioned the subject.
+ */
+const DESTRUCTIVE_MARKERS = new Set(["delete", "drop", "destroy", "remove", "purge", "wipe", "reset", "truncate"]);
+
+function words(text: string): string[] {
+  return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/**
+ * True when a marker is a whole word or `_`-separated part of the name, or the first word of the description.
+ * Only the leading verb of a description counts: a description that mentions removal in passing
+ * ("edit files; remove text") does not make a tool destructive.
+ */
+export function isDestructiveTool(name: string, ...descriptions: Array<string | undefined>): boolean {
+  if (words(name).some(w => DESTRUCTIVE_MARKERS.has(w))) return true;
+  return descriptions.some(d => d !== undefined && DESTRUCTIVE_MARKERS.has(words(d)[0] ?? ""));
+}
+
 /** Filter candidates by eligibility rules, capped at MAX_ELIGIBLE per category. Attaches index entries when available. */
 export function eligibleCandidates(
   skills: Skill[],
@@ -317,9 +337,12 @@ export function eligibleCandidates(
     let count = 0;
     for (const tool of tools) {
       if (isExcluded(tool.name, config.tools.exclude)) continue;
-      if (count >= MAX_ELIGIBLE) { toolOverflow = true; break; }
+      // Core tools the agent uses on nearly every turn: a recommendation to use one tells it nothing new.
+      if (config.skipTools.includes(tool.name)) continue;
       const sourceHash = toolSourceHash(tool.name, tool.description);
       const entry = findEntry(tool.name, sourceHash);
+      if (isDestructiveTool(tool.name, tool.description, entry?.lead)) continue;
+      if (count >= MAX_ELIGIBLE) { toolOverflow = true; break; }
       candidates.push({
         kind: "tool",
         id: tool.name,

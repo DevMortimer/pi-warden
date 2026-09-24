@@ -3173,7 +3173,7 @@ test("conscience: path rule confirm blocks load via loadSkillBody", async () => 
   const { loadSkillBody } = await import("../src/load.js");
   const skillPath = await writeSkillFile("gated-skill", "---\nname: gated-skill\ndescription: Gated\n---\n\nBody.");
   const skill = { name: "gated-skill", description: "Gated", filePath: skillPath, baseDir: join(temporary, ".pi", "skills", "gated-skill"), sourceInfo: { path: skillPath, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
-  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, skipTools: [] as string[], timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
   const pathRules = [{ id: "block-skills", paths: ["**/skills/**"], access: "none" as const, tools: ["read"], action: "confirm" as const }];
   const result = loadSkillBody(skill as any, loadConfig, { pathRules, exemptRules: [], loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, catalogName: "gated-skill", catalogDescription: "Gated", userInvoked: false, contextWindow: 200000, hasImages: false });
   assert.equal(result.skipReason, "load_denied", `expected load_denied, got ${result.skipReason}`);
@@ -3185,7 +3185,7 @@ test("conscience: cumulative maxLoadedBytes limits loads via loadSkillBody", asy
   const { loadSkillBody } = await import("../src/load.js");
   const sp1 = await writeSkillFile("skill-a", "---\nname: skill-a\ndescription: A\n---\n\nBody A.");
   const skill = { name: "skill-a", description: "A", filePath: sp1, baseDir: join(temporary, ".pi", "skills", "skill-a"), sourceInfo: { path: sp1, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
-  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 100, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, skipTools: [] as string[], timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 100, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
   const r1 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });
   assert.ok(r1.body, "first load should succeed");
   const r2 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 90, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });
