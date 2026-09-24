@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildDoneRequest, classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, freshChecks, needsDoneCheck, recordOutcome } from "../src/done.js";
+import { buildDoneRequest, classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, freshChecks, isUiFile, isVisualCheck, needsDoneCheck, recordOutcome, recordUi } from "../src/done.js";
 import type { Judge } from "../src/guard.js";
 import { AttemptWindow, buildStuckRequest, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "../src/stuck.js";
 
@@ -408,4 +408,70 @@ test("lineDiff emits two hunks for differences at line 5 and line 50", () => {
   assert.match(result, /\+ FIRST-CHANGE/);
   assert.match(result, /- line-50/);
   assert.match(result, /\+ SECOND-CHANGE/);
+});
+
+test("isUiFile reads brace alternatives and `!` exclusions; tests of UI code are not UI", () => {
+  const globs = defaultConfig().done.uiFiles;
+  for (const path of ["web/app.css", "/repo/src/App.tsx", "src/pages/index.astro", "lib/widgets/chip.dart", "site/web/app.js", "public/js/menu.js"]) assert.equal(isUiFile(path, globs), true, path);
+  for (const path of ["src/parser.ts", "src/server.js", "README.md", "src/App.test.tsx", "src/row.dom.test.tsx", "test/widgets/chip_test.dart", "tests/web/app.js"]) assert.equal(isUiFile(path, globs), false, path);
+});
+
+test("isVisualCheck counts browser, device, screenshot, and image reads, not mentions of them", () => {
+  const visual = defaultConfig().done.visualTools;
+  const shows = (tool: string, input: Record<string, unknown>, failed = false) => isVisualCheck(tool, input, failed, visual);
+  assert.equal(shows("bash", { command: "agent-browser open http://localhost:3000" }), true);
+  assert.equal(shows("bash", { command: "cd web && PORT=3000 npx playwright test" }), true);
+  assert.equal(shows("bash", { command: "cd app && fvm flutter test test/widget_test.dart" }), true);
+  assert.equal(shows("bash", { command: "xcrun simctl io booted screenshot /tmp/s.png" }), true);
+  assert.equal(shows("bash", { command: "chrome --headless --screenshot=/tmp/s.png http://localhost" }), true);
+  assert.equal(shows("ctx_execute", { language: "shell", code: "agent-browser snapshot -i" }), true);
+  assert.equal(shows("read", { path: "/tmp/shot.PNG" }), true);
+  assert.equal(shows("mcp__chrome_devtools", { tool: "take_screenshot" }), true);
+  assert.equal(shows("mcp", { tool: "navigate_page", args: {} }), true);
+  assert.equal(shows("take_snapshot", {}), true);
+  assert.equal(shows("bash", { command: "agent-browser open http://localhost:3000" }, true), false, "a failed call showed nothing");
+  assert.equal(shows("bash", { command: "gh pr create --title x --body \"see the screenshot\"" }), false, "a PR body is data");
+  assert.equal(shows("bash", { command: "git add web/screenshots/header.png" }), false, "a screenshots path is not a screenshot");
+  assert.equal(shows("bash", { command: "which chromium; ls ~/.cache/ms-playwright" }), false);
+  assert.equal(shows("bash", { command: "npm test" }), false);
+  assert.equal(shows("read", { path: "web/app.css" }), false);
+  assert.equal(shows("mcp__linear", { tool: "list_issues" }), false);
+});
+
+test("recordUi keeps the last UI change until a visual check follows it", () => {
+  const globs = defaultConfig().done.uiFiles;
+  const evidence = emptyEvidence();
+  recordUi(evidence, [], true, globs);
+  assert.equal(evidence.unseenUi, undefined);
+  recordUi(evidence, ["web/app.css"], false, globs);
+  recordUi(evidence, ["src/parser.ts"], false, globs);
+  assert.equal(evidence.unseenUi, "web/app.css", "a non-UI change does not clear it");
+  assert.equal(needsDoneCheck(evidence), true, "no mutation counted, yet the UI change needs proof");
+  recordUi(evidence, [], true, globs);
+  assert.equal(evidence.unseenUi, undefined);
+  assert.equal(needsDoneCheck(evidence), false);
+});
+
+test("evaluateDone: a UI change with no visual check is unverified even when tests pass", async () => {
+  const config = defaultConfig().done;
+  const evidence = emptyEvidence();
+  recordOutcome(evidence, "mutation", {});
+  recordUi(evidence, ["web/app.css"], false, config.uiFiles);
+  recordOutcome(evidence, "check-pass", { command: "npm test" });
+  assert.equal(needsDoneCheck(evidence), true);
+  const verdict = await evaluateDone("restyle the header", "Done, tests pass.", evidence, { config, judge: doneJudge(0.9, 0.9, "complete", 0.1), timeoutMs: 1000 });
+  assert.equal(verdict.unverified, true, "tests do not apply to a style change, the visual check does");
+  assert.equal(verdict.falseClaim, false);
+  assert.equal(verdict.unseenUi, "web/app.css");
+  assert.equal(doneNudge(verdict), "pi-warden: reports completion (0.90) after a UI change with no browser, screenshot, or device check since. You changed `web/app.css` but did not look at the result. Open it in a browser or take a screenshot before calling it done, or say it is unverified.");
+
+  const blocked = await evaluateDone("restyle the header", "Should the header be blue?", evidence, { config, judge: doneJudge(0.9, 0.1, "blocked"), timeoutMs: 1000 });
+  assert.equal(blocked.unverified, false, "a question to the user is not a claim");
+
+  const both = emptyEvidence();
+  recordOutcome(both, "mutation", {});
+  recordUi(both, ["web/app.css"], false, config.uiFiles);
+  const neither = await evaluateDone("restyle the header", "Done.", both, { config, judge: doneJudge(0.9, 0.1, "complete"), timeoutMs: 1000 });
+  assert.deepEqual(neither.reasons, ["reports completion (0.90) after 1 file change with no test, build, or lint run since the last change", "no browser, screenshot, or device check since the last UI change"]);
+  assert.match(doneNudge(neither), /Run the project's tests.*say so explicitly instead of presenting the work as done\. You changed `web\/app\.css`/);
 });

@@ -49,7 +49,16 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
   },
   "security": { "enabled": true, "threshold": 0.7, "maskOutput": true },
   "stuck": { "enabled": true, "window": 12, "minFailures": 3, "cooldown": 3, "sameStrategy": 0.7, "nudge": true },
-  "done": { "enabled": true, "claimsDone": 0.7, "nudge": true },
+  "done": {
+    "enabled": true, "claimsDone": 0.7, "nudge": true, "uiProof": true,
+    "uiFiles": ["**/*.{css,scss,sass,less,html,htm,vue,svelte,jsx,tsx,astro,dart}", "**/web/**/*.js", "**/public/**/*.js", "!**/*.{test,spec}.*", "!**/*_test.dart", "!**/{test,tests,__tests__}/**"],
+    "visualTools": {
+      "commands": ["agent-browser", "playwright", "npx playwright", "flutter test", "fvm flutter test", "idb", "xcrun simctl io"],
+      "commandWords": ["screenshot"],
+      "tools": ["screenshot", "take_snapshot", "navigate"],
+      "images": ["png", "jpg", "jpeg", "webp"]
+    }
+  },
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7, "largeOutput": { "enabled": true, "threshold": 0.85 } },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
   "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
@@ -93,6 +102,9 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `security.maskOutput` | Default `true`. Before the model sees a tool result, replace high-confidence credential values in its text blocks with `[redacted]`: private key blocks, `sk-` keys, `ghp_`, `gho_` and `github_pat_` tokens, `AKIA` keys, `xoxa-`/`xoxb-`/`xoxp-` Slack tokens, JWTs, and `KEY=value` assignments whose name is a credential key and whose value looks like a secret. Test fixtures, documented examples (`AKIAIOSFODNN7EXAMPLE`), and the query signatures of signed URLs stay readable. The banner says how many values were masked. Images and other parts are not changed. `false`, or `security.enabled: false`, shows the value and only announces it. User file only: a project file cannot turn masking off. Masking runs even with the security guard off (`security.enabled: false`); only the user's `security.maskOutput: false` stops it. |
 | `stuck.*` | Window of tool results kept, failures before a check, cooldown between checks, same-strategy threshold. |
 | `done.*` | Completion-claim threshold and whether the agent gets a follow-up turn. |
+| `done.uiProof` | Default `true`. After a change to a `done.uiFiles` path, only a `done.visualTools` call after that change counts as proof; passing tests and builds do not. `false` restores the test/build/lint-only rule. |
+| `done.uiFiles` | Globs for files whose change shows on screen, matched against `write`/`edit` paths and files a `bash` command writes. `{a,b}` alternatives work; a glob that starts with `!` excludes. The defaults exclude test files. |
+| `done.visualTools` | What counts as looking at the result, case-insensitive, successful calls only. `commands`: heads of a shell command segment. `commandWords`: a word that stands alone as a shell argument or flag (`idb screenshot`, `--screenshot`); quoted messages, heredoc bodies, and paths such as `screenshots/` do not count. `tools`: text in a tool name, or in the `tool` an MCP proxy (`mcp`, `mcp__…`) calls. `images`: extensions whose `read` counts. |
 | `context.*` | Compression thresholds, retention confidence, duplicate size, recall tool. |
 | `context.largeOutput.enabled` | Add one question to each judged `bash` request: will the command print far more than the agent needs? Off keeps the question out of the request. Read-only commands (`cat`, `find`, `git log`) skip the judge, so the question does not ride them. |
 | `context.largeOutput.threshold` | P(large output) at or above which the agent is told, once per command family (`npm test`, `git log`, `find`) per session, to redirect or filter the command before it runs one like it again. The call is never held or warned. Default `0.85`. |

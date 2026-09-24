@@ -18,7 +18,7 @@ import { ArmingTracker, unparseableArmingRules } from "./arming.js";
 import * as configModule from "./config.js";
 import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, PACKAGE_NAME, parseConfigValue, projectConfigPath, readUserConfig, setNestedValue, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig, WardenMode } from "./config.js";
-import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
+import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, isVisualCheck, needsDoneCheck, recordOutcome as recordDoneOutcome, recordUi } from "./done.js";
 import type { RunEvidence } from "./done.js";
 import { createdScratch, evaluateAction, formatVerdictTokens, higher, hostPaths, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
@@ -34,7 +34,7 @@ import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
 import { maskSecrets, redact } from "./redact.js";
-import { formatRules, pathNoteSteer, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
+import { formatRules, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
 import type { RulesVerdict } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
@@ -1690,6 +1690,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const patch = content === event.content ? undefined : { content };
     // Checks use the original result, not the excerpts or security banner.
     if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
+    if (config.done.enabled && config.done.uiProof && !failed) {
+      const input = event.input as Record<string, unknown>;
+      const written = event.toolName === "write" || event.toolName === "edit" ? (typeof input.path === "string" ? [input.path] : [])
+        : event.toolName === "bash" && typeof input.command === "string" ? shellWrites(input.command, { home: homedir() }).writes.map(write => write.path) : [];
+      recordUi(evidence, written.map(path => projectPath(path, ctx.cwd) ?? path), isVisualCheck(event.toolName, input, failed, config.done.visualTools), config.done.uiFiles);
+    }
     if (!verdict) return patch;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     if (verdict.source === "repeat" && !verdict.stuck) return patch;

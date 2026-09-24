@@ -35,7 +35,7 @@ Works without any key (offline guards: pattern list, runaway stop, sensitive-pat
 | **Rules** | every `write` and `edit` | Judges against project Markdown rules, quotes the broken rule |
 | **Slop** | code and replies | Names stubs, restating comments, dead code, hedging |
 | **Stuck** | tool results | Repeated failures using the same strategy |
-| **Done-check** | final message | "Done" claims with no test/build/lint behind them |
+| **Done-check** | final message | "Done" claims with no test/build/lint behind them, or UI changes nobody looked at |
 | **Security** | code and output | Hardcoded secrets, injection risks |
 | **Runaway** | reply stream | Stops replies that begin repeating themselves |
 | **Subagent triage** | async child reports | Keeps noisy background work from waking the parent |

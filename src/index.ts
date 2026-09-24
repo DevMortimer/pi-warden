@@ -7,7 +7,7 @@ export { evaluateProse, buildProseRequest, proseQuestions, proseNudge, describeA
 export type { ProseSymptom, ProseVerdict, ProseOptions } from "./prose.js";
 export { AttemptWindow, makeAttempt, resultFailed, resultText, evaluateStuck, buildStuckRequest, stuckQuestions, stuckNudge, formatStuck } from "./stuck.js";
 export type { Attempt, StuckJudgment, StuckVerdict, StuckOptions } from "./stuck.js";
-export { classifyToolResult, recordOutcome, emptyEvidence, freshChecks, needsDoneCheck, finalAssistantText, evaluateDone, buildDoneRequest, doneQuestions, doneNudge, formatDone } from "./done.js";
+export { classifyToolResult, recordOutcome, recordUi, isUiFile, isVisualCheck, emptyEvidence, freshChecks, needsDoneCheck, finalAssistantText, evaluateDone, buildDoneRequest, doneQuestions, doneNudge, formatDone } from "./done.js";
 export type { ToolOutcome, RunEvidence, DoneJudgment, DoneVerdict, DoneOptions } from "./done.js";
 export { evaluateOutput, buildOutputRequest, outputQuestions, compressOutput, saveOutput, securityNotice, outputKey, duplicateNote } from "./output.js";
 export type { Retention, OutputVerdict, OutputOptions } from "./output.js";
@@ -29,7 +29,7 @@ export type { CallOutcome, CallRecord, CallScores, HoldSnapshot, OutcomeVia } fr
 export type { ContextLedgerSnapshot, RecallKind } from "./saver.js";
 export type { ShapeResult } from "./shape.js";
 export { CONFIG_SCHEMA, defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, isRecallTool, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, setNestedValue, getNestedValue, parseConfigValue, PACKAGE_NAME } from "./config.js";
-export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, LargeOutputConfig, RunawayConfig, NotifyConfig, SubagentConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
+export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardConfig, VisualToolsConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, LargeOutputConfig, RunawayConfig, NotifyConfig, SubagentConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
 export type { CommandView } from "./tools.js";
 export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, runawayTokens, rulesTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, SENTENCE_TEMPLATES, pickSentenceTemplate, TOKEN_NAMES } from "./widget.js";

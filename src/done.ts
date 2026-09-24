@@ -1,8 +1,9 @@
 import { ask, choice, noul } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge } from "pi-typesafe";
-import type { DoneGuardConfig } from "./config.js";
-import { isReadOnlyCommand } from "./guard.js";
+import type { DoneGuardConfig, VisualToolsConfig } from "./config.js";
+import { isReadOnlyCommand, stripDataText } from "./guard.js";
 import { redact } from "./redact.js";
+import { matchGlob } from "./rules.js";
 import { commandOf } from "./tools.js";
 import { DEFAULT_TEMPLATES, doneTokens, renderTemplate } from "./widget.js";
 
@@ -50,6 +51,8 @@ export interface RunEvidence {
   mutations: number;
   checks: Array<{ call: string; passed: boolean }>;
   checksBeforeMutation?: number;
+  /** The last UI file changed with no visual check after it. Tests and builds do not show what a page looks like. */
+  unseenUi?: string;
 }
 
 export function emptyEvidence(): RunEvidence {
@@ -66,6 +69,57 @@ export function recordOutcome(evidence: RunEvidence, outcome: ToolOutcome, input
     const call = command !== undefined ? redact(command.length > 200 ? `${command.slice(0, 200)}…` : command) : "check";
     evidence.checks.push({ call, passed: outcome === "check-pass" });
   }
+}
+
+// `{a,b}` alternatives, which the rules glob matcher does not read, as in the default `*.{css,html,…}` UI glob.
+function expandBraces(pattern: string): string[] {
+  const match = /\{([^{}]*)\}/.exec(pattern);
+  if (!match) return [pattern];
+  return match[1]!.split(",").flatMap(option => expandBraces(pattern.slice(0, match.index) + option + pattern.slice(match.index + match[0].length)));
+}
+
+/** A path matches when some glob matches it and no `!` glob does. */
+export function isUiFile(path: string, globs: readonly string[]): boolean {
+  const normalised = path.replace(/\\/g, "/");
+  const include = globs.filter(glob => !glob.startsWith("!")).flatMap(expandBraces);
+  const exclude = globs.filter(glob => glob.startsWith("!")).map(glob => glob.slice(1)).flatMap(expandBraces);
+  return matchGlob(normalised, include) !== undefined && matchGlob(normalised, exclude) === undefined;
+}
+
+function shellSegments(command: string): string[] {
+  return command.split(/\n|;|&&|\|\||\||&/).map(part => part.trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "")).filter(Boolean);
+}
+
+/**
+ * Whether a successful tool call showed the rendered UI: a browser or device command, a screenshot, a browser MCP tool, or
+ * reading an image. A test run proves the code runs; only this proves what the user will see.
+ */
+export function isVisualCheck(tool: string, input: Record<string, unknown>, failed: boolean, visual: VisualToolsConfig): boolean {
+  if (failed) return false;
+  if (tool === "read") {
+    const path = typeof input.path === "string" ? input.path.toLowerCase() : "";
+    return visual.images.some(extension => path.endsWith(`.${extension.toLowerCase()}`));
+  }
+  const view = commandOf(tool, input);
+  if (view) {
+    if (!view.shell) return false;
+    // A PR body, commit message, or heredoc note that mentions a screenshot is not one; nor is a `screenshots/` path.
+    const segments = shellSegments(stripDataText(view.command).text.toLowerCase());
+    const heads = visual.commands.map(command => command.toLowerCase());
+    const words = new Set(visual.commandWords.map(word => word.toLowerCase()));
+    return segments.some(segment => heads.some(head => segment === head || segment.startsWith(`${head} `))
+      || segment.split(/\s+/).some(token => words.has(token.replace(/^-+/, "").replace(/=.*$/, ""))));
+  }
+  // An MCP proxy (`mcp`, `mcp__chrome_devtools`) names the real tool in its input.
+  const names = [tool, /^mcp(?:__|$)/.test(tool) && typeof input.tool === "string" ? input.tool : ""].map(name => name.toLowerCase());
+  return names.some(name => name && visual.tools.some(word => name.includes(word.toLowerCase())));
+}
+
+/** Paths a successful call changed that match the UI globs: `write`/`edit` paths, plus files a shell command writes. */
+export function recordUi(evidence: RunEvidence, changed: readonly string[], visual: boolean, globs: readonly string[]): void {
+  const ui = changed.filter(path => isUiFile(path, globs));
+  if (ui.length) evidence.unseenUi = ui[ui.length - 1]!;
+  else if (visual) delete evidence.unseenUi;
 }
 
 interface MessageLike { role: string; content?: unknown; stopReason?: unknown }
@@ -92,7 +146,7 @@ export function freshChecks(evidence: RunEvidence): RunEvidence["checks"] {
 
 /** The check only makes sense when something changed and nothing proved that change works. */
 export function needsDoneCheck(evidence: RunEvidence): boolean {
-  return evidence.mutations > 0 && !freshChecks(evidence).some(check => check.passed);
+  return (evidence.mutations > 0 && !freshChecks(evidence).some(check => check.passed)) || evidence.unseenUi !== undefined;
 }
 
 export const doneQuestions = {
@@ -135,6 +189,8 @@ export interface DoneVerdict {
   reasons: string[];
   evidence: RunEvidence;
   judgment?: DoneJudgment;
+  /** Set when the claim follows a UI change that nothing showed on screen. */
+  unseenUi?: string;
   error?: string;
   errorCode?: IntegrationErrorCode;
 }
@@ -170,24 +226,33 @@ export async function evaluateDone(task: string | undefined, finalMessage: strin
     model: result.model,
     elapsedMs: result.elapsedMs,
   };
-  const unverified = judgment.claimsDone >= options.config.claimsDone && judgment.outcome !== "blocked" && judgment.verificationApplies >= APPLIES_THRESHOLD;
+  const claimed = judgment.claimsDone >= options.config.claimsDone && judgment.outcome !== "blocked";
   const checks = freshChecks(evidence);
+  const codeUnverified = claimed && evidence.mutations > 0 && !checks.some(check => check.passed) && judgment.verificationApplies >= APPLIES_THRESHOLD;
+  // The file type already says a visual check applies, so `verification_applies` (about tests and builds) does not gate it.
+  const unseenUi = claimed ? evidence.unseenUi : undefined;
+  const unverified = codeUnverified || unseenUi !== undefined;
   // Total checks, not fresh: a false claim is nothing ever run in the run; a stale check is unverified, not a lie.
   const falseClaim = unverified && judgment.claimsVerified >= 0.7 && evidence.checks.length === 0;
   const reasons: string[] = [];
-  if (unverified) {
+  if (codeUnverified) {
     const failed = checks.filter(check => !check.passed).length;
     reasons.push(`reports completion (${judgment.claimsDone.toFixed(2)}) after ${evidence.mutations} file change${evidence.mutations === 1 ? "" : "s"} with ${failed ? `${failed} failed check${failed === 1 ? "" : "s"} and no passing one` : "no test, build, or lint run since the last change"}`);
   }
+  if (unseenUi !== undefined) reasons.push(codeUnverified ? "no browser, screenshot, or device check since the last UI change" : `reports completion (${judgment.claimsDone.toFixed(2)}) after a UI change with no browser, screenshot, or device check since`);
   if (falseClaim) reasons.push(`claims checks passed (${judgment.claimsVerified.toFixed(2)}) but none ran`);
-  return { unverified, falseClaim, reasons, evidence, judgment };
+  return { unverified, falseClaim, reasons, evidence, judgment, ...(unseenUi !== undefined ? { unseenUi } : {}) };
 }
 
 /** Follow-up for the agent: verify or say plainly that nothing was verified. */
 export function doneNudge(verdict: DoneVerdict): string {
   const failed = freshChecks(verdict.evidence).filter(check => !check.passed);
+  const codeUnverified = verdict.unseenUi === undefined
+    || (verdict.evidence.mutations > 0 && !freshChecks(verdict.evidence).some(check => check.passed) && (verdict.judgment?.verificationApplies ?? 1) >= APPLIES_THRESHOLD);
   const detail = failed.length ? `The last check that ran failed: ${failed.at(-1)!.call}. Fix that first.` : "Run the project's tests, build, or lint (whatever exists) on what you changed.";
-  return `pi-warden: ${verdict.reasons.join("; ")}. ${detail} Then report the actual result. If no check exists or can run, say so explicitly instead of presenting the work as done.`;
+  const code = codeUnverified ? ` ${detail} Then report the actual result. If no check exists or can run, say so explicitly instead of presenting the work as done.` : "";
+  const ui = verdict.unseenUi !== undefined ? ` You changed \`${redact(verdict.unseenUi)}\` but did not look at the result. Open it in a browser or take a screenshot before calling it done, or say it is unverified.` : "";
+  return `pi-warden: ${verdict.reasons.join("; ")}.${code}${ui}`;
 }
 
 export function formatDone(verdict: DoneVerdict, template: string = DEFAULT_TEMPLATES.done): string {
