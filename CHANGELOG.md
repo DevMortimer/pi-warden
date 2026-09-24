@@ -6,6 +6,19 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.48.1
+
+### Fixed
+
+- The intent-mismatch question is asked only when the agent stated a plan for the call: the text of the assistant message that makes the call, or of the text-only message right before it with no tool call in between. Before this, a call with no text of its own was judged against the latest assistant text since the user's prompt, often written before several earlier calls. A shell command with a visible effect (a `git` commit, push, merge, tag, or reset, `gh pr`, `gh release`, or `npm publish` in any segment, decided in code before the request) is still judged against the latest assistant text since the prompt, because an unannounced commit or push after an older plan is the mismatch users object to. On the recorded sessions from 2026-09-21 to 2026-09-24, 151 of 163 intent-mismatch notices were judged against stale text; the question would now be asked for 63 of the 163 (8 against the call's own text, 55 visible actions against stale text). A skipped question is one fewer question in the action request.
+
+### Tooling
+
+- `tests/steer-delivery.test.ts` pins that a steer sent from `tool_call` or `tool_result` for the last call of a turn joins the request that carries the tool result and costs no extra model request, so the intent-mismatch notice stays a steer.
+- `scripts/intent-cases.mjs` reads Pi session logs and, for every intent-mismatch notice, classifies where the plan came from: the message that made the call, the text-only message right before it, or text from before earlier tool calls (stale). It also runs the built `assistantPlan` on each call's branch and counts the notices whose question would still be asked. Aggregate counts only; offline.
+
 ### Docs
 
 - README leads with a new image of the self-correction loop and its numbers from the first nine days of use; the headline numbers are updated to match.

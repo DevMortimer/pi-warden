@@ -332,6 +332,35 @@ export function commandFamily(command: string): string | undefined {
   return rest[0] === "run" && word(rest[1]) ? `${head} run ${rest[1]}` : `${head} ${rest[0]}`;
 }
 
+/** Subcommands whose effect others see: history or remote state changes, a pull request, a release, a published package. */
+const VISIBLE_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
+  git: new Set(["push", "commit", "merge", "tag", "reset"]),
+  gh: new Set(["pr", "release"]),
+  npm: new Set(["publish"]),
+};
+
+/**
+ * Whether a shell command has a segment whose effect is visible outside the working tree, decided in code before any
+ * request. Quoted data such as a commit message is blanked first, so a message that mentions `git push` is not a push.
+ */
+export function isVisibleCommand(command: string): boolean {
+  // A substitution or subshell runs its command too: `out=$(git push …)`, `(cd repo && git push)`.
+  return splitShell(stripDataText(command).text).flatMap(segment => segment.split(/\$\(|`|\(/)).some(segment => {
+    const head = headOf(segment);
+    const subcommands = head ? VISIBLE_SUBCOMMANDS[head] : undefined;
+    if (!head || !subcommands) return false;
+    const tokens = segment.trim().split(/\s+/);
+    // `git -C dir push`, `git -c key=value commit`: the option value is not the subcommand.
+    for (let index = tokens.findIndex(token => token.replace(/^.*\//, "") === head) + 1; index < tokens.length; index++) {
+      const token = tokens[index]!;
+      if (token === "-C" || token === "-c" || token === "-R" || token === "--repo") { index++; continue; }
+      if (token.startsWith("-")) continue;
+      return subcommands.has(token.replace(/[)`]+$/, ""));
+    }
+    return false;
+  });
+}
+
 /**
  * Quoted strings replaced by a placeholder; escapes inside double quotes are honoured, single quotes take everything.
  * A double-quoted string that substitutes a command (`"$(...)"`, backticks) executes it, so that string stays visible.

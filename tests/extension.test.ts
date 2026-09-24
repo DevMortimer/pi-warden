@@ -4,11 +4,11 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { Extension, RegisteredCommand } from "@earendil-works/pi-coding-agent";
+import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
 import { defaultConfig } from "../src/config.js";
 import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
-import { _testSetIndexRunning } from "../src/extension.js";
+import { _testSetIndexRunning, assistantPlan } from "../src/extension.js";
 import { indexPath } from "../src/index-cmd.js";
 
 let temporary: string;
@@ -971,7 +971,37 @@ test("trace-only off-task does not soften an independent confirm decision", asyn
   assert.doesNotMatch(blocked?.reason ?? "", /off-task 0\.95/, "the agent does not receive the trace-only reason");
 });
 
-test("the agent's plan comes from the message that makes the call, falls back to its latest text under the prompt, and a mismatch steers", async () => {
+/** A context whose branch is the user's prompt followed by `tail`; only `assistantPlan` reads it. */
+const planOf = (...tail: Array<Record<string, unknown>>) => assistantPlan({ sessionManager: { getBranch: () => [
+  { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Earlier turn text." }] } },
+  { type: "message", message: { role: "user", content: "clean the build" } },
+  ...tail,
+] } } as unknown as ExtensionContext);
+const assistantEntry = (...content: Array<Record<string, unknown>>) => ({ type: "message", message: { role: "assistant", content } });
+const cleanCall = { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm run clean" } };
+
+test("plan: a call whose own message states a plan is judged against that text", () => {
+  assert.equal(planOf(assistantEntry({ type: "text", text: "  Running the clean script now.  " }, cleanCall)), "Running the clean script now.");
+  assert.equal(planOf(
+    assistantEntry({ type: "text", text: "Two steps:" }, cleanCall, { type: "toolCall", id: "call-2", name: "bash", arguments: { command: "ls" } }),
+    { type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: [{ type: "text", text: "ok" }] } },
+  ), "Two steps:", "a sibling's result after the carrier does not hide its text");
+});
+
+test("plan: a text-less call after an earlier tool call gets no plan and no question", () => {
+  const earlierCall = assistantEntry({ type: "text", text: "Let me list build/ first." }, { type: "toolCall", id: "c0", name: "bash", arguments: { command: "ls build" } });
+  const earlierResult = { type: "message", message: { role: "toolResult", toolCallId: "c0", toolName: "bash", content: [{ type: "text", text: "a.js" }] } };
+  assert.equal(planOf(earlierCall, earlierResult, assistantEntry(cleanCall)), undefined);
+  assert.equal(planOf(assistantEntry({ type: "text", text: "Staging only those two:" }), assistantEntry({ type: "toolCall", id: "c0", name: "bash", arguments: { command: "git add a b" } }), earlierResult, assistantEntry(cleanCall)), undefined, "text from before an earlier call is stale");
+  assert.equal(planOf(assistantEntry(cleanCall)), undefined, "no text since the prompt");
+});
+
+test("plan: a call right after a text-only message is judged against that message", () => {
+  assert.equal(planOf(assistantEntry({ type: "text", text: "Now I clean the build." }), { type: "custom_message", customType: "pi-warden-steer", content: "note" }, assistantEntry(cleanCall)), "Now I clean the build.");
+  assert.equal(planOf(assistantEntry({ type: "thinking", thinking: "hmm" }), assistantEntry(cleanCall)), undefined, "a message with no text right before is no plan");
+});
+
+test("the agent's plan comes from the message that makes the call or the text-only message right before it, and a mismatch steers", async () => {
   await grantConsent();
   prompt = "Verify the RPC endpoint end to end";
   const branch = (...tail: Array<Record<string, unknown>>) => context({ sessionManager: { getBranch: () => [
@@ -991,10 +1021,9 @@ test("the agent's plan comes from the message that makes the call, falls back to
   assert.match(sentMessages.at(-1)!.message.content, /plan: Now a live verification step/);
   assert.ok(!sentMessages.at(-1)!.message.content.includes("sk-synthetic"));
 
-  // A tool-calls-only message after a tool result: the latest assistant text since the prompt is the plan.
+  // A tool-calls-only message right after a text-only message: that text is the plan.
   const earlier = branch(
-    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Let me first list what is in build/ before removing anything." }, { type: "toolCall", id: "c0", name: "bash", arguments: { command: "ls build" } }] } },
-    { type: "message", message: { role: "toolResult", toolCallId: "c0", toolName: "bash", content: [{ type: "text", text: "a.js" }] } },
+    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Let me first list what is in build/ before removing anything." }] } },
     { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm run clean" } }] } },
   );
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, intent_mismatch: 0.91 };
@@ -1005,6 +1034,17 @@ test("the agent's plan comes from the message that makes the call, falls back to
   assert.match(steerSent?.message.content ?? "", /^pi-warden: this bash call does something different from what you said you were about to do \(intent mismatch 0\.91\)\. It ran\./);
   assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan\)$/);
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+bash · .*off plan$/, "the mismatch leads the line as a warn chip");
+
+  // A tool-calls-only message after an earlier tool call: the text before that call described it, so no plan, no question.
+  const stale = branch(
+    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Let me first list what is in build/ before removing anything." }, { type: "toolCall", id: "c0", name: "bash", arguments: { command: "ls build" } }] } },
+    { type: "message", message: { role: "toolResult", toolCallId: "c0", toolName: "bash", content: [{ type: "text", text: "a.js" }] } },
+    { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm run clean" } }] } },
+  );
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
+  assert.equal(await toolCall("bash", { command: "npm run clean" }, stale), undefined);
+  assert.ok(!("plan" in requests.at(-1)!.state));
+  assert.ok(!("intent_mismatch" in requests.at(-1)!.questions));
 
   // No assistant text since the prompt: no plan, no question.
   const silent = branch({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm run clean" } }] } });
@@ -1018,8 +1058,40 @@ test("the agent's plan comes from the message that makes the call, falls back to
   assert.match(status, /1 off plan/);
   assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action\);/);
   const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
-  const lines = await readLog(logPath, 3, false);
-  assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined]], "planChars says how often the agent called without a word");
+  const lines = await readLog(logPath, 4, false);
+  assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined], [0, undefined]], "planChars says how often the agent called without a word");
+});
+
+test("plan: a text-less git push after an earlier plan and an earlier tool call is judged against that plan", async () => {
+  await grantConsent();
+  prompt = "Tidy the docs";
+  const push = { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "cd repo && git push origin main" } };
+  const branch = context({ sessionManager: { getBranch: () => [
+    { type: "message", message: { role: "user", content: prompt } },
+    assistantEntry({ type: "text", text: "Committing now." }, { type: "toolCall", id: "c0", name: "bash", arguments: { command: "git commit -m docs" } }),
+    { type: "message", message: { role: "toolResult", toolCallId: "c0", toolName: "bash", content: [{ type: "text", text: "1 file changed" }] } },
+    assistantEntry(push),
+  ] } });
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
+  assert.equal(await toolCall("bash", push.arguments, branch), undefined);
+  assert.equal(requests.at(-1)!.state.plan, "Committing now.");
+  assert.ok("intent_mismatch" in requests.at(-1)!.questions);
+});
+
+test("plan: a text-less npm ci after an earlier plan and an earlier tool call gets no question", async () => {
+  await grantConsent();
+  prompt = "Tidy the docs";
+  const install = { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm ci" } };
+  const branch = context({ sessionManager: { getBranch: () => [
+    { type: "message", message: { role: "user", content: prompt } },
+    assistantEntry({ type: "text", text: "Committing now." }, { type: "toolCall", id: "c0", name: "bash", arguments: { command: "git commit -m docs" } }),
+    { type: "message", message: { role: "toolResult", toolCallId: "c0", toolName: "bash", content: [{ type: "text", text: "1 file changed" }] } },
+    assistantEntry(install),
+  ] } });
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
+  assert.equal(await toolCall("bash", install.arguments, branch), undefined);
+  assert.ok(!("plan" in requests.at(-1)!.state));
+  assert.ok(!("intent_mismatch" in requests.at(-1)!.questions));
 });
 
 test("hold feedback offline: approval, re-plan, and a stop reply label the calls, the trace, the status line, and the session log", async () => {
