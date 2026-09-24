@@ -589,11 +589,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     paint(ctx, config);
     return entry;
   };
-  /** A judged output the saver left whole gets a trace line with its verdict, so the confidence gate can be calibrated. */
-  const recordKeptWhole = (ctx: ExtensionContext, config: WardenConfig, tool: string, verdict: OutputVerdict, prefix = "") => {
-    record(ctx, config, "context", renderTemplate(config.widget.context, { tool, retention: "kept whole" }), [
+  /** A judged output the saver left whole gets a trace line with its verdict, so the confidence gate can be calibrated.
+   *  Trace only: nothing happened to the output, so the status line keeps the last real context event. */
+  const recordKeptWhole = (config: WardenConfig, tool: string, verdict: OutputVerdict, prefix = "") => {
+    trace.push({ at: Date.now(), guard: "context", line: renderTemplate(config.widget.context, { tool, retention: "kept whole" }), details: [
       `${prefix}kept whole: retention ${verdict.retention}; confidence ${verdict.confidence?.toFixed(2)}; format ${verdict.format ?? "generic"}${verdict.formatConfidence === undefined ? "" : ` (${verdict.formatConfidence.toFixed(2)})`}; ${verdict.model}; ${verdict.elapsedMs} ms`,
-    ]);
+    ] });
   };
   /** Labels landed on earlier calls: their trace entries say so and the session log is rewritten. */
   const noteOutcomes = (config: WardenConfig, records: readonly CallRecord[]) => {
@@ -1649,7 +1650,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             noteError(ctx, "Could not store full output; keeping the block unchanged.", undefined);
           }
         }
-        if (!compressed && verdict.confidence !== undefined) recordKeptWhole(ctx, config, event.toolName, verdict, `text block ${textIndex} of ${blockVerdicts.length}: `);
+        if (!compressed && verdict.confidence !== undefined) recordKeptWhole(config, event.toolName, verdict, `text block ${textIndex} of ${blockVerdicts.length}: `);
         if (!replacement && blockNotice) replacement = `${blockNotice}\n\n${blockText}\n\n${blockNotice}`;
         if (replacement) content[index] = { ...part, text: replacement };
       }
@@ -1677,7 +1678,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           noteError(ctx, "Could not store full output; keeping it unchanged.", undefined);
         }
       }
-      if (!compressed && !ctx.signal?.aborted && output.confidence !== undefined) recordKeptWhole(ctx, config, event.toolName, output);
+      if (!compressed && !ctx.signal?.aborted && output.confidence !== undefined) recordKeptWhole(config, event.toolName, output);
     }
     if (key && !earlier) ledger.remember(key, event.toolName, storedPath);
     // The banner in the result already tells the agent, so the notice rides the result content alone and is not also

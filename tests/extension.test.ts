@@ -447,7 +447,7 @@ test("a judged output the saver keeps whole leaves its verdict in the trace, wit
   assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "the output stays whole");
   assert.equal(notices.length, noticesBefore, "no notice");
   assert.equal(sentMessages.length, 0, "no steer");
-  assert.ok(widgets.at(-1)?.some(line => /context\s+bash · kept whole/.test(line)));
+  assert.ok(!widgets.some(lines => lines?.some(line => /kept whole/.test(line))), "the status line does not change");
   const first = "first block\n".repeat(1000);
   const last = "last block!\n".repeat(1000);
   await fire("tool_result", { toolName: "read", input: {}, toolCallId: "mixed-whole", isError: false, content: [{ type: "text", text: first }, { type: "text", text: last }] });
@@ -455,6 +455,7 @@ test("a judged output the saver keeps whole leaves its verdict in the trace, wit
   const trace = sentMessages.at(-1)!.message.content;
   assert.match(trace, /kept whole: retention all; confidence 0\.20; format \w+ \(0\.80\); [^;]+; \d+ ms/, "retention, confidence, format, and format confidence are traced");
   assert.match(trace, /text block 1 of 2: kept whole: retention all[\s\S]*text block 2 of 2: kept whole: retention all/, "each kept block gets its own line");
+  assert.ok(!widgets.some(lines => lines?.some(line => /kept whole/.test(line))), "nor for kept blocks");
   // Below tailMinChars the output is never judged for retention, so nothing is traced.
   const entries = trace.match(/kept whole:/g)!.length;
   assert.equal(await toolResult("bash", { command: "ls" }, "a\nb\n", false), undefined);
