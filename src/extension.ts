@@ -1419,9 +1419,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const config = configFor(ctx);
     if (!config.enabled) return;
     // High-confidence credential values are masked before any other rewrite, so neither the model nor a stored copy
-    // sees them. Detection below still reads the original text, so the banner names what was masked.
+    // sees them. Detection below still reads the original text, so the banner names what was masked. Masking is local
+    // and sends nothing, so it runs with the security guard off; only the user's `security.maskOutput` stops it.
     const rawTexts = event.content.filter(part => part.type === "text").map(part => part.text ?? "");
-    const masking = config.security.enabled && config.security.maskOutput ? rawTexts.map(maskSecrets) : [];
+    const masking = config.security.maskOutput ? rawTexts.map(maskSecrets) : [];
     const maskedCount = masking.reduce((sum, block) => sum + block.masked, 0);
     let maskIndex = 0;
     const maskedContent = maskedCount ? event.content.map(part => part.type === "text" ? { ...part, text: masking[maskIndex++]!.text } : part) : event.content;

@@ -468,7 +468,8 @@ test("secret warnings work offline; disabled output guards and failed requests p
   // Talk about credentials is not a credential.
   assert.equal(await toolResult("read", { path: "src/output.ts" }, "export interface OutputVerdict {\n  secret: boolean;\n  token: string;\n}\nconst savedKey = process.env.TYPESAFE_API_KEY;", false), undefined);
   await writeFile(configPath(), JSON.stringify({  typesafe: true, security: { enabled: false }, context: { enabled: false } , ...STACK_BAR }));
-  assert.equal(await toolResult("read", {}, "TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", false), undefined);
+  const guardOff = await toolResult("read", {}, "TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", false) as { content: Array<{ text: string }> };
+  assert.equal(guardOff.content[0]!.text, "TOKEN=[redacted]", "masked with the security guard off, and no banner");
   await grantConsent();
   failNetwork = true;
   assert.equal(await toolResult("read", {}, "safe operational output\n".repeat(1000), false), undefined);
@@ -507,6 +508,25 @@ test("security.maskOutput false leaves the result text unchanged", async () => {
   const result = await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, key, false) as { content: Array<{ text: string }> };
   assert.ok(result.content[0]!.text.includes(key), "the value is shown as before");
   assert.match(result.content[0]!.text, /Possible credentials in this output: do not echo or commit them; use redacted values/, "today's banner");
+});
+
+test("a project file with security.enabled false still masks a real-shaped key in a tool result", async () => {
+  const projectPath = join(temporary, ".pi", "pi-warden.json");
+  await mkdir(join(temporary, ".pi"), { recursive: true });
+  try {
+    await writeFile(projectPath, JSON.stringify({ security: { enabled: false } }));
+    const key = projectKey();
+    const result = await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, `${key}\n`, false) as { content: Array<{ text: string }> };
+    assert.equal(result.content[0]!.text, "[redacted]\n", "masked, and no banner: the banner follows security.enabled");
+  } finally {
+    await rm(projectPath, { force: true });
+  }
+});
+
+test("the user file with security.maskOutput false turns masking off even with the security guard off", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: false, security: { enabled: false, maskOutput: false }, ...STACK_BAR }));
+  const key = projectKey();
+  assert.equal(await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, key, false), undefined, "content unchanged");
 });
 
 test("an API response with S3 presigned upload URLs earns no credential notice and is not masked", async () => {
