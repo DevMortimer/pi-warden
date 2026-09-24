@@ -11,6 +11,7 @@ import type { TaskSpine } from "./shape.js";
 import { globToRegExp } from "./rules.js";
 import type { RulesSourceConfig } from "./rules.js";
 import { resolveRulesFile } from "./rules-file.js";
+import { shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
@@ -109,6 +110,8 @@ export interface ActionSummary {
   input?: string;
   /** Present when part of the command is data (a heredoc body, a quoted message), so a destructive string inside it is payload. */
   dataText?: string;
+  /** Files a bash command writes with content literal in the command; `excerpt` then holds that content. */
+  writes?: string[];
 }
 
 export type ScopeLabel = "expected_step" | "plausible_side_step" | "unrelated" | "unclear";
@@ -1391,6 +1394,11 @@ export function describeAction(tool: string, input: Record<string, unknown>, cwd
     summary.command = redact(truncate(view.command, COMMAND_LIMIT));
     // Jev sees the full text; this names the part of it that is written or printed rather than executed.
     if (stripDataText(view.command).stripped) summary.dataText = "heredoc bodies and quoted arguments of echo/printf/grep/git commit in this command are text that is written, printed, searched, or recorded, not executed";
+    const written = tool === "bash" ? shellWrites(view.command, { home: homedir() }).writes : [];
+    if (written.length) {
+      summary.writes = written.map(write => `${write.append ? "appends to" : "writes"} ${displayPath(write.path, cwd).path}`);
+      summary.excerpt = redact(sample(written.map(write => write.content).join("\n"), EXCERPT_LIMIT));
+    }
   }
   if (typeof input.path === "string" && input.path.trim() && tool !== "ctx_execute_file") {
     const shown = displayPath(input.path, cwd);
@@ -1645,7 +1653,8 @@ export function describePlan(plan: string | undefined): string | undefined {
 }
 
 export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; spine?: TaskSpine | undefined; largeOutput?: boolean } = {}) {
-  const wantSlop = extras.slop && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary);
+  const writesContent = (summary.tool === "write" || summary.tool === "edit" || summary.writes !== undefined) && hasContent(summary);
+  const wantSlop = extras.slop && writesContent;
   const previous = (extras.previousActions ?? []).slice(-PREVIOUS_ACTIONS_LIMIT).map(action => ({ ...action, ...(action.command !== undefined ? { command: truncate(action.command, PREVIOUS_COMMAND_LIMIT) } : {}) }));
   const plan = describePlan(extras.plan);
   const violationQuestions = extras.violations?.length ? violationJudgmentQuestions(extras.violations) : {};
@@ -1666,7 +1675,7 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
       ...(extras.floorHits ? { floor_hits: extras.floorHits } : {}),
 
     },
-    questions: { ...shouldProceedQuestion, ...questions, ...(summary.command !== undefined ? visibleQuestion : {}), ...(plan ? intentQuestion : {}), ...(extras.largeOutput && summary.tool === "bash" ? largeOutputQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && (summary.tool === "write" || summary.tool === "edit") && hasContent(summary) ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}), ...violationQuestions, ...(extras.questions ?? {}) },
+    questions: { ...shouldProceedQuestion, ...questions, ...(summary.command !== undefined ? visibleQuestion : {}), ...(plan ? intentQuestion : {}), ...(extras.largeOutput && summary.tool === "bash" ? largeOutputQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && writesContent ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}), ...violationQuestions, ...(extras.questions ?? {}) },
   };
 }
 

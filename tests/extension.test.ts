@@ -1578,6 +1578,42 @@ test("rules: a write in a project with pi-warden.md gets its own request beside 
   }
 });
 
+test("rules: a heredoc or echo write in bash is judged as a write before the call; a skipped form leaves a trace note", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  const rulesFile = join(temporary, "pi-warden.md");
+  try {
+    await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
+    nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step", slop_stub: 0.1, slop_hedging: 0.1, slop_comments: 0.1, slop_dead: 0.1, security_risk: 0.9, "rule_no-console-statements": "violation" };
+    const command = "cat > src/h.ts <<'EOF'\nexport const h = () => console.log(1);\nEOF\necho 'export const k = \"sk\";' >> src/k.ts";
+    assert.equal(await toolCall("bash", { command }), undefined, "steers never hold");
+    const rules = requests.filter(request => "rule_no-console-statements" in request.questions);
+    assert.deepEqual(rules.map(request => [request.state.path, request.state.content]), [["src/h.ts", "export const h = () => console.log(1);\n"], ["src/k.ts", "export const k = \"sk\";\n"]], "one rules request per target, as for a write");
+    const action = requests.find(request => "irreversible" in request.questions)!;
+    assert.ok("slop_stub" in action.questions && "security_risk" in action.questions, "slop and security ride the bash action request");
+    assert.equal(requests.length, 3, "no request beyond the action request and one rules request per written file");
+    const told = sentMessages.map(message => message.message.content).join("\n");
+    assert.match(told, /security weakness/);
+    assert.match(told, /the content just written to src\/h\.ts violates project rule/);
+    assert.match(told, /the content just written to src\/k\.ts violates project rule/);
+
+    nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step" };
+    requests.length = 0;
+    await toolCall("bash", { command: "git show HEAD:src/h.ts | tee src/h.ts && echo \"$TOKEN\" > .env" });
+    assert.equal(requests.filter(request => Object.keys(request.questions).some(key => key.startsWith("rule_"))).length, 0, "no rules request for content the command does not hold");
+
+    await runCommand("trace", context({ hasUI: false }));
+    const trace = sentMessages.at(-1)!.message.content;
+    assert.match(trace, /rules · bash write src\/h\.ts · 1 rules · No console statements 0\.80 · violation/);
+    assert.match(trace, /rules · bash append src\/k\.ts · 1 rules · No console statements 0\.80 · violation/);
+    assert.match(trace, /from bash: echo appended to \(only the appended text is judged\) src\/k\.ts/);
+    assert.match(trace, /rules · bash src\/h\.ts, \.env · skipped/);
+    assert.match(trace, /shell write not judged \(src\/h\.ts\): the content arrives through a pipe/);
+    assert.match(trace, /shell write not judged \(\.env\): the content uses shell expansion/);
+  } finally {
+    await rm(rulesFile, { force: true });
+  }
+});
+
 test("a held write gets no rules or slop steer; the approved retry is judged again and gets its own", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
