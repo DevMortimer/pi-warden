@@ -589,6 +589,47 @@ test("status counts steers per guard, so a noisy guard has a name", async () => 
   } finally { await rm(rulesFile, { force: true }); }
 });
 
+test("rules past the cap: one notice per session names the rules file and the first dropped rule", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  const rulesFile = join(temporary, "pi-warden.md");
+  try {
+    await writeFile(rulesFile, Array.from({ length: 40 }, (_, index) => `# Rule ${index + 1}\nBody ${index + 1}.`).join("\n\n"));
+    nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step" };
+    const capped = (text: string) => /not judged, past the 31-question cap/.test(text);
+    await toolCall("write", { path: join(temporary, "src", "first.ts"), content: "export const first = 1;" });
+    const rulesRequest = requests.find(request => "rule_rule-1" in request.questions)!;
+    assert.equal(Object.keys(rulesRequest.questions).filter(key => key.startsWith("rule_")).length, 31);
+    const shown = notices.filter(notice => capped(notice.text));
+    assert.equal(shown.length, 1);
+    assert.match(shown[0]!.text, /pi-warden\.md/);
+    assert.match(shown[0]!.text, /rule-32/);
+    assert.match(shown[0]!.text, /9 rules/);
+    await toolCall("write", { path: join(temporary, "src", "second.ts"), content: "export const second = 2;" });
+    assert.equal(notices.filter(notice => capped(notice.text)).length, 1, "not repeated in the same session");
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /9 past the question cap from rule-32/);
+  } finally { await rm(rulesFile, { force: true }); }
+});
+
+test("rules past the cap: a write with notices off does not use up the once-per-session notice", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: true }, ...STACK_BAR }));
+  const rulesFile = join(temporary, "pi-warden.md");
+  try {
+    await writeFile(rulesFile, Array.from({ length: 40 }, (_, index) => `# Rule ${index + 1}\nBody ${index + 1}.`).join("\n\n"));
+    await sessionStart();
+    nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step" };
+    const capped = (text: string) => /not judged, past the 31-question cap/.test(text);
+    await toolCall("write", { path: join(temporary, "src", "quiet.ts"), content: "export const quiet = 1;" });
+    assert.equal(notices.filter(notice => capped(notice.text)).length, 0, "no notice with notices off");
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+    await toolCall("write", { path: join(temporary, "src", "loud.ts"), content: "export const loud = 2;" });
+    const shown = notices.filter(notice => capped(notice.text));
+    assert.equal(shown.length, 1, "the first shown notice comes on the later write");
+    assert.match(shown[0]!.text, /pi-warden\.md/);
+    assert.match(shown[0]!.text, /rule-32/);
+  } finally { await rm(rulesFile, { force: true }); }
+});
+
 test("subagent reports: silent append by default, one batched wake for a report that names trouble", async () => {
   await grantConsent();
   const failure = "Background tasks completed (1): **explorer**\n\n1. explorer\nResult: the migration failed with exit code 1\nParallel handoff: /tmp/handoff.md";

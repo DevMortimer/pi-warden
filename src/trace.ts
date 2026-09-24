@@ -122,7 +122,7 @@ export function proseDetails(verdict: ProseVerdict, reply: string, audience: str
 }
 
 export function rulesDetails(verdict: RulesVerdict, told?: string): string[] {
-  const lines = [`${verdict.tool} ${verdict.path}; rules from ${verdict.sources.join(", ") || "nowhere"}${verdict.aggregate ? " (judged as one document)" : ""}; ${verdict.asked} question${verdict.asked === 1 ? "" : "s"}`];
+  const lines = [`${verdict.tool} ${verdict.path}; rules from ${verdict.sources.join(", ") || "nowhere"}${verdict.aggregate ? " (judged as one document)" : ""}; ${verdict.asked} question${verdict.asked === 1 ? "" : "s"}${verdict.dropped ? `; ${verdict.dropped} past the question cap from ${verdict.firstDropped}` : ""}`];
   if (verdict.scores?.length) lines.push(`jev: ${verdict.scores.map(score => `${score.name} ${score.outcome.replace(/_/g, " ")} ${percent(score.violation)}`).join(" · ")}${verdict.model ? ` · ${verdict.model} · ${verdict.elapsedMs} ms` : ""}`);
   if (verdict.findings.length) lines.push(`violations: ${verdict.findings.map(finding => `${finding.name} (${percent(finding.violation)})`).join("; ")}${verdict.editId ? ` in ${verdict.editId.replace("_", " ")}` : ""}`);
   if (verdict.skippedReason) lines.push(`skipped: ${verdict.skippedReason}`);
