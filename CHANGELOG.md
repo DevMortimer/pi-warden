@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.50.1
+
 ### Changed
 
 - `/warden trace` sends the trace as text whenever `PI_WARDEN_TRACE_DIR` is set to an absolute path (the host asked for the trace file), whether or not the host built the sidebar. Before this, the text went out only when the sidebar component was never built, so a host without a terminal UI that builds components would get no trace.
