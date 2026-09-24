@@ -6,16 +6,25 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
-
-## 0.59.4
-
 ### Fixed
 
 - Shell writes that gave neither a judged write nor a skip are now judged. `exec > f; echo x` judges the text the later commands print into `f`; a redirected `{ echo x; } > f` or `(echo x) > f` group judges the text its commands print, and a group that also runs a program is skipped with a reason; `env echo x > f` treats `env` as a wrapper; a target such as `/dev/../tmp/p/f` is normalized before the `/dev/` test; a partly quoted heredoc delimiter (`<<E"OF"`) ends at `EOF` and keeps the body literal, as in bash.
 - One bash command no longer starts one rules request per write. Writes to the same file are joined into one request (40 `>>` appends to one file are one request), and past five files a command writes, the rest are recorded in the trace as skipped. The action request lists each file once.
 - The done-check no longer counts `grep -rn screenshot src`, `idb list-targets`, or `flutter test test/unit/x_test.dart` as visual proof. A `done.visualTools.commandWords` word counts only after a `commands` head, `flutter test` counts only for an `integration_test/` or golden path (or `--update-goldens`), and `idb` only for its `screenshot` or `ui` subcommand. A browser command that is not a `commands` head (`chrome --headless --screenshot=…`) no longer counts; add it to `done.visualTools.commands` to count it.
 - The conscience now drops camelCase destructive tools (`deleteIssue`, `dropTable`, `mcp__db__truncateTable`) and tools whose name or leading description verb is `kill`, `force`, `uninstall`, `revoke`, `erase`, or `clear` (`kill_process`, `force_push`, `uninstall_package`).
+
+## 0.59.4
+
+### Fixed
+
+- A prompt no longer authorizes a recursive `rm` of `/`, `.`, `./`, `..`, `~`, `*`, or `$HOME`. Before, "Clean up build/ please." released the hold on `rm -rf /`: the target `/` was found in `build/`. The `rm-recursive-dangerous-target` hit is now never authorized by a prompt. A path the prompt authorizes must appear as a whole word (a space, quote, bracket, or punctuation before and after it), so `old/build` and `build.gradle` no longer authorize `rm -rf build`, and a root-like, home, variable, or one-character target is never matched.
+- `git grep` takes the read-only fast path only with listed flags. `--open=sh` (git accepts any abbreviation of `--open-files-in-pager`) and `-O` bundled after other flags (`-lOnode`) run a program on the matched files, and both skipped the judge.
+- The `/warden index` directory is a host path only when neither it nor a directory between it and Pi's agent directory is a symlink, and its real path is inside the agent directory. A symlinked index directory could make the home directory a host path, so an overwrite of a shell profile was not held.
+- The read-only fast path no longer takes commands that write a file named in their arguments: `sort -o`, `uniq` with an output file, `tree -o` and `tree -R`, and `xxd -r` or `xxd` with an output file.
+
+### Tests
+
+- Tests for each case above: the root-like `rm` prompts, the `git grep` pager forms and common safe flags, a symlinked index directory, and the writing forms of `sort`, `uniq`, `tree`, and `xxd`.
 
 ## 0.59.3
 

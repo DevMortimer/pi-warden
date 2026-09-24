@@ -581,8 +581,30 @@ export function hostPaths(env: NodeJS.ProcessEnv = process.env): string[] {
  * other extensions' data.
  */
 export function wardenHostPaths(env: NodeJS.ProcessEnv = process.env): string[] {
-  const index = realTarget(indexDir(env));
+  const index = safeIndexDir(env);
   return [...new Set([...hostPaths(env), ...(index ? [index] : [])])];
+}
+
+/**
+ * The real index directory, or undefined when a symlink could move it: the index directory or a directory between it
+ * and the agent directory is a symlink, or its real path is not inside the real agent directory.
+ */
+function safeIndexDir(env: NodeJS.ProcessEnv): string | undefined {
+  const index = resolve(indexDir(env));
+  // indexDir is `<agent dir>/pi-warden/index`.
+  const agent = dirname(dirname(index));
+  for (let dir = index; dir !== agent && dirname(dir) !== dir; dir = dirname(dir)) {
+    try {
+      if (lstatSync(dir).isSymbolicLink()) return undefined;
+    } catch (error) {
+      // Not created yet: realTarget resolves what exists above it.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+    }
+  }
+  const real = realTarget(index);
+  const realAgent = realTarget(agent);
+  if (!real || !realAgent || !real.startsWith(realAgent + sep)) return undefined;
+  return real;
 }
 
 /** Whether a target lies in a host path, after `..` and symlinks are resolved. An unresolvable target is not in one. */
@@ -1396,6 +1418,61 @@ function isReadOnlySed(segment: string): boolean {
   return quiet && scripts === 1 && script !== undefined && isLiteralWord(script.raw) && SED_PRINT.test(script.word);
 }
 
+// `git grep` flags that only choose what is searched and how matches print. `-O`/`--open-files-in-pager` runs a program
+// and git accepts any unambiguous abbreviation of a long option (`--open=sh`), so a flag not listed here fails.
+const GIT_GREP_SHORT = new Set("nlLiIwcEFPGvhHoqaWz0123456789");
+/** Short flags whose value is the rest of the word or the next word. */
+const GIT_GREP_SHORT_VALUE = new Set("ABCefm");
+const GIT_GREP_LONG = new Set([
+  "line-number", "files-with-matches", "name-only", "files-without-match", "ignore-case", "word-regexp", "count", "extended-regexp",
+  "basic-regexp", "fixed-strings", "perl-regexp", "invert-match", "heading", "break", "color", "no-color", "cached", "untracked",
+  "no-index", "recurse-submodules", "max-depth", "context", "after-context", "before-context", "function-context", "show-function",
+  "all-match", "and", "or", "not", "full-name", "null", "only-matching", "column", "quiet", "text", "max-count", "threads",
+  "exclude-standard", "no-exclude-standard", "textconv", "no-textconv", "no-recursive", "recursive",
+]);
+
+/** The words after `git grep` use only listed flags. Words after `--` are pathspecs. */
+function isReadOnlyGitGrep(words: readonly string[]): boolean {
+  for (let k = 0; k < words.length; k++) {
+    const raw = words[k]!;
+    if (raw === "--") return true;
+    // The shell removes quotes and backslashes, so `'-O'sh` reaches git as `-Osh`.
+    const word = raw.replace(/["'\\]/g, "");
+    if (!word.startsWith("-") || word === "-") continue;
+    if (word.startsWith("--")) {
+      if (!GIT_GREP_LONG.has(word.slice(2).replace(/=.*$/s, ""))) return false;
+      continue;
+    }
+    for (let c = 1; c < word.length; c++) {
+      const flag = word[c]!;
+      if (GIT_GREP_SHORT_VALUE.has(flag)) { if (c === word.length - 1) k++; break; }
+      if (!GIT_GREP_SHORT.has(flag)) return false;
+    }
+  }
+  return true;
+}
+
+/** Operands of a command: words that are not flags, skipping the value of each flag in `valued`. */
+function operandsOf(words: readonly string[], valued: ReadonlySet<string>): string[] {
+  const operands: string[] = [];
+  for (let k = 0; k < words.length; k++) {
+    const word = words[k]!;
+    if (word === "--") { operands.push(...words.slice(k + 1)); break; }
+    if (word.startsWith("-") && word !== "-") { if (valued.has(word)) k++; continue; }
+    operands.push(word);
+  }
+  return operands;
+}
+
+/** Listed commands that write a file named in their arguments: `sort -o`, `uniq in out`, `tree -o`/`-R`, `xxd -r` or `xxd in out`. */
+function writesOutputFile(head: string, words: readonly string[]): boolean {
+  if (head === "sort") return words.some(word => /^-[A-Za-z]*o|^--o/.test(word));
+  if (head === "tree") return words.some(word => /^-[A-Za-z]*[oR]|^--o/.test(word));
+  if (head === "uniq") return operandsOf(words, new Set(["-f", "-s", "-w"])).length > 1;
+  if (head === "xxd") return words.some(word => /^-[A-Za-z]*r|^--?revert/.test(word)) || operandsOf(words, new Set(["-c", "-g", "-l", "-o", "-s", "-n", "-cols", "-len", "-seek", "-groupsize", "-name"])).length > 1;
+  return false;
+}
+
 export function isReadOnlyCommand(command: string): boolean {
   // `<(...)` runs its body like `$(...)` does.
   if (!command.trim() || /\$\(|`|<\(/.test(command)) return false;
@@ -1414,8 +1491,9 @@ export function isReadOnlyCommand(command: string): boolean {
       const rest = tokens.slice(index + 1).join(" ");
       const sub = tokens[index + 1];
       if (!sub) return false;
-      // `--output` makes log and diff write a file; `-O` makes grep run a pager program.
-      if (/(?:^|\s)(?:--output\b|--open-files-in-pager\b|-O)/.test(rest)) return false;
+      // `--output` makes log and diff write a file.
+      if (/(?:^|\s)--output\b/.test(rest)) return false;
+      if (sub === "grep") { if (!isReadOnlyGitGrep(tokens.slice(index + 2))) return false; continue; }
       if (READ_ONLY_GIT_LIST.has(sub)) { if (tokens[index + 2] !== "list") return false; continue; }
       if (sub === "branch") { if (/\s-[a-zA-Z]*[dDmMcCu]|--(?:delete|move|copy|set-upstream|unset-upstream|edit-description)/.test(` ${rest}`)) return false; continue; }
       if (sub === "remote") { if (tokens.slice(index + 2).some(token => !token.startsWith("-"))) return false; continue; }
@@ -1426,6 +1504,7 @@ export function isReadOnlyCommand(command: string): boolean {
     }
     if (head === "find" && /-(?:delete|exec\w*|ok\w*|fprint\w*|fls)\b/.test(segment)) return false;
     if (head === "sed") { if (!isReadOnlySed(segment)) return false; continue; }
+    if (writesOutputFile(head, tokens.slice(index + 1))) return false;
     if (!READ_ONLY_COMMANDS.has(head)) return false;
   }
   return true;
@@ -2158,16 +2237,18 @@ export function scopeMatches(prompt: string, scope: ViolationScope): boolean {
   if (!scope.paths?.length) return true; // no file paths = verb alone determines authorization
   const lower = prompt.toLowerCase();
   return scope.paths.every(p => {
+    // A root-like target (`/`, `.`, `./*`, `..`, `~`, `$HOME`) or a one-character one is found in almost any prompt.
+    if (UNSCOPED_TARGET.test(p.replace(/\/+$/, ""))) return false;
     const lowerPath = p.toLowerCase();
-    // Exact path match: the full path appears in the prompt, not as a prefix of a longer
-    // path. "eval/reports" must NOT match "eval/reports-old".
+    // Exact path match: the full path appears in the prompt as a whole word, not inside a longer
+    // path. "eval/reports" must NOT match "eval/reports-old" or "old/eval/reports".
     const checkExact = (haystack: string, needle: string): boolean => {
-      const i = haystack.indexOf(needle);
-      if (i === -1) return false;
-      const afterIdx = i + needle.length;
-      if (afterIdx >= haystack.length) return true;
-      const c = haystack.charCodeAt(afterIdx);
-      return c === 0x20 || c === 0x2f || c === 0x2c;
+      for (let i = haystack.indexOf(needle); i !== -1; i = haystack.indexOf(needle, i + 1)) {
+        if (i > 0 && !PATH_BEFORE.test(haystack[i - 1]!)) continue;
+        const after = haystack.slice(i + needle.length);
+        if (after === "" || PATH_AFTER.test(after)) return true;
+      }
+      return false;
     };
     if (checkExact(lower, lowerPath)) return true;
     // Trailing slash in path: also match when prompt omits it
@@ -2184,7 +2265,7 @@ export function scopeMatches(prompt: string, scope: ViolationScope): boolean {
  * Scope matching for command-scoped violations requires the full command text.
  * Scope matching for path-scoped violations requires every path to appear exactly. */
 export function authorize(prompt: string, violation: Violation): Authorization {
-  if (!isAuthEligible(violation.severity)) return { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
+  if (!isAuthEligible(violation.severity) || NEVER_AUTHORIZED.has(violation.patternFamily ?? violation.id)) return { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
   const verbs = ACTION_VERBS[violation.patternFamily ?? violation.id] ?? [];
   const actionMatched = verbs.some(v => prompt.toLowerCase().includes(v));
   if (!actionMatched) return { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
@@ -2193,6 +2274,18 @@ export function authorize(prompt: string, violation: Violation): Authorization {
   const scopeMatched = scopeMatches(prompt, violation.scope ?? {});
   return { authorized: actionMatched && scopeMatched, actionMatched, scopeMatched, negated: false };
 }
+
+/** Hits no prompt authorizes: a recursive rm of `/`, `~`, `$HOME`, a parent, or a path outside the project. */
+const NEVER_AUTHORIZED = new Set(["rm-recursive-dangerous-target"]);
+/** Targets too short or too general to name in a prompt: empty or one character, only `.`, `/`, `~`, `*`, or home or variable based. */
+const UNSCOPED_TARGET = /^(?:.?|[./~*]+|~.*|.*\$.*)$/s;
+/** What may stand before a path named in the prompt: the start, a space, a quote, a bracket, or punctuation. */
+const PATH_BEFORE = /[\s"'`(\[,:;]/;
+/**
+ * What may follow it: a slash, a space, a quote, a bracket, or punctuation that ends the word (`build.` but not
+ * `build.gradle`). Not `?`: "Remove tmp?" asks, it does not authorize.
+ */
+const PATH_AFTER = /^(?:[\s/"'`)\],:;!]|\.(?:$|\s))/;
 
 function collapseSpace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
