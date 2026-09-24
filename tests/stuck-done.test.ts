@@ -4,7 +4,7 @@ import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
 import { buildDoneRequest, classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, freshChecks, needsDoneCheck, recordOutcome } from "../src/done.js";
 import type { Judge } from "../src/guard.js";
-import { AttemptWindow, buildStuckRequest, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "../src/stuck.js";
+import { AttemptWindow, buildStuckRequest, evaluateStuck, formatStuck, makeAttempt, quickRepeatNudge, resultFailed, stuckDiff, stuckNudge } from "../src/stuck.js";
 
 const text = (value: string) => [{ type: "text", text: value }];
 const stuckJudge = (sameStrategy: number, approachChange: number, progress: number) => {
@@ -191,6 +191,89 @@ test("evaluateStuck returns a churn verdict when the same target is called enoug
   assert.match(verdict.reasons[0] ?? "", /5 times with changing output/, "the reason names the call count");
   assert.match(stuckNudge(verdict), /keeps changing but the target stays the same/, "the nudge tells the agent to act or switch");
   assert.match(formatStuck(verdict), /churn \u00b7 stuck$/, "the widget renders the churn flag");
+});
+
+test("quickRepeat fires on the 2nd identical failure with nothing changed between, once per key", async () => {
+  const config = defaultConfig().stuck;
+  const window = new AttemptWindow(config.window);
+  const missing = "ENOENT: no such file or directory, access '/tmp/shot.png'";
+  window.push(makeAttempt("read", { path: "/tmp/shot.png" }, text(missing), true));
+  assert.equal(window.quickRepeat(), undefined, "a first call is not a repeat");
+  window.push(makeAttempt("bash", { command: "ls /tmp" }, text("a.txt"), false));
+  window.push(makeAttempt("read", { path: "/tmp/shot.png" }, text(missing), true));
+  const repeat = window.quickRepeat();
+  assert.ok(repeat);
+  assert.equal(repeat.callsAgo, 2);
+  assert.equal(quickRepeatNudge(repeat), "pi-warden: you already ran `read /tmp/shot.png`; it failed the same way: ENOENT: no such file or directory, access '/tmp/shot.png'. Change something before running it again.");
+  window.push(makeAttempt("read", { path: "/tmp/shot.png" }, text(missing), true));
+  assert.equal(window.quickRepeat(), undefined, "fires once per key");
+  assert.equal(window.shouldJudge(config), true, "the 3rd identical failure still reaches the stuck check");
+  const verdict = await evaluateStuck(window, "look at the screenshot", { config, timeoutMs: 1000 });
+  assert.equal(verdict.stuck, true);
+  assert.deepEqual(verdict.reasons, ["the same call failed 3 times with the same output"]);
+  window.reset();
+  window.push(makeAttempt("read", { path: "/tmp/shot.png" }, text(missing), true));
+  window.push(makeAttempt("read", { path: "/tmp/shot.png" }, text(missing), true));
+  assert.ok(window.quickRepeat(), "a reset window may fire again");
+});
+
+test("quickRepeat stays quiet after a change, on a changed error, and for polling", () => {
+  const window = new AttemptWindow(12);
+  window.push(makeAttempt("bash", { command: "npm test" }, text("1 failing"), true));
+  window.push(makeAttempt("edit", { path: "src/a.ts", oldText: "a", newText: "b" }, text("ok"), false));
+  window.push(makeAttempt("bash", { command: "npm test" }, text("1 failing"), true));
+  assert.equal(window.quickRepeat(), undefined, "an edit between the calls resets the check");
+  window.push(makeAttempt("bash", { command: "npx prettier --write src" }, text("done"), false));
+  window.push(makeAttempt("bash", { command: "npm test" }, text("1 failing"), true));
+  assert.equal(window.quickRepeat(), undefined, "a command that is not read-only may have changed state");
+  window.push(makeAttempt("edit", { path: "src/a.ts", oldText: "x", newText: "y" }, text("oldText not found"), true));
+  window.push(makeAttempt("bash", { command: "npm test" }, text("1 failing"), true));
+  assert.equal(window.quickRepeat(), undefined, "a failed edit is not provably read-only either");
+  window.push(makeAttempt("bash", { command: "npm test" }, text("2 failing"), true));
+  assert.equal(window.quickRepeat(), undefined, "a changed error is progress");
+  window.push(makeAttempt("grep", { pattern: "parse", path: "src" }, text("src/a.ts:1: parse"), false));
+  window.push(makeAttempt("ls", { path: "src" }, text("a.ts"), false));
+  window.push(makeAttempt("bash", { command: "npm test" }, text("2 failing"), true));
+  assert.ok(window.quickRepeat(), "built-in read tools change nothing, so the same failure repeats");
+
+  window.reset();
+  window.push(makeAttempt("read", { path: "src/a.ts" }, text("const a = 1;"), false));
+  window.push(makeAttempt("mcp", { tool: "chrome_devtools_navigate", args: { url: "http://localhost:3000" } }, text("ok"), false));
+  window.push(makeAttempt("read", { path: "src/a.ts" }, text("const a = 1;"), false));
+  assert.equal(window.quickRepeat(), undefined, "an MCP call may have changed state");
+  window.push(makeAttempt("ctx_execute", { language: "javascript", code: "console.log(1)" }, text("1"), false));
+  window.push(makeAttempt("read", { path: "src/a.ts" }, text("const a = 1;"), false));
+  assert.equal(window.quickRepeat(), undefined, "a script call may have changed state");
+
+  window.reset();
+  window.push(makeAttempt("bash", { command: "sleep 5" }, text(""), false));
+  window.push(makeAttempt("bash", { command: "sleep 5" }, text(""), false));
+  assert.equal(window.quickRepeat(), undefined, "sleep is waiting, not a repeat");
+  window.push(makeAttempt("bash", { command: "git status --short" }, text(" M a.ts"), false));
+  window.push(makeAttempt("bash", { command: "git status --short" }, text(" M a.ts"), false));
+  assert.equal(window.quickRepeat(), undefined, "status checks are polling");
+  window.push(makeAttempt("bash", { command: "gh run watch 42" }, text("failed"), true));
+  window.push(makeAttempt("bash", { command: "gh run watch 42" }, text("failed"), true));
+  assert.equal(window.quickRepeat(), undefined, "watching a run is polling, even when it reports a failure");
+  window.push(makeAttempt("bash", { command: "npm run build" }, text("built"), false));
+  window.push(makeAttempt("bash", { command: "npm run build" }, text("built"), false));
+  assert.equal(window.quickRepeat(), undefined, "a successful call that is not a read is not flagged");
+});
+
+test("quickRepeat flags the same read twice with the same output", () => {
+  const window = new AttemptWindow(12);
+  const input = { path: "src/config.ts", offset: 40, limit: 20 };
+  window.push(makeAttempt("read", input, text("export interface StuckGuardConfig {"), false));
+  window.push(makeAttempt("bash", { command: "grep -n repeat src/stuck.ts" }, text("12: repeat"), false));
+  window.push(makeAttempt("read", { path: "src/config.ts", offset: 60, limit: 20 }, text("other lines"), false));
+  window.push(makeAttempt("read", input, text("export interface StuckGuardConfig {"), false));
+  const repeat = window.quickRepeat();
+  assert.ok(repeat);
+  assert.equal(quickRepeatNudge(repeat), "pi-warden: you already have this output from `read src/config.ts` (3 calls ago); nothing changed since. Use that output instead of running the call again.");
+
+  window.push(makeAttempt("bash", { command: "cat package.json" }, text("{}"), false));
+  window.push(makeAttempt("bash", { command: "cat package.json" }, text("{}"), false));
+  assert.ok(window.quickRepeat(), "a read-only shell command counts as a read");
 });
 
 test("buildStuckRequest sends numbered attempts with outcomes and a task", () => {

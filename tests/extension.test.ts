@@ -565,10 +565,11 @@ test("fixture-shaped credentials from a test file are traced once and never stee
   assert.match(trace, /credential-shaped stand-in \(traced\)/, "the trace still names what was seen");
   assert.match(trace, /test fixture or a documented example/);
   assert.ok(!trace.includes("devtok_9f8e7d6c5b4a3210") && !trace.includes("sk-synthetic"), "the trace is redacted");
-  // The second read of the same file adds nothing at all.
+  // The second read of the same file adds no credential notice; the only steer is the repeat check's.
   sentMessages.length = 0;
   assert.equal(await toolResult("read", { path: "tests/baseline.test.js" }, testOutput, false), undefined);
-  assert.equal(sentMessages.length, 0);
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0]!.message.content, /^pi-warden: you already have this output from `read tests\/baseline\.test\.js`/);
   await runCommand("trace", context({ hasUI: false }));
   assert.equal(sentMessages.at(-1)!.message.content.match(/stand-in \(traced\)/g)?.length, 1, "one trace line for the session, not one per read");
   // A real-shaped value in the same output still gets the full notice (neutral hex, not a live key):
@@ -1712,11 +1713,14 @@ test("stuck detection: exact repeats are caught offline, varied failures ask Jev
   await writeFile(configPath(), JSON.stringify({  notices: true , ...STACK_BAR }));
   await newPrompt("make the tests pass");
   await toolResult("bash", { command: "npm test" }, "1 failing", true);
-  await toolResult("bash", { command: "npm test" }, "1 failing", true);
   assert.equal(sentMessages.length, 0);
   await toolResult("bash", { command: "npm test" }, "1 failing", true);
+  assert.equal(sentMessages.length, 1, "the 2nd identical failure gets the quick repeat steer");
+  assert.equal(sentMessages[0]!.message.content, "pi-warden: you already ran `npm test`; it failed the same way: 1 failing. Change something before running it again.");
+  sentMessages.length = 0;
+  await toolResult("bash", { command: "npm test" }, "1 failing", true);
   assert.equal(networkCalls, 0, "exact repeats need no network");
-  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages.length, 1, "the 3rd identical failure still reaches the stuck check");
   assert.match(sentMessages[0]!.message.content, /the same call failed 3 times with the same output\. Stop retrying/);
   assert.match(widgets.at(-1)!.at(-1)!, /^STUCK\s+stuck\s+3 failures · exact repeat$/);
   assert.match(notices.at(-1)!.text, /warden · stuck: .* \(agent nudged\)/);
@@ -1746,6 +1750,24 @@ test("stuck detection: exact repeats are caught offline, varied failures ask Jev
   await newPrompt("something else");
   await toolResult("bash", { command: "npm test" }, "1 failing", true);
   assert.equal(networkCalls, 2, "a new prompt resets the window");
+});
+
+test("quick repeat steers respect the per-run steer budget and the repeatSteer switch", async () => {
+  await writeFile(configPath(), JSON.stringify({ steerBudget: 1, ...STACK_BAR }));
+  await newPrompt("look at the files");
+  await toolResult("read", { path: "/tmp/a.png" }, "ENOENT: no such file or directory", true);
+  await toolResult("read", { path: "/tmp/a.png" }, "ENOENT: no such file or directory", true);
+  await toolResult("read", { path: "/tmp/b.png" }, "ENOENT: no such file or directory", true);
+  await toolResult("read", { path: "/tmp/b.png" }, "ENOENT: no such file or directory", true);
+  assert.equal(networkCalls, 0);
+  assert.equal(sentMessages.length, 1, "the second quick repeat is over the budget: recorded only");
+  assert.match(sentMessages[0]!.message.content, /already ran `read \/tmp\/a\.png`/);
+
+  await writeFile(configPath(), JSON.stringify({ stuck: { repeatSteer: false }, ...STACK_BAR }));
+  await newPrompt("again");
+  await toolResult("read", { path: "/tmp/a.png" }, "ENOENT: no such file or directory", true);
+  await toolResult("read", { path: "/tmp/a.png" }, "ENOENT: no such file or directory", true);
+  assert.equal(sentMessages.length, 1, "switched off");
 });
 
 test("runaway guard: a reply that repeats its block is aborted mid-stream, recovers once per prompt, and needs no TypeSafe", async () => {
