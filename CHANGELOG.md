@@ -6,13 +6,20 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
-
-## 0.51.1
-
 ### Fixed
 
 - Authorizing an rm target from the task text no longer drops an unrelated pattern hit. A hit leaves the level computation only when every per-target violation it produced is authorized; before this, violations and hits were matched by list position, so `rm -rf a b c` with a task naming `c` could drop another rule's hit. An rm-family hit with no readable target (`find . -name '*.log' | xargs rm -rf`, `find -delete`) now gets one violation without a path; only a task that contains that command segment verbatim (whitespace collapsed) authorizes it, so "clean up the log files" does not authorize `xargs rm -rf` of any list, and the hit stays in the level computation. rm targets are read with shell quoting (`rm -rf 'a b'` is one target), redirections such as `2>/dev/null` are no longer targets, and each rm-family hit is scoped only to the targets of the segments that produced it (`rm a; rm -rf b` scopes `rm-rf` to `b`).
+
+## 0.52.0
+
+### Changed
+
+- The compaction evidence appendix lists what already failed, so the agent does not retry it after compaction. `### Tried and failed` holds up to five distinct failed calls from the stuck guard's attempt window, oldest first, each with the last line of its output that names the error (runner tallies such as "Found 1 error." are skipped), at most 160 characters per entry. `### Verification` names the last passing check and says whether code was written or edited after it (`code changed since last passing check: yes/no`), or says that no check has passed yet when code was changed. The stuck section shows failures out of the attempt window instead of an always-empty same-strategy score and a bare tool name.
+- When the appendix is over its 2 000-character cap, lower-value sections shrink first: saved outputs to the three newest, then held actions, then the active task, stuck state, and older checks. The failed attempts and the verification line are kept whole.
+
+### Fixed
+
+- Saved full outputs in the compaction appendix show the tool that produced them and their real size. Before this, every entry read `unknown → path (0 bytes)`. `ContextLedger.record` takes an optional third argument, `{ tool, bytes }`, and the new `ContextLedger.storedOutputs()` returns it with each path. An output recorded without it is listed by path only.
 
 ## 0.51.0
 
