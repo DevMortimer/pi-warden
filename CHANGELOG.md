@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.50.0
+
 ### Added
 
 - Credentials in a tool result are masked before the model sees them, not only announced. High-confidence values in the text blocks (private key blocks, `sk-` keys including `sk-proj-`, `ghp_`, `gho_` and `github_pat_` tokens, `AKIA` keys, `xoxa-`/`xoxb-`/`xoxp-` Slack tokens, JWTs, and credential-key assignments whose value looks like a secret) become `[redacted]` before any other rewrite, so compressed excerpts, duplicate notes, and stored full output hold the masked text too. Fixture and documentation stand-ins stay readable. The banner says "N value(s) masked in this output as [redacted]" and tells the agent to check presence without printing the value. A value already announced this session is still masked, without a second banner. `security.maskOutput` (default `true`) turns it off; masking is local and still runs when `security.enabled` is `false`, which only switches off the banner and the security judgments.
