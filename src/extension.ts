@@ -39,7 +39,8 @@ import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from ".
 import { detectNotifier, sendNotification } from "./notify.js";
 import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
-import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
+import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, quickRepeatNudge, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
+import type { QuickRepeat } from "./stuck.js";
 import { assess } from "./conscience.js";
 import { loadSkillBody, buildLoadMessage, policyMatches, CONSCIENCE_BETA_POLICY, recordFileIdentity, clearFileIdentityCache } from "./load.js";
 import type { ConsciencePolicy } from "./load.js";
@@ -68,7 +69,7 @@ const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
 
 /** Which guard spent the user's attention. The status line reports one count per guard. */
-export type SteerGuard = "action" | "rules" | "security" | "stuck" | "done" | "prose" | "runaway" | "subagent" | "conscience";
+export type SteerGuard = "action" | "rules" | "security" | "stuck" | "repeat" | "done" | "prose" | "runaway" | "subagent" | "conscience";
 
 interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; cooldownSkips: number; steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number; restatements: number }
 const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, cooldownSkips: 0, steers: 0, steersSkipped: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0, restatements: 0 });
@@ -1462,9 +1463,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         pendingCapability = null;
       }
     }
+    let quickRepeat: QuickRepeat | undefined;
     const stuckCheck = (() => {
       if (!config.stuck.enabled) return undefined;
       attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
+      if (config.stuck.nudge && config.stuck.repeatSteer) quickRepeat = attempts.quickRepeat();
       if (!attempts.shouldJudge(config.stuck)) return undefined;
       stats.stuckChecks++;
       return evaluateStuck(attempts, latestUserPrompt(ctx), { config: config.stuck, judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
@@ -1672,6 +1675,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const patch = content === event.content ? undefined : { content };
     // Checks use the original result, not the excerpts or security banner.
     if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
+    // A stuck verdict on the same call carries its own steer; the quick one would say the same thing twice.
+    if (quickRepeat && !verdict?.stuck) {
+      const nudge = quickRepeatNudge(quickRepeat);
+      const sent = steer(config, "repeat", nudge);
+      record(ctx, config, "stuck", `warden · stuck · repeat · ${quickRepeat.attempt.tool} · ${quickRepeat.attempt.failed ? "same failure" : "same output"} · ${sent ? "agent nudged" : "recorded only"}`, [
+        `call: ${quickRepeat.attempt.call}`, `previous identical call: ${quickRepeat.callsAgo} calls ago, nothing changed between`, `agent told: ${sent ? nudge : "nothing (repeat of a recent steer or over the steer budget)"}`,
+      ]);
+      if (sent && ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 repeat: ${quickRepeat.attempt.failed ? "same call failed the same way" : "same output re-read"} (agent nudged)`, "warning");
+    }
     if (!verdict) return patch;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     if (verdict.source === "repeat" && !verdict.stuck) return patch;
