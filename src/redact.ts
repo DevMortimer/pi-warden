@@ -46,9 +46,11 @@ const TOKEN_SHAPES: RegExp[] = [
   /\bAIza[0-9A-Za-z_-]{30,}/g,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
 ];
+/** `api_key=value`, `PASSWORD: value`: a credential-key name assigned a value. */
+const CREDENTIAL_ASSIGNMENT = new RegExp(`(?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?([^\\s"'&;,)]+)`, "gi");
 /** Assignments and headers whose value must still look like a secret. */
 const ASSIGNMENTS: RegExp[] = [
-  new RegExp(`(?:${CREDENTIAL_KEYS})[a-z0-9_-]*\\s*[=:]\\s*["']?([^\\s"'&;,)]+)`, "gi"),
+  CREDENTIAL_ASSIGNMENT,
   /authorization\s*[:=]\s*(?:basic|bearer|token)?\s*([^\s"']+)/gi,
   /\bbearer\s+([^\s"']+)/gi,
   /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:([^\s/@]+)@/gi,
@@ -141,6 +143,31 @@ export function findSecrets(text: string): string[] {
   for (const shape of TOKEN_SHAPES) for (const match of text.matchAll(shape)) found.add(match[0]);
   for (const rule of ASSIGNMENTS) for (const match of text.matchAll(rule)) if (match[1] && looksLikeSecretValue(match[1])) found.add(match[1]);
   return [...found];
+}
+
+/**
+ * Token shapes precise enough to mask in a tool result: private key blocks, `sk-` keys, `ghp_`, `gho_` and
+ * `github_pat_` tokens, `AKIA` keys, `xoxa-`/`xoxb-`/`xoxp-` Slack tokens, and JWTs. The other shapes are announced only.
+ */
+const MASKED_TOKEN = /^(?:-----BEGIN|sk-|ghp_|gho_|github_pat_|AKIA|xox[abp]-|eyJ)/;
+
+/**
+ * `text` with every high-confidence credential value replaced by `[redacted]`: a masked token shape, or a
+ * credential-key assignment whose value looks like a secret. Stand-ins (`syntheticish`) stay readable.
+ */
+export function maskSecrets(text: string): { text: string; masked: number } {
+  const values = new Set<string>();
+  for (const shape of TOKEN_SHAPES) for (const match of text.matchAll(shape)) if (MASKED_TOKEN.test(match[0])) values.add(match[0]);
+  for (const match of text.matchAll(CREDENTIAL_ASSIGNMENT)) if (match[1] && looksLikeSecretValue(match[1])) values.add(match[1]);
+  let out = text;
+  let masked = 0;
+  // Longest first, so a value that contains another is replaced whole.
+  for (const value of [...values].sort((a, b) => b.length - a.length)) {
+    if (syntheticish(value) || !out.includes(value)) continue;
+    out = out.split(value).join(REPLACEMENT);
+    masked++;
+  }
+  return { text: out, masked };
 }
 
 /** A short, stable id for a set of secrets; the values themselves never leave `findSecrets`. */

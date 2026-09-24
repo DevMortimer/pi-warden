@@ -457,7 +457,8 @@ test("secret warnings work offline; disabled output guards and failed requests p
   assert.ok(!sentMessages.at(-1)!.message.content.includes("ghp_Qk7mZ2"), "trace is redacted");
   // The same secret again, through another tool: no banner and no steer, one trace line.
   sentMessages.length = 0;
-  assert.equal(await toolResult("bash", { command: "cat .env" }, "export TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", false), undefined, "content untouched");
+  const repeat = await toolResult("bash", { command: "cat .env" }, "export TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", false) as { content: Array<{ text: string }> };
+  assert.equal(repeat.content[0]!.text, "export TOKEN=[redacted]", "masked again, with no second banner");
   assert.equal(sentMessages.length, 0);
   await runCommand("trace", context({ hasUI: false }));
   assert.match(sentMessages.at(-1)!.message.content, /possible credentials \(seen before\)/);
@@ -471,6 +472,41 @@ test("secret warnings work offline; disabled output guards and failed requests p
   await grantConsent();
   failNetwork = true;
   assert.equal(await toolResult("read", {}, "safe operational output\n".repeat(1000), false), undefined);
+});
+
+// Split so repository secret scanners do not read a fixture as a live key.
+const projectKey = () => ["sk-proj-Qm7Xr2Lk9Tz4Wn8Pv3Hd6Jb1Fc5Ys0Ga", "Ku2Re7Nt4Mx9Lp3Vz8Hq1Wd6Bj5Cf0Ys2Tg7Nk"].join("");
+
+test("a printenv result with a real-shaped sk-proj key is masked, and the banner says so", async () => {
+  const key = projectKey();
+  const result = await toolResult("bash", { command: 'fly ssh console -C "printenv OPENAI_API_KEY"' }, `${key}\n`, false) as { content: Array<{ text: string }> };
+  const shown = result.content[0]!.text;
+  assert.ok(!shown.includes(key) && !shown.includes(key.slice(0, 20)), "the key never reaches the model");
+  assert.match(shown, /\[redacted\]/);
+  assert.ok(shown.startsWith("pi-warden: Possible credentials in this output: 1 value masked in this output as [redacted]; do not echo or commit them"), shown);
+  // A KEY=value line is masked through the assignment rule as well.
+  const assigned = await toolResult("bash", { command: "env" }, `DB_PASSWORD=Tr0ub4dor3xK9Lm\nHOME=/root`, false) as { content: Array<{ text: string }> };
+  assert.match(assigned.content[0]!.text, /DB_PASSWORD=\[redacted\]\nHOME=\/root/);
+  await runCommand("trace", context({ hasUI: false }));
+  assert.ok(!sentMessages.at(-1)!.message.content.includes(key.slice(0, 20)), "the trace is redacted");
+});
+
+test("a documented fixture key such as AKIAIOSFODNN7EXAMPLE is not masked", async () => {
+  const text = "aws_access_key_id = AKIAIOSFODNN7EXAMPLE";
+  assert.equal(await toolResult("read", { path: "docs/aws.md" }, text, false), undefined, "content untouched");
+});
+
+test("source code that names secretIds is untouched by masking", async () => {
+  const source = "const secretValues = output.secretIds ?? [];\nverdict.secretIds = secretIds(real);\nconst secret: Violation = { id: \"x\" };";
+  assert.equal(await toolResult("read", { path: "src/extension.ts" }, source, false), undefined);
+});
+
+test("security.maskOutput false leaves the result text unchanged", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: false, security: { maskOutput: false }, ...STACK_BAR }));
+  const key = projectKey();
+  const result = await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, key, false) as { content: Array<{ text: string }> };
+  assert.ok(result.content[0]!.text.includes(key), "the value is shown as before");
+  assert.match(result.content[0]!.text, /Possible credentials in this output: do not echo or commit them; use redacted values/, "today's banner");
 });
 
 test("fixture-shaped credentials from a test file are traced once and never steered", async () => {

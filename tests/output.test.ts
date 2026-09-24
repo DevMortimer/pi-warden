@@ -46,7 +46,7 @@ test("offline secret hints need no consent; disabled guards neither judge nor wa
   assert.equal(mixed.secret, true);
   assert.deepEqual(mixed.secretIds, secretIds(["ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM"]));
   assert.equal(mixed.syntheticIds?.length, 1);
-  const disabled = await evaluateOutput("read", text, undefined, { ...options(), security: { enabled: false, threshold: 0.7 }, context: { ...options().context, enabled: false }, judge: { evaluate() { throw new Error("must not call"); } } });
+  const disabled = await evaluateOutput("read", text, undefined, { ...options(), security: { enabled: false, threshold: 0.7, maskOutput: true }, context: { ...options().context, enabled: false }, judge: { evaluate() { throw new Error("must not call"); } } });
   assert.equal(securityNotice(disabled), undefined);
 });
 
@@ -135,7 +135,7 @@ test("tail compression needs consent, confidence, sufficient size, and one text 
   const uncertain = await evaluateOutput("bash", log(), undefined, { ...options(), judge: judge(0.1, 0.1, "summary_only", 0.5) });
   assert.equal(uncertain.retention, "all");
   const noProbabilities: Judge = { async evaluate() { return { model: "jev-test", elapsedMs: 1, answers: { retention: { type: "choice", choice: "summary_only", confidence: 0.99 } } } as never; } };
-  const missing = await evaluateOutput("bash", log(), undefined, { ...options(), security: { enabled: false, threshold: 0.7 }, judge: noProbabilities });
+  const missing = await evaluateOutput("bash", log(), undefined, { ...options(), security: { enabled: false, threshold: 0.7, maskOutput: true }, judge: noProbabilities });
   assert.equal(missing.retention, "all", "a missing probability keeps the full output");
   const mixed = await evaluateOutput("bash", log(), undefined, { ...options(), compressible: false, judge: judge(0.1, 0.1, "summary_only") });
   assert.equal(mixed.retention, "all");

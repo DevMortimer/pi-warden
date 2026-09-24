@@ -174,6 +174,8 @@ export interface SecurityConfig {
   enabled: boolean;
   /** P(injection or exfiltration) at or above this adds an untrusted-output notice. */
   threshold: number;
+  /** Replace high-confidence credential values in tool results with `[redacted]` before the model sees them. */
+  maskOutput: boolean;
 }
 
 export interface RulesConfig {
@@ -405,7 +407,7 @@ export function defaultConfig(): WardenConfig {
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true, diffLimit: 3000, tailLimit: 1000 },
     done: { enabled: true, claimsDone: 0.7, nudge: true },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
-    security: { enabled: true, threshold: 0.7 },
+    security: { enabled: true, threshold: 0.7, maskOutput: true },
     rules: { enabled: true, threshold: 0.7, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, largeOutput: { enabled: true, threshold: 0.85 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
@@ -790,6 +792,7 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
     security: isObject(raw.security) ? {
       enabled: boolean(raw.security.enabled, base.security.enabled),
       threshold: probability(raw.security.threshold, base.security.threshold),
+      maskOutput: boolean(raw.security.maskOutput, base.security.maskOutput),
     } : base.security,
     context: isObject(raw.context) ? {
       enabled: boolean(raw.context.enabled, base.context.enabled),

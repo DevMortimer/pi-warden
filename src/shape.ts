@@ -44,7 +44,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, diffLimit: 3000, tailLimit: 1000 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
-    security: section("security", { ...off, threshold: 1 }),
+    security: section("security", { ...off, threshold: 1, maskOutput: false }),
     rules: section("rules", { ...off, threshold: 1, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, largeOutput: { ...off, threshold: 1 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),

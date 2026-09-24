@@ -31,7 +31,7 @@ import { compressOutput, duplicateNote, evaluateOutput, mergeOutput, outputKey, 
 import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
-import { redact } from "./redact.js";
+import { maskSecrets, redact } from "./redact.js";
 import { formatRules, pathNoteSteer, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
@@ -1418,7 +1418,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("tool_result", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
-    const textBlocks = event.content.filter(part => part.type === "text");
+    // High-confidence credential values are masked before any other rewrite, so neither the model nor a stored copy
+    // sees them. Detection below still reads the original text, so the banner names what was masked.
+    const rawTexts = event.content.filter(part => part.type === "text").map(part => part.text ?? "");
+    const masking = config.security.enabled && config.security.maskOutput ? rawTexts.map(maskSecrets) : [];
+    const maskedCount = masking.reduce((sum, block) => sum + block.masked, 0);
+    let maskIndex = 0;
+    const maskedContent = maskedCount ? event.content.map(part => part.type === "text" ? { ...part, text: masking[maskIndex++]!.text } : part) : event.content;
+    const textBlocks = maskedContent.filter(part => part.type === "text");
     const text = textBlocks.map(part => part.text).join("\n");
     const scratch = scratchPending.get(event.toolCallId);
     if (scratch) {
@@ -1467,7 +1474,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (earlier || recallRead) {
       output = { secret: false, suspicious: false, retention: "all" };
     } else if (multiBlock) {
-      for (const blockText of textBlocks.map(part => part.text ?? "")) {
+      for (const blockText of rawTexts) {
         if (ctx.signal?.aborted) break;
         blockVerdicts.push(await evaluateOutput(event.toolName, blockText, latestUserPrompt(ctx), {
           security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
@@ -1476,14 +1483,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
       output = mergeOutput(blockVerdicts);
     } else {
-      output = await evaluateOutput(event.toolName, text, latestUserPrompt(ctx), {
+      output = await evaluateOutput(event.toolName, rawTexts.join("\n"), latestUserPrompt(ctx), {
         security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
         signal: ctx.signal, compressible: true, taskContext: recentTaskContext(ctx),
       }, compressionLearner);
     }
     if (ctx.signal?.aborted) return;
     if (output.error) noteError(ctx, output.error, output.errorCode);
-    let content = event.content;
+    let content = maskedContent;
     // A credential-shaped value the agent has already been warned about this session is traced, not announced again.
     // Per value, not per set: masking one value or a changed subset must not re-announce the rest.
     const secretValues = output.secretIds ?? (output.secret && output.secretId !== undefined ? [output.secretId] : []);
@@ -1491,13 +1498,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const secretRepeat = output.secret && secretValues.length > 0 && unseenSecrets.length === 0;
     // Per-block banners are computed before secretsSeen is updated, so a block whose values were all announced
     // earlier stays quiet while a block with a new value earns the banner.
-    const blockNotices = multiBlock ? blockVerdicts.map(verdict => {
+    const blockNotices = multiBlock ? blockVerdicts.map((verdict, index) => {
       const values = verdict.secretIds ?? (verdict.secret && verdict.secretId !== undefined ? [verdict.secretId] : []);
       const repeat = verdict.secret && values.length > 0 && values.every(id => secretsSeen.has(id));
-      return securityNotice(repeat ? { ...verdict, secret: false } : verdict);
+      return securityNotice(repeat ? { ...verdict, secret: false } : verdict, masking[index]?.masked);
     }) : [];
     if (unseenSecrets.length) for (const id of unseenSecrets) secretsSeen.add(id);
-    const notice = multiBlock ? blockNotices.find(banner => banner !== undefined) : securityNotice(secretRepeat ? { ...output, secret: false } : output);
+    const notice = multiBlock ? blockNotices.find(banner => banner !== undefined) : securityNotice(secretRepeat ? { ...output, secret: false } : output, maskedCount);
     // Fixture and documentation stand-ins (`devtok_`, `sk-synthetic-`, an alphabet run) earn one trace line and nothing else:
     // no banner in the result and no steer. Most credential steers in the benchmark were these values read from a test file.
     const unseenSynthetic = (output.syntheticIds ?? []).filter((id) => !secretsSeen.has(id));
