@@ -157,13 +157,25 @@ test("evaluateAction: authorizing one rm target keeps an unrelated pattern hit",
   assert.ok(verdict.reasons.some(reason => reason.includes("rm -rf")), "rm-rf stays while a and b are not authorized");
 });
 
-test("patternHitsToViolations: an rm hit with no target still yields one violation", () => {
+test("patternHitsToViolations: an rm hit with no target is authorized only by its command segment", () => {
   const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
   const violations = patternHitsToViolations(hits, "bash", { command: "find . -name '*.log' | xargs rm -rf" });
   assert.equal(violations.length, 1);
   assert.equal(violations[0]!.id, "rm-rf");
   assert.equal(violations[0]!.scope?.paths, undefined, "no specific target");
-  assert.equal(authorize("clean up the log files", violations[0]!).authorized, true);
+  assert.equal(authorize("clean up the log files", violations[0]!).authorized, false, "the verb alone does not authorize");
+  assert.equal(authorize("clean up the log files: find . -name '*.log'  |  xargs rm -rf", violations[0]!).authorized, true);
+});
+
+test("evaluateAction: find -delete is not authorized by the verb alone and keeps its level", async () => {
+  const hits = [{ id: "find-delete", severity: "risky" as const, label: "find -delete / -exec rm" }];
+  const violations = patternHitsToViolations(hits, "bash", { command: "find / -name x -delete" });
+  assert.equal(violations.length, 1);
+  assert.equal(authorize("delete the old files", violations[0]!).authorized, false);
+  const config = defaultConfig().action;
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "find / -name x -delete" }, cwd: tmpdir(), task: "delete the old files" }, { config });
+  assert.notEqual(verdict.level, "allow");
+  assert.ok(verdict.reasons.some(reason => reason.includes("find -delete")), "find-delete stays in the level computation");
 });
 
 test("patternHitsToViolations: a quoted rm target with a space stays one target", () => {
