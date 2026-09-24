@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { after, before, beforeEach, test } from "node:test";
+import { after, before, beforeEach, test, type TestContext } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
@@ -3664,7 +3664,13 @@ const cooldownConfig = (judge: { cooldownMs?: number; failuresBeforeCooldown?: n
   writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, timeoutMs: 50, judge, ...STACK_BAR }));
 const paused = () => notices.filter(notice => /judgments paused/.test(notice.text));
 const resumed = () => notices.filter(notice => /judgments resumed/.test(notice.text));
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/** Moves the clock the cooldown reads forward, so a window ends without a real wait and a slow runner cannot end it early. */
+const skewClock = (t: TestContext) => {
+  const realNow = Date.now;
+  let skew = 0;
+  t.mock.method(Date, "now", () => realNow() + skew);
+  return (ms: number) => { skew += ms; };
+};
 
 test("judge cooldown: three timeouts pause the judge; the fourth action is pattern-only and sends nothing", async () => {
   await cooldownConfig();
@@ -3710,12 +3716,13 @@ test("judge cooldown: one auth failure pauses at once and the notice names the r
   assert.equal(networkCalls, asked);
 });
 
-test("judge cooldown: after cooldownMs the judge is asked again, and recovery is announced exactly once", async () => {
-  await cooldownConfig({ cooldownMs: 40, failuresBeforeCooldown: 1 });
+test("judge cooldown: after cooldownMs the judge is asked again, and recovery is announced exactly once", async t => {
+  const advance = skewClock(t);
+  await cooldownConfig({ cooldownMs: 60_000, failuresBeforeCooldown: 1 });
   failStatus = 503;
   await toolCall("bash", { command: "npm test" });
   assert.equal(paused().length, 1);
-  await sleep(60);
+  advance(60_001);
   failStatus = undefined;
   const asked = networkCalls;
   await toolCall("bash", { command: "npm run lint" });
@@ -3726,12 +3733,15 @@ test("judge cooldown: after cooldownMs the judge is asked again, and recovery is
   assert.equal(resumed().length, 1, "later successes stay quiet");
 });
 
-test("judge cooldown: a failed probe after the window reopens it without a second notice", async () => {
-  await cooldownConfig({ cooldownMs: 40, failuresBeforeCooldown: 1 });
+test("judge cooldown: a failed probe after the window reopens it without a second notice", async t => {
+  const advance = skewClock(t);
+  await cooldownConfig({ cooldownMs: 60_000, failuresBeforeCooldown: 1 });
   failStatus = 503;
   await toolCall("bash", { command: "npm test" });
-  await sleep(60);
+  advance(60_001);
+  const probed = networkCalls;
   await toolCall("bash", { command: "npm run lint" });
+  assert.ok(networkCalls > probed, "the probe after the window asks the judge");
   const asked = networkCalls;
   await toolCall("bash", { command: "npm run build" });
   assert.equal(networkCalls, asked, "the window is open again");

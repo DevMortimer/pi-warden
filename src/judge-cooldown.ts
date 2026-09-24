@@ -57,7 +57,8 @@ export class JudgeCooldown {
   /** A window has started and no judgment has succeeded since, so the user was told and not yet told it recovered. */
   private cooled = false;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /** The default reads `Date.now` on each call, not once at construction, so a test can mock the clock. */
+  constructor(private readonly now: () => number = () => Date.now()) {}
 
   /** True while judgments are paused. */
   active(): boolean {
