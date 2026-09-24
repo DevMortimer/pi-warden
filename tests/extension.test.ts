@@ -3287,8 +3287,29 @@ test("session_compact: appendix includes saved output, failed check, and held ac
     assert.match(msg.message.content, /npm run lint/, "failed check command appears in the message");
     assert.match(msg.message.content, /write/, "held tool appears in the message");
     assert.match(msg.message.content, /pending|approved|replanned/, "hold outcome appears in the message");
+    assert.ok(msg.message.content.includes(`- bash → ${savedPath} (${Buffer.byteLength(full)} bytes)`), "saved output shows the real tool and size");
+    assert.doesNotMatch(msg.message.content, /unknown →|\(0 bytes\)/);
     assert.match(msg.message.content, /=== END PI-WARDEN COMPACT EVIDENCE ===/);
   } finally { await rm(join(savedPath, ".."), { recursive: true, force: true }); }
+});
+
+test("session_compact: failed attempts and the verification state survive compaction", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  sentMessages.length = 0;
+  await newPrompt("Fix the build");
+  await toolResult("bash", { command: "npm run build" }, "src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.", true);
+  await toolResult("bash", { command: "npm run build" }, "src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.", true);
+  await toolResult("bash", { command: "npm test" }, "all 42 tests passed", false);
+  await toolResult("edit", { path: join(temporary, "src/a.ts"), edits: [] }, "Edited src/a.ts", false);
+  const compactHandlers = extension.handlers.get("session_compact") ?? [];
+  await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, context()]);
+  const sent = sentMessages.filter(m => m.message.customType === "pi-warden-compact-evidence");
+  assert.equal(sent.length, 1, "one message per compaction");
+  const text = sent[0]!.message.content;
+  assert.match(text, /### Tried and failed\n.*\n- npm run build → src\/a\.ts\(3,7\): error TS2322/);
+  assert.equal(text.match(/- npm run build →/g)?.length, 1, "the repeated call is listed once");
+  assert.match(text, /- last passing check: npm test; code changed since last passing check: yes/);
+  assert.doesNotMatch(text, /undefined/);
 });
 
 test("session_compact: compactAppendix: false sends nothing", async () => {
