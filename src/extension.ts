@@ -54,7 +54,7 @@ import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
-import { buildCompactSnapshot, compactAppendix, type CompactSnapshot } from "./compact.js";
+import { buildCompactSnapshot, compactAppendix } from "./compact.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
@@ -1313,6 +1313,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (rules.source !== "skipped") {
         stats.ruleChecks++;
         if (rules.error) noteError(ctx, rules.error, rules.errorCode);
+        // Only a shown notice uses up the once-per-session flag.
+        const capNotice = ctx.hasUI && config.notices ? rulesGuard.capNotice(rules) : undefined;
+        if (capNotice) ctx.ui.notify(capNotice, "warning");
         holds.recordRules({ source: rules.source, path: rules.path, findings: rules.findings.map(f => ({ name: f.name, violation: f.violation })), ...(rules.error ? { error: rules.error } : {}) });
         if (rules.findings.length) {
           stats.ruleViolations++;
@@ -1569,7 +1572,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             const bytesSaved = Buffer.byteLength(blockText) - Buffer.byteLength(body);
             if (bytesSaved > 0) {
               replacement = body;
-              ledger.record(path, bytesSaved);
+              ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(blockText) });
               storedPath = path;
               compressionLearner.record(event.toolName, verdict.retention, verdict.format, false);
               savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: verdict.retention, bytesSaved: String(bytesSaved) }), [
@@ -1593,7 +1596,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement) - (notice ? Buffer.byteLength(notice) * 2 + 4 : 0);
           if (bytesSaved > 0) {
             content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
-            ledger.record(path, bytesSaved);
+            ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(text) });
             storedPath = path;
             compressionLearner.record(event.toolName, output.retention, output.format, false);
             savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
@@ -1710,19 +1713,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         preview: r.callExcerpt ?? "",
         outcome: r.outcome,
       }));
-      const stuckFailures = attempts.failures();
-      const latestAttempt = attempts.attempts.at(-1);
-      const stuck: CompactSnapshot["stuck"] = stuckFailures > 0 ? {
-        failures: stuckFailures,
-        sameStrategyScore: undefined,
-        currentCallFamily: latestAttempt?.tool,
-      } : undefined;
       const task = latestUserPrompt(ctx);
       const snapshot = buildCompactSnapshot({
-        savedOutputs: ledger.storedPaths().map(p => ({ tool: "unknown", path: p, bytes: 0 })),
+        savedOutputs: ledger.storedOutputs(),
         checks: checkRecords,
         holds: holdRecords,
-        stuck,
+        attempts: attempts.attempts,
+        evidence,
         activeTask: task,
         runs: 1,
       });

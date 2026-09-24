@@ -7,10 +7,10 @@ test("the ledger counts candidates, compressions, token-turns, and first recalls
   assert.match(formatLedger(ledger.snapshot()), /no tool output large enough/);
   ledger.candidate();
   ledger.candidate();
-  ledger.record("/tmp/pi-warden-output-a/output.txt", 40_000);
+  ledger.record("/tmp/pi-warden-output-a/output.txt", 40_000, { tool: "bash", bytes: 50_000 });
   ledger.turnEnd();
   ledger.turnEnd();
-  ledger.record("/tmp/pi-warden-output-b/output.txt", 8_000);
+  ledger.record("/tmp/pi-warden-output-b/output.txt", 8_000, { tool: "bash", bytes: 50_000 });
   ledger.turnEnd();
   assert.equal(ledger.noteAccess(JSON.stringify({ path: "/tmp/pi-warden-output-a/output.txt" })), "/tmp/pi-warden-output-a/output.txt");
   assert.equal(ledger.noteAccess("cat /tmp/pi-warden-output-a/output.txt | tail", "scoped"), "/tmp/pi-warden-output-a/output.txt", "a second access is reported but not counted twice");
@@ -48,7 +48,7 @@ test("duplicates are remembered by content key, keep the first stored copy, and 
   assert.equal(snapshot.compressed, 0);
   assert.equal(snapshot.bytesSaved, 30_000);
   assert.match(formatLedger(snapshot), /0 large outputs, 0 compressed, 1 duplicate dropped, 29\.3 KB removed/);
-  ledger.record("C:\\Temp\\pi-warden-output-d\\output.txt", 1_000);
+  ledger.record("C:\\Temp\\pi-warden-output-d\\output.txt", 1_000, { tool: "bash", bytes: 50_000 });
   assert.equal(ledger.storedPathIn(JSON.stringify({ path: "C:\\Temp\\pi-warden-output-d\\output.txt" })), "C:\\Temp\\pi-warden-output-d\\output.txt", "a Windows path matches in its JSON form");
   ledger.noteAccess(JSON.stringify({ command: "findstr /n /c:\"x\" C:\\Temp\\pi-warden-output-d\\output.txt" }), "scoped");
   assert.deepEqual([ledger.snapshot().recalls, ledger.snapshot().recallsFull], [1, 0]);
