@@ -49,9 +49,9 @@ export interface IndexFile {
 /* ─── Path resolution ───────────────────────────────────────────────── */
 
 /** Resolve Pi's agent directory (mirrors config.ts userConfigPath logic). */
-function resolveAgentDir(): string {
-  const configured = process.env.PI_WARDEN_INDEX_DIR?.trim()
-    ?? process.env.PI_CODING_AGENT_DIR?.trim();
+function resolveAgentDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.PI_WARDEN_INDEX_DIR?.trim()
+    ?? env.PI_CODING_AGENT_DIR?.trim();
   if (configured) {
     const expanded = configured === "~" || configured.startsWith("~/")
       ? join(homedir(), configured.slice(1))
@@ -61,8 +61,13 @@ function resolveAgentDir(): string {
   return join(homedir(), ".pi", "agent");
 }
 
+/** The directory `/warden index` asks the agent to write its index files into. */
+export function indexDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(resolveAgentDir(env), "pi-warden", "index");
+}
+
 export function indexPath(kind: "global" | "project", projectRoot?: string): string {
-  const base = join(resolveAgentDir(), "pi-warden", "index");
+  const base = indexDir();
   if (kind === "global") return join(base, "global.json");
   // Project index keyed by first 12 hex chars of SHA-256(projectRoot)
   const hash = createHash("sha256").update(projectRoot ?? "").digest("hex").slice(0, 12);
@@ -70,9 +75,7 @@ export function indexPath(kind: "global" | "project", projectRoot?: string): str
 }
 
 export function ensureIndexDir(kind: "global" | "project"): void {
-  const dir = kind === "global"
-    ? join(resolveAgentDir(), "pi-warden", "index")
-    : join(resolveAgentDir(), "pi-warden", "index", "projects");
+  const dir = kind === "global" ? indexDir() : join(indexDir(), "projects");
   mkdirSync(dir, { recursive: true });
 }
 

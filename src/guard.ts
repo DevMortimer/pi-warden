@@ -10,6 +10,7 @@ import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./sh
 import type { TaskSpine } from "./shape.js";
 import { globToRegExp } from "./rules.js";
 import type { RulesSourceConfig } from "./rules.js";
+import { indexDir } from "./index-cmd.js";
 import { resolveRulesFile } from "./rules-file.js";
 import { shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
@@ -572,6 +573,16 @@ export function hostPaths(env: NodeJS.ProcessEnv = process.env): string[] {
     if (real && dirname(real) !== real) roots.add(real);
   }
   return [...roots];
+}
+
+/**
+ * The host paths plus pi-warden's index directory, the only place outside the project a warden command asks the agent to
+ * write. The rest of Pi's agent directory stays held: `auth.json`, `settings.json`, pi-warden's own `config.json`, and
+ * other extensions' data.
+ */
+export function wardenHostPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const index = realTarget(indexDir(env));
+  return [...new Set([...hostPaths(env), ...(index ? [index] : [])])];
 }
 
 /** Whether a target lies in a host path, after `..` and symlinks are resolved. An unresolvable target is not in one. */

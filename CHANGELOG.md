@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- A write or edit of a `/warden index` file is no longer held as "overwrites a file outside the project". `/warden index` asks the agent to write `global.json` and `projects/<hash>.json` in `pi-warden/index/` under Pi's agent directory, and in a hold-precision review 3 of the 4 approved outside-project overwrite holds were these files. That directory is now always a host path for the outside-project rule. The rest of the agent directory is still held: `auth.json`, `settings.json`, pi-warden's own `config.json`, and other extensions' data. Every other check still applies there.
 
 ## 0.59.0
 
