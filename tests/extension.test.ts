@@ -2774,6 +2774,33 @@ test("conscience: steer budget exhausted blocks delivery", async () => {
   assert.match(traceText, /budget/, "trace should note budget exhaustion");
 });
 
+test("conscience: a capability held with no_policy is never sent later by the agent_end reminder", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  nextModel = "jev-other";
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(!result?.message, "the activation gate holds the first recommendation");
+  await agentEnd("I designed the landing page.");
+  const reminders = sentMessages.filter(m => /Reminder: consider/.test(m.message.content));
+  assert.deepEqual(reminders, [], "the reminder must not deliver what the gate held");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /no policy for current hash\/model/);
+});
+
+test("conscience: the agent_end reminder still sends a capability that passed the activation gate", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(result?.message, "the first recommendation passes the gate");
+  await agentEnd("I designed the landing page.");
+  const reminders = sentMessages.filter(m => /Reminder: consider using the "impeccable" skill/.test(m.message.content));
+  assert.equal(reminders.length, 1);
+});
+
 test("conscience: session_start during assessment produces stale trace", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
   const skills = [conscienceSkill("impeccable", "UI design")];

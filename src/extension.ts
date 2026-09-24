@@ -1880,13 +1880,16 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const redactedPrompt = redact(prompt ?? "").slice(0, 2000);
       const spine = taskSpine(typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [], prompt ?? undefined);
       const activeSkills = cachedSkills.map(s => s.name);
-      const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+      let judgeModel = "";
+      const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); judgeModel = r.model; return { answers: r.answers as Record<string, unknown> }; } } : undefined;
       try {
         const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile }, spine);
         if (conscienceGeneration !== myGeneration) return;
         assessmentsThisPrompt++;
+        // Same activation gate as the first recommendation: selectedCapability is set before that gate, so without this a
+        // capability held for no_policy would be delivered here.
         if (result.selected && result.selected.kind === selectedCapability.kind && result.selected.id === selectedCapability.id &&
-            result.disposition !== "awaiting_user") {
+            result.disposition !== "awaiting_user" && policyMatches(consciencePolicy, result.questionHash, judgeModel)) {
           reminderSent = true;
           nudgesThisPrompt++;
           spendBudgetUnit();
