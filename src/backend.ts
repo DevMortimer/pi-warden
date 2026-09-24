@@ -4,6 +4,9 @@ import { DECISIONS_BACKENDS, DEFAULT_BACKEND } from "pi-typesafe";
 /** The judgment backend that receives pi-warden's Jev requests. */
 export type JudgmentBackend = "typesafe" | "openrouter";
 
+/** Why no judge is available: consent not given, no key for the backend, a saved 401 or 403, or the request budget spent. */
+export type JudgmentsOffReason = "no_consent" | "no_key" | "key_rejected" | "budget";
+
 /** The host the consent disclosure names as the destination, without scheme: `api.typesafe.ai`, `openrouter.ai`. */
 export function backendHost(backend: JudgmentBackend): string {
   return new URL(DECISIONS_BACKENDS[backend].host).host;
@@ -12,6 +15,11 @@ export function backendHost(backend: JudgmentBackend): string {
 /** The environment variable that carries the backend's key, for messages that tell the user what to set. */
 export function keyEnvFor(backend: JudgmentBackend): string {
   return DECISIONS_BACKENDS[backend].keyEnv ?? DECISIONS_BACKENDS[DEFAULT_BACKEND].keyEnv ?? "TYPESAFE_API_KEY";
+}
+
+/** Whether the backend takes the TypeSafe key, the only one `/typesafe login` stores; pi-typesafe's `usesTypesafeKey`, which its package does not export. */
+export function loginStoresKey(backend: JudgmentBackend): boolean {
+  return keyEnvFor(backend) === keyEnvFor(DEFAULT_BACKEND);
 }
 
 /** Adapt the consent text to the active backend by substituting the destination host. */
