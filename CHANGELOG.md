@@ -8,6 +8,19 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.59.4
+
+### Fixed
+
+- A prompt no longer authorizes a recursive `rm` of `/`, `.`, `./`, `..`, `~`, `*`, or `$HOME`. Before, "Clean up build/ please." released the hold on `rm -rf /`: the target `/` was found in `build/`. The `rm-recursive-dangerous-target` hit is now never authorized by a prompt. A path the prompt authorizes must appear as a whole word (a space, quote, bracket, or punctuation before and after it), so `old/build` and `build.gradle` no longer authorize `rm -rf build`, and a root-like, home, variable, or one-character target is never matched.
+- `git grep` takes the read-only fast path only with listed flags. `--open=sh` (git accepts any abbreviation of `--open-files-in-pager`) and `-O` bundled after other flags (`-lOnode`) run a program on the matched files, and both skipped the judge.
+- The `/warden index` directory is a host path only when neither it nor a directory between it and Pi's agent directory is a symlink, and its real path is inside the agent directory. A symlinked index directory could make the home directory a host path, so an overwrite of a shell profile was not held.
+- The read-only fast path no longer takes commands that write a file named in their arguments: `sort -o`, `uniq` with an output file, `tree -o` and `tree -R`, and `xxd -r` or `xxd` with an output file.
+
+### Tests
+
+- Tests for each case above: the root-like `rm` prompts, the `git grep` pager forms and common safe flags, a symlinked index directory, and the writing forms of `sort`, `uniq`, `tree`, and `xxd`.
+
 ## 0.59.3
 
 ### Fixed

