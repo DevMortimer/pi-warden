@@ -11,6 +11,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 - The credential banner in a tool result is sent only when a value was masked, and its text is unchanged. A credential-shaped value that was detected but not masked (with `security.maskOutput: false`) is now recorded in the trace as `possible credentials, none masked (traced)` and is no longer announced to the agent. In one week of sessions, 510 of 527 credential banners were the generic "Possible credentials in this output" text that pointed at no value, and agents disputed 49 of them. The prompt-injection notice is unchanged.
 - Masking now covers every value the offline credential check detects: URL passwords (`postgres://user:pass@host`), `Authorization` header and `Bearer` values, `ghu_`/`ghs_`/`ghr_` GitHub tokens, `xoxr-`/`xoxs-` Slack tokens, and `AIza` keys. Before, these were announced but left readable in the tool result.
 
+## 0.53.0
+
+### Added
+- Rules, slop, and security judge code that a `bash` command writes to a file, as if it were a `write`: heredocs into `cat` or `tee` (quoted or unquoted delimiter, `<<-`), here-strings, and `echo`/`printf` with `>` or `>>`. Each target in a chain is judged on its own, before the command runs, with the same `.gitignore` and outside-project skip as a `write`; an append judges only the appended text. An authoring form whose text cannot be read (`$VAR` or `$(...)` in the body, a pipe into `tee`) and `sed -i`, `patch`, and `git apply` are not judged, and the trace says why; a program's output sent to a file (`cmd > log`) is not judged and leaves no trace note. See `docs/guards.md` → Rules.
+
 ## 0.52.2
 
 ### Fixed
