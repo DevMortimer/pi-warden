@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Added
+
+- `PI_WARDEN_HOST_PATHS`: a `:`-separated list of absolute directories outside the project where the host lets its agent write. A `write` or `edit` in one of them, after `..` and symlinks are resolved, is not held or warned by the outside-project rule; command rules, path rules, deny rules, sensitive paths, secrets, and Jev still apply. Relative entries, empty entries, and `/` are ignored. Environment only; no config file can set it.
+
 ### Docs
 
 - Field usage report for 2026-09-21 to 2026-09-24 (`eval/reports/2026-09-24-field-usage/`) and `scripts/field-usage.mjs`, which reads Pi session logs and the holds database and prints aggregate counts only. README leads with the field numbers, names the task spine under Privacy, and notes the scratch-delete exemption and the judgments-off notice.

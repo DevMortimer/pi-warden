@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
+import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -588,6 +588,63 @@ test("evaluateAction warns on writes outside the project and confirms overwrites
     assert.equal(clobber.level, "confirm");
   } finally {
     await rm(join(cwd, "..", "pi-warden-guard-overwrite-target"), { force: true });
+  }
+});
+
+test("hostPaths reads PI_WARDEN_HOST_PATHS and ignores relative entries, empty entries, and /", async () => {
+  const host = await mkdtemp(join(tmpdir(), "pi-warden-host-"));
+  try {
+    assert.deepEqual(hostPaths({}), [], "unset is off");
+    assert.deepEqual(hostPaths({ PI_WARDEN_HOST_PATHS: "" }), []);
+    assert.deepEqual(hostPaths({ PI_WARDEN_HOST_PATHS: `relative/dir::/:${host}/../${host.split("/").pop()}` }), [realpathSync(host)], "relative, empty, and / entries are dropped; .. is resolved");
+  } finally {
+    await rm(host, { recursive: true, force: true });
+  }
+});
+
+test("evaluateAction: an overwrite in a host path is not held by the outside-project rule; outside every host path it still is", async () => {
+  const config = defaultConfig().action;
+  const host = await mkdtemp(join(tmpdir(), "pi-warden-host-"));
+  const other = await mkdtemp(join(tmpdir(), "pi-warden-other-"));
+  try {
+    await writeFile(join(host, "draft.md"), "v1");
+    await writeFile(join(other, "draft.md"), "v1");
+    await writeFile(join(tmpdir(), `pi-warden-host-escape-${process.pid}`), "v1");
+    const hostPathsOn = hostPaths({ PI_WARDEN_HOST_PATHS: `relative:/:${host}` });
+    const write = (path: string, options: { hostPaths?: string[] } = { hostPaths: hostPathsOn }) =>
+      evaluateAction({ tool: "write", input: { path, content: "v2" }, cwd, task: "revise the draft" }, { config, ...options });
+    const inside = await write(join(host, "draft.md"));
+    assert.equal(inside.level, "allow");
+    assert.equal(inside.summary.location, "outside_project", "the summary still says where the file is");
+    assert.equal((await write(join(host, "notes", "new.md"))).level, "allow", "a new file in a host path is not warned either");
+    assert.equal((await write(join(other, "draft.md"))).level, "confirm", "outside every host path is still held");
+    assert.equal((await write(join(host, "..", `pi-warden-host-escape-${process.pid}`))).level, "confirm", "`..` out of a host path is outside");
+    await symlink(other, join(host, "link"));
+    assert.equal((await write(join(host, "link", "draft.md"))).level, "confirm", "a symlink out of a host path is outside");
+    assert.equal((await write(join(host, "draft.md"), {})).level, "confirm", "without host paths nothing changes");
+    assert.equal((await write(join(host, "draft.md"), { hostPaths: hostPaths({}) })).level, "confirm", "an unset variable changes nothing");
+  } finally {
+    await rm(host, { recursive: true, force: true });
+    await rm(other, { recursive: true, force: true });
+    await rm(join(tmpdir(), `pi-warden-host-escape-${process.pid}`), { force: true });
+  }
+});
+
+test("evaluateAction: path rules, deny rules, and sensitive paths still fire in a host path", async () => {
+  const host = await mkdtemp(join(tmpdir(), "pi-warden-host-"));
+  try {
+    await writeFile(join(host, "draft.md"), "v1");
+    const hostPathsOn = hostPaths({ PI_WARDEN_HOST_PATHS: host });
+    const blocked = { ...defaultConfig().action, pathRules: [{ id: "no-drafts", paths: ["**/draft.md"], access: "none" as const, tools: ["write", "edit"], action: "block" as const }] };
+    const byPath = await evaluateAction({ tool: "write", input: { path: join(host, "draft.md"), content: "v2" }, cwd, task: "x" }, { config: blocked, hostPaths: hostPathsOn });
+    assert.equal(byPath.level, "deny", "a path rule still blocks");
+    const denyRule = { ...defaultConfig().action, commandDenyRules: [{ id: "no-host-rm", pattern: "\\brm\\b", severity: "deny" as const }] };
+    const byCommand = await evaluateAction({ tool: "bash", input: { command: `rm ${join(host, "draft.md")}` }, cwd, task: "x" }, { config: denyRule, hostPaths: hostPathsOn });
+    assert.equal(byCommand.level, "deny", "a deny rule still blocks");
+    const sensitive = await evaluateAction({ tool: "write", input: { path: join(host, ".env"), content: "A=1" }, cwd, task: "x" }, { config: defaultConfig().action, hostPaths: hostPathsOn });
+    assert.notEqual(sensitive.level, "allow", "a sensitive path is still flagged");
+  } finally {
+    await rm(host, { recursive: true, force: true });
   }
 });
 
