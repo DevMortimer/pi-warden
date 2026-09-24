@@ -12,6 +12,7 @@ import {
   assignOpaqueIds,
   SCORE_LEVELS,
   isDestructiveTool,
+  isPlatformIneligibleTool,
 } from "../src/conscience.js";
 import type { Candidate, Judge } from "../src/conscience.js";
 import type { ConscienceConfig } from "../src/config.js";
@@ -338,6 +339,36 @@ test("eligibleCandidates never offers a destructive tool, by name part or leadin
   ];
   const { candidates } = eligibleCandidates([], tools, fakeConfig(), [], []);
   assert.deepEqual(candidates.map(c => c.id), ["list_projects", "edit_text", "dropdown_state"]);
+});
+
+test("eligibleCandidates drops powershell on darwin and linux and keeps it on win32", () => {
+  const tools = [
+    { name: "powershell", description: "Run PowerShell commands" },
+    { name: "list_projects", description: "List indexed projects" },
+  ];
+  const ids = (platform: NodeJS.Platform) =>
+    eligibleCandidates([], tools, fakeConfig(), [], [], undefined, undefined, platform).candidates.map(c => c.id);
+  assert.deepEqual(ids("darwin"), ["list_projects"]);
+  assert.deepEqual(ids("linux"), ["list_projects"]);
+  assert.deepEqual(ids("win32"), ["powershell", "list_projects"]);
+});
+
+test("eligibleCandidates never drops a skill by the platform rule", () => {
+  const skills = [fakeSkill("powershell-scripting", "Write PowerShell scripts. Windows-only.")];
+  const { candidates } = eligibleCandidates(skills, [], fakeConfig(), [], [], undefined, undefined, "darwin");
+  assert.deepEqual(candidates.map(c => `${c.kind}:${c.id}`), ["skill:powershell-scripting"]);
+});
+
+test("isPlatformIneligibleTool reads the name list and Windows-only or macOS-only descriptions", () => {
+  assert.equal(isPlatformIneligibleTool("pwsh", "linux"), true);
+  assert.equal(isPlatformIneligibleTool("cmd", "darwin"), true);
+  assert.equal(isPlatformIneligibleTool("cmd", "win32"), false);
+  assert.equal(isPlatformIneligibleTool("powershell-helper", "darwin"), false);
+  assert.equal(isPlatformIneligibleTool("registry", "linux", "Edit the registry (Windows-only)"), true);
+  assert.equal(isPlatformIneligibleTool("registry", "win32", "Edit the registry (Windows-only)"), false);
+  assert.equal(isPlatformIneligibleTool("keychain", "linux", "Read the keychain. Only on macOS."), true);
+  assert.equal(isPlatformIneligibleTool("keychain", "darwin", "Read the keychain. macOS only."), false);
+  assert.equal(isPlatformIneligibleTool("wsl", "linux", "Run commands in WSL on Windows"), false);
 });
 
 test("isDestructiveTool matches whole words and _-separated parts only", () => {
