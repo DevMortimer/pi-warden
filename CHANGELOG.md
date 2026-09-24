@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.55.0
+
 ### Changed
 
 - With masking on, the credential banner in a tool result is sent only when a value was masked, and its text is unchanged. A credential-shaped value that was detected but not masked is recorded in the trace as `possible credentials, none masked (traced)` and is not announced to the agent. With `security.maskOutput: false` the value is in the agent's context, so the generic notice stays. In one week of sessions, 510 of 527 credential banners were the generic "Possible credentials in this output" text that pointed at no value, and agents disputed 49 of them. The prompt-injection notice is unchanged.
