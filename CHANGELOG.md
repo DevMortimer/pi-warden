@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.59.4
+
 ### Fixed
 
 - A prompt no longer authorizes a recursive `rm` of `/`, `.`, `./`, `..`, `~`, `*`, or `$HOME`. Before, "Clean up build/ please." released the hold on `rm -rf /`: the target `/` was found in `build/`. The `rm-recursive-dangerous-target` hit is now never authorized by a prompt. A path the prompt authorizes must appear as a whole word (a space, quote, bracket, or punctuation before and after it), so `old/build` and `build.gradle` no longer authorize `rm -rf build`, and a root-like, home, variable, or one-character target is never matched.
