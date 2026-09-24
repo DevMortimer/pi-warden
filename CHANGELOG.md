@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.52.2
+
+### Fixed
+
+- The context saver's trace now shows how many token-turns a saving spared. The ledger line of a compression or a dropped duplicate is written before the turn that carries it ends, so it nearly always read `~0 token-turns spared over 0 turns`. When a turn with a saving ends, its latest context entry in the trace gets a second line, `at turn end: Context saver: …`, with the counts that include that turn. Token-turns are the removed tokens (bytes / 4) times the turns the removal has been in effect, summed over the session; a new prompt does not reset them. A whole-file recall puts a stored output back into context, so from the next turn on its bytes no longer count toward token-turns; a scoped recall does not change the count. `/warden status` is unchanged.
+
 ## 0.52.1
 
 ### Fixed
