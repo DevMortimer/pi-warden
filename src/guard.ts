@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
@@ -427,7 +427,8 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords): Pa
     if (isAbsolute(clean)) return cwd ? !isInside(clean, cwd) : true;
     return clean.split(/[\\/]/).includes("..");
   });
-  if (dangerousTarget && scratch?.size && targets.length && targets.every(target => isSessionScratch(target, scratch))) {
+  const budget = scratchBudget();
+  if (dangerousTarget && scratch?.size && targets.length && targets.every(target => isSessionScratch(target, scratch, budget))) {
     return { id: "rm-session-scratch", severity: "risky", label: "recursive rm of session scratch: every target is under the temp directory and was created in this session" };
   }
   if (dangerousTarget) return { id: "rm-recursive-dangerous-target", severity: "destructive", label: "recursive rm on an absolute, home, variable, or parent path" };
@@ -505,7 +506,35 @@ export function tempRootOf(real: string, roots = tempRoots()): string | undefine
 /** A literal absolute path: no quotes left inside, no glob, brace, tilde, variable, escape, or substitution. */
 const LITERAL_PATH = /^\/[^*?[\]{}$`~\\"'\s]*$/;
 
-function isSessionScratch(target: string, scratch: ScratchRecords): boolean {
+/** How much of the target trees one rm segment may walk: entries seen, and the clock time it must finish by. */
+export interface ScratchBudget { entries: number; deadline: number }
+/**
+ * 10,000 entries covers a generated test tree of a few thousand directories with room to spare, and 200 ms keeps the
+ * synchronous walk in the tool-call hook short. A tree that needs more is not checked, so it keeps the hold.
+ */
+const scratchBudget = (): ScratchBudget => ({ entries: 10_000, deadline: Date.now() + 200 });
+
+/**
+ * True when every entry of the tree at `path`, the root included, has a birth time at or after `born`. Symlinks are
+ * checked as links and never followed. False when the root is missing, an entry has no birth time or cannot be read,
+ * or the walk runs past its budget: content moved in from elsewhere keeps its older birth time and must not pass.
+ */
+export function bornAfter(path: string, born: number, budget: ScratchBudget = scratchBudget()): boolean {
+  if (!(born > 0)) return false;
+  const stack = [path];
+  while (stack.length) {
+    if (--budget.entries < 0 || Date.now() > budget.deadline) return false;
+    const current = stack.pop()!;
+    try {
+      const stats = lstatSync(current);
+      if (!(stats.birthtimeMs > 0) || stats.birthtimeMs < born) return false;
+      if (stats.isDirectory()) for (const name of readdirSync(current)) stack.push(join(current, name));
+    } catch { return false; }
+  }
+  return true;
+}
+
+function isSessionScratch(target: string, scratch: ScratchRecords, budget: ScratchBudget): boolean {
   const clean = target.replace(/^["']|["']$/g, "");
   if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
   const real = realTarget(clean);
@@ -513,7 +542,7 @@ function isSessionScratch(target: string, scratch: ScratchRecords): boolean {
   if (!real || !root) return false;
   for (let path = real; path !== root && path.startsWith(root); path = dirname(path)) {
     const recorded = scratch.get(path);
-    if (recorded) return sameIdentity(scratchIdentity(path), recorded);
+    if (recorded) return sameIdentity(scratchIdentity(path), recorded) && bornAfter(real, recorded.birthtimeMs, budget);
   }
   return false;
 }

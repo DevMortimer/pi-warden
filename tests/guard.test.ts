@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, commandFamily, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
+import { bornAfter, buildRequest, commandFamily, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -227,6 +227,46 @@ test("session scratch: a recorded path replaced by a new directory stays destruc
     assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch })), "a different directory at the recorded path");
     pruneScratch(scratch);
     assert.equal(scratch.size, 0, "the stale record is dropped");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: older content moved into a recorded directory stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const important = join(base, "important");
+    await mkdir(important);
+    await writeFile(join(important, "keep.txt"), "keep me\n");
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const dir = join(base, "S", "x");
+    await mkdir(dir, { recursive: true });
+    const scratch = records(realpathSync(join(base, "S")), realpathSync(dir));
+    assert.ok(!destructiveRm(matchPatterns("bash", { command: `rm -rf ${dir}` }, cwd, { scratch })), "empty scratch is not destructive");
+    await rename(important, join(dir, "important"));
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${dir}` }, cwd, { scratch })), "moved content keeps its older birth time");
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${join(dir, "important")}` }, cwd, { scratch })), "the moved directory itself");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: a symlink inside scratch is checked as a link, never followed", async () => {
+  const base = await scratchBase();
+  try {
+    const dir = join(base, "x");
+    await mkdir(dir);
+    await symlink(cwd, join(dir, "out"));
+    const scratch = records(realpathSync(dir));
+    assert.deepEqual(matchPatterns("bash", { command: `rm -rf ${dir}` }, cwd, { scratch }).map(hit => hit.id), ["rm-session-scratch"]);
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: a tree past the walk budget is not scratch", async () => {
+  const base = await scratchBase();
+  try {
+    for (const name of ["a", "b", "c"]) await writeFile(join(base, name), name);
+    const born = scratchIdentity(realpathSync(base))!.birthtimeMs;
+    assert.equal(bornAfter(realpathSync(base), born, { entries: 4, deadline: Date.now() + 1000 }), true);
+    assert.equal(bornAfter(realpathSync(base), born, { entries: 3, deadline: Date.now() + 1000 }), false, "entry bound");
+    assert.equal(bornAfter(realpathSync(base), born, { entries: 100, deadline: Date.now() - 1 }), false, "time bound");
+    assert.equal(bornAfter(join(base, "missing"), born), false, "a missing root");
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 

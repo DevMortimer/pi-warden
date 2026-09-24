@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
@@ -781,6 +781,17 @@ test("session scratch: a recorded path deleted, then made again outside the agen
   await runCall("bash", { command: `rm -rf ${probe}` }, () => rm(probe, { recursive: true }));
   await mkdir(probe);
   assert.equal((await toolCall("bash", { command: `rm -rf ${probe}` }))?.block, true);
+}));
+
+test("session scratch: older content moved into a recorded directory stays held", async () => withScratchBase(async base => {
+  const important = join(base, "important");
+  await mkdir(important);
+  const dir = join(base, "S", "x");
+  await runCall("bash", { command: `mkdir -p ${dir}` }, () => mkdir(dir, { recursive: true }));
+  await runCall("bash", { command: `mv ${important} ${dir}/` }, () => rename(important, join(dir, "important")));
+  const held = await toolCall("bash", { command: `rm -rf ${dir}` });
+  assert.equal(held?.block, true);
+  assert.match(held?.reason ?? "", /recursive rm on an absolute, home, variable, or parent path/);
 }));
 
 test("session scratch: a fresh session forgets what the last one created", async () => withScratchBase(async base => {
