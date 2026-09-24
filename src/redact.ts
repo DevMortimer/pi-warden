@@ -57,17 +57,25 @@ const ASSIGNMENTS: RegExp[] = [
 const NOT_VALUES = new Set(["boolean", "string", "number", "object", "any", "unknown", "null", "undefined", "true", "false", "none", "nil", "void", "never", "required", "optional", "redacted", "hidden", "masked", "omitted", "unset", "missing", "empty", "changeme", "example", "placeholder", "password", "secret", "token", "value", "text", "str", "int", "bytes", "yes", "no", "on", "off", "auto", "default", "bearer", "basic", "env", "process", "os", "environ", "config", "settings", "input", "output", "prompt"]);
 
 /**
- * A value shape, not a name: at least 8 characters, not a type word or placeholder, not a reference to somewhere the
- * value lives (`$VAR`, `${...}`, `process.env.X`, `<your key>`, `[redacted]`, `***`), not an all-caps identifier, and
- * with the mixture of character classes that keys have (digits with letters, or both cases with punctuation).
+ * A value shape, not a name: at least 8 characters, not a type word or placeholder (`<redacted>`, `***`, `REDACTED`,
+ * `xxxx`), not a plain number (`19415506`, `19,415,506`), not an identifier or expression in code (`findSecrets(text)`,
+ * `output.secretIds`, a type name), not a reference to somewhere the value lives (`$VAR`, `${...}`, `process.env.X`,
+ * `<your key>`, `[redacted]`), not an all-caps identifier, and with the mixture of character classes that keys have
+ * (digits with letters, or both cases with punctuation).
  */
 export function looksLikeSecretValue(value: string): boolean {
-  const text = value.trim().replace(/^[`"'([{<]+|[`"')\]}>.,;]+$/g, "");
+  const raw = value.trim();
+  if (/^<[^<>]*>$/.test(raw)) return false; // an angle-bracket placeholder: <redacted>, <...>, <sk-live-token>
+  const text = raw.replace(/^[`"'([{<]+|[`"')\]}>.,;]+$/g, "");
   if (text.length < 8 || text.length > 512) return false;
   const lower = text.toLowerCase();
   if (NOT_VALUES.has(lower)) return false;
   if (/^[$%<\[{*]|^(?:process|os|env|settings|config|secrets?|vault|keychain|import\.meta)\.|^\$?\{|^\*+$|^x+$|^(?:your|my|the|a|an)[-_ ]/i.test(text)) return false;
+  if (/^\d+(?:[,_]\d+)*$/.test(text)) return false; // a plain number, separators allowed: 19415506, 797330_123, 19,415,506
+  if (/^(?:[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+|[a-z]+(?:[A-Z][\w$]*)+|[A-Z][a-z]+(?:[A-Z][\w$]*)*)\s*[(\[]/.test(text)) return false; // a call or index expression: a bracket straight after a code identifier or property path (`findSecrets(text)`, `secretValues.filter((id`); a bracket inside mixed characters is a password, not code
+  if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(text)) return false; // a property access: output.secretIds
   if (/^[A-Z][A-Z0-9_]{6,}$/.test(text)) return false; // an environment variable name
+  if (/^[A-Z][a-z]+(?:[A-Z][a-z0-9]*)*$/.test(text) && !/\d{3,}/.test(text)) return false; // a class or type name in code
   if (/^[a-z]+(?:[A-Z][a-z0-9]*)+$/.test(text) && !/\d{3,}/.test(text)) return false; // a camelCase identifier
   if (/^[a-z]+(?:[_-][a-z]+)+$/.test(text)) return false; // snake or kebab words such as synthetic-secret
   if (/^\/|^\.\.?\//.test(text)) return false; // a path
