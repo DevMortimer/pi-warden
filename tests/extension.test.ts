@@ -2823,9 +2823,22 @@ test("conscience: the agent_end reminder still sends a capability that passed th
   sentMessages.length = 0;
   const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
   assert.ok(result?.message, "the first recommendation passes the gate");
-  await agentEnd("I designed the landing page.");
+  // The run ended on a tool call, not a final text reply.
+  await fire("agent_end", { messages: [{ role: "user", content: prompt ?? "" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] }, context());
   const reminders = sentMessages.filter(m => /Reminder: consider using the "impeccable" skill/.test(m.message.content));
   assert.equal(reminders.length, 1);
+});
+
+test("conscience: no agent_end reminder after the run ended with a final text reply", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(result?.message, "the first recommendation passes the gate");
+  await agentEnd("I designed the landing page.");
+  const reminders = sentMessages.filter(m => /Reminder: consider/.test(m.message.content));
+  assert.deepEqual(reminders, [], "the agent already answered");
 });
 
 test("conscience: session_start during assessment produces stale trace", async () => {
@@ -3077,13 +3090,13 @@ test("conscience: reminder fires once, second agent_end says unresolved", async 
   sentMessages.length = 0;
   await promptWithSkills("design a landing page", skills);
   // agent_end: fresh assessment re-selects, budgets allow → one reminder
-  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "text", text: "Done" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const reminders1 = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.ok(reminders1.length >= 1, `first agent_end should send a reminder, got ${reminders1.length}`);
   assert.match(reminders1[0]!.message.content, /impeccable/);
   // Second agent_end for same prompt: reminderSent=true → no second reminder
   sentMessages.length = 0;
-  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "text", text: "Done again" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const reminders2 = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.equal(reminders2.length, 0, "second agent_end should not send a reminder");
   // agent_settled should show unresolved
@@ -3101,7 +3114,7 @@ test("conscience: reminder suppressed on awaiting_user and when nudges exhausted
   nextAnswers = { conscience_disposition: "awaiting_user", c1: 3 };
   sentMessages.length = 0;
   await promptWithSkills("what style?", skills);
-  await fire("agent_end", { messages: [{ role: "user", content: "what style?" }, { role: "assistant", content: [{ type: "text", text: "Which style?" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "what style?" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const remindersAwaiting = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.equal(remindersAwaiting.length, 0, "reminder suppressed when awaiting_user");
   // Test 2: maxNudges=1, already spent → suppresses reminder
@@ -3110,12 +3123,12 @@ test("conscience: reminder suppressed on awaiting_user and when nudges exhausted
   sentMessages.length = 0;
   await promptWithSkills("design a page", skills);
   // First agent_end spends the one nudge
-  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "text", text: "Done" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const firstReminder = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.ok(firstReminder.length >= 1, "first agent_end should send the one allowed reminder");
   // Second agent_end: nudgesThisPrompt=1 >= maxNudges=1 → suppressed
   sentMessages.length = 0;
-  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "text", text: "Done again" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const remindersBudget = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.equal(remindersBudget.length, 0, "reminder suppressed when maxNudges exhausted");
 });

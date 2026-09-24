@@ -1876,7 +1876,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     const judge = judgeFor(config);
     // ── Conscience: one reminder at agent_end if capability is still unresolved ──
-    if (config.conscience.enabled && selectedCapability && !reminderSent && !triggerConsumed &&
+    // A run that ended with a final text reply has answered: a reminder then starts a new turn to revisit a finished answer.
+    if (config.conscience.enabled && selectedCapability && !finalMessage && !reminderSent && !triggerConsumed &&
         assessmentsThisPrompt < config.conscience.maxAssessments &&
         nudgesThisPrompt < config.conscience.maxNudges && budgetAvailable(config) && judge) {
       const myGeneration = conscienceGeneration;

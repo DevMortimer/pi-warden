@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import type { Stats } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
@@ -270,10 +271,14 @@ const PRINTS_SECRET = new RegExp(String.raw`\bprintenv\b[^\n;&|]*\s${SECRET_NAME
 /** A double-quoted string that expands a credential variable prints it; it is not inert data text. */
 const SECRET_EXPANSION = new RegExp(String.raw`\$\{?${SECRET_NAME}(?!\w)`, "i");
 
+// `git` plus any global options before the subcommand: `-C dir`, `--git-dir=x`, `--work-tree x`, `-c key=value` point the
+// command at another repository, and a pattern that needs the subcommand right after `git` misses them.
+const GIT = String.raw`\bgit(?:\s+-[-\w.]*(?:=\S*)?(?:\s+(?:"[^"]*"|'[^']*'|[^-\s]\S*))?)*`;
+
 export const SHELL_RULES: Rule[] = [
-  { id: "git-force-push", severity: "destructive", label: "git force push", test: /\bgit\s+push\b[^\n;&|]*\s(?:-f|--force)(?![-\w])/ },
-  { id: "git-force-with-lease", severity: "risky", label: "git push --force-with-lease", test: /\bgit\s+push\b[^\n;&|]*--force-with-lease/ },
-  { id: "git-reset-hard", severity: "destructive", label: "git reset --hard", test: /\bgit\s+reset\b[^\n;&|]*--hard/ },
+  { id: "git-force-push", severity: "destructive", label: "git force push", test: new RegExp(String.raw`${GIT}\s+push\b[^\n;&|]*\s(?:-f|--force)(?![-\w])`) },
+  { id: "git-force-with-lease", severity: "destructive", label: "git push --force-with-lease", test: new RegExp(String.raw`${GIT}\s+push\b[^\n;&|]*--force-with-lease`) },
+  { id: "git-reset-hard", severity: "destructive", label: "git reset --hard", test: new RegExp(String.raw`${GIT}\s+reset\b[^\n;&|]*--hard`) },
   { id: "git-clean", severity: "destructive", label: "git clean (removes untracked files)", test: /\bgit\s+clean\b[^\n;&|]*\s-[a-zA-Z]*[fFxX]/ },
   { id: "git-checkout-discard", severity: "risky", label: "git checkout/restore discards working changes", test: /\bgit\s+checkout\s+(?:--\s+\S|(?:\.|\*)(?=\s|$))|\bgit\s+restore\b(?:(?![^\n;&|]*--staged)|(?=[^\n;&|]*(?:--worktree|\s-\w*W)))/ },
   { id: "git-branch-force-delete", severity: "risky", label: "git branch -D", test: /\bgit\s+branch\b[^\n;&|]*\s-D\b/ },
@@ -1090,6 +1095,98 @@ function applySqlTargets(raw: string, hits: Map<string, PatternHit>, exempt: Rea
   }
 }
 
+// ---------------------------------------------------------------------------
+// Git state: a hard reset of a clean tree loses no uncommitted work, and a lease push to a named feature branch cannot
+// overwrite the default branch. Only a plain single `git reset`/`git push` command is read; anything else (a `cd`, `-C`,
+// a quote, a variable, a second command) keeps the hold, as does any git call that fails or times out.
+
+const GIT_STATE_TIMEOUT_MS = 2000;
+const PLAIN_COMMAND = /^[\w@%+=:,./~^-]+(?:[ \t]+[\w@%+=:,./~^-]+)*$/;
+const LEASE_PUSH_FLAGS = /^(?:--force-with-lease(?:=\S+)?|--force-if-includes|-u|--set-upstream|-q|--quiet|-v|--verbose|-n|--dry-run|--progress|--atomic|--no-verify)$/;
+
+function plainGitWords(command: string, subcommand: string): string[] | undefined {
+  const text = command.trim();
+  if (!PLAIN_COMMAND.test(text)) return undefined;
+  const words = text.split(/[ \t]+/);
+  return words[0] === "git" && words[1] === subcommand ? words.slice(2) : undefined;
+}
+
+/** Trimmed stdout of a git call in `cwd`; undefined when git fails, times out, or `cwd` is not a work tree. */
+function gitOutput(cwd: string, args: readonly string[]): string | undefined {
+  // GIT_OPTIONAL_LOCKS=0: `git status` would otherwise refresh the index and could race the agent's own git calls.
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: GIT_STATE_TIMEOUT_MS, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  return result.status === 0 && typeof result.stdout === "string" ? result.stdout.trim() : undefined;
+}
+
+/** `git reset --hard` in `cwd` loses nothing uncommitted: one `git status --porcelain` call prints nothing. */
+export function cleanHardReset(command: string, cwd: string | undefined): boolean {
+  if (!cwd || !plainGitWords(command, "reset")) return false;
+  return gitOutput(cwd, ["status", "--porcelain"]) === "";
+}
+
+/**
+ * `git push --force-with-lease` whose every target branch is named or is the current branch, and is not `main`,
+ * `master`, or the remote's HEAD branch. A plain `--force`/`-f`, a `+` refspec, a delete, `--all`/`--mirror`/`--tags`,
+ * or any flag not in LEASE_PUSH_FLAGS keeps the hold.
+ */
+export function safeLeasePush(command: string, cwd: string | undefined): boolean {
+  const words = cwd ? plainGitWords(command, "push") : undefined;
+  if (!cwd || !words) return false;
+  const positionals: string[] = [];
+  for (const word of words) {
+    if (word.startsWith("-")) { if (!LEASE_PUSH_FLAGS.test(word)) return false; }
+    else positionals.push(word);
+  }
+  let remote = positionals[0];
+  const refspecs = positionals.slice(1);
+  if (remote !== undefined && !/^[\w.-]+$/.test(remote)) return false;
+  const targets: string[] = [];
+  let current: string | undefined;
+  const currentBranch = () => (current ??= gitOutput(cwd, ["symbolic-ref", "-q", "--short", "HEAD"]) || undefined);
+  if (!refspecs.length) {
+    const branch = currentBranch();
+    if (!branch) return false;
+    targets.push(branch);
+    // push.default=matching pushes every branch with a remote namesake, not only the current one.
+    const pushDefault = gitOutput(cwd, ["config", "--default", "simple", "--get", "push.default"]);
+    if (pushDefault === undefined || !["simple", "current", "upstream", "tracking"].includes(pushDefault)) return false;
+    // The branch's upstream is where a bare push goes under push.default=upstream, whatever its name. The pattern also
+    // matches branches below it (`feat` matches `feat/x`), so only the line for the branch itself is read.
+    const refs = gitOutput(cwd, ["for-each-ref", "--format=%(refname)%09%(upstream:remotename)%09%(upstream:lstrip=3)", `refs/heads/${branch}`]);
+    if (refs === undefined) return false;
+    const [, upstreamRemote, upstreamBranch] = refs.split("\n").map(line => line.split("\t")).find(([ref]) => ref === `refs/heads/${branch}`) ?? [];
+    if (upstreamBranch) targets.push(upstreamBranch);
+    remote ??= upstreamRemote || "origin";
+  }
+  for (const refspec of refspecs) {
+    if (refspec.startsWith("+") || refspec.startsWith(":")) return false;
+    let target = refspec.includes(":") ? refspec.slice(refspec.indexOf(":") + 1) : refspec;
+    if (target.startsWith("refs/heads/")) target = target.slice("refs/heads/".length);
+    else if (target.startsWith("refs/")) return false;
+    if (target === "HEAD" || target === "@") {
+      const branch = currentBranch();
+      if (!branch) return false;
+      target = branch;
+    }
+    if (!target) return false;
+    targets.push(target);
+  }
+  const remoteHead = gitOutput(cwd, ["for-each-ref", "--format=%(symref:lstrip=3)", `refs/remotes/${remote ?? "origin"}/HEAD`]);
+  if (remoteHead === undefined) return false;
+  const defaults = new Set(["main", "master", ...(remoteHead ? [remoteHead] : [])]);
+  return targets.every(target => !defaults.has(target));
+}
+
+/** Lowers the reset and lease-push hits to a warning when the repository state makes them safe. */
+function applyGitState(command: string, hits: Map<string, PatternHit>, cwd: string | undefined): void {
+  if (hits.get("git-reset-hard")?.severity === "destructive" && cleanHardReset(command, cwd)) {
+    hits.set("git-reset-hard", { id: "git-reset-hard", severity: "risky", label: "git reset --hard on a clean working tree" });
+  }
+  if (hits.get("git-force-with-lease")?.severity === "destructive" && !hits.has("git-force-push") && safeLeasePush(command, cwd)) {
+    hits.set("git-force-with-lease", { id: "git-force-with-lease", severity: "risky", label: "git push --force-with-lease to a branch that is not the default" });
+  }
+}
+
 interface CompiledUserRule extends Rule { message?: string; action?: "dialog" | "hold"; }
 
 /** Compiled user rules and exempt ids; passed from the config so matchPatterns stays pure. */
@@ -1169,6 +1266,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     const command = stripDataText(raw).text;
     for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
     applySqlTargets(raw, hits, exempt);
+    applyGitState(raw, hits, cwd);
     // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else: no scratch.
     const scratch = PRIVILEGED.test(command) || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
     for (const segment of splitShell(command)) {

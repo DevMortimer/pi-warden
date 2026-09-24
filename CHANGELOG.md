@@ -8,6 +8,24 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.60.0
+
+### Changed
+
+- `git reset --hard` warns instead of holding when the working tree is clean: `git status --porcelain` in the call's directory prints nothing. The check runs once with a 2-second timeout; a failed or timed-out check holds.
+- `git push --force-with-lease` now holds by default. It warns only when every target branch is named in the command or is the current branch, no target is `main`, `master`, or the remote's HEAD branch, and the command has no plain `--force`/`-f`. A `+` or delete refspec, `--all`, `--mirror`, `--tags`, an unknown flag, a detached HEAD, or `push.default=matching` on a bare push keeps the hold.
+- Both relaxations read only a plain single `git reset` or `git push` command. A `cd`, `-C`, quote, variable, or second command keeps the hold.
+- The conscience no longer sends its `agent_end` reminder when the run ended with a final text reply. The agent has answered; a reminder then started a new turn to revisit a finished answer.
+
+### Fixed
+
+- `git reset --hard` with global options before `reset` (`git -C dir`, `--git-dir`, `--work-tree`, `-c key=value`) is held. Before, the pattern needed `reset` right after `git`, so `git -C dir reset --hard` was neither held nor warned.
+- `git push --force`, `-f`, and `--force-with-lease` with the same global options before `push` (`git -C dir push --force`) are held. The push patterns had the same gap.
+
+### Tests
+
+- A clean and a changed tree for `reset --hard`, and a failed status check. Lease pushes to a feature branch, to `main`, `master`, and the remote HEAD branch, with plain `--force`, with a bare push that tracks the default branch, and outside a repository. A conscience run that ended with a final reply sends no reminder. `reset --hard` with `-C`, `--git-dir`, `--work-tree`, and `-c` on a clean tree is held. `push --force`, `-f`, and `--force-with-lease` with those options are held.
+
 ## 0.59.5
 
 ### Fixed
