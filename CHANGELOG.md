@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.59.4
+
 ### Fixed
 
 - Shell writes that gave neither a judged write nor a skip are now judged. `exec > f; echo x` judges the text the later commands print into `f`; a redirected `{ echo x; } > f` or `(echo x) > f` group judges the text its commands print, and a group that also runs a program is skipped with a reason; `env echo x > f` treats `env` as a wrapper; a target such as `/dev/../tmp/p/f` is normalized before the `/dev/` test; a partly quoted heredoc delimiter (`<<E"OF"`) ends at `EOF` and keeps the body literal, as in bash.
