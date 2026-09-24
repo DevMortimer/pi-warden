@@ -12,6 +12,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 - The conscience never recommends a destructive tool. A tool whose name has `delete`, `drop`, `destroy`, `remove`, `purge`, `wipe`, `reset`, or `truncate` as a whole word or `_`-separated part, or whose description starts with one of these words, is not a candidate. The field data had 4 recommendations of `delete_project`.
 - Fewer candidates make the conscience request smaller. On a catalog of 19 skills and 32 tools, one assessment now sends 45 questions in 2 requests instead of 54 questions in 3.
 
+## 0.57.0
+
+### Added
+
+- The done-check asks for a visual check after UI changes (`done.uiProof`, default on). When a run changes a file that matches `done.uiFiles` (stylesheets, markup, `.jsx`/`.tsx`/`.vue`/`.svelte`/`.astro` components, Flutter `.dart` files, `web/` and `public/` scripts; tests excluded), whether by `write`, `edit`, or a `bash` file write, passing tests and builds no longer prove a "done" reply. Only a successful `done.visualTools` call after the last UI change does: `agent-browser`, `playwright`, `flutter test`, `idb`, `xcrun simctl io`, a `screenshot` command, a browser MCP tool such as `take_screenshot` or `navigate_page`, or a `read` of an image. Without one, the final reply is judged with the existing questions, and the nudge names the file: "You changed `web/app.css` but did not look at the result. Open it in a browser or take a screenshot before calling it done, or say it is unverified." In a week of real sessions, 23 of 75 UI runs that ended with a "done" reply had no visual step after the last UI change; replayed, the rule nudges 20 of them and 7 of the other 52, 6 of which had no real visual step either. `uiProof: false` restores the previous rule. See `docs/guards.md` → Done-check.
+
 ## 0.56.1
 
 ### Tests

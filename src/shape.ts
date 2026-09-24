@@ -44,7 +44,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     steerBudget: typeof source.steerBudget === "number" && source.steerBudget >= 0 ? source.steerBudget : 3,
     action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, shouldProceed: { hold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, diffLimit: 3000, tailLimit: 1000 }),
-    done: section("done", { ...off, claimsDone: 1, nudge: false }),
+    done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false }),
     rules: section("rules", { ...off, threshold: 1, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),

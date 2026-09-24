@@ -151,6 +151,38 @@ export interface DoneGuardConfig {
   claimsDone: number;
   /** Also send the agent a follow-up asking it to verify. Triggers one more LLM turn. */
   nudge: boolean;
+  /** After a change to a `uiFiles` path, only a `visualTools` call counts as proof; passing tests do not. */
+  uiProof: boolean;
+  /** Globs for files whose change shows on screen. `{a,b}` alternatives are allowed; a `!` glob excludes. */
+  uiFiles: string[];
+  visualTools: VisualToolsConfig;
+}
+
+/** Tool calls that show the rendered UI. Matching is case-insensitive. */
+export interface VisualToolsConfig {
+  /** Heads of a shell command segment: `agent-browser`, `npx playwright`. */
+  commands: string[];
+  /** Words that make a shell command visual when one stands alone as an argument or flag: `idb screenshot`, `--screenshot`. */
+  commandWords: string[];
+  /** Text in a tool name, or in the `tool` an MCP proxy calls: `take_screenshot`, `navigate_page`. */
+  tools: string[];
+  /** Image extensions whose `read` counts as looking at the result. */
+  images: string[];
+}
+
+// Tests of UI code are proven by running them, not by looking at them.
+export const DEFAULT_UI_FILES = [
+  "**/*.{css,scss,sass,less,html,htm,vue,svelte,jsx,tsx,astro,dart}", "**/web/**/*.js", "**/public/**/*.js",
+  "!**/*.{test,spec}.*", "!**/*_test.dart", "!**/{test,tests,__tests__}/**",
+];
+
+export function defaultVisualTools(): VisualToolsConfig {
+  return {
+    commands: ["agent-browser", "playwright", "npx playwright", "flutter test", "fvm flutter test", "idb", "xcrun simctl io"],
+    commandWords: ["screenshot"],
+    tools: ["screenshot", "take_snapshot", "navigate"],
+    images: ["png", "jpg", "jpeg", "webp"],
+  };
 }
 
 export interface ProseConfig {
@@ -409,7 +441,7 @@ export function defaultConfig(): WardenConfig {
       floor: "evidence",
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true, repeatSteer: true, diffLimit: 3000, tailLimit: 1000 },
-    done: { enabled: true, claimsDone: 0.7, nudge: true },
+    done: { enabled: true, claimsDone: 0.7, nudge: true, uiProof: true, uiFiles: [...DEFAULT_UI_FILES], visualTools: defaultVisualTools() },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true },
     rules: { enabled: true, threshold: 0.7, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
@@ -711,7 +743,20 @@ function applySubagent(base: SubagentConfig, raw: unknown): SubagentConfig {
 
 function applyDone(base: DoneGuardConfig, raw: unknown): DoneGuardConfig {
   if (!isObject(raw)) return base;
-  return { enabled: boolean(raw.enabled, base.enabled), claimsDone: probability(raw.claimsDone, base.claimsDone), nudge: boolean(raw.nudge, base.nudge) };
+  const visual = isObject(raw.visualTools) ? raw.visualTools : {};
+  return {
+    enabled: boolean(raw.enabled, base.enabled),
+    claimsDone: probability(raw.claimsDone, base.claimsDone),
+    nudge: boolean(raw.nudge, base.nudge),
+    uiProof: boolean(raw.uiProof, base.uiProof),
+    uiFiles: globList(raw.uiFiles, base.uiFiles),
+    visualTools: {
+      commands: globList(visual.commands, base.visualTools.commands),
+      commandWords: globList(visual.commandWords, base.visualTools.commandWords),
+      tools: globList(visual.tools, base.visualTools.tools),
+      images: globList(visual.images, base.visualTools.images).map(extension => extension.replace(/^\./, "")),
+    },
+  };
 }
 
 function applyProse(base: ProseConfig, raw: unknown): ProseConfig {
