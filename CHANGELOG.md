@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.56.1
+
 ### Tests
 
 - The two judge cooldown tests that wait for the window to end no longer depend on runner speed. They used a 40 ms window and a 60 ms sleep, so on a slow runner the window could end again before the next action, and the test failed with `the window is open again: 3 !== 2`. They now use a 60 s window and move a mocked `Date.now` forward instead of sleeping. The failed-probe test also checks that the probe after the window reaches the judge, so it can no longer pass when the window never ends. `JudgeCooldown` now reads `Date.now` on each call rather than keeping the function it saw at construction; the timing is unchanged.
