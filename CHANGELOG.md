@@ -10,6 +10,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - The stuck guard catches a literal repeat on the 2nd call, in code, with no request. When the agent makes the same call (same tool and input) a second time and nothing that can change state ran between, it gets a short steer if the call failed with the same output ("you already ran `npm test`; it failed the same way: 1 failing. Change something before running it again.") or if a read (`read`, or a read-only shell command) returned the same output again ("you already have this output from `read src/config.ts` (3 calls ago); nothing changed since."). A successful write or edit, or any command that is not read-only, resets the check. Polling and waiting (`sleep`, `watch`, `git status`, `gh run watch`, `gh pr checks`, `tail -f`, `ps`) never fire. It fires once per call per prompt, so a 3rd identical failure still reaches the regular stuck check; it counts against the per-run steer budget as `repeat`, and a stuck verdict on the same result takes its place. New key `stuck.repeatSteer` (default `true`) turns it off; it also follows `stuck.nudge`.
 
+## 0.53.0
+
+### Added
+- Rules, slop, and security judge code that a `bash` command writes to a file, as if it were a `write`: heredocs into `cat` or `tee` (quoted or unquoted delimiter, `<<-`), here-strings, and `echo`/`printf` with `>` or `>>`. Each target in a chain is judged on its own, before the command runs, with the same `.gitignore` and outside-project skip as a `write`; an append judges only the appended text. An authoring form whose text cannot be read (`$VAR` or `$(...)` in the body, a pipe into `tee`) and `sed -i`, `patch`, and `git apply` are not judged, and the trace says why; a program's output sent to a file (`cmd > log`) is not judged and leaves no trace note. See `docs/guards.md` → Rules.
+
 ## 0.52.2
 
 ### Fixed
