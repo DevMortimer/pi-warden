@@ -4,6 +4,9 @@ import { DECISIONS_BACKENDS, DEFAULT_BACKEND } from "pi-typesafe";
 /** The judgment backend that receives pi-warden's Jev requests. */
 export type JudgmentBackend = "typesafe" | "openrouter";
 
+/** Why no judge is available: consent not given, no key for the backend, a saved 401 or 403, or the request budget spent. */
+export type JudgmentsOffReason = "no_consent" | "no_key" | "key_rejected" | "budget";
+
 /** The host the consent disclosure names as the destination, without scheme: `api.typesafe.ai`, `openrouter.ai`. */
 export function backendHost(backend: JudgmentBackend): string {
   return new URL(DECISIONS_BACKENDS[backend].host).host;

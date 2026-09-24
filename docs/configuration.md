@@ -228,13 +228,16 @@ It is a backstop for sanctioned work, not a boundary anyone hostile respects: ke
 | `PI_WARDEN_MODE=steer\|confirm\|advise` | Overrides `mode`. |
 | `PI_WARDEN_TRACE_DIR=<absolute path>` | Appends the trace to `<path>/<session id>.jsonl`, one file per Pi session. For a host that runs Pi in RPC mode, where the status line and the sidebar never show. An empty or relative path turns it off. See [Trace file](#trace-file). |
 
+When a guard would ask Jev but cannot, Warden tells you once per session and reason why, and what to do: no consent (`/warden enable`, or `PI_WARDEN_ENABLED=1` headless), no key for the backend (set its key variable or run `/typesafe login`), or a saved key that was rejected (`/typesafe login`); a headless session gets a status message instead of a notice, and a spent request budget keeps its own warning.
+
 ### Trace file
 
 With `PI_WARDEN_TRACE_DIR` set to an absolute path, Warden appends every trace event to `<path>/<session id>.jsonl`. The directory is created owner-only (`0700`) when it is missing; the file is owner-only (`0600`). A new or resumed session writes to its own file. The file keeps every event: the 100-entry limit of the sidebar does not apply. Each line is one JSON object with `"v": 1` and a `kind`:
 
 | `kind` | Written | Fields |
 | --- | --- | --- |
-| `session` | Once when the session opens the file | `sessionId`; `cwd` (the home directory shown as `~`, redacted); `wardenVersion`; `mode` (`steer`, `confirm`, or `advise`); `at` |
+| `session` | Once when the session opens the file | `sessionId`; `cwd` (the home directory shown as `~`, redacted); `wardenVersion`; `mode` (`steer`, `confirm`, or `advise`); `judgments` (`on`, or `off:<reason>` with reason `no_consent`, `no_key`, `key_rejected`, or `budget`); `at` |
+| `judgments` | When a guard finds the judgment state changed from the last `session` or `judgments` line | `judgments` (same values as on `session`); `at` |
 | `entry` | For every trace event | `id` (a number, unique in the file; a reload continues the count); `at`; `guard`; `line` (the status-line text); `details` (the redacted detail lines the sidebar shows); `tokens` (the widget tokens, when the event has them) |
 | `amend` | When an outcome lands on an event that is still in the sidebar's 100 entries | `id` of the entry; `line` (the added detail line); `at` |
 

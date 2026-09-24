@@ -3,6 +3,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import { sessionFileId } from "./holds.js";
+import type { JudgmentsOffReason } from "./backend.js";
 import { redact } from "./redact.js";
 import type { TraceEntry, TraceEvent } from "./trace.js";
 
@@ -10,7 +11,9 @@ import type { TraceEntry, TraceEvent } from "./trace.js";
  * Trace file for hosts that run Pi without the terminal UI. The widget and the sidebar never reach an RPC host, so with
  * `PI_WARDEN_TRACE_DIR` set the trace is also appended to `<dir>/<session>.jsonl`, one JSON object per line:
  *
- * - `{"v":1,"kind":"session","sessionId","cwd","wardenVersion","mode","at"}` when the file is opened for a session;
+ * - `{"v":1,"kind":"session","sessionId","cwd","wardenVersion","mode","judgments","at"}` when the file is opened for a
+ *   session; `judgments` is `"on"` or `"off:<reason>"`, reason one of `no_consent`, `no_key`, `key_rejected`, `budget`;
+ * - `{"v":1,"kind":"judgments","judgments","at"}` when a guard finds the judgment state changed from the last line;
  * - `{"v":1,"kind":"entry","id","at","guard","line","details","tokens"?}` for every trace entry, as the trace stores it;
  * - `{"v":1,"kind":"amend","id","line","at"}` for an outcome line added to an entry still in the trace.
  *
@@ -66,6 +69,15 @@ export interface TraceFileSession {
   sessionId: string;
   cwd: string;
   mode: string;
+  /** Whether Jev judgments can run as the session opens. */
+  judgments: JudgmentsState;
+}
+
+/** The trace file's judgment state: `"on"`, or `"off:<reason>"`. */
+export type JudgmentsState = "on" | `off:${JudgmentsOffReason}`;
+
+export function judgmentsState(reason: JudgmentsOffReason | undefined): JudgmentsState {
+  return reason === undefined ? "on" : `off:${reason}`;
 }
 
 /** Appends the session's trace events in trace order, one write at a time. */
@@ -75,9 +87,11 @@ export class TraceFile {
   private sequence = 0;
   private readonly ids = new WeakMap<TraceEntry, number>();
   private stopped = false;
+  private judgmentsNow: JudgmentsState;
 
   constructor(readonly path: string, dir: string, session: TraceFileSession, private readonly onFailure: (message: string) => void) {
-    const header = { v: 1, kind: "session", sessionId: session.sessionId, cwd: shownPath(session.cwd), wardenVersion: wardenVersion(), mode: session.mode, at: new Date().toISOString() };
+    const header = { v: 1, kind: "session", sessionId: session.sessionId, cwd: shownPath(session.cwd), wardenVersion: wardenVersion(), mode: session.mode, judgments: session.judgments, at: new Date().toISOString() };
+    this.judgmentsNow = session.judgments;
     this.queue = this.guarded(async () => {
       await mkdir(dir, { recursive: true, mode: 0o700 });
       this.base = await lastEntryId(path);
@@ -102,6 +116,14 @@ export class TraceFile {
     const { line } = event;
     this.append(() => ({ v: 1, kind: "amend", id: this.base + local, line, at }));
   };
+
+  /** Adds a `judgments` line when the state differs from the last one written. */
+  judgments(state: JudgmentsState): void {
+    if (this.stopped || state === this.judgmentsNow) return;
+    this.judgmentsNow = state;
+    const at = new Date().toISOString();
+    this.append(() => ({ v: 1, kind: "judgments", judgments: state, at }));
+  }
 
   /** Resolves when every event so far is on disk or the file has stopped. */
   flush(): Promise<void> {
