@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
@@ -3916,4 +3916,86 @@ test("conscience: a rejected key traces key_rejected, and missing consent still 
   await runCommand("trace", context({ hasUI: false }));
   traceText = sentMessages.at(-1)!.message.content;
   assert.match(traceText, /skipReason: no_consent/);
+});
+
+/** A session directory copied from the prefs fixture, dated now so it sits inside the scan window. */
+const prefsSessions = async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-ext-"));
+  const fixtures = resolve("tests/fixtures/prefs");
+  const now = new Date();
+  for (const name of await readdir(fixtures)) {
+    await writeFile(join(dir, name), await readFile(join(fixtures, name)));
+    await utimes(join(dir, name), now, now);
+  }
+  let reads = 0;
+  const manager = {
+    ...sessionManager,
+    getSessionDir: () => { reads++; return dir; },
+    getSessionFile: () => join(dir, "2026-01-04T10-00-00-000Z_current.jsonl"),
+  };
+  return { dir, manager, reads: () => reads };
+};
+
+test("/warden prefs lists the standing preferences with counts, dates, and the hint, and writes nothing", async () => {
+  const sessions = await prefsSessions();
+  try {
+    const ctx = context({ sessionManager: sessions.manager });
+    await sessionStart(ctx);
+    const before = await readdir(sessions.dir);
+    notices.length = 0;
+    await runCommand("prefs", ctx);
+    const text = notices.at(-1)!.text;
+    assert.match(text, /^Standing preferences \(repeated in 2\+ of the last 3 sessions of this project\):/);
+    assert.match(text, /Never paste the api_key=\[redacted\] value into the chat log \(2 sessions, last 2026-01-03\)/);
+    assert.match(text, /Dont open pull requests, leave the branch local \(2 sessions, last 2026-01-02\)/);
+    assert.ok(text.endsWith("Add the ones you want to keep to pi-warden.md as rules."));
+    assert.doesNotMatch(text, /linter|formatter/i);
+    assert.equal(networkCalls, 0, "no judgment request");
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "no injection by default");
+    await runCommand("prefs", ctx);
+    assert.equal(sessions.reads(), 1, "one scan per session start");
+    assert.deepEqual(await readdir(sessions.dir), before);
+  } finally {
+    await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+test("prefs.inject sends one context message at session start, not a steer, and not again on a resume", async () => {
+  const sessions = await prefsSessions();
+  try {
+    await writeFile(configPath(), JSON.stringify({ prefs: { inject: true }, ...STACK_BAR }));
+    sentMessages.length = 0;
+    await sessionStart(context({ sessionManager: sessions.manager }));
+    const sent = sentMessages.filter(m => m.message.customType === "pi-warden-prefs");
+    assert.equal(sent.length, 1);
+    assert.match(sent[0]!.message.content, /^Preferences this user repeated in earlier sessions of this project:\n- Never paste the api_key=\[redacted\]/);
+    assert.ok(sent[0]!.message.content.length <= 600);
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-steer").length, 0);
+    const resumed = { ...sessions.manager, getBranch: () => [{ type: "custom_message", customType: "pi-warden-prefs", content: sent[0]!.message.content }] };
+    sentMessages.length = 0;
+    await sessionStart(context({ sessionManager: resumed }));
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0);
+    assert.equal(networkCalls, 0);
+  } finally {
+    await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+test("enabled: false or prefs.enabled: false reads no session file, even with inject on", async () => {
+  const sessions = await prefsSessions();
+  try {
+    for (const config of [{ enabled: false, prefs: { inject: true } }, { prefs: { enabled: false, inject: true } }]) {
+      await writeFile(configPath(), JSON.stringify({ ...config, ...STACK_BAR }));
+      const ctx = context({ sessionManager: sessions.manager });
+      sentMessages.length = 0;
+      notices.length = 0;
+      await sessionStart(ctx);
+      await runCommand("prefs", ctx);
+      assert.match(notices.at(-1)!.text, /Standing preferences are off .*no session files were read/);
+      assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0);
+    }
+    assert.equal(sessions.reads(), 0, "the session directory was never asked for");
+  } finally {
+    await rm(sessions.dir, { recursive: true, force: true });
+  }
 });
