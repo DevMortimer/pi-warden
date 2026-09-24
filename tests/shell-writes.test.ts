@@ -88,10 +88,9 @@ test("a leading ~ in a target expands to the home directory", () => {
 });
 
 test("skipped forms give no write and a reason", () => {
-  assert.equal(skipped("git show HEAD:src/a.ts | cat > src/a.ts", /through a pipe/).path, "src/a.ts");
-  skipped("echo 'x' | tee src/a.ts", /through a pipe/);
-  skipped("cat <(curl -s https://example.com) > page.html", /process substitution/);
-  skipped("diff <(ls) <(ls a) > d.txt", /process substitution/);
+  assert.equal(skipped("echo 'x' | tee src/a.ts", /through a pipe/).path, "src/a.ts");
+  skipped("git show HEAD:src/a.ts | tee -a src/a.ts", /through a pipe/);
+  skipped("tee a.txt <<< \"$VALUE\"", /shell expansion/);
   skipped("echo \"key=$API_KEY\" > .env.example", /shell expansion/);
   skipped("echo $(date) > stamp.txt", /shell expansion/);
   skipped("echo \"`whoami`\" > who.txt", /shell expansion/);
@@ -102,11 +101,14 @@ test("skipped forms give no write and a reason", () => {
   skipped("sed --in-place=.bak 's/a/b/' src/a.ts", /sed -i/);
   skipped("patch -p1 < fix.diff", /patch applies a diff/);
   skipped("git apply fix.diff", /git apply/);
-  skipped("cat template.ts > src/a.ts", /cat copies files/);
-  skipped("cat < template.ts > src/a.ts", /read from a file/);
-  skipped("node gen.js > src/gen.ts", /output of node/);
   skipped("printf '%-10s' x > pad.txt", /conversion that is not judged/);
   skipped("cd src && echo x > a.ts", /changes directory first/);
+});
+
+test("a program's output or a file's content sent to a file is neither a write nor a skip", () => {
+  for (const command of ["node gen.js > src/gen.ts", "npm test > test.log 2>&1", "cat template.ts > src/a.ts", "cat < template.ts > src/a.ts", "git show HEAD:src/a.ts | cat > src/a.ts", "cat <(curl -s https://example.com) > page.html", "diff <(ls) <(ls a) > d.txt", "cd src && node gen.js > gen.ts", "node gen.js > \"$OUT\""]) {
+    assert.deepEqual(shellWrites(command), { writes: [], skips: [] }, command);
+  }
 });
 
 test("truncation and descriptor-only commands are neither writes nor skips", () => {

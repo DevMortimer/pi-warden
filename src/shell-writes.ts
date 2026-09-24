@@ -3,8 +3,9 @@ import { isAbsolute } from "node:path";
 /**
  * File writes whose content is literal in a shell command: heredocs into `cat`/`tee`, `echo`/`printf` redirections,
  * here-strings, and `>>` appends. The rules, slop, and security guards judge them as `write` calls, so a heredoc is not a
- * way around the checks a `write` gets. Nothing is executed; a write whose content the command text does not hold is
- * skipped with a reason for the trace.
+ * way around the checks a `write` gets. Nothing is executed. An authoring form whose text cannot be read (shell
+ * expansion, a pipe into `tee`) and an in-place change (`sed -i`, `patch`, `git apply`) are skipped with a reason for the
+ * trace; a program's output sent to a file is not an authoring form and is passed over silently.
  */
 
 export interface ShellWrite {
@@ -321,25 +322,23 @@ function expandHome(word: Word, home: string | undefined): string | undefined {
   return home === undefined ? undefined : `${home}${word.text.slice(1)}`;
 }
 
-/** Where the written text comes from, or why the command text does not hold it. */
-function contentOf(segment: Segment, name: string, args: readonly Word[]): { content: string; via: ShellWrite["via"] } | { reason: string } {
-  if (segment.substitution) return { reason: "process substitution supplies the content" };
+/**
+ * Where the written text comes from, or why an authoring form's text cannot be read. Undefined when the command only
+ * sends a program's output or a file's content to the target: that is no authoring form, so it leaves no trace note.
+ */
+function contentOf(segment: Segment, name: string, args: readonly Word[]): { content: string; via: ShellWrite["via"] } | { reason: string } | undefined {
   if (name === "echo" || name === "printf") {
-    if (args.some(arg => arg.expanded)) return { reason: EXPANSION_REASON };
+    if (segment.substitution || args.some(arg => arg.expanded)) return { reason: EXPANSION_REASON };
     if (name === "echo") return { content: echoText(args.map(arg => arg.text)), via: "echo" };
-    if (args[0]?.text === "-v") return { reason: "printf -v writes a variable, not a file" };
+    if (args[0]?.text === "-v") return undefined;
     const content = printfText(args.map(arg => arg.text));
     return content === undefined ? { reason: "the printf format uses a conversion that is not judged" } : { content, via: "printf" };
   }
-  if (name === "cat" && args.some(arg => arg.text !== "-" && !arg.text.startsWith("-"))) return { reason: "cat copies files, whose content is not in the command text" };
-  if (name !== "cat" && name !== "tee") return { reason: `the output of ${name || "the command"} is not in the command text` };
-  if (segment.input) {
-    if (segment.input.expanded) return { reason: EXPANSION_REASON };
-    return { content: segment.input.text, via: segment.input.kind };
-  }
-  if (segment.stdin === "pipe") return { reason: "the content arrives through a pipe" };
-  if (segment.stdin === "file") return { reason: "the content is read from a file" };
-  return { reason: "the command text holds no content" };
+  if (name !== "cat" && name !== "tee") return undefined;
+  if (name === "cat" && args.some(arg => arg.text !== "-" && !arg.text.startsWith("-"))) return undefined;
+  if (segment.input) return segment.input.expanded ? { reason: EXPANSION_REASON } : { content: segment.input.text, via: segment.input.kind };
+  if (name === "tee" && segment.stdin === "pipe") return { reason: "the content arrives through a pipe" };
+  return undefined;
 }
 
 /**
@@ -368,6 +367,7 @@ export function shellWrites(command: string, options: { home?: string } = {}): S
     const files = targets.filter(target => !/^\/dev\//.test(target.word.text));
     if (!files.length) continue;
     const source = contentOf(segment, name, name === "tee" ? [] : args);
+    if (!source) continue;
     for (const target of files) {
       const path = target.word.expanded ? undefined : expandHome(target.word, options.home);
       if (path === undefined || !path) { skips.push({ path: target.word.text, reason: "the target path uses shell expansion" }); continue; }

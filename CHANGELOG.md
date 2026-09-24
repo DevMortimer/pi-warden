@@ -7,7 +7,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 ## Unreleased
 
 ### Added
-- Rules, slop, and security judge code that a `bash` command writes to a file, as if it were a `write`: heredocs into `cat` or `tee` (quoted or unquoted delimiter, `<<-`), here-strings, and `echo`/`printf` with `>` or `>>`. Each target in a chain is judged on its own, before the command runs, with the same `.gitignore` and outside-project skip as a `write`; an append judges only the appended text. Content the command text does not hold (a pipe, a file, command output, process substitution, `$VAR` or `$(...)` in the body, `sed -i`, `patch`, `git apply`) is not judged, and the trace says why. See `docs/guards.md` → Rules.
+- Rules, slop, and security judge code that a `bash` command writes to a file, as if it were a `write`: heredocs into `cat` or `tee` (quoted or unquoted delimiter, `<<-`), here-strings, and `echo`/`printf` with `>` or `>>`. Each target in a chain is judged on its own, before the command runs, with the same `.gitignore` and outside-project skip as a `write`; an append judges only the appended text. An authoring form whose text cannot be read (`$VAR` or `$(...)` in the body, a pipe into `tee`) and `sed -i`, `patch`, and `git apply` are not judged, and the trace says why; a program's output sent to a file (`cmd > log`) is not judged and leaves no trace note. See `docs/guards.md` → Rules.
 
 ## 0.52.1
 
