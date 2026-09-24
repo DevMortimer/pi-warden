@@ -3942,6 +3942,11 @@ test("conscience: a rejected key traces key_rejected, and missing consent still 
   assert.match(traceText, /skipReason: no_consent/);
 });
 
+test("/warden completions offer every subcommand, including recommend and prefs", async () => {
+  assert.deepEqual(await command.getArgumentCompletions!("rec"), [{ value: "recommend", label: "recommend" }]);
+  assert.deepEqual(await command.getArgumentCompletions!("pr"), [{ value: "prefs", label: "prefs" }]);
+});
+
 /** A session directory copied from the prefs fixture, dated now so it sits inside the scan window. */
 const prefsSessions = async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-ext-"));

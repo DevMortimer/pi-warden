@@ -1944,7 +1944,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     });
   }
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs"];
+  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "recommend"];
   pi.registerCommand("warden", {
     description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, and a synthetic guard test",
     getArgumentCompletions(prefix) {
