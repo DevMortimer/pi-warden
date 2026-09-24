@@ -77,6 +77,12 @@ test("user overrides accept valid values and ignore junk", () => {
   assert.equal(config.stuck.sameStrategy, 0.9);
   assert.equal(config.stuck.nudge, false);
   assert.equal(config.done.claimsDone, 0.5);
+  assert.equal(config.done.uiProof, true);
+  assert.ok(config.done.uiFiles.includes("**/web/**/*.js"));
+  const ui = applyUserOverrides(defaultConfig(), { done: { uiProof: false, uiFiles: ["**/*.css", 3], visualTools: { commands: ["cypress"], images: [".gif"] } } }).done;
+  assert.equal(ui.uiProof, false);
+  assert.deepEqual(ui.uiFiles, ["**/*.css"]);
+  assert.deepEqual(ui.visualTools, { ...defaultConfig().done.visualTools, commands: ["cypress"], images: ["gif"] }, "unset lists keep their defaults; a leading dot is dropped");
   assert.equal(config.slop.threshold, 0.6, "0.2.x placeholder key sets the shared threshold");
   assert.equal(config.slop.prose.audience, "plain");
   assert.equal(config.slop.prose.trend, 3, "trend is capped at the 3-reply window");

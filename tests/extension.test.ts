@@ -2050,6 +2050,61 @@ test("done-check: an edit after a passing run makes the run unverified again", a
   assert.match(widgets.at(-1)!.at(-1)!, /^UNVERIFIED\s+done\s+done-check · 2 changes · 0\/0 checks passed · claims done 0\.90 /);
 });
 
+test("done-check: a UI change needs a visual check after it, even after passing tests", async () => {
+  await grantConsent();
+  await newPrompt("make the header sticky");
+  await toolResult("edit", { path: "web/app.css", edits: [] }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  nextAnswers = { claims_done: 0.92, claims_verified: 0.9, verification_applies: 0.2, outcome: "complete" };
+  await agentEnd("Done: the header is sticky and tests pass.");
+  assert.equal(networkCalls, 1, "a passing test does not show the page: the claim is judged");
+  assert.deepEqual(Object.keys(requests.at(-1)!.questions).sort(), ["claims_done", "claims_verified", "outcome", "verification_applies"], "no new question");
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0]!.message.content, /after a UI change with no browser, screenshot, or device check since\. You changed `web\/app\.css` but did not look at the result\. Open it in a browser or take a screenshot before calling it done, or say it is unverified\.$/);
+  assert.doesNotMatch(sentMessages[0]!.message.content, /Run the project's tests/, "the tests already passed");
+
+  await newPrompt("and the footer");
+  await toolResult("edit", { path: "web/app.css", edits: [] }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  await toolResult("bash", { command: "agent-browser open http://localhost:3000 && agent-browser screenshot /tmp/footer.png" }, "saved", false);
+  await agentEnd("Done: the footer is fixed.");
+  assert.equal(networkCalls, 1, "a screenshot after the last UI edit is the proof: no done-check");
+
+  await newPrompt("and the sidebar");
+  await toolResult("mcp__chrome_devtools", { tool: "take_screenshot" }, "image", false);
+  await toolResult("write", { path: "src/components/sidebar.tsx", content: "" }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  nextAnswers = { claims_done: 0.9, claims_verified: 0.9, verification_applies: 0.9, outcome: "complete" };
+  let before = networkCalls;
+  await agentEnd("The sidebar is done.");
+  assert.equal(networkCalls - before, 1, "a screenshot before the last UI edit does not count");
+  assert.ok("claims_done" in requests.at(-1)!.questions);
+  assert.match(sentMessages.at(-1)!.message.content, /You changed `src\/components\/sidebar\.tsx`/);
+
+  await newPrompt("and a shell-written page");
+  await toolResult("bash", { command: "cat > web/index.html <<'EOF'\n<h1>hi</h1>\nEOF" }, "", false);
+  before = networkCalls;
+  await agentEnd("The page is done.");
+  assert.equal(networkCalls - before, 1, "a UI file written from bash is a UI change too");
+  assert.ok("claims_done" in requests.at(-1)!.questions);
+});
+
+test("done-check: non-UI changes, and uiProof off, behave as before", async () => {
+  await grantConsent();
+  await newPrompt("fix the parser");
+  await toolResult("edit", { path: "src/parser.ts", edits: [] }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  await agentEnd("Fixed; tests pass.");
+  assert.equal(networkCalls, 0, "a passing check covers a non-UI change");
+
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, done: { uiProof: false }, ...STACK_BAR }));
+  await newPrompt("make the header sticky");
+  await toolResult("edit", { path: "web/app.css", edits: [] }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  await agentEnd("Done: the header is sticky.");
+  assert.equal(networkCalls, 0, "with uiProof off a passing test is enough, as before");
+});
+
 test("the request carries the latest user prompt and a redacted action summary", async () => {
   await grantConsent();
   prompt = "Deploy the thing with TOKEN=sk-live-abcdefghijklmnop please";
