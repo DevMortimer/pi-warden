@@ -20,7 +20,7 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, isVisualCheck, needsDoneCheck, recordOutcome as recordDoneOutcome, recordUi } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { createdScratch, evaluateAction, formatVerdictTokens, higher, hostPaths, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets, isVisibleCommand } from "./guard.js";
+import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { shellWrites } from "./shell-writes.js";
@@ -746,7 +746,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     judgmentsReported.clear();
     judgmentsHeadless = !ctx.hasUI;
     judgmentsNotify = text => { if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true }); };
-    sessionHostPaths = hostPaths();
+    sessionHostPaths = wardenHostPaths();
     const dir = traceDir();
     if (dir) {
       const warn = (text: string) => { if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true }); };

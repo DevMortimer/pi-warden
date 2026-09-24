@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds, isVisibleCommand } from "../src/guard.js";
+import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds, isVisibleCommand, wardenHostPaths } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -687,6 +687,33 @@ test("evaluateAction: an overwrite in a host path is not held by the outside-pro
     await rm(host, { recursive: true, force: true });
     await rm(other, { recursive: true, force: true });
     await rm(join(tmpdir(), `pi-warden-host-escape-${process.pid}`), { force: true });
+  }
+});
+
+test("evaluateAction: an overwrite of a /warden index file is not held; the rest of the agent directory still is", async () => {
+  const config = defaultConfig().action;
+  const agent = await mkdtemp(join(tmpdir(), "pi-warden-agent-"));
+  try {
+    await mkdir(join(agent, "pi-warden", "index", "projects"), { recursive: true });
+    await mkdir(join(agent, "other-extension"), { recursive: true });
+    for (const file of ["pi-warden/index/global.json", "pi-warden/index/projects/0123456789ab.json", "pi-warden/config.json", "auth.json", "settings.json", "other-extension/data.json"]) {
+      await writeFile(join(agent, file), "{}");
+    }
+    const roots = wardenHostPaths({ PI_CODING_AGENT_DIR: agent });
+    assert.deepEqual(roots, [join(realpathSync(agent), "pi-warden", "index")], "only the index directory, not the agent directory");
+    const write = (file: string) =>
+      evaluateAction({ tool: "write", input: { path: join(agent, file), content: "{\"entries\":[]}" }, cwd, task: "build the capability index" }, { config, hostPaths: roots });
+    assert.equal((await write("pi-warden/index/global.json")).level, "allow");
+    assert.equal((await write("pi-warden/index/projects/0123456789ab.json")).level, "allow");
+    assert.equal((await write("auth.json")).level, "confirm", "auth.json is still held");
+    assert.equal((await write("settings.json")).level, "confirm", "settings.json is still held");
+    assert.equal((await write("other-extension/data.json")).level, "confirm", "another extension's data is still held");
+    assert.equal((await write("pi-warden/config.json")).level, "confirm", "pi-warden's own config is still held");
+    assert.equal((await write("pi-warden/index/../../auth.json")).level, "confirm", "`..` out of the index directory is outside");
+    const withHost = wardenHostPaths({ PI_CODING_AGENT_DIR: agent, PI_WARDEN_HOST_PATHS: join(agent, "other-extension") });
+    assert.equal(withHost.length, 2, "host paths from the environment still apply");
+  } finally {
+    await rm(agent, { recursive: true, force: true });
   }
 });
 
