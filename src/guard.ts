@@ -30,6 +30,8 @@ export interface ViolationScope {
   targetIndex?: number | undefined;
   /** Total number of targets in the original command (for informational purposes). */
   targetCount?: number | undefined;
+  /** Command segments the prompt must contain verbatim (whitespace collapsed), for an rm-family violation with no target. */
+  segments?: string[] | undefined;
 }
 
 /** A pattern detection result enriched with severity, authorization eligibility, and scope. */
@@ -1165,7 +1167,10 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
 // avoid (docs/deterministic-floor-spec.md §PR 2, "What this deliberately does not do").
 
 /** Write-sinks a shell grammar actually defines: the target of a redirection, or tee's operands. */
-const REDIRECT_TARGET = /(?:^|[\s;&|)(])\d*>{1,2}[|&]?\s*(\S+)/g;
+const REDIRECT_OPERATOR = String.raw`\d*>{1,2}[|&]?`;
+const REDIRECT_TARGET = new RegExp(String.raw`(?:^|[\s;&|)(])${REDIRECT_OPERATOR}\s*(\S+)`, "g");
+/** A shell word that starts a redirection; the word alone (`2>`) takes the next word as its target. */
+const REDIRECT_WORD = new RegExp(`^${REDIRECT_OPERATOR}`);
 
 export function writeSinkTargets(command: string): string[] {
   const targets: string[] = [];
@@ -1684,7 +1689,8 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
   const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scratch: options.scratch });
   // Violation pipeline: authorize per-violation, remove authorized from level computation and Jev questions.
-  const allViolations = patternHitsToViolations(patterns, action.tool, action.input);
+  const violationsByHit = hitViolations(patterns, action.tool, action.input);
+  const allViolations = violationsByHit.flat();
   const allAuthorizations = allViolations.map(v => authorize(action.task ?? "", v));
   const remainingViolations: Violation[] = [];
   const remainingAuthorizations: Authorization[] = [];
@@ -1694,10 +1700,13 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       remainingAuthorizations.push(allAuthorizations[i]!);
     }
   }
-  // Filter patterns to exclude authorized violations. Use per-instance index, not ID,
-  // so two violations with the same pattern ID but different scopes are independent.
-  const authorizedIndices = new Set(allViolations.map((_, i) => i).filter(i => allAuthorizations[i]!.authorized));
-  const activePatterns = patterns.filter((_, i) => !authorizedIndices.has(i));
+  // A hit leaves the level computation only when every violation it produced is authorized. Violations are per
+  // target and hits per pattern, so the two lists do not share indices.
+  const authorized = new Set(allViolations.filter((_, i) => allAuthorizations[i]!.authorized));
+  const activePatterns = patterns.filter((_, i) => {
+    const own = violationsByHit[i]!;
+    return own.length === 0 || !own.every(violation => authorized.has(violation));
+  });
   const reasons: string[] = [];
   let level: Level = "allow";
   // A shell command that merely mentions a secrets file (grep for key names, cat .env.example) is decided after Jev
@@ -2074,6 +2083,11 @@ export function isNegated(prompt: string, actionVerb: string): boolean {
  * (bash with no file paths), scope is not required to match — the verb family alone
  * determines authorization. File-scoped violations require the prompt to mention the path. */
 export function scopeMatches(prompt: string, scope: ViolationScope): boolean {
+  // A deletion with no readable target (`xargs rm -rf`, `find -delete`) can remove anything: the verb is not enough.
+  if (scope.segments) {
+    const text = collapseSpace(prompt);
+    return scope.segments.every(segment => text.includes(collapseSpace(segment)));
+  }
   if (!scope.paths?.length) return true; // no file paths = verb alone determines authorization
   const lower = prompt.toLowerCase();
   return scope.paths.every(p => {
@@ -2113,6 +2127,10 @@ export function authorize(prompt: string, violation: Violation): Authorization {
   return { authorized: actionMatched && scopeMatched, actionMatched, scopeMatched, negated: false };
 }
 
+function collapseSpace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 /** Characters that need escaping in a regex literal. */
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2142,45 +2160,123 @@ export function isAuthEligible(severity: Severity): boolean {
 
 const RM_FAMILY_IDS = new Set(["rm", "rm-recursive", "rm-rf", "rm-recursive-dangerous-target", "rm-session-scratch", "find-delete"]); const RM_COMMAND_RE = /(?:^|[\s"'(])rm\s+(.*)$/i;
 
-/** Extract file targets from every rm segment in a command. */
-function detectRmTargets(command: string): string[] {
+/** Shell words with quotes and backslash escapes resolved; `raw` keeps the source text. Undefined on an unclosed quote. */
+function shellWords(text: string): { word: string; raw: string }[] | undefined {
+  const words: { word: string; raw: string }[] = [];
+  let index = 0;
+  while (index < text.length) {
+    while (index < text.length && /\s/.test(text[index]!)) index++;
+    if (index >= text.length) break;
+    const start = index;
+    let word = "";
+    while (index < text.length && !/\s/.test(text[index]!)) {
+      const char = text[index]!;
+      if (char === "'" || char === "\"") {
+        const close = char === "'" ? text.indexOf("'", index + 1) : closingDoubleQuote(text, index + 1);
+        if (close === -1) return undefined;
+        const inner = text.slice(index + 1, close);
+        word += char === "'" ? inner : inner.replace(/\\(["\\$`])/g, "$1");
+        index = close + 1;
+      } else if (char === "\\" && index + 1 < text.length) {
+        word += text[index + 1]!;
+        index += 2;
+      } else {
+        word += char;
+        index++;
+      }
+    }
+    words.push({ word, raw: text.slice(start, index) });
+  }
+  return words;
+}
+
+function closingDoubleQuote(text: string, from: number): number {
+  for (let index = from; index < text.length; index++) {
+    if (text[index] === "\\") index++;
+    else if (text[index] === "\"") return index;
+  }
+  return -1;
+}
+
+/** The file targets of one rm segment: flags and redirections skipped, quoted words kept whole. */
+function rmSegmentTargets(args: string): string[] {
+  // An unclosed quote means rm sits inside a quoted string (`bash -c "rm -rf a b"`): read its words as plain text.
+  const words = shellWords(args) ?? args.split(/\s+/).filter(Boolean).map(token => ({ word: token.replace(/^["']|["']$/g, ""), raw: token }));
   const targets: string[] = [];
-  for (const segment of splitShell(command)) {
-    const raw = RM_COMMAND_RE.exec(segment);
-    if (!raw) continue;
-    targets.push(...raw[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/^["']|["']$/g, "")).filter(token => !token.startsWith("-")));
+  for (let index = 0; index < words.length; index++) {
+    const { word, raw } = words[index]!;
+    const redirect = REDIRECT_WORD.exec(raw);
+    if (redirect) {
+      if (redirect[0] === raw) index++;
+      continue;
+    }
+    if (word && !word.startsWith("-")) targets.push(word);
   }
   return targets;
 }
 
-/** Convert PatternHit[] to Violation[] with scope.
- * For rm-family hits, produces one violation per target so authorization and scope checks
- * are per-target (the prompt must name each target the user wants to authorize).
- * For non-rm hits, the full command is included in the scope for exact matching. */
-export function patternHitsToViolations(hits: readonly PatternHit[], tool: string, input: Record<string, unknown>): Violation[] {
-  const result: Violation[] = [];
-  const baseScope = scopeFromInput(tool, input);   for (const hit of hits) {
-    if (baseScope?.command && tool === "bash" && RM_FAMILY_IDS.has(hit.id)) {
-      const targets = detectRmTargets(baseScope.command);
-      if (targets.length > 0) {
-        for (let ti = 0; ti < targets.length; ti++) {
-          result.push({
-            id: hit.id,
-            severity: hit.severity,
-            source: "pattern" as const,
-            description: hit.message ?? hit.label,
-            patternFamily: hit.id,
-            scope: { paths: [targets[ti]!], command: baseScope.command, tool: baseScope.tool, targetIndex: ti, targetCount: targets.length },
-          });
-        }
-        continue;
-      }
-    }
-    // Non-rm bash command violations: handled entirely by the pattern loop.
-    // Rm-family and file-tool violations stay in the pipeline for Jev judgment.
-    if (tool === "bash" && !RM_FAMILY_IDS.has(hit.id) && !baseScope?.paths?.length) continue;
+interface RmSegment {
+  /** The id classifyRm gives the segment without a cwd or scratch records; undefined for a non-recursive rm. */
+  id: string | undefined;
+  targets: string[];
+}
+
+/** Every rm segment of a command, read the way matchPatterns reads it (data text blanked). */
+function rmSegments(command: string): RmSegment[] {
+  const segments: RmSegment[] = [];
+  for (const segment of splitShell(stripDataText(command).text)) {
+    const raw = RM_COMMAND_RE.exec(segment);
+    if (raw) segments.push({ id: classifyRm(segment)?.id, targets: rmSegmentTargets(raw[1]!) });
   }
-  return result;
+  return segments;
+}
+
+/** The pipelines of the original command that hold this hit's deletion; a pipeline stays whole, as its list feeds `xargs rm`. */
+function untargetedSegments(hit: PatternHit, command: string): string[] {
+  const findDelete = SHELL_RULES.find(rule => rule.id === "find-delete")!.test;
+  const pipelines = command.split(/\n|;|&&|\|\||&/).map(part => part.trim()).filter(Boolean);
+  const own = pipelines.filter(pipeline => hit.id === "find-delete" ? findDelete.test(pipeline) : pipeline.split("|").some(part => RM_COMMAND_RE.test(part)));
+  // Unreadable here (the rm sits inside a wrapper or a heredoc): the task must then contain the whole command.
+  return own.length ? own : [command];
+}
+
+/** The rm segments that produced this hit. */
+function segmentsOfHit(hit: PatternHit, hits: readonly PatternHit[], segments: readonly RmSegment[]): RmSegment[] {
+  // find-delete comes from a find segment, whose deletions have no targets to read.
+  if (hit.id === "find-delete") return [];
+  if (hit.id === "rm") return [...segments];
+  const exact = segments.filter(segment => segment.id === hit.id);
+  if (exact.length) return exact;
+  // The cwd and scratch records can change the id (an absolute path inside the project is rm-rf, session scratch is
+  // rm-session-scratch): take the recursive segments no other hit claims exactly.
+  const claimed = new Set(hits.filter(other => other !== hit).map(other => other.id));
+  return segments.filter(segment => segment.id !== undefined && !claimed.has(segment.id));
+}
+
+/** The violations of each hit, in hit order. Only rm-family hits of a shell command yield violations. */
+function hitViolations(hits: readonly PatternHit[], tool: string, input: Record<string, unknown>): Violation[][] {
+  const baseScope = scopeFromInput(tool, input);
+  const command = tool === "bash" ? baseScope?.command : undefined;
+  const segments = command ? rmSegments(command) : [];
+  return hits.map(hit => {
+    // Other hits are decided by the pattern loop in evaluateAction; they have nothing to authorize per target.
+    if (!command || !RM_FAMILY_IDS.has(hit.id)) return [];
+    const violation = { id: hit.id, severity: hit.severity, source: "pattern" as const, description: hit.message ?? hit.label, patternFamily: hit.id };
+    const targets = segmentsOfHit(hit, hits, segments).flatMap(segment => segment.targets);
+    // A hit with no readable target (`xargs rm -rf`, `find -delete`) still gets one violation; only a task that quotes its
+    // command segment authorizes it.
+    if (!targets.length) return [{ ...violation, scope: { command, tool: baseScope!.tool, segments: untargetedSegments(hit, command) } }];
+    return targets.map((target, ti) => ({ ...violation, scope: { paths: [target], command, tool: baseScope!.tool, targetIndex: ti, targetCount: targets.length } }));
+  });
+}
+
+/** Convert PatternHit[] to Violation[] with scope.
+ * For rm-family hits, produces one violation per target of the segments that produced the hit, so authorization and
+ * scope checks are per-target (the prompt must name each target the user wants to authorize). An rm-family hit with no
+ * readable target produces one violation without paths, scoped to the command segments the prompt must quote. Other
+ * hits produce none. */
+export function patternHitsToViolations(hits: readonly PatternHit[], tool: string, input: Record<string, unknown>): Violation[] {
+  return hitViolations(hits, tool, input).flat();
 }
 
 /** Escalation A: blast-radius / action authorization. */

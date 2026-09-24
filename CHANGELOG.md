@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.52.1
+
+### Fixed
+
+- Authorizing an rm target from the task text no longer drops an unrelated pattern hit. A hit leaves the level computation only when every per-target violation it produced is authorized; before this, violations and hits were matched by list position, so `rm -rf a b c` with a task naming `c` could drop another rule's hit. An rm-family hit with no readable target (`find . -name '*.log' | xargs rm -rf`, `find -delete`) now gets one violation without a path; only a task that contains that command segment verbatim (whitespace collapsed) authorizes it, so "clean up the log files" does not authorize `xargs rm -rf` of any list, and the hit stays in the level computation. rm targets are read with shell quoting (`rm -rf 'a b'` is one target), redirections such as `2>/dev/null` are no longer targets, and each rm-family hit is scoped only to the targets of the segments that produced it (`rm a; rm -rf b` scopes `rm-rf` to `b`).
+
 ## 0.52.0
 
 ### Changed
