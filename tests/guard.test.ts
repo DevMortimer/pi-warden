@@ -483,6 +483,29 @@ test("destructive text that is data is not a command: heredoc bodies written to 
   assert.equal(describeAction("bash", { command: "npm test" }, cwd).dataText, undefined);
 });
 
+test("matchPatterns reads message flag values as text, even when they hold separators", () => {
+  const destructive = (command: string) => matchPatterns("bash", { command }).some(hit => hit.severity === "destructive");
+  const data = [
+    "gh pr create --title \"Fix guard\" --body \"## Summary\n\nA body that quotes rm -rf / is held; it deletes nothing && runs nothing.\"",
+    "git commit -m \"remove rm -rf usage\"",
+    "git commit -m \"drop the step; rm -rf / was never needed\"",
+    "gh issue comment 12 -b 'first; rm -rf ~'",
+    "gh release create v1 --notes=\"a && rm -rf /\"",
+    "gh pr edit 3 --body $'line\\n; rm -rf /'",
+    "git tag -a v1 --message=\"a | rm -rf /\"",
+  ];
+  for (const command of data) assert.equal(destructive(command), false, command);
+  const executed = [
+    "gh pr create --body \"$(rm -rf ~)\"",
+    "gh pr create --body \"`rm -rf ~`\"",
+    "git commit -m \"msg; still text\" && rm -rf /",
+    "gh pr create --body 'unclosed; rm -rf /",
+    "gh pr view 3 --body \"x; rm -rf /\"",
+    "git -c alias.x=y commit -m \"x; rm -rf /\"",
+  ];
+  for (const command of executed) assert.equal(destructive(command), true, command);
+});
+
 test("matchPatterns flags secret files and paths as sensitive", () => {
   assert.ok(matchPatterns("bash", { command: "cat .env" }).some(hit => hit.severity === "sensitive"));
   assert.ok(matchPatterns("bash", { command: "cat ~/.ssh/id_rsa" }).some(hit => hit.severity === "sensitive"));
