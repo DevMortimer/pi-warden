@@ -753,6 +753,305 @@ function printedScratch(command: string, output: string, started: number, birtht
   return created;
 }
 
+// ---------------------------------------------------------------------------
+// SQL targets: which database a SQL client command reaches. A scoped DELETE on a loopback database warns; a command
+// against a hosted database is elevated unless its SQL runs in a read-only transaction that is rolled back. A target or
+// SQL that cannot be read with confidence (a variable host, SQL from a file or a pipe) keeps the plain pattern hits.
+
+export type SqlTarget = "loopback" | "hosted" | "unknown";
+
+const SQL_CLIENTS = new Set(["psql", "mysql", "mariadb", "supabase"]);
+/** Clients that talk to Postgres, which rejects writes inside a read-only transaction. */
+const POSTGRES_CLIENTS = new Set(["psql", "supabase"]);
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const HOSTED_SUFFIXES = [".supabase.com", ".supabase.co", ".neon.tech", ".rds.amazonaws.com", ".planetscale.com"];
+const CONNECTION_URL = /^(?:postgres|postgresql|mysql):\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^:/?#]*)[^?#]*(?:\?([^#]*))?/i;
+const SQL_WRITE = /\b(?:insert|update|delete|alter|create|drop|truncate|grant)\b/i;
+const SQL_TX_CONTROL = /^(?:begin|start|commit|end|rollback|abort|savepoint|release|prepare|set\s+(?:session\s+characteristics|transaction))\b/i;
+
+interface ShellWord { text: string; expanded: boolean }
+interface SqlSegment {
+  words: ShellWord[];
+  /** Heredoc bodies fed to this segment; `expanded` when the shell substitutes inside the body. */
+  heredocs: Array<{ body: string; expanded: boolean }>;
+  /** Stdin comes from a pipe, a file, or a here-string, so its content is not read. */
+  stdin: boolean;
+}
+
+/**
+ * Shell segments with quotes resolved and heredoc bodies attached to the segment that reads them. Unlike `splitShell`,
+ * a `;` inside quotes does not split, so `psql -c "BEGIN READ ONLY; SELECT 1; ROLLBACK"` stays one segment.
+ */
+function sqlSegments(command: string): SqlSegment[] {
+  const segments: SqlSegment[] = [];
+  let segment: SqlSegment = { words: [], heredocs: [], stdin: false };
+  let word: ShellWord | undefined;
+  let pending: Array<{ segment: SqlSegment; delimiter: string; tabs: boolean; literal: boolean }> = [];
+  const endWord = () => { if (word) segment.words.push(word); word = undefined; };
+  const endSegment = (piped = false) => {
+    endWord();
+    if (segment.words.length || segment.heredocs.length) segments.push(segment);
+    segment = { words: [], heredocs: [], stdin: piped };
+  };
+  const append = (text: string, expanded = false) => { word ??= { text: "", expanded: false }; word.text += text; word.expanded ||= expanded; };
+  let index = 0;
+  while (index < command.length) {
+    const char = command[index]!;
+    if (char === "'") {
+      const end = command.indexOf("'", index + 1);
+      const stop = end < 0 ? command.length : end;
+      append(command.slice(index + 1, stop));
+      index = stop + 1;
+      continue;
+    }
+    if (char === "\"") {
+      let end = index + 1;
+      let text = "";
+      let expanded = false;
+      while (end < command.length && command[end] !== "\"") {
+        if (command[end] === "\\" && end + 1 < command.length && /["\\$`]/.test(command[end + 1]!)) { text += command[end + 1]; end += 2; continue; }
+        if (command[end] === "$" || command[end] === "`") expanded = true;
+        text += command[end];
+        end++;
+      }
+      append(text, expanded);
+      index = end + 1;
+      continue;
+    }
+    if (char === "\\") {
+      if (command[index + 1] !== "\n") append(command[index + 1] ?? "");
+      index += 2;
+      continue;
+    }
+    if (char === "#" && !word) {
+      while (index < command.length && command[index] !== "\n") index++;
+      continue;
+    }
+    if (char === "\n") {
+      endSegment();
+      index++;
+      for (const heredoc of pending) {
+        const body: string[] = [];
+        while (index < command.length) {
+          const lineEnd = command.indexOf("\n", index);
+          const stop = lineEnd < 0 ? command.length : lineEnd;
+          const line = command.slice(index, stop);
+          index = stop + 1;
+          if ((heredoc.tabs ? line.replace(/^\t+/, "") : line) === heredoc.delimiter) break;
+          body.push(line);
+        }
+        const text = body.join("\n");
+        heredoc.segment.heredocs.push({ body: text, expanded: !heredoc.literal && /[$`\\]/.test(text) });
+      }
+      pending = [];
+      continue;
+    }
+    if (char === "<" && command.startsWith("<<", index) && !command.startsWith("<<<", index)) {
+      endWord();
+      const match = /^<<(-?)\s*(?:"([^"\n]*)"|'([^'\n]*)'|\\?([^\s;&|<>()]+))/.exec(command.slice(index));
+      if (!match) { segment.stdin = true; index += 2; continue; }
+      const delimiter = match[2] ?? match[3] ?? match[4]!;
+      pending.push({ segment, delimiter, tabs: match[1] === "-", literal: match[4] === undefined || match[0].includes("\\") });
+      index += match[0].length;
+      continue;
+    }
+    if (char === "<") { endWord(); segment.stdin = true; index += command.startsWith("<<<", index) ? 3 : 1; continue; }
+    if (char === "&" && (command[index - 1] === ">" || command[index + 1] === ">")) { append(char); index++; continue; }
+    if (char === "$" || char === "`") { append(char, true); index++; continue; }
+    if (char === ";" || char === "&" || char === "|" || char === "(" || char === ")") {
+      const operator = command.startsWith("&&", index) || command.startsWith("||", index) ? 2 : 1;
+      endSegment(char === "|" && operator === 1);
+      index += operator;
+      continue;
+    }
+    if (/\s/.test(char)) { endWord(); index++; continue; }
+    append(char);
+    index++;
+  }
+  endSegment();
+  return segments;
+}
+
+/** Index of the command word: leading assignments and wrappers are skipped, as `headOf` does. */
+function headIndex(words: readonly ShellWord[]): number {
+  let index = 0;
+  while (index < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!.text) || WRAPPERS.has(words[index]!.text))) index++;
+  return index;
+}
+
+function sqlClient(segment: SqlSegment): string | undefined {
+  const head = segment.words[headIndex(segment.words)]?.text.replace(/^.*\//, "");
+  return head && SQL_CLIENTS.has(head) ? head : undefined;
+}
+
+/** Option spellings that carry SQL text, per client; `-c` is SQL for psql but `--comments` for mysql. */
+const SQL_TEXT_FLAGS: Record<string, readonly string[]> = { psql: ["-c", "--command"], mysql: ["-e", "--execute"], mariadb: ["-e", "--execute"], supabase: [] };
+const SQL_FILE_FLAGS: Record<string, readonly string[]> = { psql: ["-f", "--file"], mysql: [], mariadb: [], supabase: [] };
+/** Option spellings that name the server: psql's `-S` is single-line mode, mysql's is the socket path. */
+const SQL_HOST_FLAGS: Record<string, readonly string[]> = { psql: ["-h", "--host"], mysql: ["-h", "--host", "-S", "--socket"], mariadb: ["-h", "--host", "-S", "--socket"], supabase: [] };
+
+interface SqlCall { client: string; target: SqlTarget; host?: string; sql?: string; singleTransaction: boolean; text: string }
+
+/** The value of an option at `index`: `-c X`, `-cX`, `--command X`, or `--command=X`. Undefined when the word is not the option. */
+function optionValue(words: readonly ShellWord[], index: number, flags: readonly string[]): { value: ShellWord | undefined; next: number } | undefined {
+  const text = words[index]!.text;
+  for (const flag of flags) {
+    if (text === flag) return { value: words[index + 1], next: index + 2 };
+    if (flag.startsWith("--") && text.startsWith(`${flag}=`)) return { value: { text: text.slice(flag.length + 1), expanded: words[index]!.expanded }, next: index + 1 };
+    if (!flag.startsWith("--") && text.startsWith(flag) && text.length > flag.length) return { value: { text: text.slice(flag.length), expanded: words[index]!.expanded }, next: index + 1 };
+  }
+  return undefined;
+}
+
+/** Hosts named by a connection string or a `host=` keyword; `postgres:///db` without a host names none. */
+function connectionHosts(value: string): string[] {
+  const url = CONNECTION_URL.exec(value);
+  if (url) {
+    const query = new URLSearchParams(url[2] ?? "").get("host");
+    const host = url[1]!.replace(/^\[|\]$/g, "");
+    return query ? [query] : [host];
+  }
+  return [...value.matchAll(/(?:^|\s)host(?:addr)?=(\S+)/g)].map(match => match[1]!);
+}
+
+/** How a SQL client segment reads: its target, the host that decided it, and its SQL text when every piece is literal. */
+function readSqlCall(segment: SqlSegment): SqlCall | undefined {
+  const client = sqlClient(segment);
+  if (!client) return undefined;
+  const words = segment.words;
+  const head = headIndex(words);
+  const text = [...words.map(word => word.text), ...segment.heredocs.map(heredoc => heredoc.body)].join(" ");
+  const hosts: string[] = [];
+  const sql: string[] = [];
+  let sqlReadable = !segment.stdin;
+  let variable = false;
+  let hosted: string | undefined;
+  let singleTransaction = false;
+  for (const word of words.slice(0, head)) {
+    const assignment = /^(PGHOST|PGHOSTADDR|PGSERVICE)=(.*)$/s.exec(word.text);
+    if (!assignment) continue;
+    if (word.expanded || assignment[1] === "PGSERVICE") variable = true;
+    else hosts.push(assignment[2]!);
+  }
+  for (let index = head + 1; index < words.length;) {
+    const word = words[index]!;
+    const sqlText = optionValue(words, index, SQL_TEXT_FLAGS[client]!);
+    if (sqlText) {
+      if (!sqlText.value || sqlText.value.expanded) sqlReadable = false;
+      else sql.push(sqlText.value.text);
+      index = sqlText.next;
+      continue;
+    }
+    const file = optionValue(words, index, SQL_FILE_FLAGS[client]!);
+    if (file) { sqlReadable = false; index = file.next; continue; }
+    if (word.expanded) { variable = true; index++; continue; }
+    const host = optionValue(words, index, SQL_HOST_FLAGS[client]!);
+    const dbname = optionValue(words, index, ["-d", "--dbname", "--db-url"]);
+    const target = client === "supabase" ? optionValue(words, index, ["--target"]) : undefined;
+    const option = host ?? dbname ?? target;
+    if (option?.value?.expanded) variable = true;
+    else if (host) { if (host.value) hosts.push(host.value.text); }
+    else if (dbname) { if (dbname.value) hosts.push(...connectionHosts(dbname.value.text)); }
+    else if (target) { if (target.value && target.value.text !== "local") hosted ??= `Supabase target ${target.value.text}`; }
+    else if (client === "supabase" && word.text === "--linked") hosted ??= "the linked Supabase project";
+    else if (word.text === "-1" || word.text === "--single-transaction") singleTransaction = true;
+    else if (word.text.includes("://")) hosts.push(...connectionHosts(word.text));
+    index = option?.next ?? index + 1;
+  }
+  for (const heredoc of segment.heredocs) {
+    if (heredoc.expanded) sqlReadable = false;
+    else sql.push(heredoc.body);
+  }
+  const call = { client, singleTransaction, text, ...(sqlReadable && sql.length ? { sql: sql.join(";\n") } : {}) };
+  if (variable) return { ...call, target: "unknown" };
+  const named = hosts.map(host => host.toLowerCase());
+  const hostedName = hosted ?? named.find(host => HOSTED_SUFFIXES.some(suffix => host.endsWith(suffix)));
+  if (hostedName) return { ...call, target: "hosted", host: hostedName };
+  if (named.length && named.every(host => LOOPBACK_HOSTS.has(host) || host.startsWith("/"))) return { ...call, target: "loopback", host: named[0]! };
+  return { ...call, target: "unknown" };
+}
+
+/**
+ * The database a SQL client command reaches, read from the first segment of `command`: `-h`/`--host`, `PGHOST=`, and a
+ * `postgres://`, `postgresql://`, or `mysql://` connection string, in the arguments or a `-d`/`--dbname` value.
+ * `127.0.0.1`, `localhost`, `::1`, and a Unix socket path are loopback; a managed-database domain or a supabase
+ * `--linked` or non-local `--target` is hosted. A variable anywhere in the arguments, no host, or any other host is unknown.
+ */
+export function sqlTarget(command: string): SqlTarget {
+  const segment = sqlSegments(command)[0];
+  return (segment && readSqlCall(segment)?.target) ?? "unknown";
+}
+
+function sqlStatements(sql: string): string[] {
+  return sql.split(";").map(statement => statement.trim()).filter(Boolean);
+}
+
+/**
+ * SQL wrapped as `BEGIN READ ONLY; … ROLLBACK`, `START TRANSACTION READ ONLY; … ROLLBACK`, or `BEGIN; SET TRANSACTION
+ * READ ONLY; … ROLLBACK`, with no transaction control in between. A `COMMIT` anywhere, `READ WRITE`, a comment, a psql
+ * meta-command, or `--single-transaction` (which makes the inner `BEGIN` a no-op) voids it.
+ */
+function readOnlyWrapped(call: SqlCall): boolean {
+  if (!POSTGRES_CLIENTS.has(call.client) || call.sql === undefined || call.singleTransaction) return false;
+  if (/--|\/\*|\\|\bcommit\b|\bread\s+write\b|transaction_read_only/i.test(call.sql)) return false;
+  const statements = sqlStatements(call.sql);
+  let start: number;
+  if (/^(?:begin|start\s+transaction)\b.*\bread\s+only\b/is.test(statements[0] ?? "")) start = 1;
+  else if (/^(?:begin|start\s+transaction)\b/i.test(statements[0] ?? "") && /^set\s+transaction\b.*\bread\s+only\b/is.test(statements[1] ?? "")) start = 2;
+  else return false;
+  if (statements.length <= start || !/^rollback$/i.test(statements.at(-1)!)) return false;
+  return statements.slice(start, -1).every(statement => !SQL_TX_CONTROL.test(statement));
+}
+
+/** Every DELETE carries a WHERE, and nothing drops or truncates. */
+function scopedDeletesOnly(sql: string): boolean {
+  if (/--|\/\*|\\/.test(sql)) return false;
+  const statements = sqlStatements(sql);
+  if (statements.some(statement => /\b(?:drop|truncate)\b/i.test(statement))) return false;
+  const deletes = statements.filter(statement => /\bdelete\s+from\b/i.test(statement));
+  return deletes.length > 0 && deletes.every(statement => {
+    const where = /\bwhere\b(.*)$/is.exec(statement);
+    return where !== null && !ALWAYS_TRUE.test(where[1]!.trim().replace(/^\((.*)\)$/s, "$1").trim());
+  });
+}
+
+/** A WHERE clause that matches every row: `true`, `NOT false`, or a literal equal to itself (`1=1`, `'a'='a'`). */
+const ALWAYS_TRUE = /^(?:true|not\s+false|(\d+)\s*=\s*\1|'([^']*)'\s*=\s*'\2')$/i;
+
+const SQL_RULE_IDS = new Set(["sql-drop", "sql-truncate", "sql-delete"]);
+
+/** Replaces or drops the SQL pattern hits and adds the target hits, from the raw command (heredoc bodies included). */
+function applySqlTargets(raw: string, hits: Map<string, PatternHit>, exempt: ReadonlySet<string>): void {
+  const segments = sqlSegments(raw).map(segment => ({ segment, call: readSqlCall(segment) }));
+  const text = (entry: (typeof segments)[number]) => entry.call?.text ?? [...entry.segment.words.map(word => word.text), ...entry.segment.heredocs.map(heredoc => heredoc.body)].join(" ");
+  const readOnlyHosted = (entry: (typeof segments)[number]) => entry.call?.target === "hosted" && readOnlyWrapped(entry.call);
+  // A heredoc body fed to a SQL client is SQL, not data: the SQL rules read it as they read a `-c` value.
+  for (const rule of SHELL_RULES) {
+    if (!SQL_RULE_IDS.has(rule.id) || exempt.has(rule.id) || hits.has(rule.id)) continue;
+    if (segments.some(entry => entry.call !== undefined && rule.test.test(entry.call.text))) hits.set(rule.id, { id: rule.id, severity: rule.severity, label: rule.label });
+  }
+  for (const rule of SHELL_RULES) {
+    if (!SQL_RULE_IDS.has(rule.id) || !hits.has(rule.id)) continue;
+    const matching = segments.filter(entry => rule.test.test(text(entry)));
+    if (matching.length && matching.every(readOnlyHosted)) hits.delete(rule.id);
+  }
+  if (hits.has("sql-delete")) {
+    const matching = segments.filter(entry => /\bdelete\s+from\s+\w/i.test(text(entry)));
+    if (matching.length && matching.every(({ call }) => call?.target === "loopback" && call.sql !== undefined && scopedDeletesOnly(call.sql))) {
+      hits.delete("sql-delete");
+      if (!exempt.has("sql-delete-local")) hits.set("sql-delete-local", { id: "sql-delete-local", severity: "risky", label: "SQL DELETE FROM … WHERE on a loopback database" });
+    }
+  }
+  for (const entry of segments) {
+    const call = entry.call;
+    if (call?.target !== "hosted" || readOnlyHosted(entry)) continue;
+    if (!exempt.has("sql-hosted") && !hits.has("sql-hosted")) hits.set("sql-hosted", { id: "sql-hosted", severity: "risky", label: `SQL client against a hosted database (${call.host})` });
+    if (call.sql !== undefined && SQL_WRITE.test(call.sql) && !exempt.has("sql-hosted-write") && !hits.has("sql-hosted-write")) {
+      hits.set("sql-hosted-write", { id: "sql-hosted-write", severity: "destructive", label: `SQL write against a hosted database (${call.host})` });
+    }
+  }
+}
+
 interface CompiledUserRule extends Rule { message?: string; action?: "dialog" | "hold"; }
 
 /** Compiled user rules and exempt ids; passed from the config so matchPatterns stays pure. */
@@ -776,6 +1075,9 @@ export const EXEMPTABLE_IDS: readonly string[] = [
   "rm-rf",
   "rm-recursive-dangerous-target",
   "rm-session-scratch",
+  "sql-delete-local",
+  "sql-hosted",
+  "sql-hosted-write",
   "sensitive-path",
 ];
 
@@ -828,6 +1130,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
   if (raw) {
     const command = stripDataText(raw).text;
     for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
+    applySqlTargets(raw, hits, exempt);
     // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else: no scratch.
     const scratch = PRIVILEGED.test(command) || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
     for (const segment of splitShell(command)) {
@@ -1751,6 +2054,7 @@ const ACTION_VERBS: Record<string, string[]> = {
   "sql-drop": ["drop"],
   "sql-truncate": ["truncate"],
   "sql-delete": ["delete"],
+  "sql-delete-local": ["delete"],
   "infra-destroy": ["destroy"],
   "git-branch-force-delete": ["delete", "remove"],
 };
