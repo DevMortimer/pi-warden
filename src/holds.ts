@@ -32,6 +32,7 @@ export interface CallScores {
   intentMismatch?: number;
   visible?: number;
   securityRisk?: number;
+  largeOutput?: number;
 }
 
 export interface CallRecord {
@@ -98,6 +99,7 @@ function scoresOf(verdict: Verdict): CallScores | undefined {
   if (judgment.intentMismatch !== undefined) scores.intentMismatch = judgment.intentMismatch;
   if (judgment.visible !== undefined) scores.visible = judgment.visible;
   if (judgment.securityRisk !== undefined) scores.securityRisk = judgment.securityRisk;
+  if (judgment.largeOutput !== undefined) scores.largeOutput = judgment.largeOutput;
   return scores;
 }
 

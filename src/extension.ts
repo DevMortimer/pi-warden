@@ -589,6 +589,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     paint(ctx, config);
     return entry;
   };
+  /** A judged output the saver left whole gets a trace line with its verdict, so the confidence gate can be calibrated. */
+  const recordKeptWhole = (ctx: ExtensionContext, config: WardenConfig, tool: string, verdict: OutputVerdict, prefix = "") => {
+    record(ctx, config, "context", renderTemplate(config.widget.context, { tool, retention: "kept whole" }), [
+      `${prefix}kept whole: retention ${verdict.retention}; confidence ${verdict.confidence?.toFixed(2)}; format ${verdict.format ?? "generic"}${verdict.formatConfidence === undefined ? "" : ` (${verdict.formatConfidence.toFixed(2)})`}; ${verdict.model}; ${verdict.elapsedMs} ms`,
+    ]);
+  };
   /** Labels landed on earlier calls: their trace entries say so and the session log is rewritten. */
   const noteOutcomes = (config: WardenConfig, records: readonly CallRecord[]) => {
     for (const item of records) {
@@ -1621,6 +1627,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         textIndex++;
         if (!verdict) continue;
         let replacement: string | undefined;
+        let compressed = false;
         const excerpt = compressOutput(blockText, verdict.retention, verdict.format);
         if (excerpt) {
           try {
@@ -1629,6 +1636,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             const bytesSaved = Buffer.byteLength(blockText) - Buffer.byteLength(body);
             if (bytesSaved > 0) {
               replacement = body;
+              compressed = true;
               ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(blockText) });
               storedPath = path;
               compressionLearner.record(event.toolName, verdict.retention, verdict.format, false);
@@ -1641,11 +1649,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             noteError(ctx, "Could not store full output; keeping the block unchanged.", undefined);
           }
         }
+        if (!compressed && verdict.confidence !== undefined) recordKeptWhole(ctx, config, event.toolName, verdict, `text block ${textIndex} of ${blockVerdicts.length}: `);
         if (!replacement && blockNotice) replacement = `${blockNotice}\n\n${blockText}\n\n${blockNotice}`;
         if (replacement) content[index] = { ...part, text: replacement };
       }
     } else {
       const excerpt = earlier ? undefined : compressOutput(text, output.retention, output.format);
+      let compressed = false;
       if (excerpt && !ctx.signal?.aborted) {
         try {
           const path = await saveOutput(text);
@@ -1653,6 +1663,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement) - (notice ? Buffer.byteLength(notice) * 2 + 4 : 0);
           if (bytesSaved > 0) {
             content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
+            compressed = true;
             ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(text) });
             storedPath = path;
             compressionLearner.record(event.toolName, output.retention, output.format, false);
@@ -1666,6 +1677,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           noteError(ctx, "Could not store full output; keeping it unchanged.", undefined);
         }
       }
+      if (!compressed && !ctx.signal?.aborted && output.confidence !== undefined) recordKeptWhole(ctx, config, event.toolName, output);
     }
     if (key && !earlier) ledger.remember(key, event.toolName, storedPath);
     // The banner in the result already tells the agent, so the notice rides the result content alone and is not also

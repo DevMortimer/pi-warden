@@ -8,6 +8,8 @@ import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
 import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds, isVisibleCommand } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
+import { actionDetails } from "../src/trace.js";
+import { actionTokens } from "../src/widget.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
 let cwd: string;
@@ -1306,6 +1308,16 @@ test("large output: a disabled config never asks the question", async () => {
     assert.equal(verdict.largeOutputFamily, undefined);
   }
   assert.deepEqual(defaultConfig().context.largeOutput, { enabled: true, threshold: 0.85 });
+});
+
+test("large output: the score is in the action trace tokens and details when judged, absent otherwise", async () => {
+  const judged = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: defaultConfig().action, judge: largeOutputJudge(0.3), largeOutput: largeOutputOn });
+  assert.equal(actionTokens(judged).largeOutput, "0.30");
+  assert.match(actionDetails(judged).find(line => line.startsWith("jev:"))!, / · large-output 0\.30 · /);
+  const unasked = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: defaultConfig().action, judge: largeOutputJudge(0.3) });
+  assert.equal(actionTokens(unasked).largeOutput, undefined);
+  assert.ok(!("largeOutput" in JSON.parse(JSON.stringify(actionTokens(unasked)))), "the trace file line carries no largeOutput key");
+  assert.ok(!actionDetails(unasked).some(line => line.includes("large-output")));
 });
 
 test("isVisibleCommand finds a commit, push, merge, tag, reset, pull request, release, or publish in any segment", () => {

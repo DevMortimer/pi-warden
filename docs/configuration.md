@@ -298,7 +298,7 @@ Tokens per guard:
 
 | Guard | Tokens |
 | --- | --- |
-| action | `tool level source irreversible offTask scope approved intent visible plan slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time` |
+| action | `tool level source irreversible offTask scope approved intent visible largeOutput plan slop slopStub slopComments slopDead slopHedging patterns reasons path model ms flags time` |
 | rules | `tool path asked violations status source reasons model ms flags time` |
 | prose | `wordy cliches jargon status reasons model ms flags time` |
 | stuck | `failures sameStrategy approachChange progress status source reasons model ms flags time` |
