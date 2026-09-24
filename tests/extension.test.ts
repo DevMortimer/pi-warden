@@ -502,14 +502,15 @@ test("source code that names secretIds is untouched by masking", async () => {
   assert.equal(await toolResult("read", { path: "src/extension.ts" }, source, false), undefined);
 });
 
-test("security.maskOutput false leaves the result text unchanged; the unmasked credential is traced, not announced", async () => {
+test("security.maskOutput false leaves the result text unchanged and keeps the generic banner", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: false, security: { maskOutput: false }, ...STACK_BAR }));
   const key = projectKey();
-  assert.equal(await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, key, false), undefined, "content unchanged: no masking and no banner");
-  assert.equal(sentMessages.filter(sent => /credentials/i.test(sent.message.content)).length, 0, "no steer");
+  const result = await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, key, false) as { content: Array<{ text: string }> };
+  assert.ok(result.content[0]!.text.includes(key), "the value is shown as before");
+  assert.match(result.content[0]!.text, /Possible credentials in this output: do not echo or commit them; use redacted values/, "today's banner");
   await runCommand("trace", context({ hasUI: false }));
   const trace = sentMessages.at(-1)!.message.content;
-  assert.equal(trace.match(/none masked \(traced\)/g)?.length, 1, "one trace line");
+  assert.doesNotMatch(trace, /none masked \(traced\)/, "announced, so not trace-only");
   assert.ok(!trace.includes(key.slice(0, 20)), "the trace is redacted");
 });
 

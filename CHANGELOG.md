@@ -8,7 +8,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Changed
 
-- The credential banner in a tool result is sent only when a value was masked, and its text is unchanged. A credential-shaped value that was detected but not masked (with `security.maskOutput: false`) is now recorded in the trace as `possible credentials, none masked (traced)` and is no longer announced to the agent. In one week of sessions, 510 of 527 credential banners were the generic "Possible credentials in this output" text that pointed at no value, and agents disputed 49 of them. The prompt-injection notice is unchanged.
+- With masking on, the credential banner in a tool result is sent only when a value was masked, and its text is unchanged. A credential-shaped value that was detected but not masked is recorded in the trace as `possible credentials, none masked (traced)` and is not announced to the agent. With `security.maskOutput: false` the value is in the agent's context, so the generic notice stays. In one week of sessions, 510 of 527 credential banners were the generic "Possible credentials in this output" text that pointed at no value, and agents disputed 49 of them. The prompt-injection notice is unchanged.
 - Masking now covers every value the offline credential check detects: URL passwords (`postgres://user:pass@host`), `Authorization` header and `Bearer` values, `ghu_`/`ghs_`/`ghr_` GitHub tokens, `xoxr-`/`xoxs-` Slack tokens, and `AIza` keys. Before, these were announced but left readable in the tool result.
 
 ## 0.53.0
