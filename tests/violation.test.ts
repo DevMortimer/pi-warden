@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { authorize, aggregateLevel, escalateBlastRadius, escalateRulesViolation, isAuthEligible, isNegated, parseViolationJudgments, patternHitsToViolations, removeAuthorized, scopeMatches } from "../src/guard.js";
+import { authorize, aggregateLevel, evaluateAction, escalateBlastRadius, escalateRulesViolation, isAuthEligible, isNegated, parseViolationJudgments, patternHitsToViolations, removeAuthorized, scopeMatches } from "../src/guard.js";
 import type { Authorization, EscalatedViolation, Violation } from "../src/guard.js";
 import { checkPiWardenMissing, extractRules, resolveRulesFile } from "../src/rules-file.js";
 import { defaultConfig } from "../src/config.js";
@@ -143,6 +143,45 @@ test("patternHitsToViolations: every rm segment contributes its own targets", ()
   const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
   const violations = patternHitsToViolations(hits, "bash", { command: "rm -rf a; rm -rf b c" });
   assert.deepEqual(violations.map(violation => violation.scope?.paths?.[0]), ["a", "b", "c"]);
+});
+
+test("evaluateAction: authorizing one rm target keeps an unrelated pattern hit", async () => {
+  // Hits are [rm-rf, rule-one, rule-two]; violations are one per target [a, b, c]. Authorizing c must not drop rule-two.
+  const config = { ...defaultConfig().action, commandRules: [
+    { id: "rule-one", pattern: "\\brm\\b", severity: "warn" as const },
+    { id: "rule-two", pattern: "\\brm\\b", severity: "confirm" as const },
+  ] };
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "rm -rf a b c" }, cwd: tmpdir(), task: "delete c" }, { config });
+  assert.equal(verdict.level, "confirm", "rule-two still sets the level");
+  assert.ok(verdict.reasons.some(reason => reason.includes("rule-two")), "rule-two stays in the reasons");
+  assert.ok(verdict.reasons.some(reason => reason.includes("rm -rf")), "rm-rf stays while a and b are not authorized");
+});
+
+test("patternHitsToViolations: an rm hit with no target still yields one violation", () => {
+  const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
+  const violations = patternHitsToViolations(hits, "bash", { command: "find . -name '*.log' | xargs rm -rf" });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0]!.id, "rm-rf");
+  assert.equal(violations[0]!.scope?.paths, undefined, "no specific target");
+  assert.equal(authorize("clean up the log files", violations[0]!).authorized, true);
+});
+
+test("patternHitsToViolations: a quoted rm target with a space stays one target", () => {
+  const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
+  const violations = patternHitsToViolations(hits, "bash", { command: "rm -rf 'a b' && npm test" });
+  assert.deepEqual(violations.map(violation => violation.scope?.paths?.[0]), ["a b"]);
+});
+
+test("patternHitsToViolations: a redirection is not an rm target", () => {
+  const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
+  const violations = patternHitsToViolations(hits, "bash", { command: "rm -rf build 2>/dev/null && npm test" });
+  assert.deepEqual(violations.map(violation => violation.scope?.paths?.[0]), ["build"]);
+});
+
+test("patternHitsToViolations: rm targets stay with the segment that produced the hit", () => {
+  const hits = [{ id: "rm-rf", severity: "risky" as const, label: "rm -rf" }];
+  const violations = patternHitsToViolations(hits, "bash", { command: "rm a; rm -rf b" });
+  assert.deepEqual(violations.map(violation => violation.scope?.paths?.[0]), ["b"]);
 });
 
 // ---------------------------------------------------------------------------
