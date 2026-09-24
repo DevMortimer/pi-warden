@@ -32,11 +32,13 @@ export class ContextLedger {
   private compressed = 0;
   private duplicates = 0;
   private bytesSaved = 0;
+  /** `bytesSaved` minus the savings of outputs a whole-file recall put back into context. */
+  private bytesAbsent = 0;
   private turns = 0;
   private tokenTurnsSaved = 0;
   private recalls = 0;
   private recallsFull = 0;
-  private readonly stored = new Map<string, { recalled: boolean; tool: string | undefined; bytes: number | undefined }>();
+  private readonly stored = new Map<string, { recalled: boolean; restored: boolean; saved: number; tool: string | undefined; bytes: number | undefined }>();
   /** Every sizeable text result seen this session, by content key, with the tool that produced it and its stored copy if any. */
   private readonly seen = new Map<string, { tool: string; path?: string }>();
 
@@ -48,7 +50,8 @@ export class ContextLedger {
   record(path: string, bytesSaved: number, source?: { tool: string; bytes: number }): void {
     this.compressed++;
     this.bytesSaved += bytesSaved;
-    this.stored.set(path, { recalled: false, tool: source?.tool, bytes: source?.bytes });
+    this.bytesAbsent += bytesSaved;
+    this.stored.set(path, { recalled: false, restored: false, saved: bytesSaved, tool: source?.tool, bytes: source?.bytes });
   }
 
   /** Remember a result's identity so a later identical result can be dropped. `path` is set when a full copy exists. */
@@ -65,12 +68,13 @@ export class ContextLedger {
   duplicate(bytesSaved: number): void {
     this.duplicates++;
     this.bytesSaved += bytesSaved;
+    this.bytesAbsent += bytesSaved;
   }
 
   /** One LLM turn finished: everything removed so far was absent from this turn's prompt. */
   turnEnd(): void {
     this.turns++;
-    this.tokenTurnsSaved += Math.round(this.bytesSaved / 4);
+    this.tokenTurnsSaved += Math.round(this.bytesAbsent / 4);
   }
 
   /** The stored path that `text` (a path, command, or serialized input) mentions, if any. */
@@ -80,11 +84,13 @@ export class ContextLedger {
     return undefined;
   }
 
-  /** Counts the first access to a compressed output; later accesses and duplicate-only copies are not new recalls. */
+  /** Counts the first access to a compressed output; later accesses and duplicate-only copies are not new recalls.
+   *  A whole-file access, first or not, puts the output back into context, so its savings stop counting toward token-turns. */
   noteAccess(text: string, kind: RecallKind = "full"): string | undefined {
     for (const [path, state] of this.stored) {
       if (!mentions(text, path)) continue;
       if (!state.recalled) { state.recalled = true; this.recalls++; if (kind === "full") this.recallsFull++; }
+      if (kind === "full" && !state.restored) { state.restored = true; this.bytesAbsent -= state.saved; }
       return path;
     }
     return undefined;
@@ -105,7 +111,7 @@ export class ContextLedger {
   }
 
   reset(): void {
-    this.large = 0; this.compressed = 0; this.duplicates = 0; this.bytesSaved = 0; this.turns = 0; this.tokenTurnsSaved = 0; this.recalls = 0; this.recallsFull = 0;
+    this.large = 0; this.compressed = 0; this.duplicates = 0; this.bytesSaved = 0; this.bytesAbsent = 0; this.turns = 0; this.tokenTurnsSaved = 0; this.recalls = 0; this.recallsFull = 0;
     this.stored.clear();
     this.seen.clear();
   }
