@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
+import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds, isVisibleCommand } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -1246,6 +1246,15 @@ test("large output: a disabled config never asks the question", async () => {
     assert.equal(verdict.largeOutputFamily, undefined);
   }
   assert.deepEqual(defaultConfig().context.largeOutput, { enabled: true, threshold: 0.85 });
+});
+
+test("isVisibleCommand finds a commit, push, merge, tag, reset, pull request, release, or publish in any segment", () => {
+  for (const command of ["git push", "cd repo && git -C . push origin main", "git commit -m 'docs'", "git merge main", "git tag v1", "git reset --hard HEAD~1", "gh pr create --fill", "gh -R o/r release create v1", "npm publish", "out=$(git push -u origin x 2>&1)", "(cd repo && git push)", "sudo git push"]) {
+    assert.equal(isVisibleCommand(command), true, command);
+  }
+  for (const command of ["npm ci", "git status", "git log --oneline", "git -c core.pager=cat diff", "gh issue view 1", "npm test", "echo 'git push'", "grep -r 'npm publish' .", "cat <<'EOF' > note.md\ngit push\nEOF"]) {
+    assert.equal(isVisibleCommand(command), false, command);
+  }
 });
 
 test("commandFamily names the head and, for tools with subcommands, the subcommand", () => {

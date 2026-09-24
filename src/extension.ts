@@ -20,7 +20,7 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { createdScratch, evaluateAction, formatVerdictTokens, higher, hostPaths, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import { createdScratch, evaluateAction, formatVerdictTokens, higher, hostPaths, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
@@ -134,20 +134,59 @@ export function siblingToolCalls(ctx: ExtensionContext): ToolCallRef[] {
   return [];
 }
 
+/** Whether the call is a shell command with a visible effect (commit, push, merge, tag, reset, pull request, release, publish). */
+export function isVisibleAction(tool: string, input: Record<string, unknown>): boolean {
+  const view = commandOf(tool, input);
+  return view?.shell === true && isVisibleCommand(view.command);
+}
+
 /**
- * The agent's own words before the call: the text of the assistant message that carries it, or, when that message is
- * tool calls only, the latest assistant text since the user's prompt. Sent as `plan`; it explains the step and cannot approve it.
+ * The agent's own words for the call: the text of the assistant message that carries it, or, when that message is
+ * tool calls only, the text of the assistant message right before it with no tool call in between. Text from before an
+ * earlier tool call described that call, so it is no plan and the intent question is not asked. The exception is
+ * `visibleAction` (a commit, push, merge, tag, reset, pull request, release, or publish, by `isVisibleCommand`): such a
+ * call is still judged against the latest assistant text since the user's prompt, because an unannounced commit or push
+ * after an older plan is the mismatch users object to. Sent as `plan`; it explains the step and cannot approve it.
  */
-export function assistantPlan(ctx: ExtensionContext): string | undefined {
+export function assistantPlan(ctx: ExtensionContext, visibleAction = false): string | undefined {
   const entries = ctx.sessionManager.getBranch();
+  const plan = planForCall(entries);
+  if (plan !== undefined || !visibleAction) return plan;
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
     if (entry?.type !== "message") continue;
     if (entry.message.role === "user") return undefined;
     if (entry.message.role !== "assistant") continue;
+    const text = assistantText(entry.message.content);
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function assistantText(content: string | ReadonlyArray<{ type: string }>): string {
+  return (typeof content === "string" ? content : content.filter((part): part is { type: "text"; text: string } => part.type === "text").map(part => part.text).join("\n")).trim();
+}
+
+/** The text of the message that carries the call, or of the assistant message right before it with no tool call in between. */
+function planForCall(entries: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>): string | undefined {
+  let carrierSeen = false;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry?.type !== "message") continue;
+    const { role } = entry.message;
+    if (role === "user") return undefined;
+    // A result after the carrier belongs to a sibling call; one before it means an earlier tool call ran.
+    if (role === "toolResult") { if (carrierSeen) return undefined; continue; }
+    if (role !== "assistant") continue;
     const content = entry.message.content;
-    const text = typeof content === "string" ? content : content.filter((part): part is { type: "text"; text: string } => part.type === "text").map(part => part.text).join("\n");
-    if (text.trim()) return text.trim();
+    const text = assistantText(content);
+    if (!carrierSeen) {
+      if (text) return text;
+      carrierSeen = true;
+      continue;
+    }
+    if (typeof content !== "string" && content.some(part => part.type === "toolCall")) return undefined;
+    return text || undefined;
   }
   return undefined;
 }
@@ -594,9 +633,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     for (const name of names) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
     const critical = names.every(name => CRITICAL_STEER_GUARDS.has(name));
     // A notice delivered once is already in the agent's context. Sending the repeat again costs the accounting turn it
-    // forbids, so repeats are recorded only. The same goes for notices past the per-run steer budget: every delivered
-    // steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the
-    // final status. A notice skipped for the budget keeps its fingerprint, so the same notice can deliver next run.
+    // forbids, so repeats are recorded only. The same goes for notices past the per-run steer budget: a steer sent during
+    // a tool call rides the request the tool result needs (tests/steer-delivery.test.ts), but one queued after the run
+    // ends starts a new model turn, and every steer asks the agent for a reply sentence; a closing run that collects six
+    // notices collects six restatements of the final status. A notice skipped for the budget keeps its fingerprint, so the same notice can deliver next run.
     // Critical guards (stuck, done, runaway recovery, subagent wake) always deliver: their message starts the turn.
     const overBudget = config.steerBudget > 0 && steersThisRun >= config.steerBudget;
     const deliver = critical || (!overBudget && !steerRepeats.seen(content));
@@ -1131,7 +1171,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     rulesCheck?.catch(() => undefined);
     const verdict = await actionGuard.inspect(
       call,
-      { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx), spine: taskSpine(ctx.sessionManager.getBranch()) },
+      { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx, isVisibleAction(event.toolName, event.input as Record<string, unknown>)), spine: taskSpine(ctx.sessionManager.getBranch()) },
       { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch, hostPaths: sessionHostPaths },
     );
     if (verdict.source === "skipped") return;
@@ -1555,9 +1595,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
     }
     if (key && !earlier) ledger.remember(key, event.toolName, storedPath);
-    // The banner in the result already tells the agent. A steer custom message sent here arrives after the turn ends
-    // when this result closes the turn and starts a new turn to answer a message that asks for nothing, so the notice
-    // rides the result content alone and is never steered.
+    // The banner in the result already tells the agent, so the notice rides the result content alone and is not also
+    // steered. A steer sent here would join the request that carries this result and cost no extra turn
+    // (tests/steer-delivery.test.ts); it would only repeat the banner.
     if (notice && textBlocks.length) {
       if (!bannersPlacedWithBlocks) {
         let index = 0;
