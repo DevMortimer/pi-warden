@@ -447,6 +447,15 @@ function isInside(target: string, cwd: string): boolean {
 // target is such a path, after symlinks are resolved, is risky rather than destructive. Everything here fails closed:
 // a path that cannot be resolved, or that uses shell expansion, is not scratch.
 
+/**
+ * Whether the exemption applies on this platform. It rests on birth time being a real creation time: macOS and Windows
+ * report one; Linux without `statx` reports ctime, which `mv` updates, so moved-in content would pass the tree walk.
+ * Elsewhere nothing is recorded and a recursive rm is classified as if no scratch existed.
+ */
+export function scratchPlatform(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "darwin" || platform === "win32";
+}
+
 /** What a recorded path was when it was created. A path whose current identity differs was replaced and is not scratch. */
 export interface ScratchIdentity { dev: number; ino: number; birthtimeMs: number }
 /** Real paths the agent created under the temp directory in this session, with the identity each had when recorded. */
@@ -570,7 +579,8 @@ function mkdirTargets(command: string): string[] {
  * or a written file. Each path and its missing ancestors below the temp root are listed. Taken before the call runs, so
  * a directory that already existed is never recorded as created.
  */
-export function scratchCandidates(tool: string, input: Record<string, unknown>, cwd: string): string[] {
+export function scratchCandidates(tool: string, input: Record<string, unknown>, cwd: string, platform: NodeJS.Platform = process.platform): string[] {
+  if (!scratchPlatform(platform)) return [];
   const command = tool === "bash" ? commandOf(tool, input)?.command : undefined;
   const paths = command ? mkdirTargets(command) : tool === "write" && typeof input.path === "string" && !input.path.startsWith("~") ? [resolve(cwd, input.path)] : [];
   const roots = tempRoots();
@@ -608,8 +618,10 @@ function tempPathsIn(text: string, roots: readonly string[]): string[] {
  * its birth time must fall in a later millisecond than `started` (`Date.now()` when the call began). Where the file
  * system reports no birth time, a printed path counts only from a command that does nothing but run `mktemp` and print
  * what it made (`mktempOnly`). `birthtime` reads a file's birth time in milliseconds, 0 when the file system has none.
+ * Nothing is recorded where `scratchPlatform` is false.
  */
-export function createdScratch(tool: string, input: Record<string, unknown>, output: string, started: number, candidates: readonly string[], birthtime = (stats: Stats) => stats.birthtimeMs): Map<string, ScratchIdentity> {
+export function createdScratch(tool: string, input: Record<string, unknown>, output: string, started: number, candidates: readonly string[], birthtime = (stats: Stats) => stats.birthtimeMs, platform: NodeJS.Platform = process.platform): Map<string, ScratchIdentity> {
+  if (!scratchPlatform(platform)) return new Map();
   const found: string[] = [];
   for (const path of candidates) {
     try { if (realpathSync(path) === path) found.push(path); } catch { /* not created */ }
@@ -683,6 +695,8 @@ export interface PatternOptions {
   pathRules?: readonly PathRule[];
   /** Real paths the agent created under the temp directory in this session; a recursive rm of only these is not destructive. */
   scratch?: ScratchRecords | undefined;
+  /** The platform `scratchPlatform` decides for; the running one when omitted. */
+  platform?: NodeJS.Platform | undefined;
 }
 
 /** Every id exemptRules can legitimately name: the built-in shell rules, the rm-classifier's derived ids, and the
@@ -747,7 +761,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     const command = stripDataText(raw).text;
     for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
     // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else: no scratch.
-    const scratch = PRIVILEGED.test(command) ? undefined : options?.scratch;
+    const scratch = PRIVILEGED.test(command) || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
     for (const segment of splitShell(command)) {
       const hit = classifyRm(segment, cwd, scratch);
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.

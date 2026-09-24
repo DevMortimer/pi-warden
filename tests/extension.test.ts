@@ -697,11 +697,19 @@ test("without consent, only pattern checks run: risky warns, destructive is held
   assert.equal(networkCalls, 0);
 });
 
-/** Offline pattern checks only, so a destructive hit holds and a risky one warns. A base dir under /tmp, removed after `run`. */
+/**
+ * Offline pattern checks only, so a destructive hit holds and a risky one warns. A base dir under /tmp, removed after
+ * `run`. `process.platform` reads as darwin meanwhile, where the scratch exemption applies, so the cases run the same on any host.
+ */
 const withScratchBase = async (run: (base: string) => Promise<void>) => {
   await writeFile(configPath(), JSON.stringify({ notices: true, rules: { enabled: false }, ...STACK_BAR }));
   const base = await mkdtemp("/tmp/pi-warden-scratch-");
-  try { await run(base); } finally { await rm(base, { recursive: true, force: true }); }
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+  try { await run(base); } finally {
+    Object.defineProperty(process, "platform", platform);
+    await rm(base, { recursive: true, force: true });
+  }
 };
 /** Fires tool_call, runs `effect` as the command would, then fires tool_result with `output`. */
 const runCall = async (toolName: string, input: Record<string, unknown>, effect: () => Promise<unknown>, output = "") => {
