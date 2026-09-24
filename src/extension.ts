@@ -1426,7 +1426,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
     }
     if (config.context.enabled && !earlier && !recallRead && textBlocks.length === 1 && text.length >= config.context.tailMinChars) ledger.candidate();
-    if (multiBlock && !ctx.signal?.aborted) {
+    // Captured before the loop so the notice block below knows whether each block already carries its banner.
+    const bannersPlacedWithBlocks = multiBlock && !ctx.signal?.aborted;
+    if (bannersPlacedWithBlocks) {
       // Retention and banners per block; block order and non-text parts are never touched.
       content = [...content];
       let textIndex = 0;
@@ -1486,8 +1488,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
     }
     if (key && !earlier) ledger.remember(key, event.toolName, storedPath);
+    // The banner in the result already tells the agent. A steer custom message sent here arrives after the turn ends
+    // when this result closes the turn and starts a new turn to answer a message that asks for nothing, so the notice
+    // rides the result content alone and is never steered.
     if (notice && textBlocks.length) {
-      if (!multiBlock) {
+      if (!bannersPlacedWithBlocks) {
         let index = 0;
         content = content.map(part => {
           if (part.type !== "text") return part;
@@ -1495,13 +1500,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return { ...part, text: `${index === 1 ? `${notice}\n\n` : ""}${part.text}${index === textBlocks.length ? `\n\n${notice}` : ""}` };
         });
       }
-      const delivered = steer(config, "security", notice);
       record(ctx, config, "security", renderTemplate(config.widget.security, {
         tool: event.toolName, injection: output.injection?.toFixed(2), exfiltration: output.exfiltration?.toFixed(2),
         status: [output.suspicious && "untrusted instructions", output.secret && "possible credentials"].filter(Boolean).join(", "),
       }), [
         `jev: injection ${output.injection?.toFixed(2) ?? "not judged"}; exfiltration ${output.exfiltration?.toFixed(2) ?? "not judged"}`,
-        `output sample: ${redact(text).slice(0, 300)}`, delivered ? `agent told: ${notice}` : `steer recorded, not delivered (a repeat or the per-run budget): ${notice}`,
+        `output sample: ${redact(text).slice(0, 300)}`, `agent told by the banner in the tool result: ${notice}`,
       ]);
     }
     // Stuck-loop diff: when the verdict is stuck on a failed result and a previous failed output

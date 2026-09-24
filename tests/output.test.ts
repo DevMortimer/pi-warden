@@ -50,6 +50,24 @@ test("offline secret hints need no consent; disabled guards neither judge nor wa
   assert.equal(securityNotice(disabled), undefined);
 });
 
+test("placeholders, token counts, and source identifiers earn no credential verdict", async () => {
+  const samples: Array<[string, string]> = [
+    ["sed output of a redacted env file", "DATABASE_URL=<redacted>\nTYPESAFE_API_KEY=<redacted>\nGITHUB_TOKEN=<redacted>"],
+    ["JSON token counts", '{"model": "jev-latest", "promptTokens": 14350, "cacheReadTokens": 19415506, "cacheWriteTokens": 797330}'],
+    ["grep of source lines that handle secrets", "src/load.ts:151:  const secrets = findSecrets(body);\nsrc/extension.ts:1359:    const secretValues = output.secretIds ?? [];\nsrc/extension.ts:1361:    const unseenSecrets = secretValues.filter((id) => !secretsSeen.has(id));\nsrc/output.ts:242:    secret: secretBlocks.length > 0,"],
+  ];
+  for (const [name, text] of samples) {
+    const result = await evaluateOutput("read", text, undefined, options());
+    assert.equal(result.secret, false, name);
+    assert.equal(securityNotice(result), undefined, name);
+  }
+  // The verdict flips only for a real-shaped value.
+  const key = "k7Rm2Qx9Lp4Ns8Vt1Wd6Yc3Zb5Hf7Jg0Pk2Mn5Qz";
+  const result = await evaluateOutput("read", `API_KEY=${key}`, undefined, options());
+  assert.equal(result.secret, true);
+  assert.match(securityNotice(result)!, /do not echo or commit/i);
+});
+
 test("bounded output requests redact before sampling and batch independent questions", () => {
   const secret = "-----BEGIN PRIVATE KEY-----\n" + "x".repeat(15000) + "\n-----END PRIVATE KEY-----";
   const request = buildOutputRequest("read", secret, "TOKEN=private-value", true, true);

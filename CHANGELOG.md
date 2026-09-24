@@ -10,6 +10,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - A judge cooldown. After three consecutive timeout, network, or other failures, or one auth or configuration failure, pi-warden stops asking Jev for a minute instead of paying a full request timeout on every guarded action. One warning names the failure kind, the duration, and for an auth failure the fix; one info notice says when judgments resume. Guards run as they do with no judge configured, nothing is sent during the window, and `/warden status` counts the checks that ran without Jev. Configure with `judge.failuresBeforeCooldown` and `judge.cooldownMs` (capped at 10 minutes); state is per session. A malformed request that pi-typesafe rejects locally does not count. A request that hits pi-warden's own `timeoutMs` reaches the SDK as an abort, so it is told apart from a user's cancel by the signal's reason and counted as a timeout.
 
+## 0.44.1
+
+### Fixed
+
+- The credential and untrusted-output notice rides the tool result: the banner in the result content and the trace record stay, and the separate steer message is gone, so a notice on the last tool result of a turn no longer costs an extra model turn.
+- Credential detection no longer fires on placeholder values (`<redacted>`, `<...>`, `***`, `REDACTED`, `xxxx`), plain numbers with `_` or `,` separators, or a key name whose value is only an identifier or expression in code (`findSecrets(text)`, `output.secretIds`).
+
 ## 0.44.0
 
 ### Added
