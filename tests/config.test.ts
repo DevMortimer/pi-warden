@@ -204,6 +204,15 @@ test("loadConfig merges user then trusted project file, and survives malformed f
   assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { typesafe: true, enabled: false });
 });
 
+test("a project file with security.maskOutput false leaves output masking on", () => {
+  const project = applyProjectOverrides(defaultConfig(), { security: { maskOutput: false, threshold: 0.5 } });
+  assert.equal(project.security.maskOutput, true, "the project file cannot turn masking off");
+  assert.equal(project.security.threshold, 0.5, "other security keys still apply from a project file");
+  assert.equal(applyUserOverrides(defaultConfig(), { security: { maskOutput: false } }).security.maskOutput, false, "the user file can");
+  const userOff = applyUserOverrides(defaultConfig(), { security: { maskOutput: false } });
+  assert.equal(applyProjectOverrides(userOff, { security: { maskOutput: true } }).security.maskOutput, false, "nor can a project file turn it back on over the user's choice");
+});
+
 // Legacy and malformed config sections must preserve the objects dereferenced by event handlers.
 test("regression: hostile config files cannot leave a guard's `.enabled` dereference undefined", () => {
   const hostile = [undefined, null, false, 0, "yes", [], { enabled: null }, { prose: null }, { prose: false }, { prose: 3 }, { prose: [] }];
