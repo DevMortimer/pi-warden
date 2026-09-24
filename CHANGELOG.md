@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Fixed
+
+- A done-check nudge no longer clears the evidence that caused it. A run that a warden follow-up starts (done-check nudge, runaway recovery, subagent wake) keeps the changes and checks of the run before it, so the agent must still show a passing check. A later "done" with no check in that run is judged and recorded as unverified; the one-nudge-per-prompt bound stays. A user prompt still starts with empty evidence.
+
 ### Docs
 
 - Field usage report for 2026-09-21 to 2026-09-24 (`eval/reports/2026-09-24-field-usage/`) and `scripts/field-usage.mjs`, which reads Pi session logs and the holds database and prints aggregate counts only. README leads with the field numbers, names the task spine under Privacy, and notes the scratch-delete exemption and the judgments-off notice.
