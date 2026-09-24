@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- A recursive `rm` whose every target is scratch the agent created in this session under the OS temp directory (`mkdir`, `mktemp`, a `write`, or a temp directory a command printed and created) warns as `rm-session-scratch` instead of holding as destructive. Targets are resolved through `..` and symlinks first; a temp root, a wildcard, a variable, a substitution, or any target that was not created this session keeps the hold. The created paths live in memory and reset on `session_start`.
 
 ## 0.45.0
 

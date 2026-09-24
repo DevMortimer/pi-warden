@@ -19,7 +19,7 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
@@ -312,6 +312,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const subagentSeen = new Set<string>();
   // Command families already steered toward filtered output this session: one steer per family.
   const largeOutputSteered = new Set<string>();
+  // Real paths the agent created under the temp directory this session; a recursive rm of only these is not destructive.
+  const sessionScratch = new Set<string>();
+  // Per tool call id: when it started and the temp paths it may create that did not exist yet.
+  const scratchPending = new Map<string, { started: number; candidates: string[] }>();
   const wakePolicy = new WakePolicy(0);
   const runaway = new RunawayMonitor();
   // Runs stopped by the runaway guard for the current user prompt; the first one gets a recovery turn, later ones wait for the user.
@@ -656,6 +660,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     secretsSeen.clear();
     subagentSeen.clear();
     largeOutputSteered.clear();
+    sessionScratch.clear();
+    scratchPending.clear();
     wakePolicy.reset();
     steerRepeats.reset();
     steersThisRun = 0;
@@ -995,6 +1001,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    if (event.toolName === "bash" || event.toolName === "write") scratchPending.set(event.toolCallId, { started: Date.now(), candidates: scratchCandidates(event.toolName, event.input as Record<string, unknown>, ctx.cwd) });
     // ── Conscience: track tool attempts on the selected capability ──
     if (config.conscience.enabled && selectedCapability && !triggerConsumed) {
       if (selectedCapability.kind === "tool" && event.toolName === selectedCapability.id) {
@@ -1071,7 +1078,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx), spine: taskSpine(ctx.sessionManager.getBranch()) },
-      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined },
+      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch },
     );
     if (verdict.source === "skipped") return;
     // Arming check: if any armed rule's command regex matches this call, inject a hit into the verdict.
@@ -1319,6 +1326,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (!config.enabled) return;
     const textBlocks = event.content.filter(part => part.type === "text");
     const text = textBlocks.map(part => part.text).join("\n");
+    const scratch = scratchPending.get(event.toolCallId);
+    if (scratch) {
+      scratchPending.delete(event.toolCallId);
+      for (const path of createdScratch(event.toolName, event.input as Record<string, unknown>, text, scratch.started, scratch.candidates)) sessionScratch.add(path);
+    }
     // Repeat detection uses the original result, so its request goes out together with the output check.
     const failed = resultFailed(event.isError, event.details, event.content);
     // ── Conscience: track tool_result for the pending capability ──

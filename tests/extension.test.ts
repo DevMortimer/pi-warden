@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
@@ -696,6 +696,91 @@ test("without consent, only pattern checks run: risky warns, destructive is held
   assert.match(notices.at(-1)!.text, /held bash: destructive: git force push/);
   assert.equal(networkCalls, 0);
 });
+
+/** Offline pattern checks only, so a destructive hit holds and a risky one warns. A base dir under /tmp, removed after `run`. */
+const withScratchBase = async (run: (base: string) => Promise<void>) => {
+  await writeFile(configPath(), JSON.stringify({ notices: true, rules: { enabled: false }, ...STACK_BAR }));
+  const base = await mkdtemp("/tmp/pi-warden-scratch-");
+  try { await run(base); } finally { await rm(base, { recursive: true, force: true }); }
+};
+/** Fires tool_call, runs `effect` as the command would, then fires tool_result with `output`. */
+const runCall = async (toolName: string, input: Record<string, unknown>, effect: () => Promise<unknown>, output = "") => {
+  await toolCall(toolName, input);
+  // A path born in the same millisecond the call began does not count as created by it.
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await effect();
+  await toolResult(toolName, input, output, false);
+};
+
+test("session scratch: mkdir -p under /tmp, then rm -rf of it is not held", async () => withScratchBase(async base => {
+  const probe = join(base, "probe-abc");
+  await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
+  const result = await toolCall("bash", { command: `rm -rf ${probe}` });
+  assert.equal(result, undefined, "not held");
+  assert.match(notices.at(-1)!.text, /session scratch/);
+}));
+
+test("session scratch: mktemp -d printing a $TMPDIR path, then rm -rf of it is not held", async () => withScratchBase(async () => {
+  let made = "";
+  const input = { command: "mktemp -d" };
+  await toolCall("bash", input);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  made = await mkdtemp(join(tmpdir(), "tmp."));
+  try {
+    await toolResult("bash", input, `${made}\n`, false);
+    assert.equal(await toolCall("bash", { command: `rm -rf ${made}` }), undefined, "not held");
+    assert.match(notices.at(-1)!.text, /session scratch/);
+  } finally { await rm(made, { recursive: true, force: true }); }
+}));
+
+test("session scratch: a written file's new parent under /tmp is scratch", async () => withScratchBase(async base => {
+  const file = join(base, "gen", "out.txt");
+  await runCall("write", { path: file, content: "x" }, async () => { await mkdir(join(base, "gen")); await writeFile(file, "x"); });
+  assert.equal(await toolCall("bash", { command: `rm -rf ${join(base, "gen")}` }), undefined, "not held");
+}));
+
+test("session scratch: one target never created keeps the whole rm held", async () => withScratchBase(async base => {
+  const probe = join(base, "probe-abc");
+  await mkdir(join(base, "other"));
+  await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
+  const held = await toolCall("bash", { command: `rm -rf ${probe} ${join(base, "other")}` });
+  assert.equal(held?.block, true);
+  assert.match(held?.reason ?? "", /recursive rm on an absolute, home, variable, or parent path/);
+}));
+
+test("session scratch: mkdir -p of a directory that already existed records nothing", async () => withScratchBase(async base => {
+  const existing = join(base, "existing");
+  await mkdir(existing);
+  await runCall("bash", { command: `mkdir -p ${existing}` }, async () => {});
+  assert.equal((await toolCall("bash", { command: `rm -rf ${existing}` }))?.block, true);
+}));
+
+test("session scratch: a symlink under /tmp pointing outside the temp directory stays held", async () => withScratchBase(async base => {
+  const dir = join(base, "dir");
+  await runCall("bash", { command: `mkdir -p ${dir}` }, () => mkdir(dir));
+  const inside = join(dir, "out");
+  await symlink(process.cwd(), inside);
+  assert.equal((await toolCall("bash", { command: `rm -rf ${inside}` }))?.block, true, "a link inside a recorded directory resolves outside");
+  const printed = join(base, "link");
+  await runCall("bash", { command: `ln -s ${process.cwd()} ${printed} && echo ${printed}` }, () => symlink(process.cwd(), printed), `${printed}\n`);
+  assert.equal((await toolCall("bash", { command: `rm -rf ${printed}` }))?.block, true, "a printed link resolves outside and is not recorded");
+}));
+
+test("session scratch: a temp directory printed by a command counts only when the command created it", async () => withScratchBase(async base => {
+  const before = join(base, "before");
+  await mkdir(before);
+  const made = join(base, "made");
+  await runCall("bash", { command: "npm test" }, () => mkdir(made), `fixture at ${made}\nreused ${before}\n`);
+  assert.equal(await toolCall("bash", { command: `rm -rf ${made}` }), undefined, "created during the command");
+  assert.equal((await toolCall("bash", { command: `rm -rf ${before}` }))?.block, true, "existed before the command");
+}));
+
+test("session scratch: a fresh session forgets what the last one created", async () => withScratchBase(async base => {
+  const probe = join(base, "probe-abc");
+  await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
+  await sessionStart();
+  assert.equal((await toolCall("bash", { command: `rm -rf ${probe}` }))?.block, true);
+}));
 
 test("per-call warning notices are off by default; trace-only off-task stays silent and notices: true restores UI warnings", async () => {
   await writeFile(configPath(), JSON.stringify({  typesafe: true, rules: { enabled: false }, ...STACK_BAR }));

@@ -38,6 +38,8 @@ export interface InspectOptions {
   rules?: EvaluateOptions["rules"];
   /** Calls allowed in the previous turn; the regret question about them rides this call's request, never a sibling's. */
   previousActions?: readonly PreviousAction[] | undefined;
+  /** Real paths the agent created under the temp directory in this session, forwarded to `evaluateAction`. */
+  scratch?: ReadonlySet<string> | undefined;
 }
 
 interface Prejudged { key: string; verdict: Promise<Verdict>; used: boolean }
@@ -66,7 +68,7 @@ export class ActionGuard {
     const retryAfterHold = this.holdPending && this.lastHoldPrompt !== task;
     const judgeCall = (tool: string, input: Record<string, unknown>, previousActions?: readonly PreviousAction[]) => evaluateAction(
       { tool, input, cwd: options.cwd, task, context: conversation.context, plan: conversation.plan, spine: conversation.spine },
-      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, largeOutput: options.largeOutput, rules: options.rules, retryAfterHold, previousActions },
+      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, largeOutput: options.largeOutput, rules: options.rules, retryAfterHold, previousActions, scratch: options.scratch },
     );
     // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
     if (options.judge && !retryAfterHold) {
