@@ -257,6 +257,13 @@ function sample(text: string, limit: number): string {
 
 interface Rule { id: string; severity: Severity; label: string; test: RegExp }
 
+/** An environment variable name that holds a credential: API_KEY, GITHUB_TOKEN, DB_PASSWORD, client_secret. */
+const SECRET_NAME = String.raw`\w*(?:key|secret|token|passw(?:or)?d)\w*`;
+/** `printenv NAME` or `echo $NAME` / `"${NAME}"` (also `\$NAME` inside `ssh … "…"`), unless piped to `wc` or sent to /dev/null. */
+const PRINTS_SECRET = new RegExp(String.raw`\bprintenv\b[^\n;&|]*\s${SECRET_NAME}\b(?![^\n;&|]*\|\s*wc\b)(?!\s*>\s*\/dev\/null)|\becho\b[^\n;&|]*\\?\$\{?${SECRET_NAME}(?!\w|:?\+)(?![^\n;&|]*\|\s*wc\b)`, "i");
+/** A double-quoted string that expands a credential variable prints it; it is not inert data text. */
+const SECRET_EXPANSION = new RegExp(String.raw`\$\{?${SECRET_NAME}(?!\w)`, "i");
+
 export const SHELL_RULES: Rule[] = [
   { id: "git-force-push", severity: "destructive", label: "git force push", test: /\bgit\s+push\b[^\n;&|]*\s(?:-f|--force)(?![-\w])/ },
   { id: "git-force-with-lease", severity: "risky", label: "git push --force-with-lease", test: /\bgit\s+push\b[^\n;&|]*--force-with-lease/ },
@@ -281,6 +288,8 @@ export const SHELL_RULES: Rule[] = [
   { id: "git-bypass", severity: "risky", label: "bypasses commit hooks or signing", test: /\bgit\b[^\n;&|]*(?:--no-verify\b|--no-gpg-sign\b|-c\s+commit\.gpg[sS]ign=false|-c\s+core\.hooksPath=)/ },
   { id: "pr-merge", severity: "risky", label: "merges a pull request", test: /\bgh\s+pr\s+merge\b|\bglab\s+mr\s+merge\b/ },
   { id: "sudo", severity: "risky", label: "sudo", test: /(?:^|[\s;&|(])sudo\s/ },
+  // A printed credential lands in the tool result, the model request, and the session log before any notice can help.
+  { id: "printenv-secret", severity: "destructive", label: "prints a credential variable into the tool result; check that it is set without printing it: `test -n \"$NAME\" && echo set` or `printenv NAME | wc -c`", test: PRINTS_SECRET },
 ];
 
 const SENSITIVE_PATH = /(?:^|[\s/"'=:(])\.env(?:\.(?!example\b|sample\b|template\b|dist\b)[\w.-]+)?(?=$|[\s"';|&)])|(?:^|[\s"'=:/~])\.?(?:ssh\/(?:id_\w+|authorized_keys|known_hosts)|aws\/credentials|gnupg\/|netrc\b|npmrc\b|pypirc\b|docker\/config\.json|kube\/config\b|pi\/agent\/auth\.json|pi\/agent\/pi-typesafe\/auth\.json)|\b\w+\.(?:pem|p12|pfx|keystore|jks)\b|\bid_(?:rsa|ed25519|ecdsa|dsa)\b/i;
@@ -363,7 +372,8 @@ export function isVisibleCommand(command: string): boolean {
 
 /**
  * Quoted strings replaced by a placeholder; escapes inside double quotes are honoured, single quotes take everything.
- * A double-quoted string that substitutes a command (`"$(...)"`, backticks) executes it, so that string stays visible.
+ * A double-quoted string that substitutes a command (`"$(...)"`, backticks) executes it, and one that expands a
+ * credential variable (`"$API_KEY"`) prints it, so that string stays visible.
  */
 function blankQuotes(segment: string): string {
   let out = "";
@@ -374,7 +384,7 @@ function blankQuotes(segment: string): string {
     while (end < segment.length && segment[end] !== char) end += char === "\"" && segment[end] === "\\" ? 2 : 1;
     if (end >= segment.length) { out += segment.slice(index); break; }
     const inner = segment.slice(index + 1, end);
-    out += char === "\"" && SUBSTITUTION.test(inner) ? `${char}${inner}${char}` : `${char}[text]${char}`;
+    out += char === "\"" && (SUBSTITUTION.test(inner) || SECRET_EXPANSION.test(inner)) ? `${char}${inner}${char}` : `${char}[text]${char}`;
     index = end;
   }
   return out;

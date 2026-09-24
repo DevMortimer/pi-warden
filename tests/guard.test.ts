@@ -197,6 +197,39 @@ test("matchPatterns flags destructive shell commands", () => {
   assert.ok(inside.some(hit => hit.id === "rm-rf"), "absolute path inside the project is risky, not destructive");
 });
 
+test("printenv or echo of a credential variable is held; checks that do not print the value are not", () => {
+  const held = [
+    "printenv OPENAI_API_KEY",
+    "printenv HOME GITHUB_TOKEN",
+    "printenv db_password",
+    "echo $OPENAI_API_KEY",
+    'echo "${OPENAI_API_KEY}"',
+    'echo "key: $STRIPE_SECRET"',
+    "echo ${DB_PASSWD}",
+    'ssh prod "printenv OPENAI_API_KEY"',
+    'ssh prod "echo \\$OPENAI_API_KEY"',
+    "ssh prod 'echo $OPENAI_API_KEY'",
+    'fly ssh console -C "printenv OPENAI_API_KEY"',
+    'fly ssh console -C "echo $SESSION_SECRET"',
+    "cd app && printenv API_KEY",
+  ];
+  for (const command of held) {
+    const hit = matchPatterns("bash", { command }).find(hit => hit.id === "printenv-secret");
+    assert.ok(hit, `expected printenv-secret for: ${command}`);
+    assert.equal(hit.severity, "destructive", command);
+    assert.match(hit.label, /test -n "\$NAME" && echo set/, "the label names a check that does not print the value");
+  }
+  const safe = [
+    "printenv", "env", "printenv | wc -l", "env | sort", "printenv HOME", "echo $PATH", "echo $HOME",
+    'test -n "$OPENAI_API_KEY" && echo set', "printenv OPENAI_API_KEY | wc -c", "printenv OPENAI_API_KEY > /dev/null && echo set",
+    'echo "${OPENAI_API_KEY:+set}"', "echo ${#OPENAI_API_KEY}", "echo -n $OPENAI_API_KEY | wc -c", "[ -n \"$GITHUB_TOKEN\" ] && echo set",
+    'fly ssh console -C "test -n \\$OPENAI_API_KEY && echo set"', "echo '$OPENAI_API_KEY'", 'git commit -m "document printenv usage"',
+  ];
+  for (const command of safe) {
+    assert.ok(!matchPatterns("bash", { command }).some(hit => hit.id === "printenv-secret"), `unexpected printenv-secret for: ${command}`);
+  }
+});
+
 /** A real directory under /tmp for scratch cases; removed by the caller. */
 const scratchBase = () => mkdtemp("/tmp/pi-warden-scratch-");
 /** Runs `run` with `process.platform` reported as `platform`, for code that reads the running platform. */
