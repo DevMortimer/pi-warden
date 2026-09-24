@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, commandFamily, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
+import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -194,6 +195,184 @@ test("matchPatterns flags destructive shell commands", () => {
   }
   const inside = matchPatterns("bash", { command: `rm -rf ${cwd}/dist` }, cwd);
   assert.ok(inside.some(hit => hit.id === "rm-rf"), "absolute path inside the project is risky, not destructive");
+});
+
+/** A real directory under /tmp for scratch cases; removed by the caller. */
+const scratchBase = () => mkdtemp("/tmp/pi-warden-scratch-");
+/** Runs `run` with `process.platform` reported as `platform`, for code that reads the running platform. */
+const onPlatform = async <T>(platform: NodeJS.Platform, run: () => Promise<T>): Promise<T> => {
+  const saved = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...saved, value: platform });
+  try { return await run(); } finally { Object.defineProperty(process, "platform", saved); }
+};
+/** Session records for real paths, with the identity each has now. */
+const records = (...paths: string[]) => new Map(paths.map(path => [path, scratchIdentity(path)!]));
+const destructiveRm = (hits: ReturnType<typeof matchPatterns>) => hits.some(hit => hit.id === "rm-recursive-dangerous-target" && hit.severity === "destructive");
+
+test("session scratch: an rm of a recorded temp directory is risky, not destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const probe = join(base, "probe-abc");
+    await mkdir(probe);
+    const scratch = records(realpathSync(probe));
+    const hits = matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" });
+    assert.deepEqual(hits.map(hit => [hit.id, hit.severity]), [["rm-session-scratch", "risky"]]);
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd)), "without the session set it stays destructive");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: a recorded path replaced by a new directory stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const probe = join(base, "probe-abc");
+    await mkdir(probe);
+    const scratch = records(realpathSync(probe));
+    await rm(probe, { recursive: true });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await mkdir(probe);
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" })), "a different directory at the recorded path");
+    pruneScratch(scratch);
+    assert.equal(scratch.size, 0, "the stale record is dropped");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: older content moved into a recorded directory stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const important = join(base, "important");
+    await mkdir(important);
+    await writeFile(join(important, "keep.txt"), "keep me\n");
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const dir = join(base, "S", "x");
+    await mkdir(dir, { recursive: true });
+    const scratch = records(realpathSync(join(base, "S")), realpathSync(dir));
+    assert.ok(!destructiveRm(matchPatterns("bash", { command: `rm -rf ${dir}` }, cwd, { scratch, platform: "darwin" })), "empty scratch is not destructive");
+    await rename(important, join(dir, "important"));
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${dir}` }, cwd, { scratch, platform: "darwin" })), "moved content keeps its older birth time");
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${join(dir, "important")}` }, cwd, { scratch, platform: "darwin" })), "the moved directory itself");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: a symlink inside scratch is checked as a link, never followed", async () => {
+  const base = await scratchBase();
+  try {
+    const dir = join(base, "x");
+    await mkdir(dir);
+    await symlink(cwd, join(dir, "out"));
+    const scratch = records(realpathSync(dir));
+    assert.deepEqual(matchPatterns("bash", { command: `rm -rf ${dir}` }, cwd, { scratch, platform: "darwin" }).map(hit => hit.id), ["rm-session-scratch"]);
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: a tree past the walk budget is not scratch", async () => {
+  const base = await scratchBase();
+  try {
+    for (const name of ["a", "b", "c"]) await writeFile(join(base, name), name);
+    const born = scratchIdentity(realpathSync(base))!.birthtimeMs;
+    assert.equal(bornAfter(realpathSync(base), born, { entries: 4, deadline: Date.now() + 1000 }), true);
+    assert.equal(bornAfter(realpathSync(base), born, { entries: 3, deadline: Date.now() + 1000 }), false, "entry bound");
+    assert.equal(bornAfter(realpathSync(base), born, { entries: 100, deadline: Date.now() - 1 }), false, "time bound");
+    assert.equal(bornAfter(join(base, "missing"), born), false, "a missing root");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: without birth time, mktemp beside a listing records nothing", async () => {
+  const base = await scratchBase();
+  try {
+    const existing = realpathSync(await mkdtemp(join(base, "existing-")));
+    const made = realpathSync(await mkdtemp(join(base, "tmp.")));
+    const noBirth = () => 0;
+    const listing = createdScratch("bash", { command: `mktemp -d; ls -d ${base}/*` }, `${made}\n${existing}\n`, Date.now() - 1000, [], noBirth, "darwin");
+    assert.equal(listing.size, 0);
+    const scratch = new Map(listing);
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${existing}` }, cwd, { scratch, platform: "darwin" })), "the pre-existing directory stays destructive");
+    assert.deepEqual([...createdScratch("bash", { command: "mktemp -d" }, `${made}\n`, Date.now() - 1000, [], noBirth, "darwin").keys()], [made], "mktemp alone");
+    assert.deepEqual([...createdScratch("bash", { command: "d=$(mktemp -d) && echo \"$d\"" }, `${made}\n`, Date.now() - 1000, [], noBirth, "darwin").keys()], [made], "an assignment and an echo of it");
+    assert.equal(createdScratch("bash", { command: "mktemp -d; echo done" }, `${made}\ndone\n`, Date.now() - 1000, [], noBirth, "darwin").size, 0, "anything else in the command");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: mktempOnly accepts only commands that make temp paths and print them", () => {
+  assert.equal(mktempOnly("mktemp -d"), 1);
+  assert.equal(mktempOnly("mktemp -d -t probe.XXXXXX"), 1);
+  assert.equal(mktempOnly("a=$(mktemp -d); b=\"$(mktemp)\"; echo $a ${b}"), 2);
+  for (const command of ["mktemp -u", "mktemp --dry-run", "mktemp -d; ls /tmp", "a=$(mktemp -d); echo $HOME", "echo /tmp/x", "mktemp -d $TMPDIR/x.XXXX", "a=$(mktemp -d) && cp -r ~/src $a"]) {
+    assert.equal(mktempOnly(command), 0, command);
+  }
+});
+
+test("session scratch: a privileged rm of scratch stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const probe = join(base, "probe-abc");
+    await mkdir(probe);
+    const scratch = records(realpathSync(probe));
+    for (const command of [`sudo rm -rf ${probe}`, `doas rm -rf ${probe}`, `su -c "rm -rf ${probe}"`, `sudo -u root rm -rf ${probe}`, `sudo bash <<EOF\nrm -rf ${probe}\nEOF`]) {
+      assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd, { scratch, platform: "darwin" })), `expected destructive for: ${command}`);
+    }
+    assert.ok(!destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" })), "the same rm without sudo is scratch");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: on linux a recorded mkdir then rm -rf stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const probe = join(base, "probe-abc");
+    const input = { command: `mkdir -p ${probe}` };
+    assert.deepEqual(scratchCandidates("bash", input, cwd, "linux"), [], "no candidates on linux");
+    const candidates = scratchCandidates("bash", input, cwd, "darwin");
+    await mkdir(probe);
+    assert.equal(createdScratch("bash", input, "", Date.now() - 1000, candidates, undefined, "linux").size, 0, "nothing recorded on linux");
+    const scratch = createdScratch("bash", input, "", Date.now() - 1000, candidates, undefined, "darwin");
+    assert.ok(scratch.has(realpathSync(probe)));
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "linux" })), "linux keeps the hold");
+    assert.ok(!destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" })), "darwin exempts it");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: a parent escape out of a recorded directory stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const probe = join(base, "probe-abc");
+    await mkdir(probe);
+    const scratch = records(realpathSync(probe));
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}/../../etc` }, cwd, { scratch, platform: "darwin" })));
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}/../probe-abc` }, cwd, { scratch, platform: "darwin" })), "any `..` segment keeps the hold");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: a temp root, a variable, or a wildcard stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const scratch = records(realpathSync(base), realpathSync("/tmp"), realpathSync(tmpdir()));
+    for (const command of ["rm -rf /tmp", "rm -rf /tmp/", "rm -rf \"$TMPDIR\"", "rm -rf /tmp/*", `rm -rf ${base}/*`, `rm -rf ${base}/$NAME`, `rm -rf ${base}/$(echo x)`, `rm -rf ${realpathSync(tmpdir())}`]) {
+      assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd, { scratch, platform: "darwin" })), `expected destructive for: ${command}`);
+    }
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: a relative project path keeps its current classification", async () => {
+  const base = await scratchBase();
+  try {
+    const scratch = records(realpathSync(base));
+    for (const [command, id] of [["rm -rf dist", "rm-rf"], ["rm -r build", "rm-recursive"], ["rm -rf ../sibling", "rm-recursive-dangerous-target"]] as const) {
+      assert.deepEqual(matchPatterns("bash", { command }, cwd, { scratch, platform: "darwin" }).map(hit => hit.id), matchPatterns("bash", { command }, cwd).map(hit => hit.id));
+      assert.ok(matchPatterns("bash", { command }, cwd, { scratch, platform: "darwin" }).some(hit => hit.id === id), `${command} is ${id}`);
+    }
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${base} dist` }, cwd, { scratch, platform: "darwin" })), "a relative target next to scratch keeps the hold");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: the judge reads the scratch fact in floor_hits", async () => {
+  const base = await scratchBase();
+  try {
+    const scratch = records(realpathSync(base));
+    const fake = judge(0.2, 0.1);
+    const verdict = await onPlatform("darwin", () => evaluateAction({ tool: "bash", input: { command: `rm -rf ${base}` }, cwd, task: "run the tests" }, { config: defaultConfig().action, judge: fake, scratch }));
+    const request = fake.calls[0] as { state: { floor_hits: string } };
+    assert.equal(request.state.floor_hits, "recursive rm of session scratch: every target is under the temp directory and was created in this session [risky]");
+    assert.notEqual(verdict.level, "confirm", verdict.reasons.join("; "));
+  } finally { await rm(base, { recursive: true, force: true }); }
 });
 
 test("matchPatterns stays quiet for ordinary commands", () => {

@@ -1,6 +1,7 @@
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
+import type { Stats } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
 import type { ActionGuardConfig, ArmingRule, CommandRule, LargeOutputConfig, PathRule, RulesConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
@@ -219,6 +220,8 @@ export interface EvaluateOptions {
    * How a candidate question is measured on recorded sessions before it earns an acting rule (scripts/calibrate-action.mjs).
    */
   questions?: Questions | undefined;
+  /** Real paths the agent created under the temp directory in this session (`PatternOptions.scratch`). */
+  scratch?: ScratchRecords | undefined;
 }
 
 const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2, deny: 3 };
@@ -410,7 +413,7 @@ export function stripDataText(command: string): ScannedCommand {
  * rm with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
  * risky. A quote or parenthesis before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
  */
-function classifyRm(segment: string, cwd?: string): PatternHit | undefined {
+function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords): PatternHit | undefined {
   const match = /(?:^|[\s"'(])rm\s+(.*)$/.exec(segment);
   if (!match) return undefined;
   const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["')]+$/, ""));
@@ -425,6 +428,10 @@ function classifyRm(segment: string, cwd?: string): PatternHit | undefined {
     if (isAbsolute(clean)) return cwd ? !isInside(clean, cwd) : true;
     return clean.split(/[\\/]/).includes("..");
   });
+  const budget = scratchBudget();
+  if (dangerousTarget && scratch?.size && targets.length && targets.every(target => isSessionScratch(target, scratch, budget))) {
+    return { id: "rm-session-scratch", severity: "risky", label: "recursive rm of session scratch: every target is under the temp directory and was created in this session" };
+  }
   if (dangerousTarget) return { id: "rm-recursive-dangerous-target", severity: "destructive", label: "recursive rm on an absolute, home, variable, or parent path" };
   if (force) return { id: "rm-rf", severity: "risky", label: "rm -rf on a project path" };
   return { id: "rm-recursive", severity: "risky", label: "recursive rm" };
@@ -435,6 +442,249 @@ function isInside(target: string, cwd: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+// ---------------------------------------------------------------------------
+// Session scratch: paths the agent created under the OS temp directory in this session. A recursive rm whose every
+// target is such a path, after symlinks are resolved, is risky rather than destructive. Everything here fails closed:
+// a path that cannot be resolved, or that uses shell expansion, is not scratch.
+
+/**
+ * Whether the exemption applies on this platform. It rests on birth time being a real creation time: macOS and Windows
+ * report one; Linux without `statx` reports ctime, which `mv` updates, so moved-in content would pass the tree walk.
+ * Elsewhere nothing is recorded and a recursive rm is classified as if no scratch existed.
+ */
+export function scratchPlatform(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "darwin" || platform === "win32";
+}
+
+/** What a recorded path was when it was created. A path whose current identity differs was replaced and is not scratch. */
+export interface ScratchIdentity { dev: number; ino: number; birthtimeMs: number }
+/** Real paths the agent created under the temp directory in this session, with the identity each had when recorded. */
+export type ScratchRecords = ReadonlyMap<string, ScratchIdentity>;
+
+/** The identity of a path itself (a symlink is not followed); undefined when it does not exist. */
+export function scratchIdentity(path: string): ScratchIdentity | undefined {
+  try {
+    const stats = lstatSync(path);
+    return { dev: stats.dev, ino: stats.ino, birthtimeMs: stats.birthtimeMs };
+  } catch { return undefined; }
+}
+
+function sameIdentity(a: ScratchIdentity | undefined, b: ScratchIdentity): boolean {
+  return a !== undefined && a.dev === b.dev && a.ino === b.ino && a.birthtimeMs === b.birthtimeMs;
+}
+
+/** Drops records whose path is gone or now names a different file, so a later file at the same path is not scratch. */
+export function pruneScratch(records: Map<string, ScratchIdentity>): void {
+  for (const [path, identity] of records) if (!sameIdentity(scratchIdentity(path), identity)) records.delete(path);
+}
+
+/** Real paths of the temp roots that exist: `os.tmpdir()`, `$TMPDIR`, `/tmp`, `/private/tmp`. */
+export function tempRoots(): string[] {
+  const roots = new Set<string>();
+  for (const root of [tmpdir(), process.env.TMPDIR, "/tmp", "/private/tmp"]) {
+    if (!root || !isAbsolute(root)) continue;
+    try { roots.add(realpathSync(root)); } catch { /* absent on this system */ }
+  }
+  return [...roots];
+}
+
+/**
+ * The real path of an absolute path: the realpath of its deepest existing ancestor plus the missing rest. Undefined when
+ * a component exists but cannot be resolved (a dangling symlink, a loop, no permission).
+ */
+export function realTarget(path: string): string | undefined {
+  const rest: string[] = [];
+  let head = resolve(path);
+  for (;;) {
+    try { return join(realpathSync(head), ...rest.reverse()); } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") return undefined;
+      try { lstatSync(head); return undefined; } catch { /* missing: resolve the parent */ }
+      const parent = dirname(head);
+      if (parent === head) return undefined;
+      rest.push(basename(head));
+      head = parent;
+    }
+  }
+}
+
+/** The temp root a real path lies strictly under; a temp root itself has none. */
+export function tempRootOf(real: string, roots = tempRoots()): string | undefined {
+  return roots.find(root => real !== root && real.startsWith(root.endsWith(sep) ? root : root + sep));
+}
+
+/** A privilege-raising command word anywhere in a command. */
+const PRIVILEGED = /(?:^|[\s;&|("'`])(?:sudo|doas|su|pkexec|run0)(?=\s|$)/m;
+
+/** A literal absolute path: no quotes left inside, no glob, brace, tilde, variable, escape, or substitution. */
+const LITERAL_PATH = /^\/[^*?[\]{}$`~\\"'\s]*$/;
+
+/** How much of the target trees one rm segment may walk: entries seen, and the clock time it must finish by. */
+export interface ScratchBudget { entries: number; deadline: number }
+/**
+ * 10,000 entries covers a generated test tree of a few thousand directories with room to spare, and 200 ms keeps the
+ * synchronous walk in the tool-call hook short. A tree that needs more is not checked, so it keeps the hold.
+ */
+const scratchBudget = (): ScratchBudget => ({ entries: 10_000, deadline: Date.now() + 200 });
+
+/**
+ * True when every entry of the tree at `path`, the root included, has a birth time at or after `born`. Symlinks are
+ * checked as links and never followed. False when the root is missing, an entry has no birth time or cannot be read,
+ * or the walk runs past its budget: content moved in from elsewhere keeps its older birth time and must not pass.
+ */
+export function bornAfter(path: string, born: number, budget: ScratchBudget = scratchBudget()): boolean {
+  if (!(born > 0)) return false;
+  const stack = [path];
+  while (stack.length) {
+    if (--budget.entries < 0 || Date.now() > budget.deadline) return false;
+    const current = stack.pop()!;
+    try {
+      const stats = lstatSync(current);
+      if (!(stats.birthtimeMs > 0) || stats.birthtimeMs < born) return false;
+      if (stats.isDirectory()) for (const name of readdirSync(current)) stack.push(join(current, name));
+    } catch { return false; }
+  }
+  return true;
+}
+
+function isSessionScratch(target: string, scratch: ScratchRecords, budget: ScratchBudget): boolean {
+  const clean = target.replace(/^["']|["']$/g, "");
+  if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
+  const real = realTarget(clean);
+  const root = real === undefined ? undefined : tempRootOf(real);
+  if (!real || !root) return false;
+  for (let path = real; path !== root && path.startsWith(root); path = dirname(path)) {
+    const recorded = scratch.get(path);
+    if (recorded) return sameIdentity(scratchIdentity(path), recorded) && bornAfter(real, recorded.birthtimeMs, budget);
+  }
+  return false;
+}
+
+/** `mkdir` targets in a command that are literal absolute paths; flags and relative operands are skipped. */
+function mkdirTargets(command: string): string[] {
+  const targets: string[] = [];
+  for (const segment of splitShell(stripDataText(command).text)) {
+    if (headOf(segment) !== "mkdir") continue;
+    const tokens = segment.trim().split(/\s+/);
+    for (const token of tokens.slice(tokens.findIndex(token => token.replace(/^.*\//, "") === "mkdir") + 1)) {
+      const clean = token.replace(/^["']|["']$/g, "");
+      if (LITERAL_PATH.test(clean) && !clean.split("/").includes("..")) targets.push(clean);
+    }
+  }
+  return targets;
+}
+
+/**
+ * Real paths under a temp root that this call may create and that do not exist yet: `mkdir` targets of a shell command,
+ * or a written file. Each path and its missing ancestors below the temp root are listed. Taken before the call runs, so
+ * a directory that already existed is never recorded as created.
+ */
+export function scratchCandidates(tool: string, input: Record<string, unknown>, cwd: string, platform: NodeJS.Platform = process.platform): string[] {
+  if (!scratchPlatform(platform)) return [];
+  const command = tool === "bash" ? commandOf(tool, input)?.command : undefined;
+  const paths = command ? mkdirTargets(command) : tool === "write" && typeof input.path === "string" && !input.path.startsWith("~") ? [resolve(cwd, input.path)] : [];
+  const roots = tempRoots();
+  const missing = new Set<string>();
+  for (const path of paths) {
+    const real = realTarget(path);
+    const root = real === undefined ? undefined : tempRootOf(real, roots);
+    if (!real || !root) continue;
+    for (let current = real; current !== root && !existsSync(current); current = dirname(current)) missing.add(current);
+  }
+  return [...missing];
+}
+
+/** At most this many temp paths are read from one tool result. */
+const SCRATCH_OUTPUT_LIMIT = 20;
+
+/** Absolute paths in text that start with a temp root, as spelled or as resolved. */
+function tempPathsIn(text: string, roots: readonly string[]): string[] {
+  const prefixes = new Set(roots);
+  for (const root of [tmpdir(), process.env.TMPDIR, "/tmp", "/private/tmp"]) if (root && isAbsolute(root)) prefixes.add(root.replace(/\/+$/, ""));
+  const alternatives = [...prefixes].map(prefix => prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const pattern = new RegExp(`(?:^|[\\s"'=:(\\[])((?:${alternatives})/[^\\s"'\`:,;()[\\]{}<>*?$\\\\]+)`, "gm");
+  const found = new Set<string>();
+  for (const match of text.matchAll(pattern)) {
+    found.add(match[1]!.replace(/[./]+$/, ""));
+    if (found.size >= SCRATCH_OUTPUT_LIMIT) break;
+  }
+  return [...found];
+}
+
+/**
+ * Real paths the call created, read after it ran, each with its identity. A candidate from `scratchCandidates` counts
+ * when it now exists as itself (not through a symlink). For a shell command, absolute temp paths printed in its output
+ * also count, bounded: the first 20 such paths only, each must exist under a temp root as a real directory or file, and
+ * its birth time must fall in a later millisecond than `started` (`Date.now()` when the call began). Where the file
+ * system reports no birth time, a printed path counts only from a command that does nothing but run `mktemp` and print
+ * what it made (`mktempOnly`). `birthtime` reads a file's birth time in milliseconds, 0 when the file system has none.
+ * Nothing is recorded where `scratchPlatform` is false.
+ */
+export function createdScratch(tool: string, input: Record<string, unknown>, output: string, started: number, candidates: readonly string[], birthtime = (stats: Stats) => stats.birthtimeMs, platform: NodeJS.Platform = process.platform): Map<string, ScratchIdentity> {
+  if (!scratchPlatform(platform)) return new Map();
+  const found: string[] = [];
+  for (const path of candidates) {
+    try { if (realpathSync(path) === path) found.push(path); } catch { /* not created */ }
+  }
+  const command = tool === "bash" ? commandOf(tool, input)?.command : undefined;
+  if (command) found.push(...printedScratch(command, output, started, birthtime));
+  const created = new Map<string, ScratchIdentity>();
+  for (const path of found) {
+    const identity = scratchIdentity(path);
+    if (identity) created.set(path, identity);
+  }
+  return created;
+}
+
+/** Arguments of a `mktemp` that creates something: literal words only, and no `-u`/`--dry-run`. */
+const MKTEMP_ARGS = String.raw`((?:\s+[^\s$\`<>()"']+)*)`;
+const MKTEMP_ALONE = new RegExp(String.raw`^mktemp${MKTEMP_ARGS}$`);
+const MKTEMP_ASSIGN = new RegExp(String.raw`^([A-Za-z_]\w*)=("?)\$\(\s*mktemp${MKTEMP_ARGS}\s*\)\2$`);
+const ECHO_VARS = /^echo((?:\s+"?\$\{?[A-Za-z_]\w*\}?"?)+)$/;
+
+/**
+ * How many paths a command that only makes temp files may print: each segment is a bare `mktemp`, an assignment
+ * `name=$(mktemp …)`, or an `echo` of names assigned that way. 0 for any other command.
+ */
+export function mktempOnly(command: string): number {
+  const assigned = new Set<string>();
+  let made = 0;
+  for (const segment of splitShell(command)) {
+    const alone = MKTEMP_ALONE.exec(segment);
+    const assign = alone ? undefined : MKTEMP_ASSIGN.exec(segment);
+    const args = alone?.[1] ?? assign?.[3];
+    if (args !== undefined) {
+      if (/(?:^|\s)(?:-[a-zA-Z]*u[a-zA-Z]*|--dry-run)(?=\s|$)/.test(args)) return 0;
+      if (assign) assigned.add(assign[1]!);
+      made++;
+      continue;
+    }
+    const echo = ECHO_VARS.exec(segment);
+    if (!echo || ![...echo[1]!.matchAll(/\$\{?([A-Za-z_]\w*)/g)].every(name => assigned.has(name[1]!))) return 0;
+  }
+  return made;
+}
+
+function printedScratch(command: string, output: string, started: number, birthtime: (stats: Stats) => number): string[] {
+  const created: string[] = [];
+  const made = mktempOnly(command);
+  const lines = output.split("\n").map(line => line.trim()).filter(Boolean);
+  const roots = tempRoots();
+  for (const path of tempPathsIn(output, roots)) {
+    if (path.split("/").includes("..")) continue;
+    try {
+      const real = realpathSync(path);
+      if (!tempRootOf(real, roots)) continue;
+      const stats = statSync(real);
+      if (!stats.isDirectory() && !stats.isFile()) continue;
+      const birth = birthtime(stats);
+      const born = birth > 0 ? Math.floor(birth) > started : made > 0 && lines.length <= made && lines.includes(path);
+      if (born) created.push(real);
+    } catch { /* gone or unreadable */ }
+  }
+  return created;
+}
+
 interface CompiledUserRule extends Rule { message?: string; action?: "dialog" | "hold"; }
 
 /** Compiled user rules and exempt ids; passed from the config so matchPatterns stays pure. */
@@ -443,6 +693,10 @@ export interface PatternOptions {
   commandDenyRules?: readonly CommandRule[];
   exemptRules?: readonly string[];
   pathRules?: readonly PathRule[];
+  /** Real paths the agent created under the temp directory in this session; a recursive rm of only these is not destructive. */
+  scratch?: ScratchRecords | undefined;
+  /** The platform `scratchPlatform` decides for; the running one when omitted. */
+  platform?: NodeJS.Platform | undefined;
 }
 
 /** Every id exemptRules can legitimately name: the built-in shell rules, the rm-classifier's derived ids, and the
@@ -453,6 +707,7 @@ export const EXEMPTABLE_IDS: readonly string[] = [
   "rm-recursive",
   "rm-rf",
   "rm-recursive-dangerous-target",
+  "rm-session-scratch",
   "sensitive-path",
 ];
 
@@ -505,8 +760,10 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
   if (raw) {
     const command = stripDataText(raw).text;
     for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
+    // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else: no scratch.
+    const scratch = PRIVILEGED.test(command) || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
     for (const segment of splitShell(command)) {
-      const hit = classifyRm(segment, cwd);
+      const hit = classifyRm(segment, cwd, scratch);
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
       if (hit && !exempt.has(hit.id)) add(hit);
     }
@@ -1054,7 +1311,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   const plan = describePlan(action.plan);
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
-  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules });
+  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scratch: options.scratch });
   // Violation pipeline: authorize per-violation, remove authorized from level computation and Jev questions.
   const allViolations = patternHitsToViolations(patterns, action.tool, action.input);
   const allAuthorizations = allViolations.map(v => authorize(action.task ?? "", v));
@@ -1412,6 +1669,7 @@ const ACTION_VERBS: Record<string, string[]> = {
   "rm-recursive": ["delete", "remove", "clean", "tidy", "purge"],
   "rm-rf": ["delete", "remove", "clean", "tidy", "purge"],
   "rm-recursive-dangerous-target": ["delete", "remove", "clean", "tidy", "purge"],
+  "rm-session-scratch": ["delete", "remove", "clean", "tidy", "purge"],
   "find-delete": ["delete", "remove", "clean", "tidy", "purge"],
   "git-rm": ["delete", "remove", "clean", "tidy", "purge"],
   "publish": ["publish"],
@@ -1508,7 +1766,7 @@ export function isAuthEligible(severity: Severity): boolean {
   return true;
 }
 
-const RM_FAMILY_IDS = new Set(["rm", "rm-recursive", "rm-rf", "rm-recursive-dangerous-target", "find-delete"]); const RM_COMMAND_RE = /(?:^|[\s"'(])rm\s+(.*)$/i;
+const RM_FAMILY_IDS = new Set(["rm", "rm-recursive", "rm-rf", "rm-recursive-dangerous-target", "rm-session-scratch", "find-delete"]); const RM_COMMAND_RE = /(?:^|[\s"'(])rm\s+(.*)$/i;
 
 /** Extract file targets from every rm segment in a command. */
 function detectRmTargets(command: string): string[] {
