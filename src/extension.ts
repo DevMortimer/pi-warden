@@ -10,7 +10,7 @@ const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ 
 import { authState, createTypeSafe, describeAuth } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
-import { backendHost, disclosureFor, judgeOptions, keyEnvFor, resolveBackend } from "./backend.js";
+import { backendHost, disclosureFor, judgeOptions, keyEnvFor, loginStoresKey, resolveBackend } from "./backend.js";
 import type { JudgmentBackend, JudgmentsOffReason } from "./backend.js";
 import { ActionGuard } from "./action-guard.js";
 import type { ToolCallRef } from "./action-guard.js";
@@ -152,12 +152,18 @@ export function assistantPlan(ctx: ExtensionContext): string | undefined {
   return undefined;
 }
 
-/** The once-per-session notice: why Jev judgments are off and what turns them on. Never names a key or a path. */
-export function judgmentsOffText(reason: Exclude<JudgmentsOffReason, "budget">, backend: JudgmentBackend, headless: boolean): string {
+/**
+ * The once-per-session notice: why Jev judgments are off and what turns them on. `rejectedEnv` is the environment
+ * variable that holds a rejected key, or undefined when the rejected key is the one `/typesafe login` saved. Never
+ * names a key value or a path.
+ */
+export function judgmentsOffText(reason: Exclude<JudgmentsOffReason, "budget">, backend: JudgmentBackend, headless: boolean, rejectedEnv?: string): string {
   switch (reason) {
     case "no_consent": return `warden: Jev judgments are off (no consent). ${headless ? "Set PI_WARDEN_ENABLED=1." : "Run /warden enable."}`;
-    case "no_key": return `warden: Jev judgments are off (no key for ${backend}). Set ${keyEnvFor(backend)} or run /typesafe login.`;
-    case "key_rejected": return "warden: Jev judgments are off (the saved key was rejected). Run /typesafe login.";
+    case "no_key": return `warden: Jev judgments are off (no key for ${backend}). Set ${keyEnvFor(backend)}${loginStoresKey(backend) ? " or run /typesafe login" : ""}.`;
+    case "key_rejected": return rejectedEnv
+      ? `warden: Jev judgments are off (the key in ${rejectedEnv} was rejected). Check the key, then run /warden status.`
+      : "warden: Jev judgments are off (the key saved by /typesafe login was rejected). Run /typesafe login.";
   }
 }
 
@@ -389,7 +395,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // The budget has its own notice in noteError.
     if (reason === undefined || reason === "budget" || judgmentsReported.has(reason)) return;
     judgmentsReported.add(reason);
-    judgmentsNotify?.(judgmentsOffText(reason, config.typesafeBackend, judgmentsHeadless));
+    const auth = reason === "key_rejected" ? authState({ backend: config.typesafeBackend }) : undefined;
+    judgmentsNotify?.(judgmentsOffText(reason, config.typesafeBackend, judgmentsHeadless, auth?.kind === "environment" ? auth.keyName : undefined));
   };
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
   /** A consent flag is not proof that judgments happen; check the key state for the chosen backend. */

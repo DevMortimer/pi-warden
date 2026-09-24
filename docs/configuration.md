@@ -228,7 +228,7 @@ It is a backstop for sanctioned work, not a boundary anyone hostile respects: ke
 | `PI_WARDEN_MODE=steer\|confirm\|advise` | Overrides `mode`. |
 | `PI_WARDEN_TRACE_DIR=<absolute path>` | Appends the trace to `<path>/<session id>.jsonl`, one file per Pi session. For a host that runs Pi in RPC mode, where the status line and the sidebar never show. An empty or relative path turns it off. See [Trace file](#trace-file). |
 
-When a guard would ask Jev but cannot, Warden tells you once per session and reason why, and what to do: no consent (`/warden enable`, or `PI_WARDEN_ENABLED=1` headless), no key for the backend (set its key variable or run `/typesafe login`), or a saved key that was rejected (`/typesafe login`); a headless session gets a status message instead of a notice, and a spent request budget keeps its own warning.
+When a guard would ask Jev but cannot, Warden tells you once per session and reason why, and what to do: no consent (`/warden enable`, or `PI_WARDEN_ENABLED=1` headless), no key for the backend (set its key variable, or run `/typesafe login` for the TypeSafe backend), or a rejected key (named by where it comes from: run `/typesafe login` again for the key it saved, or check the key in the environment variable and run `/warden status`); a headless session gets a status message instead of a notice, and a spent request budget keeps its own warning.
 
 ### Trace file
 

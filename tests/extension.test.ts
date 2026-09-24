@@ -3219,6 +3219,7 @@ test("judge cooldown: a new session trusts the judge again", async () => {
   const asked = networkCalls;
   await toolCall("bash", { command: "npm run lint" });
   assert.ok(networkCalls > asked);
+});
 
 /** A saved 403 in pi-typesafe's auth-state record: the key in effect was rejected by the backend. */
 const rejectKey = async () => {
@@ -3251,7 +3252,7 @@ test("judgments off: each reason is said once per session with its fix, and work
   await sessionStart();
   await toolCall("bash", { command: "npm test" });
   await toolCall("bash", { command: "npm run lint" });
-  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (the saved key was rejected). Run /typesafe login."]);
+  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (the key in TYPESAFE_API_KEY was rejected). Check the key, then run /warden status."]);
   assert.ok(!judgmentsOff()[0]!.includes("offline-test-key"), "the notice never names the key");
   assert.equal(networkCalls, 0);
 
@@ -3261,6 +3262,37 @@ test("judgments off: each reason is said once per session with its fix, and work
   await toolCall("bash", { command: "npm test" });
   assert.equal(networkCalls, 1);
   assert.deepEqual(judgmentsOff(), [], "a session with working judgments shows no notice");
+});
+
+test("judgments off: no key on OpenRouter names only its variable, since /typesafe login stores no OpenRouter key", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: "openrouter", rules: { enabled: false }, ...STACK_BAR }));
+  const savedOpenRouter = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  try {
+    await toolCall("bash", { command: "npm test" });
+    assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (no key for openrouter). Set OPENROUTER_API_KEY."]);
+    assert.equal(networkCalls, 0);
+  } finally {
+    if (savedOpenRouter !== undefined) process.env.OPENROUTER_API_KEY = savedOpenRouter;
+  }
+});
+
+test("judgments off: a rejected key saved by /typesafe login is named as that key, and the notice never shows it", async () => {
+  await grantConsent();
+  const savedTestKey = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  try {
+    await rejectKey();
+    await writeFile(join(temporary, "agent", "pi-typesafe", "auth.json"), JSON.stringify({ apiKey: "stored-test-key-0123456789" }), { mode: 0o600 });
+    await sessionStart();
+    await toolCall("bash", { command: "npm test" });
+    await toolCall("bash", { command: "npm run lint" });
+    assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (the key saved by /typesafe login was rejected). Run /typesafe login."]);
+    assert.ok(!judgmentsOff()[0]!.includes("stored-test-key"));
+    assert.equal(networkCalls, 0);
+  } finally {
+    process.env.TYPESAFE_API_KEY = savedTestKey;
+  }
 });
 
 test("judgments off: a headless session gets one status message instead of a UI notice", async () => {

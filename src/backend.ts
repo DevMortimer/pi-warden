@@ -17,6 +17,11 @@ export function keyEnvFor(backend: JudgmentBackend): string {
   return DECISIONS_BACKENDS[backend].keyEnv ?? DECISIONS_BACKENDS[DEFAULT_BACKEND].keyEnv ?? "TYPESAFE_API_KEY";
 }
 
+/** Whether the backend takes the TypeSafe key, the only one `/typesafe login` stores; pi-typesafe's `usesTypesafeKey`, which its package does not export. */
+export function loginStoresKey(backend: JudgmentBackend): boolean {
+  return keyEnvFor(backend) === keyEnvFor(DEFAULT_BACKEND);
+}
+
 /** Adapt the consent text to the active backend by substituting the destination host. */
 export function disclosureFor(backend: JudgmentBackend, disclosure: string): string {
   return backend === DEFAULT_BACKEND ? disclosure : disclosure.replace(backendHost(DEFAULT_BACKEND), backendHost(backend));
