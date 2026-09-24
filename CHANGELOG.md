@@ -10,6 +10,19 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - The done-check asks for a visual check after UI changes (`done.uiProof`, default on). When a run changes a file that matches `done.uiFiles` (stylesheets, markup, `.jsx`/`.tsx`/`.vue`/`.svelte`/`.astro` components, Flutter `.dart` files, `web/` and `public/` scripts; tests excluded), whether by `write`, `edit`, or a `bash` file write, passing tests and builds no longer prove a "done" reply. Only a successful `done.visualTools` call after the last UI change does: `agent-browser`, `playwright`, `flutter test`, `idb`, `xcrun simctl io`, a `screenshot` command, a browser MCP tool such as `take_screenshot` or `navigate_page`, or a `read` of an image. Without one, the final reply is judged with the existing questions, and the nudge names the file: "You changed `web/app.css` but did not look at the result. Open it in a browser or take a screenshot before calling it done, or say it is unverified." In a week of real sessions, 23 of 75 UI runs that ended with a "done" reply had no visual step after the last UI change; replayed, the rule nudges 20 of them and 7 of the other 52, 6 of which had no real visual step either. `uiProof: false` restores the previous rule. See `docs/guards.md` → Done-check.
 
+## 0.56.0
+
+### Added
+
+- The stuck guard catches a literal repeat on the 2nd call, in code, with no request. When the agent makes the same call (same tool and input) a second time and nothing that can change state ran between, it gets a short steer if the call failed with the same output ("you already ran `npm test`; it failed the same way: 1 failing. Change something before running it again.") or if a read (`read`, or a read-only shell command) returned the same output again ("you already have this output from `read src/config.ts` (3 calls ago); nothing changed since."). Every call that is not provably read-only resets the check: writes and edits, MCP tools, scripts, unknown tools, and shell commands that are not read-only; only `read`, `grep`, `find`, `ls`, and read-only shell commands do not. Polling and waiting (`sleep`, `watch`, `git status`, `gh run watch`, `gh pr checks`, `tail -f`, `ps`) never fire. It fires once per call per prompt, so a 3rd identical failure still reaches the regular stuck check; it counts against the per-run steer budget as `repeat`, and a stuck verdict on the same result takes its place. New key `stuck.repeatSteer` (default `true`) turns it off; it also follows `stuck.nudge`.
+
+## 0.55.0
+
+### Changed
+
+- With masking on, the credential banner in a tool result is sent only when a value was masked, and its text is unchanged. A credential-shaped value that was detected but not masked is recorded in the trace as `possible credentials, none masked (traced)` and is not announced to the agent. With `security.maskOutput: false` the value is in the agent's context, so the generic notice stays. In one week of sessions, 510 of 527 credential banners were the generic "Possible credentials in this output" text that pointed at no value, and agents disputed 49 of them. The prompt-injection notice is unchanged.
+- Masking now covers every value the offline credential check detects: URL passwords (`postgres://user:pass@host`), `Authorization` header and `Bearer` values, `ghu_`/`ghs_`/`ghr_` GitHub tokens, `xoxr-`/`xoxs-` Slack tokens, and `AIza` keys. Before, these were announced but left readable in the tool result.
+
 ## 0.54.0
 
 ### Changed

@@ -3,6 +3,7 @@ import { ask, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { StuckGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
+import { isReadOnlyCommand } from "./guard.js";
 import { commandOf, outputReportsFailure } from "./tools.js";
 import { DEFAULT_TEMPLATES, renderTemplate, stuckTokens } from "./widget.js";
 
@@ -16,6 +17,19 @@ export interface Attempt {
   failed: boolean;
   /** Tail of the tool output, redacted, where the error usually is. */
   output: string;
+  /** The call may have changed files or state: every call that is not provably read-only, failed or not. */
+  changes: boolean;
+  /** A `read`, or a shell command that `isReadOnlyCommand` accepts. */
+  readOnly: boolean;
+  /** Polling or waiting: the call is expected to run again with the same output. */
+  poll: boolean;
+}
+
+/** The 2nd identical call with nothing changed since the 1st, decided without Jev. */
+export interface QuickRepeat {
+  attempt: Attempt;
+  /** Tool results between the two calls, the latest included. */
+  callsAgo: number;
 }
 
 export interface StuckJudgment {
@@ -73,8 +87,16 @@ function normaliseOutput(text: string): string {
     .replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?/g, "#date");
 }
 
+/** Waiting, watching, and status checks print the same thing until something outside the agent changes. */
+/** Pi's built-in tools that only read files. */
+const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
+const POLL_COMMAND = /\b(?:sleep|watch|wait)\b|\bgh\s+(?:run|pr)\s+(?:watch|checks|view|list)\b|\bgit\s+status\b|\btail\s+-[fF]\b|\b(?:ps|pgrep)\b/;
+
 export function makeAttempt(tool: string, input: Record<string, unknown>, content: ReadonlyArray<{ type: string; text?: string }>, failed: boolean): Attempt {
-  const command = commandOf(tool, input)?.command;
+  const view = commandOf(tool, input);
+  const command = view?.command;
+  const readOnlyCommand = view !== undefined && view.shell && isReadOnlyCommand(view.command);
   const call = command !== undefined ? command
     : typeof input.path === "string" ? `${tool} ${input.path}`
     : JSON.stringify(input);
@@ -86,6 +108,10 @@ export function makeAttempt(tool: string, input: Record<string, unknown>, conten
     call: redact(head(call, CALL_LIMIT)),
     failed,
     output: redact(tail(text, OUTPUT_LIMIT)),
+    // MCP tools, scripts, and unknown tools can change state that the next call reads.
+    changes: !READ_TOOLS.has(tool) && !readOnlyCommand,
+    readOnly: tool === "read" || readOnlyCommand,
+    poll: command !== undefined && POLL_COMMAND.test(command),
   };
 }
 
@@ -93,6 +119,8 @@ export function makeAttempt(tool: string, input: Record<string, unknown>, conten
 export class AttemptWindow {
   readonly attempts: Attempt[] = [];
   private sinceJudgment = Number.MAX_SAFE_INTEGER;
+  /** Call keys that already got a quick-repeat steer in this window. */
+  private readonly quickRepeated = new Set<string>();
 
   constructor(private readonly limit: number) {}
 
@@ -105,6 +133,7 @@ export class AttemptWindow {
   reset(): void {
     this.attempts.length = 0;
     this.sinceJudgment = Number.MAX_SAFE_INTEGER;
+    this.quickRepeated.clear();
   }
 
   markJudged(): void {
@@ -137,6 +166,25 @@ export class AttemptWindow {
     const latest = this.attempts.at(-1);
     if (!latest) return 0;
     return this.attempts.filter(attempt => attempt.key === latest.key).length;
+  }
+
+  /**
+   * The latest call repeats the previous call with the same key, nothing that can change state ran between them, and
+   * it either failed again with the same output or re-read an output the agent already has. Fires once per key per
+   * window, so a 3rd identical failure goes to the regular stuck check instead of a second quick steer.
+   */
+  quickRepeat(): QuickRepeat | undefined {
+    const latest = this.attempts.at(-1);
+    if (!latest || latest.poll || this.quickRepeated.has(latest.key)) return undefined;
+    let index = this.attempts.length - 2;
+    while (index >= 0 && this.attempts[index]!.key !== latest.key) index--;
+    if (index < 0) return undefined;
+    const previous = this.attempts[index]!;
+    if (previous.outputKey !== latest.outputKey || previous.failed !== latest.failed) return undefined;
+    if (!latest.failed && !latest.readOnly) return undefined;
+    if (this.attempts.slice(index + 1, -1).some(attempt => attempt.changes)) return undefined;
+    this.quickRepeated.add(latest.key);
+    return { attempt: latest, callsAgo: this.attempts.length - 1 - index };
   }
 
   /** Latest result failed with enough failures behind it, succeeded but repeats itself, or is churning on the same
@@ -227,6 +275,26 @@ export function stuckNudge(verdict: StuckVerdict): string {
     return `pi-warden: ${verdict.reasons.join("; ")}. The output keeps changing but the target stays the same. Either act on the latest result and move on, or try a different command entirely.`;
   }
   return `pi-warden: ${verdict.reasons.join("; ")}. Stop retrying. Re-read the last error output carefully, state a new hypothesis about the cause, and either gather the missing information (read the relevant file, check versions or paths) or try a different method. If two different methods have failed, report the blocker to the user with the exact error instead of trying again.`;
+}
+
+const STEER_CALL_LIMIT = 120;
+const STEER_LINE_LIMIT = 160;
+
+/** The line of a failed output that names the error, else its last line. */
+function errorLine(output: string): string {
+  const lines = output.split("\n").map(line => line.trim()).filter(line => line && !/^\[\d+ earlier chars\]/.test(line));
+  const line = lines.find(candidate => /error|fail|denied|not found|no such|enoent|cannot|invalid/i.test(candidate)) ?? lines.at(-1) ?? "(no output)";
+  return head(line, STEER_LINE_LIMIT);
+}
+
+/** Steering text for a quick repeat: names the call and what the agent already has, asks for a change first. */
+export function quickRepeatNudge(repeat: QuickRepeat): string {
+  const call = head(repeat.attempt.call, STEER_CALL_LIMIT);
+  if (repeat.attempt.failed) {
+    return `pi-warden: you already ran \`${call}\`; it failed the same way: ${errorLine(repeat.attempt.output)}. Change something before running it again.`;
+  }
+  const ago = repeat.callsAgo === 1 ? "1 call ago" : `${repeat.callsAgo} calls ago`;
+  return `pi-warden: you already have this output from \`${call}\` (${ago}); nothing changed since. Use that output instead of running the call again.`;
 }
 
 /** LCS-based line diff between two outputs, capped at diffLimit characters. Both inputs must be pre-redacted. */

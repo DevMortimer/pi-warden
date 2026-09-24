@@ -190,20 +190,12 @@ export function findSecrets(text: string): string[] {
 }
 
 /**
- * Token shapes precise enough to mask in a tool result: private key blocks, `sk-` keys, `ghp_`, `gho_` and
- * `github_pat_` tokens, `AKIA` keys, `xoxa-`/`xoxb-`/`xoxp-` Slack tokens, and JWTs. The other shapes are announced only.
- */
-const MASKED_TOKEN = /^(?:-----BEGIN|sk-|ghp_|gho_|github_pat_|AKIA|xox[abp]-|eyJ)/;
-
-/**
- * `text` with every high-confidence credential value replaced by `[redacted]`: a masked token shape, or a
- * credential-key assignment whose value looks like a secret. Stand-ins (`syntheticish`, signed URL signatures) stay readable.
+ * `text` with every credential value that `findSecrets` detects replaced by `[redacted]`: token shapes, credential-key
+ * assignments, `Authorization` and `Bearer` values, and URL passwords. Stand-ins (`syntheticish`, signed URL
+ * signatures) stay readable. Masking the whole detected set means a value is never announced without being masked.
  */
 export function maskSecrets(text: string): { text: string; masked: number } {
-  const values = new Set<string>();
-  for (const shape of TOKEN_SHAPES) for (const match of text.matchAll(shape)) if (MASKED_TOKEN.test(match[0])) values.add(match[0]);
-  for (const match of text.matchAll(CREDENTIAL_ASSIGNMENT)) if (match[1] && looksLikeSecretValue(match[1])) values.add(match[1]);
-  const { real } = partitionSecrets([...values], text);
+  const { real } = partitionSecrets(findSecrets(text), text);
   let out = text;
   let masked = 0;
   // Longest first, so a value that contains another is replaced whole.
