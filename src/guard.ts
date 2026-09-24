@@ -1342,6 +1342,9 @@ const READ_ONLY_COMMANDS = new Set([
   "readlink", "jq", "column", "nl", "strings", "md5", "md5sum", "shasum", "sha1sum", "sha256sum", "hexdump", "xxd", "od", "uname", "hostname", "whoami", "id", "uptime",
 ]);
 const READ_ONLY_GIT = new Set(["status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse", "describe", "shortlog", "grep", "cat-file", "rev-list", "name-rev", "merge-base"]);
+// Most variables can change what a command runs or loads (`PATH`, `LD_PRELOAD`, `BASH_ENV`, `GIT_*`, `PAGER`, `LESSOPEN`);
+// these only change locale, time zone, or output formatting.
+const READ_ONLY_ASSIGNMENT = /^(?:LANG|LC_[A-Z]+|TZ|NO_COLOR|TERM|COLUMNS|FORCE_COLOR)=/;
 /** Git subcommands whose other actions write (`git worktree remove`, `git stash pop`): only `list` is read-only. */
 const READ_ONLY_GIT_LIST = new Set(["worktree", "stash"]);
 // One print command, `[addr[,addr]][!]p`: no room for the `w`, `W`, `e`, or `r` commands, or for `s///w`.
@@ -1387,7 +1390,10 @@ export function isReadOnlyCommand(command: string): boolean {
   for (const segment of splitShell(stripped)) {
     const tokens = segment.split(/\s+/);
     let index = 0;
-    while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!)) index++;
+    while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!)) {
+      if (!READ_ONLY_ASSIGNMENT.test(tokens[index]!)) return false;
+      index++;
+    }
     const head = tokens[index];
     if (!head) return false;
     if (head === "git") {

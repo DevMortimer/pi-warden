@@ -517,6 +517,15 @@ test("isReadOnlyCommand accepts print-only sed -n and git list forms, and reject
   for (const command of rejected) assert.equal(isReadOnlyCommand(command), false, command);
 });
 
+test("isReadOnlyCommand accepts leading assignments only for locale, time zone, and output-format variables", () => {
+  for (const command of ["LANG=C sort f", "LC_ALL=C grep -n x f", "TZ=UTC date", "NO_COLOR=1 git log -3", "TERM=dumb COLUMNS=80 ls", "FORCE_COLOR=0 cat f", "LC_ALL=C sed -n 1p f"]) {
+    assert.equal(isReadOnlyCommand(command), true, command);
+  }
+  for (const command of ["PATH=/tmp/evil ls", "LD_PRELOAD=x.so cat f", "DYLD_INSERT_LIBRARIES=x.dylib cat f", "BASH_ENV=x ls", "ENV=x ls", "IFS=/ ls", "PAGER=sh git log", "GIT_EXTERNAL_DIFF=x git diff", "LESSOPEN='|x %s' less f", "LANG=C PATH=/tmp ls", "lang=C ls", "E=/tmp/x"]) {
+    assert.equal(isReadOnlyCommand(command), false, command);
+  }
+});
+
 test("describeAction summarises tool input without leaking secrets or absolute paths", () => {
   const bash = describeAction("bash", { command: "export TOKEN=sk-live-0123456789abcdef && ls" }, cwd);
   assert.equal(bash.tool, "bash");
