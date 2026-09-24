@@ -89,6 +89,8 @@ export interface HoldScores {
   irreversible: number;
   /** Reason categories from the verdict, used for same-reason queries and destructive-pattern detection. */
   reasons: string[];
+  /** The large_output score of a judged bash call; recorded for calibration, never part of the signature. */
+  largeOutput?: number;
 }
 
 /** Enumerations for type safety over bare strings. */
@@ -148,7 +150,7 @@ export interface SkipResult {
 
 /** Hash tool + scores to identify similar holds. */
 export function signatureHash(tool: string, scores: HoldScores): string {
-  return createHash("sha256").update(tool + ":" + JSON.stringify(scores)).digest("hex").slice(0, 16);
+  return createHash("sha256").update(tool + ":" + JSON.stringify({ irreversible: scores.irreversible, reasons: scores.reasons })).digest("hex").slice(0, 16);
 }
 
 /** Score a batch of rows with time-decayed weights. Returns { score, totalWeight }.
@@ -183,7 +185,7 @@ export function toHoldRecord(
     projectRoot,
     tool: item.tool,
     commandPreview: redact(ctx?.preview ?? item.tool).slice(0, 200),
-    scores: { irreversible: raw?.irreversible ?? 0, reasons: item.reasons },
+    scores: { irreversible: raw?.irreversible ?? 0, reasons: item.reasons, ...(raw?.largeOutput !== undefined ? { largeOutput: raw.largeOutput } : {}) },
     level: item.level as HoldLevel,
     held: item.held ?? true,
     reasons: item.reasons,

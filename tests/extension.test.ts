@@ -436,6 +436,31 @@ test("multi-block results: retention is decided per text block, order and non-te
   assert.equal(requests.filter(request => "retention" in request.questions).length, 2, "each large text block earns its own retention request");
   await runCommand("trace", context({ hasUI: false }));
   assert.match(sentMessages.at(-1)!.message.content, /text block 1 of 2[\s\S]*text block 2 of 2/, "the trace names each compressed block");
+  assert.ok(!/kept whole/.test(sentMessages.at(-1)!.message.content), "a compressed block is not also traced as kept whole");
+});
+
+test("a judged output the saver keeps whole leaves its verdict in the trace, with no notice or steer", async () => {
+  await grantConsent();
+  nextAnswers = { retention: "all" };
+  const full = "progress complete\n".repeat(1000);
+  const noticesBefore = notices.length;
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "the output stays whole");
+  assert.equal(notices.length, noticesBefore, "no notice");
+  assert.equal(sentMessages.length, 0, "no steer");
+  assert.ok(!widgets.some(lines => lines?.some(line => /kept whole/.test(line))), "the status line does not change");
+  const first = "first block\n".repeat(1000);
+  const last = "last block!\n".repeat(1000);
+  await fire("tool_result", { toolName: "read", input: {}, toolCallId: "mixed-whole", isError: false, content: [{ type: "text", text: first }, { type: "text", text: last }] });
+  await runCommand("trace", context({ hasUI: false }));
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.match(trace, /kept whole: retention all; confidence 0\.20; format \w+ \(0\.80\); [^;]+; \d+ ms/, "retention, confidence, format, and format confidence are traced");
+  assert.match(trace, /text block 1 of 2: kept whole: retention all[\s\S]*text block 2 of 2: kept whole: retention all/, "each kept block gets its own line");
+  assert.ok(!widgets.some(lines => lines?.some(line => /kept whole/.test(line))), "nor for kept blocks");
+  // Below tailMinChars the output is never judged for retention, so nothing is traced.
+  const entries = trace.match(/kept whole:/g)!.length;
+  assert.equal(await toolResult("bash", { command: "ls" }, "a\nb\n", false), undefined);
+  await runCommand("trace", context({ hasUI: false }));
+  assert.equal(sentMessages.at(-1)!.message.content.match(/kept whole:/g)!.length, entries);
 });
 
 test("a credential in one text block banners that block only; siblings stay untouched", async () => {
@@ -3916,6 +3941,11 @@ test("conscience: a rejected key traces key_rejected, and missing consent still 
   await runCommand("trace", context({ hasUI: false }));
   traceText = sentMessages.at(-1)!.message.content;
   assert.match(traceText, /skipReason: no_consent/);
+});
+
+test("/warden completions offer every subcommand, including recommend and prefs", async () => {
+  assert.deepEqual(await command.getArgumentCompletions!("rec"), [{ value: "recommend", label: "recommend" }]);
+  assert.deepEqual(await command.getArgumentCompletions!("pr"), [{ value: "prefs", label: "prefs" }]);
 });
 
 /** A session directory copied from the prefs fixture, dated now so it sits inside the scan window. */

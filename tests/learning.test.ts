@@ -26,6 +26,7 @@ test("signatureHash produces consistent hashes", () => {
   const h2 = signatureHash("bash", { irreversible: 0.5, reasons: ["test"] });
   assert.equal(h1, h2, "same input produces same hash");
   assert.equal(h1.length, 16, "hash is 16 hex chars");
+  assert.equal(signatureHash("bash", { irreversible: 0.5, reasons: ["test"], largeOutput: 0.3 }), h1, "the large_output score does not split the signature");
 });
 
 test("recordHold inserts a hold and returns an id", async () => {
@@ -323,6 +324,26 @@ test("judged allowed call produces a row with held = 0 and redacted preview", as
   const row = rows[0]!;
   assert.equal(row.held, 0, "held column is 0");
   assert.equal(row.command_preview, "npm test", "preview stored correctly");
+});
+
+test("the large_output score of a judged bash call lands in the scores column", async () => {
+  const projectRoot = "/large-output/project";
+  const scored = toHoldRecord(
+    { at: Date.now(), tool: "bash", level: "confirm", reasons: [], scores: { irreversible: 0.1, offTask: 0, scope: "expected_step", largeOutput: 0.3 }, held: true },
+    projectRoot,
+    { preview: "npm test" },
+  );
+  assert.deepEqual(scored.scores, { irreversible: 0.1, reasons: [], largeOutput: 0.3 });
+  await recordHold(scored);
+  // The lookup carries no large_output score, so an exact match also proves the signature ignores it.
+  const history = await querySmartHistory("bash", { irreversible: 0.1, reasons: [] }, projectRoot);
+  assert.equal(history.exact.length, 1);
+  assert.equal(JSON.parse(String(history.exact[0]!.scores)).largeOutput, 0.3);
+  const unscored = toHoldRecord(
+    { at: Date.now(), tool: "write", level: "allow", reasons: [], scores: { irreversible: 0.1, offTask: 0, scope: "expected_step" }, held: false },
+    projectRoot,
+  );
+  assert.ok(!("largeOutput" in unscored.scores), "a verdict without the score writes no largeOutput key");
 });
 
 test("regret on an allowed call is persisted to SQLite", async () => {
