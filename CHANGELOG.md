@@ -10,6 +10,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - Authorizing an rm target from the task text no longer drops an unrelated pattern hit. A hit leaves the level computation only when every per-target violation it produced is authorized; before this, violations and hits were matched by list position, so `rm -rf a b c` with a task naming `c` could drop another rule's hit. An rm-family hit with no readable target (`find . -name '*.log' | xargs rm -rf`, `find -delete`) now gets one violation without a path; only a task that contains that command segment verbatim (whitespace collapsed) authorizes it, so "clean up the log files" does not authorize `xargs rm -rf` of any list, and the hit stays in the level computation. rm targets are read with shell quoting (`rm -rf 'a b'` is one target), redirections such as `2>/dev/null` are no longer targets, and each rm-family hit is scoped only to the targets of the segments that produced it (`rm a; rm -rf b` scopes `rm-rf` to `b`).
 
+## 0.51.0
+
+### Changed
+
+- The rules guard applies its 31-question cap per write after path scoping, not when the rules file loads. Before this, rules past 31 in file order were never judged, even when most rules were scoped by `paths:` to other files. Each write now takes the rules that apply to its path, in file order, and asks the first 31. The trace entry records how many applicable rules were dropped and the first dropped rule id. The first write in a session with dropped rules shows one notice naming the rules file and that rule id.
+- `/warden status` shows the total rule count, and names only the unscoped rules that are past the cap for every file. `RuleSet.dropped` is replaced by `RuleSet.alwaysDropped` (unscoped rules past the cap); `RuleSet.rules` now holds every parsed rule.
+
 ## 0.50.1
 
 ### Changed
