@@ -999,8 +999,14 @@ function scopedDeletesOnly(sql: string): boolean {
   const statements = sqlStatements(sql);
   if (statements.some(statement => /\b(?:drop|truncate)\b/i.test(statement))) return false;
   const deletes = statements.filter(statement => /\bdelete\s+from\b/i.test(statement));
-  return deletes.length > 0 && deletes.every(statement => /\bwhere\b/i.test(statement));
+  return deletes.length > 0 && deletes.every(statement => {
+    const where = /\bwhere\b(.*)$/is.exec(statement);
+    return where !== null && !ALWAYS_TRUE.test(where[1]!.trim().replace(/^\((.*)\)$/s, "$1").trim());
+  });
 }
+
+/** A WHERE clause that matches every row: `true`, `NOT false`, or a literal equal to itself (`1=1`, `'a'='a'`). */
+const ALWAYS_TRUE = /^(?:true|not\s+false|(\d+)\s*=\s*\1|'([^']*)'\s*=\s*'\2')$/i;
 
 const SQL_RULE_IDS = new Set(["sql-drop", "sql-truncate", "sql-delete"]);
 
@@ -1009,6 +1015,11 @@ function applySqlTargets(raw: string, hits: Map<string, PatternHit>, exempt: Rea
   const segments = sqlSegments(raw).map(segment => ({ segment, call: readSqlCall(segment) }));
   const text = (entry: (typeof segments)[number]) => entry.call?.text ?? [...entry.segment.words.map(word => word.text), ...entry.segment.heredocs.map(heredoc => heredoc.body)].join(" ");
   const readOnlyHosted = (entry: (typeof segments)[number]) => entry.call?.target === "hosted" && readOnlyWrapped(entry.call);
+  // A heredoc body fed to a SQL client is SQL, not data: the SQL rules read it as they read a `-c` value.
+  for (const rule of SHELL_RULES) {
+    if (!SQL_RULE_IDS.has(rule.id) || exempt.has(rule.id) || hits.has(rule.id)) continue;
+    if (segments.some(entry => entry.call !== undefined && rule.test.test(entry.call.text))) hits.set(rule.id, { id: rule.id, severity: rule.severity, label: rule.label });
+  }
   for (const rule of SHELL_RULES) {
     if (!SQL_RULE_IDS.has(rule.id) || !hits.has(rule.id)) continue;
     const matching = segments.filter(entry => rule.test.test(text(entry)));

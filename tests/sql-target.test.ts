@@ -85,3 +85,40 @@ test("$DATABASE_URL keeps today's behaviour", async () => {
   assert.deepEqual(hitsOf("psql \"$DATABASE_URL\" -c 'BEGIN READ ONLY; DROP TABLE users; ROLLBACK;'"), [["sql-drop", "destructive"]]);
   assert.deepEqual(hitsOf("psql -h 127.0.0.1 -f cleanup.sql"), [], "SQL from a file is not read");
 });
+
+test("a heredoc DROP TABLE to loopback holds", async () => {
+  const command = "psql -h 127.0.0.1 <<EOF\nDROP TABLE users;\nEOF";
+  assert.deepEqual(hitsOf(command), [["sql-drop", "destructive"]]);
+  assert.equal(await levelOf(command), "confirm");
+});
+
+test("a heredoc DELETE FROM t; to loopback holds", async () => {
+  const command = "psql -h localhost <<'SQL'\nDELETE FROM t;\nSQL";
+  assert.deepEqual(hitsOf(command), [["sql-delete", "destructive"]]);
+  assert.equal(await levelOf(command), "confirm");
+});
+
+test("a heredoc DELETE FROM t WHERE email LIKE 'x%'; to loopback warns", async () => {
+  const command = "psql -h 127.0.0.1 <<'SQL'\nDELETE FROM t WHERE email LIKE 'x%';\nSQL";
+  assert.deepEqual(hitsOf(command), [["sql-delete-local", "risky"]]);
+  assert.equal(await levelOf(command), "warn");
+});
+
+test("heredoc SQL to cat stays data", () => {
+  assert.deepEqual(hitsOf("cat > cleanup.sql <<'SQL'\nDROP TABLE users;\nDELETE FROM t;\nSQL"), []);
+});
+
+test("WHERE true and WHERE 1=1 on loopback hold", async () => {
+  for (const where of ["true", "1=1", "1 = 1", "'a'='a'", "NOT false", "(true)"]) {
+    const command = `psql -h 127.0.0.1 -c "DELETE FROM t WHERE ${where};"`;
+    assert.deepEqual(hitsOf(command), [["sql-delete", "destructive"]], where);
+    assert.equal(await levelOf(command), "confirm", where);
+  }
+});
+
+test("WHERE id = 1 on loopback warns", async () => {
+  const command = "psql -h 127.0.0.1 -c 'DELETE FROM t WHERE id = 1;'";
+  assert.deepEqual(hitsOf(command), [["sql-delete-local", "risky"]]);
+  assert.equal(await levelOf(command), "warn");
+  assert.deepEqual(hitsOf("psql -h 127.0.0.1 -c 'DELETE FROM t WHERE 1=1 AND id = 1;'"), [["sql-delete-local", "risky"]], "a clause that names a column is a real WHERE");
+});
