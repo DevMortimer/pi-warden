@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.46.0
+
 ### Added
 
 - When a guard would ask Jev but cannot, Warden says so once per session and reason, with the fix: `warden: Jev judgments are off (no consent). Run /warden enable.` (`Set PI_WARDEN_ENABLED=1.` headless), `(no key for <backend>). Set <key variable>.` (with ` or run /typesafe login` on the TypeSafe backend, the only one login stores a key for), or for a rejected key `(the key saved by /typesafe login was rejected). Run /typesafe login.` or `(the key in <key variable> was rejected). Check the key, then run /warden status.` A headless session gets a status message. A spent request budget keeps its own warning. Before this, judgments stopped silently.
