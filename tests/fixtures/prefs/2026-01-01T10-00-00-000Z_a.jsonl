@@ -1,0 +1,8 @@
+{"type":"session","version":3,"id":"a","timestamp":"2026-01-01T10:00:00.000Z","cwd":"/project"}
+{"type":"message","id":"a1","parentId":null,"timestamp":"2026-01-01T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Please don't open pull requests, leave the branch local."}],"timestamp":0}}
+{"type":"message","id":"a2","parentId":null,"timestamp":"2026-01-01T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"I will never push to main without asking."}]}}
+{"type":"message","id":"a3","parentId":null,"timestamp":"2026-01-01T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"bash","content":[{"type":"text","text":"README: always run the formatter before committing"}]}}
+{"type":"custom_message","id":"a4","parentId":null,"timestamp":"2026-01-01T10:00:04.000Z","customType":"other-extension","content":"Always run the formatter before committing.","display":true}
+{"type":"message","id":"a5","parentId":null,"timestamp":"2026-01-01T10:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"# Task order\n\nNever push to main. Always run the formatter before committing."}],"timestamp":0}}
+{"type":"message","id":"a6","parentId":null,"timestamp":"2026-01-01T10:00:06.000Z","message":{"role":"user","content":[{"type":"text","text":"why don't you run the formatter before committing?"}],"timestamp":0}}
+{"type":"message","id":"a7","parentId":null,"timestamp":"2026-01-01T10:00:07.000Z","message":{"role":"user","content":[{"type":"text","text":"Never paste the api_key=abcd1234efgh5678 value into the chat log"}],"timestamp":0}}

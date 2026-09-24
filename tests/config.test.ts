@@ -350,3 +350,10 @@ test("conscience.advanceThreshold clamps to [0, 1]", () => {
   const config3 = applyUserOverrides(defaultConfig(), { conscience: { advanceThreshold: 0.85 } });
   assert.equal(config3.conscience.advanceThreshold, 0.85, "valid value passes through");
 });
+
+test("prefs: on for /warden prefs, injection off by default; invalid values fall back", () => {
+  assert.deepEqual(defaultConfig().prefs, { enabled: true, inject: false });
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { prefs: { inject: true } }).prefs, { enabled: true, inject: true });
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { prefs: { enabled: "no", inject: 1 } }).prefs, { enabled: true, inject: false });
+  assert.deepEqual(applyProjectOverrides(defaultConfig(), { prefs: { enabled: false } }).prefs, { enabled: false, inject: false });
+});
