@@ -52,7 +52,7 @@ test("failures inside the window and a failed probe after it add no second notic
   assert.equal(cooldown.success(), undefined, "recovery is announced once");
 });
 
-test("a deadline counts as a timeout, a user's cancel and the budget do not count", () => {
+test("a deadline counts as a timeout; a user's cancel, the budget and a malformed request do not count", () => {
   const aborted = new TypeSafeIntegrationError("aborted", "cancelled");
   const deadline = new AbortController();
   deadline.abort(new DOMException("deadline", "TimeoutError"));
@@ -62,6 +62,7 @@ test("a deadline counts as a timeout, a user's cancel and the budget do not coun
   assert.equal(cooldownFailureKind(aborted, cancel.signal), undefined);
   assert.equal(cooldownFailureKind(aborted), undefined);
   assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("budget", "limit")), undefined);
+  assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("validation", "too many questions")), undefined);
 });
 
 test("a 401 or 403 is an auth failure; other HTTP errors are network", () => {
@@ -69,5 +70,4 @@ test("a 401 or 403 is an auth failure; other HTTP errors are network", () => {
   assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("http", "denied", 403)), "auth");
   assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("http", "unavailable", 503)), "network");
   assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("timeout", "slow")), "timeout");
-  assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("validation", "bad request")), "configuration");
 });

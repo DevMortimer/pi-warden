@@ -60,6 +60,8 @@ test("user overrides accept valid values and ignore junk", () => {
   });
   assert.deepEqual(config.notify, { enabled: false, cooldownMs: 0, command: ["my-notifier", "{title}", "{body}"] });
   assert.deepEqual(applyUserOverrides(defaultConfig(), { notify: { cooldownMs: -5, command: ["", "x"] } }).notify, defaultConfig().notify, "a negative cooldown and a blank executable are junk");
+  assert.equal(applyUserOverrides(defaultConfig(), { judge: { cooldownMs: 3_600_000 } }).judge.cooldownMs, 600_000, "the judge cooldown is capped at 10 minutes");
+  assert.equal(applyUserOverrides(defaultConfig(), { judge: { cooldownMs: 30_000 } }).judge.cooldownMs, 30_000);
   assert.deepEqual(applyUserOverrides(defaultConfig(), { notify: { command: ["ok", 7] } }).notify.command, [], "a non-string argument rejects the whole command");
   assert.deepEqual(config.runaway, { enabled: true, repeats: 2, thinkingRepeats: 10, minChars: 100, recover: false }, "one occurrence is not a repeat; a fraction is junk");
   assert.equal(config.typesafe, true);

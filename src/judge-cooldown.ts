@@ -29,13 +29,14 @@ export function classifyJudgeError(err: unknown): JudgeFailureKind {
 /**
  * What a failure says about the backend, or `undefined` when it says nothing.
  *
- * `budget` already stops judgments for the session on its own. `aborted` is ambiguous: pi-warden's own per-request
+ * `budget` already stops judgments for the session on its own. `validation` is thrown locally for one malformed
+ * request (too many questions, input over the byte limit) and says nothing about the backend. `aborted` is ambiguous: pi-warden's own per-request
  * deadline reaches the SDK as an abort, so a hung backend surfaces as `aborted`, not `timeout`. The signal's reason
  * tells the two apart; only a user's cancel is left out.
  */
 export function cooldownFailureKind(err: unknown, signal?: AbortSignal): JudgeFailureKind | undefined {
   const code = err && typeof err === "object" && "code" in err ? (err as { code: unknown }).code : undefined;
-  if (code === "budget") return undefined;
+  if (code === "budget" || code === "validation") return undefined;
   if (code === "aborted") return (signal?.reason as { name?: unknown } | undefined)?.name === "TimeoutError" ? "timeout" : undefined;
   const status = err && typeof err === "object" && "status" in err ? (err as { status: unknown }).status : undefined;
   if (status === 401 || status === 403) return "auth";

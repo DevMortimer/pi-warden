@@ -209,6 +209,14 @@ export interface ContextConfig {
   formatConfidence: number;
   /** Append a compact evidence appendix to the summary during compaction. */
   compactAppendix: boolean;
+  /** Prevention before the call: a bash action request asks whether the command will print far more than the agent needs. Never holds. */
+  largeOutput: LargeOutputConfig;
+}
+
+export interface LargeOutputConfig {
+  enabled: boolean;
+  /** P(the command prints far more than the agent needs) at or above which the agent is steered once per command family per session. */
+  threshold: number;
 }
 
 export interface RunawayConfig {
@@ -399,7 +407,7 @@ export function defaultConfig(): WardenConfig {
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7 },
     rules: { enabled: true, threshold: 0.7, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
-    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true },
+    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, largeOutput: { enabled: true, threshold: 0.85 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
     judge: { cooldownMs: 60000, failuresBeforeCooldown: 3 },
@@ -678,9 +686,12 @@ function applyNotify(base: NotifyConfig, raw: unknown, allowCommand: boolean): N
   return { enabled: boolean(raw.enabled, base.enabled), cooldownMs: cooldown, command };
 }
 
+/** A project config cannot switch the judge off for longer than this by setting a huge cooldown. */
+const MAX_JUDGE_COOLDOWN_MS = 10 * 60 * 1000;
+
 function applyJudge(base: JudgeConfig, raw: unknown): JudgeConfig {
   if (!isObject(raw)) return base;
-  const cooldown = typeof raw.cooldownMs === "number" && Number.isSafeInteger(raw.cooldownMs) && raw.cooldownMs >= 0 ? raw.cooldownMs : base.cooldownMs;
+  const cooldown = typeof raw.cooldownMs === "number" && Number.isSafeInteger(raw.cooldownMs) && raw.cooldownMs >= 0 ? Math.min(raw.cooldownMs, MAX_JUDGE_COOLDOWN_MS) : base.cooldownMs;
   return { cooldownMs: cooldown, failuresBeforeCooldown: positiveInteger(raw.failuresBeforeCooldown, base.failuresBeforeCooldown) };
 }
 
@@ -788,6 +799,10 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
       recallTool: isRecallTool(raw.context.recallTool) ? raw.context.recallTool : base.context.recallTool,
       formatConfidence: probability(raw.context.formatConfidence, base.context.formatConfidence),
       compactAppendix: boolean(raw.context.compactAppendix, base.context.compactAppendix),
+      largeOutput: isObject(raw.context.largeOutput) ? {
+        enabled: boolean(raw.context.largeOutput.enabled, base.context.largeOutput.enabled),
+        threshold: probability(raw.context.largeOutput.threshold, base.context.largeOutput.threshold),
+      } : base.context.largeOutput,
     } : base.context,
   };
 }
