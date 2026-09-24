@@ -19,6 +19,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 - `tests/steer-delivery.test.ts` pins that a steer sent from `tool_call` or `tool_result` for the last call of a turn joins the request that carries the tool result and costs no extra model request, so the intent-mismatch notice stays a steer.
 - `scripts/intent-cases.mjs` reads Pi session logs and, for every intent-mismatch notice, classifies where the plan came from: the message that made the call, the text-only message right before it, or text from before earlier tool calls (stale). It also runs the built `assistantPlan` on each call's branch and counts the notices whose question would still be asked. Aggregate counts only; offline.
 
+### Docs
+
+- README leads with a new image of the self-correction loop and its numbers from the first nine days of use; the headline numbers are updated to match.
+
 ## 0.48.0
 
 ### Added

@@ -6,9 +6,11 @@ pi-warden supervises Pi while it works, catching risky actions, ignored rules, s
 
 Instead of interrupting you for every problem, Warden usually feeds the issue back to the agent so it can correct itself and keep going.
 
-**In four days of real work: 19,695 actions judged, 143 held (0.7%), 624 corrections sent to the agent. After a "done" with no test behind it, the agent ran one 74% of the time.** [Field report and the script that produced it.](eval/reports/2026-09-24-field-usage/)
+**In nine days of real use: 743 sessions, 193 risky actions held before they ran, 1,292 notes sent to the agent. After a "done" with no test behind it, the agent ran one 78% of the time.**
 
-![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
+![pi-warden tells the agent what it got wrong and the agent fixes it: 65 untested "done" claims, 51 then ran the tests, 5 found a failure it had missed; after a hold the agent found a safer way 33 times](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/hero.png)
+
+<sub>Numbers from the first nine days of real use (2026-09-16 to 2026-09-24, 743 sessions). The quoted lines are verbatim. Counted with `scripts/field-usage.mjs`; the [field report](eval/reports/2026-09-24-field-usage/) has the method and what was noise.</sub>
 
 ## Install
 
@@ -40,6 +42,8 @@ Works without any key (offline guards: pattern list, runaway stop, sensitive-pat
 | **Conscience** (beta, off) | each operator prompt | Recommends a skill or tool from the capability index before the agent acts; enable with `conscience.enabled: true` |
 
 ## How intervention works
+
+![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
 
 1. **Read-only? Skip.** `git status`, `ls`, `read` means no request and no trace entry.
 2. **Known-dangerous pattern? Catch it locally.** Force push, `git reset --hard`, recursive `rm`, SQL `DROP` held instantly. An agent deleting temp-directory scratch it created in the same session is not held (macOS and Windows).
