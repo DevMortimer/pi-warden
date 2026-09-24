@@ -223,6 +223,15 @@ test("saved outputs show the real tool and byte size", () => {
   assert.doesNotMatch(text, /unknown|\(0 bytes\)/);
 });
 
+test("saved outputs recorded without a source show only the path", () => {
+  const ledger = new ContextLedger();
+  ledger.record("/tmp/pi-warden-output-c/output.txt", 5_000);
+  assert.deepEqual(ledger.storedOutputs(), [{ tool: undefined, path: "/tmp/pi-warden-output-c/output.txt", bytes: undefined }]);
+  const text = compactAppendix(buildCompactSnapshot({ savedOutputs: ledger.storedOutputs(), checks: [], holds: [], activeTask: undefined, runs: 1 }));
+  assert.match(text, /\n- \/tmp\/pi-warden-output-c\/output\.txt\n/);
+  assert.doesNotMatch(text, /unknown|bytes\)|undefined|→/);
+});
+
 test("over the cap: saved outputs shrink to the 3 newest, then holds go, and failed attempts and verification stay whole", () => {
   const attempts = Array.from({ length: 5 }, (_, i) => attempt(`k${i}`, `npm run step-${i} ${"a".repeat(60)}`, true, `error: step ${i} ${"e".repeat(120)}`));
   const built = buildCompactSnapshot({

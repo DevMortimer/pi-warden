@@ -17,10 +17,11 @@ const SAVED_KEEP_WHEN_OVER = 3;
 const TASK_CHARS_WHEN_OVER = 300;
 
 export interface SavedOutput {
-  tool: string;
+  /** Undefined when the recorder did not say; the appendix then prints only what it knows. */
+  tool: string | undefined;
   path: string;
   /** Uncompressed size in bytes. */
-  bytes: number;
+  bytes: number | undefined;
 }
 
 export interface CheckEntry {
@@ -113,7 +114,7 @@ function render(snapshot: CompactSnapshot): string {
 
   if (snapshot.savedOutputs.length) {
     const items = snapshot.savedOutputs
-      .map(item => `- ${redact(item.tool)} → ${redact(item.path)} (${item.bytes} bytes)`)
+      .map(item => `- ${item.tool ? `${redact(item.tool)} → ` : ""}${redact(item.path)}${item.bytes === undefined ? "" : ` (${item.bytes} bytes)`}`)
       .join("\n");
     sections.push(`### Saved full outputs\n${items}`);
   }
@@ -204,7 +205,7 @@ export function verificationOf(evidence: Pick<RunEvidence, "mutations" | "checks
  * paths are local and allowed.
  */
 export function buildCompactSnapshot(options: {
-  savedOutputs: Array<{ tool: string; path: string; bytes: number }>;
+  savedOutputs: Array<{ tool: string | undefined; path: string; bytes: number | undefined }>;
   checks: Array<{ command: string; passed: boolean; runIndex: number; indexInRun: number }>;
   holds: Array<{ tool: string; preview: string; outcome: string }>;
   /** The stuck guard's attempt window, oldest first. */

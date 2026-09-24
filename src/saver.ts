@@ -36,7 +36,7 @@ export class ContextLedger {
   private tokenTurnsSaved = 0;
   private recalls = 0;
   private recallsFull = 0;
-  private readonly stored = new Map<string, { recalled: boolean; tool: string; bytes: number }>();
+  private readonly stored = new Map<string, { recalled: boolean; tool: string | undefined; bytes: number | undefined }>();
   /** Every sizeable text result seen this session, by content key, with the tool that produced it and its stored copy if any. */
   private readonly seen = new Map<string, { tool: string; path?: string }>();
 
@@ -44,11 +44,11 @@ export class ContextLedger {
     this.large++;
   }
 
-  /** `source` is the tool that produced the output and the full output's size in bytes. */
-  record(path: string, bytesSaved: number, source: { tool: string; bytes: number }): void {
+  /** `source` is the tool that produced the output and the full output's size in bytes; optional for callers that do not know them. */
+  record(path: string, bytesSaved: number, source?: { tool: string; bytes: number }): void {
     this.compressed++;
     this.bytesSaved += bytesSaved;
-    this.stored.set(path, { recalled: false, tool: source.tool, bytes: source.bytes });
+    this.stored.set(path, { recalled: false, tool: source?.tool, bytes: source?.bytes });
   }
 
   /** Remember a result's identity so a later identical result can be dropped. `path` is set when a full copy exists. */
@@ -99,8 +99,8 @@ export class ContextLedger {
     return [...this.stored.keys()];
   }
 
-  /** Stored full outputs, oldest first, with the tool that produced each and its size. Local only, like `storedPaths`. */
-  storedOutputs(): Array<{ tool: string; path: string; bytes: number }> {
+  /** Stored full outputs, oldest first, with the tool that produced each and its size when recorded. Local only, like `storedPaths`. */
+  storedOutputs(): Array<{ tool: string | undefined; path: string; bytes: number | undefined }> {
     return [...this.stored].map(([path, entry]) => ({ tool: entry.tool, path, bytes: entry.bytes }));
   }
 

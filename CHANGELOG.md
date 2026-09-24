@@ -13,7 +13,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Fixed
 
-- Saved full outputs in the compaction appendix show the tool that produced them and their real size. Before this, every entry read `unknown → path (0 bytes)`.
+- Saved full outputs in the compaction appendix show the tool that produced them and their real size. Before this, every entry read `unknown → path (0 bytes)`. `ContextLedger.record` takes an optional third argument, `{ tool, bytes }`, and the new `ContextLedger.storedOutputs()` returns it with each path. An output recorded without it is listed by path only.
 
 ## 0.50.1
 
