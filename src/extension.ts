@@ -59,8 +59,8 @@ import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
 import { buildCompactSnapshot, compactAppendix } from "./compact.js";
-import { formatPrefs, prefsMessage, scanPreferences } from "./prefs.js";
-import type { PrefsScan } from "./prefs.js";
+import { emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, isCorrection, LESSON_CHARS, LESSON_TURNS, NO_LESSON_SIGNAL, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences, writePrefsStore } from "./prefs.js";
+import type { PrefItem, PrefsScan } from "./prefs.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
@@ -402,8 +402,18 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
     const dir = typeof manager.getSessionDir === "function" ? manager.getSessionDir() : undefined;
     const exclude = typeof manager.getSessionFile === "function" ? manager.getSessionFile() : undefined;
-    return prefsScan = dir ? scanPreferences({ dir, exclude, cwd: ctx.cwd }) : Promise.resolve({ prefs: [], scanned: 0, directories: 0, ms: 0 });
+    return prefsScan = dir ? scanPreferences({ dir, exclude, cwd: ctx.cwd }) : Promise.resolve({ prefs: [], candidates: [], counts: emptyWordCounts(), project: ctx.cwd, scanned: 0, directories: 0, ms: 0 });
   };
+  /** The scan, the project's lesson file, and every listed item with its status; read fresh so `forget` numbers match. */
+  const evaluatedPrefs = async (ctx: ExtensionContext | ExtensionCommandContext): Promise<{ scan: PrefsScan; path: string; items: PrefItem[] }> => {
+    const scan = await standingPrefs(ctx);
+    const path = prefsStorePath(scan.project);
+    return { scan, path, items: evaluatePrefs(scan, await readPrefsStore(path)) };
+  };
+  // Assistant turns this session, and the turn of the last user correction or stuck, repeat, or done-check steer in this
+  // run: `warden_remember` records a lesson only within LESSON_TURNS turns of one.
+  let assistantTurns = 0;
+  let lessonSignalTurn: number | undefined;
 
   // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
   let shapeReported = false;
@@ -656,6 +666,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean }): boolean => {
     const names = typeof guard === "string" ? [guard] : [...guard];
     for (const name of names) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
+    if (names.some(name => name === "stuck" || name === "repeat" || name === "done")) lessonSignalTurn = assistantTurns;
     const critical = names.every(name => CRITICAL_STEER_GUARDS.has(name));
     // A notice delivered once is already in the agent's context. Sending the repeat again costs the accounting turn it
     // forbids, so repeats are recorded only. The same goes for notices past the per-run steer budget: a steer sent during
@@ -791,6 +802,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     notifier = undefined;
     lastNotifiedAt = 0;
     prefsScan = undefined;
+    assistantTurns = 0;
+    lessonSignalTurn = undefined;
     // Load capability indexes (once per session, overwritten on every /warden index run).
     globalIndexFile = readIndex(indexPath("global")) ?? undefined;
     projectIndexFile = readIndex(indexPath("project", ctx.cwd)) ?? undefined;
@@ -810,7 +823,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
       if (branch.some(entry => entry.type === "custom_message" && entry.customType === PREFS_TYPE)) return;
       try {
-        const message = prefsMessage((await standingPrefs(ctx)).prefs);
+        const message = prefsMessage((await evaluatedPrefs(ctx)).items);
         // Not a steer; one message per session; do not spend a steer unit.
         if (message) pi.sendMessage({ customType: PREFS_TYPE, content: message, display: opening.steerVisible });
       } catch (error) {
@@ -830,6 +843,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     doneNudged = false;
     wardenContinuation = false;
     steersThisRun = 0;
+    lessonSignalTurn = isCorrection(event.prompt ?? "") ? assistantTurns : undefined;
     finals.reset();
     runaway.reset();
     runawayStops = 0;
@@ -1101,6 +1115,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
 
   // Every turn that runs after a compression is a turn that did not carry the removed text.
   pi.on("turn_end", async (_event, ctx) => {
+    assistantTurns++;
     ledger.turnEnd();
     if (savingEntry) trace.amend(savingEntry, `at turn end: ${formatLedger(ledger.snapshot())}`);
     savingEntry = undefined;
@@ -1948,6 +1963,35 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     });
   }
 
+  // A plain JSON Schema: Pi compiles tool schemas with TypeBox, which accepts one, and pi-warden keeps no TypeBox dependency.
+  const rememberParameters = {
+    type: "object",
+    properties: { lesson: { type: "string", maxLength: LESSON_CHARS, description: `One standing instruction for this project, at most ${LESSON_CHARS} characters, e.g. "Never X" or "Always Y".` } },
+    required: ["lesson"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+  pi.registerTool({
+    name: "warden_remember",
+    label: "warden remember",
+    description: `Record a standing lesson for this project, so later sessions keep it. Use it only right after the user corrected you, or after a mistake you had to undo; never for task notes, plans, or progress. The lesson is one instruction in a standing form (don't, never, always, stop, from now on, next time), names no ticket, branch, PR, or hash, and never skips a test, check, review, or confirmation. It reaches later sessions only once it is confirmed.`,
+    parameters: rememberParameters,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const reply = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined });
+      const config = configFor(ctx);
+      if (!config.enabled || !config.prefs.enabled) return reply(`not recorded: standing preferences are off (${config.enabled ? "prefs.enabled" : "enabled"} is false)`);
+      const signal = lessonSignalTurn !== undefined && assistantTurns - lessonSignalTurn <= LESSON_TURNS;
+      const lesson = typeof (params as { lesson?: unknown }).lesson === "string" ? (params as { lesson: string }).lesson : "";
+      if (!signal) return reply(NO_LESSON_SIGNAL);
+      const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
+      const session = typeof manager.getSessionId === "function" ? manager.getSessionId() : "unknown";
+      const scan = await standingPrefs(ctx);
+      const path = prefsStorePath(scan.project);
+      const result = recordLesson({ lesson, session, now: Date.now(), signal, scan, store: await readPrefsStore(path) });
+      if (result.store) await writePrefsStore(path, result.store);
+      return reply(result.reply);
+    },
+  });
+
   const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "recommend"];
   pi.registerCommand("warden", {
     description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, and a synthetic guard test",
@@ -2008,7 +2052,16 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }
         if (action === "prefs") {
           if (!config.enabled || !config.prefs.enabled) { report(`Standing preferences are off (${config.enabled ? "prefs.enabled" : "enabled"} is false); no session files were read.`); return; }
-          report(formatPrefs(await standingPrefs(ctx)));
+          const { scan, path, items } = await evaluatedPrefs(ctx);
+          if (argument === "forget") {
+            const index = Number(tokens[2]);
+            const item = Number.isInteger(index) ? items[index - 1] : undefined;
+            if (!item) { report(`Usage: /warden prefs forget <n>, where n is an item number from /warden prefs (1 to ${items.length}).`, "warning"); return; }
+            await writePrefsStore(path, forgetPref(await readPrefsStore(path), item));
+            report(`Forgotten for this project: "${item.text}". It is not listed or injected again.`);
+            return;
+          }
+          report(formatPrefs(scan, items));
           return;
         }
         if (action === "recommend") {

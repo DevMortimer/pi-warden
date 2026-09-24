@@ -309,7 +309,7 @@ export type WardenMode = "steer" | "confirm" | "advise";
 export interface PrefsConfig {
   /** Read this project's earlier session files for preferences the user repeated (`/warden prefs`). Local, code only. */
   enabled: boolean;
-  /** At session start, send the standing preferences to the agent as one context message. Off by default. */
+  /** At session start, send the standing preferences that pass every injection rule to the agent as one context message. */
   inject: boolean;
 }
 
@@ -479,7 +479,7 @@ export function defaultConfig(): WardenConfig {
       advanceThreshold: 0.70,
       loadThreshold: 1.0,
     },
-    prefs: { enabled: true, inject: false },
+    prefs: { enabled: true, inject: true },
   };
 }
 
