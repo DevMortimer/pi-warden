@@ -16,6 +16,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 - Signed URLs no longer raise "Possible credentials". A value found only in the query signature of an `https://` URL that also carries an expiry (`X-Amz-Expires`, `X-Goog-Expires`, `Expires`, or `se=`) counts as a stand-in: the `X-Amz-Signature`, `X-Amz-Credential`, `X-Goog-Signature`, `X-Goog-Credential`, `Signature`, and `token` parameters of S3 and GCS presigned URLs and storage links. It is traced once, with no banner and no masking in the result; redaction of what leaves the machine is unchanged. A `token=` outside such a URL, or a value that also appears on its own, still counts. Before this, nearly every read of an issue tracker's API raised the notice, because its responses carry signed upload URLs. `partitionSecrets` takes the text as an optional second argument for this check.
 - A credential value containing `&` is redacted whole: `DB_PASSWORD=Tr0ub4dor&3xK9` no longer leaves `&3xK9` in what goes to Jev, the trace, or the masked result. `&` still ends a value before another `name=` (a URL query), before a second `&`, and before whitespace or the end.
 - `security.maskOutput` is read from the user file only: a repository's `.pi/pi-warden.json` cannot turn off masking of credentials in its own agent's output.
+- `X-Amz-Security-Token` counts as a signed-URL parameter, so an S3 presigned URL made with temporary credentials no longer raises "Possible credentials".
 
 ## 0.48.1
 

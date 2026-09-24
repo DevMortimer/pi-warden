@@ -107,3 +107,8 @@ test("a credential value containing & is redacted whole; & as a separator still 
   assert.equal(redact(tight), "API_KEY=[redacted]&&npm test");
   assert.equal(maskSecrets(tight).text, "API_KEY=[redacted]&&npm test");
 });
+
+test("an S3 presigned URL made with temporary credentials is not a credential", () => {
+  const sessionToken = ["IQoJb3JpZ2luX2VjEJr%2F%2F%2F%2F%2FwEaCXVzLWVhc3QtMSJHMEUCIQDx7Kp2Rm9", "Lq4Tz8Wn3Vb6Hd1Jc5Ys0GaKu2Re7Nt4Mx9Lp3Vz8Hq1Wd6Bj5Cf0Ys2Tg7Nk%3D"].join("");
+  assertSignedUrl("s3 temporary", `https://uploads.s3.us-east-1.amazonaws.com/team/a1/shot.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${["ASIA3M7QZ2", "PRT9LVXW8Y"].join("")}%2F20260924%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260924T101010Z&X-Amz-Expires=3600&X-Amz-Security-Token=${sessionToken}&X-Amz-SignedHeaders=host&X-Amz-Signature=${signature}`);
+});

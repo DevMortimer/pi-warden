@@ -139,8 +139,8 @@ export function syntheticish(value: string): boolean {
 const HTTPS_URL = /https:\/\/[^\s"'<>`]+/g;
 /** The expiry that makes a URL a short-lived signed URL. */
 const SIGNED_EXPIRY = /[?&](?:X-Amz-Expires|X-Goog-Expires|Expires|se)=/i;
-/** The query signature of a signed URL: S3 and GCS presigned URLs, CloudFront, and storage `token=` links. */
-const SIGNED_PARAM = /[?&](?:X-Amz-Signature|X-Amz-Credential|X-Goog-Signature|X-Goog-Credential|Signature|token)=([^&#]*)/gi;
+/** The query signature of a signed URL: S3 (including temporary-credential session tokens) and GCS presigned URLs, CloudFront, and storage `token=` links. */
+const SIGNED_PARAM = /[?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|X-Goog-Signature|X-Goog-Credential|Signature|token)=([^&#]*)/gi;
 
 /** Start and end offsets of every signature parameter value in a signed `https://` URL in `text`. */
 function signedUrlSpans(text: string): Array<[number, number]> {
