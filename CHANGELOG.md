@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.60.1
+
 ### Fixed
 
 - Message text in a command is no longer read as a command. The quoted values of `--body`, `-b`, `--title`, `-t`, and `--notes` on `gh pr|issue|release create|edit|comment`, and of `-m` and `--message` on `git commit` and `git tag`, are blanked before the patterns run, also in `=` form and as `$'…'`. A body that held `;`, `&&`, or new lines was cut into segments before, so a PR body that quoted `rm -rf /` was held as destructive. A value with `$(`, backticks, or an unclosed quote is still read, because the shell runs it.
