@@ -30,7 +30,7 @@ Three files, each optional. Copy what you need and edit it.
 - Say what a violation looks like. "A bare `TODO` without a ticket" beats "TODOs should be tidy".
 - Scope with `paths:` when a rule is language-specific or does not apply to tests. Globs: `**` any depth, `*` within one segment, a pattern without a slash matches at any depth.
 - Code fences inside a rule are fine; a `#` inside a fence is not read as a heading.
-- Rules cost tokens: one request per write or edit, roughly 600 tokens plus about 150 per rule plus the content sample. At most 31 rules are asked per request.
+- Rules cost tokens: one request per write or edit, roughly 600 tokens plus about 150 per rule plus the content sample. At most 31 rules are asked per request: the rules that apply to the file's path, in file order. The cap applies after `paths:` scoping, so scoped rules only count against writes they match.
 - No `pi-warden.md`? pi-warden falls back to `README.md`, `CLAUDE.md`, or `AGENTS.md` and asks one question about the whole document (cut to `rules.maxChars`, headings kept). It works, but a dedicated rules file gives sharper answers and names the rule. Set `"rules": { "fallback": false }` to turn the fallback off.
 
 ## Checking the rules from the command line
@@ -40,6 +40,6 @@ node -e '
 import("pi-warden").then(({ RuleStore, defaultConfig }) => {
   const set = new RuleStore().load(process.cwd(), defaultConfig().rules);
   for (const rule of set?.rules ?? []) console.log(rule.id, rule.paths.length ? rule.paths.join(",") : "(all files)");
-  if (set?.dropped) console.log(`${set.dropped} rules beyond the cap are ignored`);
+  if (set?.alwaysDropped) console.log(`${set.alwaysDropped} unscoped rules are past the cap for every file`);
 });'
 ```

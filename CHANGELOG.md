@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- The rules guard applies its 31-question cap per write after path scoping, not when the rules file loads. Before this, rules past 31 in file order were never judged, even when most rules were scoped by `paths:` to other files. Each write now takes the rules that apply to its path, in file order, and asks the first 31. The trace entry records how many applicable rules were dropped and the first dropped rule id. The first write in a session with dropped rules shows one notice naming the rules file and that rule id.
+- `/warden status` shows the total rule count, and names only the unscoped rules that are past the cap for every file. `RuleSet.dropped` is replaced by `RuleSet.alwaysDropped` (unscoped rules past the cap); `RuleSet.rules` now holds every parsed rule.
 
 ## 0.50.1
 
