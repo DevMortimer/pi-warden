@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.49.0
+
+### Added
+
+- The action guard reads which database a `psql`, `mysql`, `mariadb`, or `supabase` command targets (`sqlTarget`): loopback, hosted, or unknown. A loopback `DELETE FROM … WHERE …` warns (`sql-delete-local`) instead of holding; `DROP`, `TRUNCATE`, and a `DELETE` with no `WHERE` or an always-true one (`WHERE true`, `WHERE 1=1`, `WHERE 'a'='a'`, `WHERE NOT false`) still hold on loopback. SQL in a heredoc fed to a database client is now checked for `DROP`, `TRUNCATE`, and `DELETE FROM` on every target, as `-c` SQL is; before, such a heredoc was treated as data and got no hit. A hosted target (Supabase, Neon, RDS, PlanetScale, or a supabase `--linked` or non-local `--target`) warns as elevated (`sql-hosted`), and a write statement against it holds (`sql-hosted-write`). A hosted Postgres command wrapped as `BEGIN READ ONLY; … ROLLBACK;` is quiet; a `COMMIT` anywhere voids that. A variable host such as `$DATABASE_URL`, and SQL from `-f` or a pipe, keep the plain SQL hits. See docs/guards.md.
+
 ## 0.48.1
 
 ### Fixed
