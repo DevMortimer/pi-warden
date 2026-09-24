@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- The action guard's read-only fast path, which skips the Jev judgment, now also accepts `sed -n` with one print command (`sed -n '10,20p' f`, `sed -n '/a/,/b/p' f`), `git worktree list`, `git stash list`, and `git merge-base`. For `sed`, the only accepted options are ones that cannot write or run anything: no `-i`, no `-f`, and no option after the first operand. The script must be literal, with no variable expansion and no `w`, `W`, `e`, or `r` command. In one week of real sessions, `sed -n` line ranges were almost all of the read-only commands that still went to Jev; about a third of them got a `warn`. The fast path now also rejects `<(...)` process substitution and git's `--output` and `-O`/`--open-files-in-pager`, which run a command, write a file, or open a pager program.
 
 ## 0.52.2
 

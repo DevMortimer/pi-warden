@@ -1341,10 +1341,47 @@ const READ_ONLY_COMMANDS = new Set([
   "file", "stat", "du", "df", "tree", "diff", "sort", "uniq", "cut", "tr", "cd", "true", "false", "test", "[", "date", "basename", "dirname", "realpath",
   "readlink", "jq", "column", "nl", "strings", "md5", "md5sum", "shasum", "sha1sum", "sha256sum", "hexdump", "xxd", "od", "uname", "hostname", "whoami", "id", "uptime",
 ]);
-const READ_ONLY_GIT = new Set(["status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse", "describe", "shortlog", "grep", "cat-file", "rev-list", "name-rev"]);
+const READ_ONLY_GIT = new Set(["status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse", "describe", "shortlog", "grep", "cat-file", "rev-list", "name-rev", "merge-base"]);
+/** Git subcommands whose other actions write (`git worktree remove`, `git stash pop`): only `list` is read-only. */
+const READ_ONLY_GIT_LIST = new Set(["worktree", "stash"]);
+// One print command, `[addr[,addr]][!]p`: no room for the `w`, `W`, `e`, or `r` commands, or for `s///w`.
+const SED_ADDRESS = String.raw`(?:\d+|\$|/(?:[^/\\]|\\.)*/)`;
+const SED_PRINT = new RegExp(String.raw`^(?:${SED_ADDRESS}(?:,(?:${SED_ADDRESS}|\+\d+))?)?!?p$`);
+
+/** A word the shell passes through unchanged: single-quoted, double-quoted without `$` or a backslash, or plain characters. */
+function isLiteralWord(raw: string): boolean {
+  return /^'[^']*'$/.test(raw) || /^"[^"$\\]*"$/.test(raw) || /^[\w,+!/.=-]+$/.test(raw);
+}
+
+/**
+ * `sed -n` that only prints. Options are limited to ones that cannot write or run anything (no `-i`, no `-f` script
+ * file), and none may follow the first operand: GNU sed permutes, so `sed -n 1p f -i` still edits in place.
+ */
+function isReadOnlySed(segment: string): boolean {
+  const words = shellWords(segment);
+  if (!words) return false;
+  let index = 0;
+  while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!.word)) index++;
+  let quiet = false, operands = false, script: { word: string; raw: string } | undefined, scripts = 0;
+  for (let k = index + 1; k < words.length; k++) {
+    const word = words[k]!.word;
+    if (word.startsWith("-")) {
+      if (operands) return false;
+      if (word === "--quiet" || word === "--silent") { quiet = true; continue; }
+      if (!/^-[nErsuz]*e?$/.test(word) || word === "-") return false;
+      if (word.includes("n")) quiet = true;
+      if (word.endsWith("e")) { script = words[++k]; scripts++; if (!script) return false; }
+      continue;
+    }
+    if (!operands && scripts === 0) { script = words[k]; scripts++; }
+    operands = true;
+  }
+  return quiet && scripts === 1 && script !== undefined && isLiteralWord(script.raw) && SED_PRINT.test(script.word);
+}
 
 export function isReadOnlyCommand(command: string): boolean {
-  if (!command.trim() || /\$\(|`/.test(command)) return false;
+  // `<(...)` runs its body like `$(...)` does.
+  if (!command.trim() || /\$\(|`|<\(/.test(command)) return false;
   const stripped = command.replace(/\d?>\s*&\s*\d/g, "").replace(/&?\d?>\s*\/dev\/null/g, "");
   if (stripped.includes(">")) return false;
   for (const segment of splitShell(stripped)) {
@@ -1357,6 +1394,9 @@ export function isReadOnlyCommand(command: string): boolean {
       const rest = tokens.slice(index + 1).join(" ");
       const sub = tokens[index + 1];
       if (!sub) return false;
+      // `--output` makes log and diff write a file; `-O` makes grep run a pager program.
+      if (/(?:^|\s)(?:--output\b|--open-files-in-pager\b|-O)/.test(rest)) return false;
+      if (READ_ONLY_GIT_LIST.has(sub)) { if (tokens[index + 2] !== "list") return false; continue; }
       if (sub === "branch") { if (/\s-[a-zA-Z]*[dDmMcCu]|--(?:delete|move|copy|set-upstream|unset-upstream|edit-description)/.test(` ${rest}`)) return false; continue; }
       if (sub === "remote") { if (tokens.slice(index + 2).some(token => !token.startsWith("-"))) return false; continue; }
       if (sub === "tag") { if (!tokens.slice(index + 2).every(token => token === "-l" || token === "--list" || token.startsWith("-n"))) return false; continue; }
@@ -1365,6 +1405,7 @@ export function isReadOnlyCommand(command: string): boolean {
       continue;
     }
     if (head === "find" && /-(?:delete|exec\w*|ok\w*|fprint\w*|fls)\b/.test(segment)) return false;
+    if (head === "sed") { if (!isReadOnlySed(segment)) return false; continue; }
     if (!READ_ONLY_COMMANDS.has(head)) return false;
   }
   return true;
