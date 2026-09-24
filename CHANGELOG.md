@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.45.0
+
 ### Added
 
 - A judge cooldown. After three consecutive timeout, network, or other failures, or one auth or configuration failure, pi-warden stops asking Jev for a minute instead of paying a full request timeout on every guarded action. One warning names the failure kind, the duration, and for an auth failure the fix; one info notice says when judgments resume. Guards run as they do with no judge configured, nothing is sent during the window, and `/warden status` counts the checks that ran without Jev. Configure with `judge.failuresBeforeCooldown` and `judge.cooldownMs` (capped at 10 minutes); state is per session. A malformed request that pi-typesafe rejects locally does not count. A request that hits pi-warden's own `timeoutMs` reaches the SDK as an abort, so it is told apart from a user's cancel by the signal's reason and counted as a timeout.
