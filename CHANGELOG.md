@@ -8,7 +8,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Changed
 
-- A recursive `rm` whose every target is scratch the agent created in this session under the OS temp directory (`mkdir`, `mktemp`, a `write`, or a temp directory a command printed and created) warns as `rm-session-scratch` instead of holding as destructive. Targets are resolved through `..` and symlinks first; a temp root, a wildcard, a variable, a substitution, or any target that was not created this session keeps the hold. The created paths live in memory and reset on `session_start`.
+- A recursive `rm` whose every target is scratch the agent created in this session under the OS temp directory (`mkdir`, `mktemp`, a `write`, or a temp directory a command printed and created) warns as `rm-session-scratch` instead of holding as destructive. Targets are resolved through `..` and symlinks first; a temp root, a wildcard, a variable, a substitution, `sudo` or another privilege prefix, content older than the directory it sits in, or any target that was not created this session (or was replaced since) keeps the hold. The created paths live in memory and reset on `session_start`.
 
 ## 0.45.0
 

@@ -504,6 +504,9 @@ export function tempRootOf(real: string, roots = tempRoots()): string | undefine
   return roots.find(root => real !== root && real.startsWith(root.endsWith(sep) ? root : root + sep));
 }
 
+/** A privilege-raising command word anywhere in a command. */
+const PRIVILEGED = /(?:^|[\s;&|("'`])(?:sudo|doas|su|pkexec|run0)(?=\s|$)/m;
+
 /** A literal absolute path: no quotes left inside, no glob, brace, tilde, variable, escape, or substitution. */
 const LITERAL_PATH = /^\/[^*?[\]{}$`~\\"'\s]*$/;
 
@@ -743,8 +746,10 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
   if (raw) {
     const command = stripDataText(raw).text;
     for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
+    // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else: no scratch.
+    const scratch = PRIVILEGED.test(command) ? undefined : options?.scratch;
     for (const segment of splitShell(command)) {
-      const hit = classifyRm(segment, cwd, options?.scratch);
+      const hit = classifyRm(segment, cwd, scratch);
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
       if (hit && !exempt.has(hit.id)) add(hit);
     }

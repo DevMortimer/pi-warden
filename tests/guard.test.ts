@@ -295,6 +295,19 @@ test("session scratch: mktempOnly accepts only commands that make temp paths and
   }
 });
 
+test("session scratch: a privileged rm of scratch stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const probe = join(base, "probe-abc");
+    await mkdir(probe);
+    const scratch = records(realpathSync(probe));
+    for (const command of [`sudo rm -rf ${probe}`, `doas rm -rf ${probe}`, `su -c "rm -rf ${probe}"`, `sudo -u root rm -rf ${probe}`, `sudo bash <<EOF\nrm -rf ${probe}\nEOF`]) {
+      assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd, { scratch })), `expected destructive for: ${command}`);
+    }
+    assert.ok(!destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch })), "the same rm without sudo is scratch");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
 test("session scratch: a parent escape out of a recorded directory stays destructive", async () => {
   const base = await scratchBase();
   try {
