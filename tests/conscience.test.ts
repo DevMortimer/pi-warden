@@ -11,9 +11,11 @@ import {
   opaqueId,
   assignOpaqueIds,
   SCORE_LEVELS,
+  isDestructiveTool,
 } from "../src/conscience.js";
 import type { Candidate, Judge } from "../src/conscience.js";
 import type { ConscienceConfig } from "../src/config.js";
+import { defaultConfig } from "../src/config.js";
 import { CONSCIENCE_BETA_POLICY } from "../src/load.js";
 
 /* ─── Helpers ───────────────────────────────────────────────────────── */
@@ -31,6 +33,8 @@ const fakeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceConfig
   enabled: true,
   skills: { mode: "recommend", exclude: [] },
   tools: { enabled: true, exclude: [] },
+  // Today's tests predate skipTools and use core tool names as their catalog; the skipTools tests set it explicitly.
+  skipTools: [],
   timeoutMs: 3000,
   maxAssessments: 3,
   maxNudges: 2,
@@ -275,6 +279,98 @@ test("eligibleCandidates caps at 256 per category and sets overflow flag", () =>
   const { candidates, skillOverflow } = eligibleCandidates(manySkills, [], fakeConfig(), [], []);
   assert.equal(candidates.length, 256, "should cap at 256");
   assert.equal(skillOverflow, true, "should set overflow flag");
+});
+
+/** A judge that records every candidate name each request carries, and answers no_gap. */
+function recordingJudge(): { judge: Judge; requests: string[][] } {
+  const requests: string[][] = [];
+  return {
+    requests,
+    judge: {
+      evaluate: async ({ state }) => {
+        requests.push(Object.values((state as { candidates: Record<string, { kind: string; name: string }> }).candidates).map(c => `${c.kind}:${c.name}`));
+        return { answers: { conscience_disposition: { type: "choice", choice: "no_gap", confidence: 1, probabilities: { advance: 0, awaiting_user: 0, no_gap: 1, unclear: 0 } } } };
+      },
+    },
+  };
+}
+
+const mixedCatalog = {
+  tools: [
+    { name: "read", description: "Read file contents" },
+    { name: "bash", description: "Execute bash commands" },
+    { name: "search_code", description: "Search the code index for literal strings" },
+  ],
+  skills: [fakeSkill("tdd", "Test-driven development")],
+};
+
+test("default skipTools: only the custom tool and the skill reach the request", async () => {
+  const { judge, requests } = recordingJudge();
+  await assess("add a test", "", mixedCatalog.skills, mixedCatalog.tools, [], [], defaultDeps(judge, { skipTools: defaultConfig().conscience.skipTools }));
+  assert.deepEqual(requests.flat().sort(), ["skill:tdd", "tool:search_code"]);
+});
+
+test("skipTools: [] restores every tool in the request", async () => {
+  const { judge, requests } = recordingJudge();
+  await assess("add a test", "", mixedCatalog.skills, mixedCatalog.tools, [], [], defaultDeps(judge, { skipTools: [] }));
+  assert.deepEqual(requests.flat().sort(), ["skill:tdd", "tool:bash", "tool:read", "tool:search_code"]);
+});
+
+test("eligibleCandidates with skipTools: [] keeps every core tool", () => {
+  const { candidates } = eligibleCandidates([], defaultTools, fakeConfig({ skipTools: [] }), [], []);
+  assert.deepEqual(candidates.map(c => c.id), ["read", "bash", "edit"]);
+});
+
+test("eligibleCandidates never drops a skill by skipTools", () => {
+  const { candidates } = eligibleCandidates([fakeSkill("bash", "A skill that shares a core tool name")], [], fakeConfig({ skipTools: ["bash"] }), [], []);
+  assert.deepEqual(candidates.map(c => `${c.kind}:${c.id}`), ["skill:bash"]);
+});
+
+test("eligibleCandidates never offers a destructive tool, by name part or leading description verb", () => {
+  const tools = [
+    { name: "delete_project", description: "Remove a project's data from the index" },
+    { name: "db-drop", description: "Database helper" },
+    { name: "cache", description: "Purge the cache for a key" },
+    { name: "Reset", description: "Session helper" },
+    { name: "list_projects", description: "List indexed projects" },
+    { name: "edit_text", description: "Edit files; can remove or replace text" },
+    { name: "dropdown_state", description: "Read the dropdown state" },
+  ];
+  const { candidates } = eligibleCandidates([], tools, fakeConfig(), [], []);
+  assert.deepEqual(candidates.map(c => c.id), ["list_projects", "edit_text", "dropdown_state"]);
+});
+
+test("isDestructiveTool matches whole words and _-separated parts only", () => {
+  assert.equal(isDestructiveTool("delete_project"), true);
+  assert.equal(isDestructiveTool("truncate"), true);
+  assert.equal(isDestructiveTool("wipe disk"), true);
+  assert.equal(isDestructiveTool("resetter"), false);
+  assert.equal(isDestructiveTool("list_projects", "Delete nothing; list projects"), true);
+  assert.equal(isDestructiveTool("list_projects", "List projects; never delete"), false);
+});
+
+test("assess never recommends a skipped core tool, even when the judge rates it highest", async () => {
+  const seen: string[] = [];
+  const judge: Judge = {
+    evaluate: async ({ state }) => {
+      const candidates = (state as { candidates: Record<string, { name: string }> }).candidates;
+      const answers: Record<string, unknown> = {
+        conscience_disposition: { type: "choice", choice: "advance", confidence: 1, probabilities: { advance: 1, awaiting_user: 0, no_gap: 0, unclear: 0 } },
+      };
+      for (const [id, c] of Object.entries(candidates)) {
+        seen.push(c.name);
+        // bash would win outright if it reached the request.
+        const p = c.name === "bash" ? [0, 0, 0, 1] : [0, 0, 0.1, 0.85];
+        answers[id] = { type: "score", score: 3, confidence: 1, legend: {}, probabilities: Object.fromEntries(p.map((v, i) => [String(i), v])) };
+      }
+      return { answers };
+    },
+  };
+  const tools = [{ name: "bash", description: "Execute bash commands" }, { name: "search_code", description: "Search the code index" }];
+  const result = await assess("find where the steer text is built", "", [], tools, [], [],
+    defaultDeps(judge, { skipTools: defaultConfig().conscience.skipTools }));
+  assert.ok(!seen.includes("bash"), "a skipped core tool never reaches the request");
+  assert.equal(result.selected?.id, "search_code");
 });
 
 /* ─── assess: answer parsing (defect 1) ─────────────────────────────── */

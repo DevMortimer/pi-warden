@@ -330,6 +330,13 @@ test("floor: invalid value falls back to base", () => {
   assert.equal(project.action.floor, "level", "invalid value does not override user setting");
 });
 
+test("conscience.skipTools defaults to the core tools and accepts an override", () => {
+  assert.deepEqual(defaultConfig().conscience.skipTools, ["read", "bash", "edit", "write", "grep", "find", "ls"]);
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { conscience: { skipTools: [] } }).conscience.skipTools, []);
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { conscience: { skipTools: ["bash", 3] } }).conscience.skipTools, ["bash"]);
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { conscience: { skipTools: "bash" } }).conscience.skipTools, defaultConfig().conscience.skipTools);
+});
+
 test("conscience.advanceThreshold defaults to 0.70", () => {
   const config = defaultConfig();
   assert.equal(config.conscience.advanceThreshold, 0.70);

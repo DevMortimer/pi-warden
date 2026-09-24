@@ -14,6 +14,8 @@ export interface ShapeResult {
 }
 
 const off = { enabled: false };
+// Duplicated from defaultConfig(): this file must work when the config module is stale and lacks the key.
+const coreTools = () => ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const proseOff = () => ({ ...off, audience: "technical", threshold: 1, trend: 3, minChars: 1 });
 
 /**
@@ -54,18 +56,21 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     subagent: section("subagent", { ...off, wake: false, threshold: 1, cooldownMs: 0 }),
     widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
     learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 }),
-    conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }),
+    conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }),
   };
   // A missing/invalid runtime section falls back to disabled conscience, no loads, and the existing update warning.
   if (typeof config.conscience !== "object" || config.conscience === null) {
     missing.push("conscience");
-    config.conscience = { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 };
+    config.conscience = { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 };
   }
   if (typeof config.conscience.skills !== "object" || config.conscience.skills === null) {
     config.conscience = { ...config.conscience, skills: { mode: "recommend", exclude: [] } };
   }
   if (typeof config.conscience.tools !== "object" || config.conscience.tools === null) {
     config.conscience = { ...config.conscience, tools: { enabled: true, exclude: [] } };
+  }
+  if (!Array.isArray(config.conscience.skipTools)) {
+    config.conscience = { ...config.conscience, skipTools: coreTools() };
   }
   if (typeof config.slop.prose !== "object" || config.slop.prose === null) {
     missing.push("slop.prose");
