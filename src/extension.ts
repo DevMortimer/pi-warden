@@ -1308,8 +1308,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (rules.source !== "skipped") {
         stats.ruleChecks++;
         if (rules.error) noteError(ctx, rules.error, rules.errorCode);
-        const capNotice = rulesGuard.capNotice(rules);
-        if (capNotice && ctx.hasUI && config.notices) ctx.ui.notify(capNotice, "warning");
+        // Only a shown notice uses up the once-per-session flag.
+        const capNotice = ctx.hasUI && config.notices ? rulesGuard.capNotice(rules) : undefined;
+        if (capNotice) ctx.ui.notify(capNotice, "warning");
         holds.recordRules({ source: rules.source, path: rules.path, findings: rules.findings.map(f => ({ name: f.name, violation: f.violation })), ...(rules.error ? { error: rules.error } : {}) });
         if (rules.findings.length) {
           stats.ruleViolations++;
