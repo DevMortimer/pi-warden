@@ -380,6 +380,25 @@ test("isDestructiveTool matches whole words and _-separated parts only", () => {
   assert.equal(isDestructiveTool("list_projects", "List projects; never delete"), false);
 });
 
+test("eligibleCandidates drops camelCase and kill, force, uninstall, revoke, erase, clear tools", () => {
+  const tools = [
+    { name: "deleteIssue", description: "Issue helper" },
+    { name: "dropTable", description: "Table helper" },
+    { name: "mcp__db__truncateTable", description: "Table helper" },
+    { name: "kill_process", description: "Process helper" },
+    { name: "force_push", description: "Git helper" },
+    { name: "uninstall_package", description: "Package helper" },
+    { name: "revokeToken", description: "Token helper" },
+    { name: "disk", description: "Erase a disk" },
+    { name: "cache", description: "Clear the cache" },
+    { name: "getIssue", description: "Read an issue" },
+    { name: "HTMLParser", description: "Parse HTML" },
+    { name: "cleanupNotes", description: "Tidy notes" },
+  ];
+  const { candidates } = eligibleCandidates([], tools, fakeConfig(), [], []);
+  assert.deepEqual(candidates.map(c => c.id), ["getIssue", "HTMLParser", "cleanupNotes"]);
+});
+
 test("assess never recommends a skipped core tool, even when the judge rates it highest", async () => {
   const seen: string[] = [];
   const judge: Judge = {

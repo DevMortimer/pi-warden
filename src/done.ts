@@ -91,6 +91,16 @@ function shellSegments(command: string): string[] {
 }
 
 /**
+ * Heads that also run work the user never sees. `flutter test` shows the UI only for integration or golden tests, and
+ * `idb` only through its `screenshot` and `ui` subcommands; `idb list-targets` or a unit test proves nothing on screen.
+ */
+function headShows(head: string, args: readonly string[]): boolean {
+  if (/(?:^|\s)flutter test$/.test(head)) return args.some(arg => /(?:^|\/)integration_test(?:\/|$)/.test(arg) || arg.includes("golden"));
+  if (head === "idb") return args.some(arg => arg === "screenshot" || arg === "ui");
+  return true;
+}
+
+/**
  * Whether a successful tool call showed the rendered UI: a browser or device command, a screenshot, a browser MCP tool, or
  * reading an image. A test run proves the code runs; only this proves what the user will see.
  */
@@ -107,8 +117,12 @@ export function isVisualCheck(tool: string, input: Record<string, unknown>, fail
     const segments = shellSegments(stripDataText(view.command).text.toLowerCase());
     const heads = visual.commands.map(command => command.toLowerCase());
     const words = new Set(visual.commandWords.map(word => word.toLowerCase()));
-    return segments.some(segment => heads.some(head => segment === head || segment.startsWith(`${head} `))
-      || segment.split(/\s+/).some(token => words.has(token.replace(/^-+/, "").replace(/=.*$/, ""))));
+    // A command word counts only after a visual head: `grep -rn screenshot src` searches for the word.
+    return segments.some(segment => heads.some(head => {
+      if (segment !== head && !segment.startsWith(`${head} `)) return false;
+      const args = segment.slice(head.length).split(/\s+/).filter(Boolean);
+      return headShows(head, args) || args.some(arg => words.has(arg.replace(/^-+/, "").replace(/=.*$/, "")));
+    }));
   }
   // An MCP proxy (`mcp`, `mcp__chrome_devtools`) names the real tool in its input.
   const names = [tool, /^mcp(?:__|$)/.test(tool) && typeof input.tool === "string" ? input.tool : ""].map(name => name.toLowerCase());

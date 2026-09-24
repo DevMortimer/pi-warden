@@ -504,9 +504,13 @@ test("isVisualCheck counts browser, device, screenshot, and image reads, not men
   const shows = (tool: string, input: Record<string, unknown>, failed = false) => isVisualCheck(tool, input, failed, visual);
   assert.equal(shows("bash", { command: "agent-browser open http://localhost:3000" }), true);
   assert.equal(shows("bash", { command: "cd web && PORT=3000 npx playwright test" }), true);
-  assert.equal(shows("bash", { command: "cd app && fvm flutter test test/widget_test.dart" }), true);
+  assert.equal(shows("bash", { command: "cd app && fvm flutter test integration_test/app_test.dart" }), true);
+  assert.equal(shows("bash", { command: "flutter test test/goldens/header_golden_test.dart" }), true);
+  assert.equal(shows("bash", { command: "flutter test --update-goldens" }), true);
   assert.equal(shows("bash", { command: "xcrun simctl io booted screenshot /tmp/s.png" }), true);
-  assert.equal(shows("bash", { command: "chrome --headless --screenshot=/tmp/s.png http://localhost" }), true);
+  assert.equal(shows("bash", { command: "idb screenshot /tmp/s.png" }), true);
+  assert.equal(shows("bash", { command: "idb ui tap 10 20" }), true);
+  assert.equal(shows("bash", { command: "npx playwright test --screenshot=on" }), true);
   assert.equal(shows("ctx_execute", { language: "shell", code: "agent-browser snapshot -i" }), true);
   assert.equal(shows("read", { path: "/tmp/shot.PNG" }), true);
   assert.equal(shows("mcp__chrome_devtools", { tool: "take_screenshot" }), true);
@@ -517,6 +521,11 @@ test("isVisualCheck counts browser, device, screenshot, and image reads, not men
   assert.equal(shows("bash", { command: "git add web/screenshots/header.png" }), false, "a screenshots path is not a screenshot");
   assert.equal(shows("bash", { command: "which chromium; ls ~/.cache/ms-playwright" }), false);
   assert.equal(shows("bash", { command: "npm test" }), false);
+  assert.equal(shows("bash", { command: "grep -rn screenshot src" }), false, "a command word counts only after a visual head");
+  assert.equal(shows("bash", { command: "chrome --headless --screenshot=/tmp/s.png http://localhost" }), false, "chrome is not a visual head");
+  assert.equal(shows("bash", { command: "idb list-targets" }), false, "idb shows the UI only through screenshot or ui");
+  assert.equal(shows("bash", { command: "flutter test test/unit/x_test.dart" }), false, "a unit test shows no UI");
+  assert.equal(shows("bash", { command: "cd app && fvm flutter test test/widget_test.dart" }), false, "a widget test is not a golden test");
   assert.equal(shows("read", { path: "web/app.css" }), false);
   assert.equal(shows("mcp__linear", { tool: "list_issues" }), false);
 });
