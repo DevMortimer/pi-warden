@@ -896,6 +896,12 @@ test("a visible action (commit, push, merge, launch) needs less plan mismatch to
   assert.match(intentSteer(drift), /and its effect is visible outside the working tree/);
   assert.match(formatVerdict(drift), /off plan · warn$/);
   assert.equal(drift.intentTraceOnly, undefined, "a push and a pull request keep the steer by default");
+  const install = { tool: "bash", input: { command: "npm install left-pad" }, cwd, task: "get the PR ready", plan: "I will run the tests once more before touching the PR." };
+  const judgedVisible = await evaluateAction(install, { config, judge: withVisible(0.91, 0.85) });
+  assert.equal(judgedVisible.intentMismatch, true);
+  assert.equal(judgedVisible.intentTraceOnly, undefined, "not visible by code, but the judge scores it visible: the steer stays");
+  const judgedLocal = await evaluateAction(install, { config, judge: withVisible(0.91, 0.5) });
+  assert.equal(judgedLocal.intentTraceOnly, true, "neither code nor judge finds a visible effect: trace-only");
   const silenced = await evaluateAction(call, { config: { ...config, intentTraceOnly: "all" }, judge: withVisible(0.83, 0.96) });
   assert.equal(silenced.intentTraceOnly, true, "\"all\" keeps even a visible mismatch in the trace only");
   assert.equal(silenced.intentTraceOnlyReasonIndex, silenced.reasons.findIndex(reason => reason.startsWith("intent mismatch")));

@@ -1225,11 +1225,11 @@ test("intentTraceOnly: an invisible mismatch is traced without a steer, a visibl
     assistantEntry({ type: "text", text: plan }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command } }),
   ] } });
   const intentSteers = () => sentMessages.filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content));
-  const run = async (intentTraceOnly: string | undefined, command: string) => {
+  const run = async (intentTraceOnly: string | undefined, command: string, visible = 0.2) => {
     await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, ...(intentTraceOnly ? { intentTraceOnly } : {}) }, ...STACK_BAR }));
     await sessionStart(context({ hasUI: false }));
     sentMessages.length = 0;
-    nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, visible: 0.2, intent_mismatch: 0.91, should_proceed: 1.0 };
+    nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, visible, intent_mismatch: 0.91, should_proceed: 1.0 };
     assert.equal(await toolCall("bash", { command }, branch(command)), undefined, "a mismatch never holds");
     return intentSteers().length;
   };
@@ -1241,8 +1241,10 @@ test("intentTraceOnly: an invisible mismatch is traced without a steer, a visibl
   const trace = sentMessages.at(-1)!.message.content;
   assert.equal(trace.match(/intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only, no visible effect\)/g)?.length, 1);
 
-  // A push is visible: the steer still reaches the agent.
+  // A push is visible by code, an install the judge scores visible: the steer still reaches the agent for both.
   assert.equal(await run(undefined, "git push origin main"), 1);
+  assert.equal(await run(undefined, "npm install left-pad", 0.85), 1);
+  assert.equal(await run(undefined, "npm install left-pad", 0.5), 0);
   // "none" restores the steer on every mismatch; "all" sends none, visible calls included.
   assert.equal(await run("none", "npm run clean"), 1);
   assert.equal(await run("all", "git push origin main"), 0);

@@ -51,7 +51,7 @@ export interface ActionGuardConfig {
   intentMismatch: number;
   /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
   visibleMismatch: number;
-  /** Which intent mismatches stay in the trace without a steer: "invisible" (default) a call with no visible effect (not a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`), "all" every one, "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. */
+  /** Which intent mismatches stay in the trace without a steer: "invisible" (default) a call with no visible effect (neither a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`, nor judged `visible` at 0.8 or more), "all" every one, "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. */
   intentTraceOnly: "invisible" | "all" | "none";
   /** Low P(should_proceed) is trace-only unless steer is enabled; hold is the inclusive threshold, not a blocking decision. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
   shouldProceed: { hold: number; steer: boolean };
