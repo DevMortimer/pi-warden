@@ -23,8 +23,8 @@ import type { RunEvidence } from "./done.js";
 import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
-import { shellWrites } from "./shell-writes.js";
-import type { ShellWrite } from "./shell-writes.js";
+import { mergeWrites, shellWrites } from "./shell-writes.js";
+import type { ShellSkip, ShellWrite } from "./shell-writes.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import { initSchema, recordHold, recordOutcome, toHoldRecord, holdStats, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
@@ -72,6 +72,9 @@ export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to a
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
+
+/** Rules requests one bash command may start; the other files it writes are recorded as skipped. */
+const SHELL_RULES_CHECKS = 5;
 
 /** Which guard spent the user's attention. The status line reports one count per guard. */
 export type SteerGuard = "action" | "rules" | "security" | "stuck" | "repeat" | "done" | "prose" | "runaway" | "subagent" | "conscience";
@@ -1213,9 +1216,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const shell = event.toolName === "bash" && typeof (event.input as Record<string, unknown>).command === "string"
       ? shellWrites((event.input as Record<string, unknown>).command as string, { home: homedir() })
       : undefined;
+    // Each file is one rules request, so a script that writes many files would start as many requests at once.
+    const shellFiles = mergeWrites(shell?.writes ?? []);
+    const shellSkips: ShellSkip[] = [...(shell?.skips ?? []), ...shellFiles.slice(SHELL_RULES_CHECKS).map(write => ({ path: write.path, reason: `only the first ${SHELL_RULES_CHECKS} files a command writes are judged` }))];
     const rulesChecks: Array<{ check: Promise<RulesVerdict>; shellWrite?: ShellWrite }> = !config.rules.enabled ? []
       : event.toolName === "write" || event.toolName === "edit" ? [{ check: rulesGuard.inspect(call, siblings, rulesOptions) }]
-      : (shell?.writes ?? []).map((shellWrite, index) => ({ shellWrite, check: rulesGuard.inspect({ id: `${event.toolCallId}#write${index}`, tool: "write", input: { path: shellWrite.path, content: shellWrite.content } }, siblings, rulesOptions) }));
+      : shellFiles.slice(0, SHELL_RULES_CHECKS).map((shellWrite, index) => ({ shellWrite, check: rulesGuard.inspect({ id: `${event.toolCallId}#write${index}`, tool: "write", input: { path: shellWrite.path, content: shellWrite.content } }, siblings, rulesOptions) }));
     for (const { check } of rulesChecks) check.catch(() => undefined);
     const verdict = await actionGuard.inspect(
       call,
@@ -1378,9 +1384,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         record(ctx, config, "rules", rulesLine, [...shellNote, `${rules.tool} ${rules.path}: ${rules.skippedReason}`]);
       }
     }
-    if (config.rules.enabled && shell?.skips.length) {
-      const paths = shell.skips.flatMap(skip => (skip.path ? [skip.path] : []));
-      record(ctx, config, "rules", renderTemplate(config.widget.rules, { guard: "rules", tool: "bash", path: paths.length ? paths.join(", ") : "file change", status: "skipped" }), shell.skips.map(skip => `shell write not judged${skip.path ? ` (${skip.path})` : ""}: ${skip.reason}`));
+    if (config.rules.enabled && shellSkips.length) {
+      const paths = shellSkips.flatMap(skip => (skip.path ? [skip.path] : []));
+      record(ctx, config, "rules", renderTemplate(config.widget.rules, { guard: "rules", tool: "bash", path: paths.length ? paths.join(", ") : "file change", status: "skipped" }), shellSkips.map(skip => `shell write not judged${skip.path ? ` (${skip.path})` : ""}: ${skip.reason}`));
     }
     if (config.rules.enabled && (event.toolName === "write" || event.toolName === "edit")) {
       const hits = rulesGuard.notesFor(verdict.summary.location === "inside_project" ? verdict.summary.path : undefined, config.rules.sensitivePaths);

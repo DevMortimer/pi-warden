@@ -13,7 +13,7 @@ import { globToRegExp } from "./rules.js";
 import type { RulesSourceConfig } from "./rules.js";
 import { indexDir } from "./index-cmd.js";
 import { resolveRulesFile } from "./rules-file.js";
-import { shellWrites } from "./shell-writes.js";
+import { mergeWrites, shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
@@ -1629,7 +1629,7 @@ export function describeAction(tool: string, input: Record<string, unknown>, cwd
     summary.command = redact(truncate(view.command, COMMAND_LIMIT));
     // Jev sees the full text; this names the part of it that is written or printed rather than executed.
     if (stripDataText(view.command).stripped) summary.dataText = "heredoc bodies and quoted arguments of echo/printf/grep/git commit in this command are text that is written, printed, searched, or recorded, not executed";
-    const written = tool === "bash" ? shellWrites(view.command, { home: homedir() }).writes : [];
+    const written = tool === "bash" ? mergeWrites(shellWrites(view.command, { home: homedir() }).writes) : [];
     if (written.length) {
       summary.writes = written.map(write => `${write.append ? "appends to" : "writes"} ${displayPath(write.path, cwd).path}`);
       summary.excerpt = redact(sample(written.map(write => write.content).join("\n"), EXCERPT_LIMIT));

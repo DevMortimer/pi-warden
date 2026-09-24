@@ -273,10 +273,11 @@ function isExcluded(id: string, exclude: string[]): boolean {
  * Name parts that mark a tool as destructive. A recommendation to run such a tool is never worth the risk
  * of the agent calling it on a prompt that only mentioned the subject.
  */
-const DESTRUCTIVE_MARKERS = new Set(["delete", "drop", "destroy", "remove", "purge", "wipe", "reset", "truncate"]);
+const DESTRUCTIVE_MARKERS = new Set(["delete", "drop", "destroy", "remove", "purge", "wipe", "reset", "truncate", "kill", "force", "uninstall", "revoke", "erase", "clear"]);
 
+/** camelCase is split before lowercasing, so `deleteIssue` and `mcp__db__truncateTable` show their verb. */
 function words(text: string): string[] {
-  return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
 
 /**

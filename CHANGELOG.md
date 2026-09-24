@@ -22,6 +22,15 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - A clean and a changed tree for `reset --hard`, and a failed status check. Lease pushes to a feature branch, to `main`, `master`, and the remote HEAD branch, with plain `--force`, with a bare push that tracks the default branch, and outside a repository. A conscience run that ended with a final reply sends no reminder. `reset --hard` with `-C`, `--git-dir`, `--work-tree`, and `-c` on a clean tree is held. `push --force`, `-f`, and `--force-with-lease` with those options are held.
 
+## 0.59.5
+
+### Fixed
+
+- Shell writes that gave neither a judged write nor a skip are now judged. `exec > f; echo x` judges the text the later commands print into `f`; a redirected `{ echo x; } > f` or `(echo x) > f` group judges the text its commands print, and a group that also runs a program is skipped with a reason; `env echo x > f` treats `env` as a wrapper; a target such as `/dev/../tmp/p/f` is normalized before the `/dev/` test; a partly quoted heredoc delimiter (`<<E"OF"`) ends at `EOF` and keeps the body literal, as in bash.
+- One bash command no longer starts one rules request per write. Writes to the same file are joined into one request (40 `>>` appends to one file are one request), and past five files a command writes, the rest are recorded in the trace as skipped. The action request lists each file once.
+- The done-check no longer counts `grep -rn screenshot src`, `idb list-targets`, or `flutter test test/unit/x_test.dart` as visual proof. A `done.visualTools.commandWords` word counts only after a `commands` head, `flutter test` counts only for an `integration_test/` or golden path (or `--update-goldens`), and `idb` only for its `screenshot` or `ui` subcommand. `chrome`, `chromium`, and `google-chrome` are now `commands` heads that count with a screenshot flag (`chrome --headless --screenshot=…`), so a headless-browser screenshot is proof and `chromium --version` is not.
+- The conscience now drops camelCase destructive tools (`deleteIssue`, `dropTable`, `mcp__db__truncateTable`) and tools whose name or leading description verb is `kill`, `force`, `uninstall`, `revoke`, `erase`, or `clear` (`kill_process`, `force_push`, `uninstall_package`).
+
 ## 0.59.4
 
 ### Fixed
