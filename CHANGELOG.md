@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Docs
+
+- README leads with a new image of the self-correction loop and its numbers from the first nine days of use; the headline numbers are updated to match.
 
 ## 0.48.0
 
