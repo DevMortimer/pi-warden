@@ -792,7 +792,8 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
     security: isObject(raw.security) ? {
       enabled: boolean(raw.security.enabled, base.security.enabled),
       threshold: probability(raw.security.threshold, base.security.threshold),
-      maskOutput: boolean(raw.security.maskOutput, base.security.maskOutput),
+      // Only the user file can turn masking off: a repository must not unmask credentials in its own agent's output.
+      maskOutput: source === "user" ? boolean(raw.security.maskOutput, base.security.maskOutput) : base.security.maskOutput,
     } : base.security,
     context: isObject(raw.context) ? {
       enabled: boolean(raw.context.enabled, base.context.enabled),
