@@ -220,7 +220,7 @@ export interface EvaluateOptions {
    */
   questions?: Questions | undefined;
   /** Real paths the agent created under the temp directory in this session (`PatternOptions.scratch`). */
-  scratch?: ReadonlySet<string> | undefined;
+  scratch?: ScratchRecords | undefined;
 }
 
 const LEVEL_RANK: Record<Level, number> = { allow: 0, warn: 1, confirm: 2, deny: 3 };
@@ -412,7 +412,7 @@ export function stripDataText(command: string): ScannedCommand {
  * rm with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
  * risky. A quote or parenthesis before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
  */
-function classifyRm(segment: string, cwd?: string, scratch?: ReadonlySet<string>): PatternHit | undefined {
+function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords): PatternHit | undefined {
   const match = /(?:^|[\s"'(])rm\s+(.*)$/.exec(segment);
   if (!match) return undefined;
   const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["')]+$/, ""));
@@ -444,6 +444,28 @@ function isInside(target: string, cwd: string): boolean {
 // Session scratch: paths the agent created under the OS temp directory in this session. A recursive rm whose every
 // target is such a path, after symlinks are resolved, is risky rather than destructive. Everything here fails closed:
 // a path that cannot be resolved, or that uses shell expansion, is not scratch.
+
+/** What a recorded path was when it was created. A path whose current identity differs was replaced and is not scratch. */
+export interface ScratchIdentity { dev: number; ino: number; birthtimeMs: number }
+/** Real paths the agent created under the temp directory in this session, with the identity each had when recorded. */
+export type ScratchRecords = ReadonlyMap<string, ScratchIdentity>;
+
+/** The identity of a path itself (a symlink is not followed); undefined when it does not exist. */
+export function scratchIdentity(path: string): ScratchIdentity | undefined {
+  try {
+    const stats = lstatSync(path);
+    return { dev: stats.dev, ino: stats.ino, birthtimeMs: stats.birthtimeMs };
+  } catch { return undefined; }
+}
+
+function sameIdentity(a: ScratchIdentity | undefined, b: ScratchIdentity): boolean {
+  return a !== undefined && a.dev === b.dev && a.ino === b.ino && a.birthtimeMs === b.birthtimeMs;
+}
+
+/** Drops records whose path is gone or now names a different file, so a later file at the same path is not scratch. */
+export function pruneScratch(records: Map<string, ScratchIdentity>): void {
+  for (const [path, identity] of records) if (!sameIdentity(scratchIdentity(path), identity)) records.delete(path);
+}
 
 /** Real paths of the temp roots that exist: `os.tmpdir()`, `$TMPDIR`, `/tmp`, `/private/tmp`. */
 export function tempRoots(): string[] {
@@ -483,13 +505,16 @@ export function tempRootOf(real: string, roots = tempRoots()): string | undefine
 /** A literal absolute path: no quotes left inside, no glob, brace, tilde, variable, escape, or substitution. */
 const LITERAL_PATH = /^\/[^*?[\]{}$`~\\"'\s]*$/;
 
-function isSessionScratch(target: string, scratch: ReadonlySet<string>): boolean {
+function isSessionScratch(target: string, scratch: ScratchRecords): boolean {
   const clean = target.replace(/^["']|["']$/g, "");
   if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
   const real = realTarget(clean);
   const root = real === undefined ? undefined : tempRootOf(real);
   if (!real || !root) return false;
-  for (let path = real; path !== root && path.startsWith(root); path = dirname(path)) if (scratch.has(path)) return true;
+  for (let path = real; path !== root && path.startsWith(root); path = dirname(path)) {
+    const recorded = scratch.get(path);
+    if (recorded) return sameIdentity(scratchIdentity(path), recorded);
+  }
   return false;
 }
 
@@ -544,19 +569,29 @@ function tempPathsIn(text: string, roots: readonly string[]): string[] {
 }
 
 /**
- * Real paths the call created, read after it ran. A candidate from `scratchCandidates` counts when it now exists as
- * itself (not through a symlink). For a shell command, absolute temp paths printed in its output also count, bounded:
- * the first 20 such paths only, each must exist under a temp root as a real directory or file, and its birth time must
- * fall in a later millisecond than `started` (`Date.now()` when the call began). Where the file system reports no
- * birth time, only a whole output line of a command that runs `mktemp` counts.
+ * Real paths the call created, read after it ran, each with its identity. A candidate from `scratchCandidates` counts
+ * when it now exists as itself (not through a symlink). For a shell command, absolute temp paths printed in its output
+ * also count, bounded: the first 20 such paths only, each must exist under a temp root as a real directory or file, and
+ * its birth time must fall in a later millisecond than `started` (`Date.now()` when the call began). Where the file
+ * system reports no birth time, only a whole output line of a command that runs `mktemp` counts.
  */
-export function createdScratch(tool: string, input: Record<string, unknown>, output: string, started: number, candidates: readonly string[]): string[] {
-  const created: string[] = [];
+export function createdScratch(tool: string, input: Record<string, unknown>, output: string, started: number, candidates: readonly string[]): Map<string, ScratchIdentity> {
+  const found: string[] = [];
   for (const path of candidates) {
-    try { if (realpathSync(path) === path) created.push(path); } catch { /* not created */ }
+    try { if (realpathSync(path) === path) found.push(path); } catch { /* not created */ }
   }
   const command = tool === "bash" ? commandOf(tool, input)?.command : undefined;
-  if (!command) return created;
+  if (command) found.push(...printedScratch(command, output, started));
+  const created = new Map<string, ScratchIdentity>();
+  for (const path of found) {
+    const identity = scratchIdentity(path);
+    if (identity) created.set(path, identity);
+  }
+  return created;
+}
+
+function printedScratch(command: string, output: string, started: number): string[] {
+  const created: string[] = [];
   const mktemp = splitShell(command).some(segment => headOf(segment) === "mktemp" || /\$\(\s*mktemp\b|`\s*mktemp\b/.test(segment));
   const lines = new Set(output.split("\n").map(line => line.trim()));
   const roots = tempRoots();
@@ -583,7 +618,7 @@ export interface PatternOptions {
   exemptRules?: readonly string[];
   pathRules?: readonly PathRule[];
   /** Real paths the agent created under the temp directory in this session; a recursive rm of only these is not destructive. */
-  scratch?: ReadonlySet<string> | undefined;
+  scratch?: ScratchRecords | undefined;
 }
 
 /** Every id exemptRules can legitimately name: the built-in shell rules, the rm-classifier's derived ids, and the

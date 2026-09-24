@@ -1,6 +1,6 @@
 import type { ActionGuardConfig, LargeOutputConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { evaluateAction, textApproves } from "./guard.js";
-import type { EvaluateOptions, PreviousAction, TaskMessage, Verdict } from "./guard.js";
+import type { EvaluateOptions, PreviousAction, ScratchRecords, TaskMessage, Verdict } from "./guard.js";
 import type { TaskSpine } from "./shape.js";
 import type { Judge } from "pi-typesafe";
 
@@ -39,7 +39,7 @@ export interface InspectOptions {
   /** Calls allowed in the previous turn; the regret question about them rides this call's request, never a sibling's. */
   previousActions?: readonly PreviousAction[] | undefined;
   /** Real paths the agent created under the temp directory in this session, forwarded to `evaluateAction`. */
-  scratch?: ReadonlySet<string> | undefined;
+  scratch?: ScratchRecords | undefined;
 }
 
 interface Prejudged { key: string; verdict: Promise<Verdict>; used: boolean }

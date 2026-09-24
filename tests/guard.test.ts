@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { buildRequest, commandFamily, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
+import { buildRequest, commandFamily, describeAction, evaluateAction, formatVerdict, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
 
@@ -199,6 +199,8 @@ test("matchPatterns flags destructive shell commands", () => {
 
 /** A real directory under /tmp for scratch cases; removed by the caller. */
 const scratchBase = () => mkdtemp("/tmp/pi-warden-scratch-");
+/** Session records for real paths, with the identity each has now. */
+const records = (...paths: string[]) => new Map(paths.map(path => [path, scratchIdentity(path)!]));
 const destructiveRm = (hits: ReturnType<typeof matchPatterns>) => hits.some(hit => hit.id === "rm-recursive-dangerous-target" && hit.severity === "destructive");
 
 test("session scratch: an rm of a recorded temp directory is risky, not destructive", async () => {
@@ -206,10 +208,25 @@ test("session scratch: an rm of a recorded temp directory is risky, not destruct
   try {
     const probe = join(base, "probe-abc");
     await mkdir(probe);
-    const scratch = new Set([realpathSync(probe)]);
+    const scratch = records(realpathSync(probe));
     const hits = matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch });
     assert.deepEqual(hits.map(hit => [hit.id, hit.severity]), [["rm-session-scratch", "risky"]]);
     assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd)), "without the session set it stays destructive");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("session scratch: a recorded path replaced by a new directory stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const probe = join(base, "probe-abc");
+    await mkdir(probe);
+    const scratch = records(realpathSync(probe));
+    await rm(probe, { recursive: true });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await mkdir(probe);
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch })), "a different directory at the recorded path");
+    pruneScratch(scratch);
+    assert.equal(scratch.size, 0, "the stale record is dropped");
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
@@ -218,7 +235,7 @@ test("session scratch: a parent escape out of a recorded directory stays destruc
   try {
     const probe = join(base, "probe-abc");
     await mkdir(probe);
-    const scratch = new Set([realpathSync(probe)]);
+    const scratch = records(realpathSync(probe));
     assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}/../../etc` }, cwd, { scratch })));
     assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}/../probe-abc` }, cwd, { scratch })), "any `..` segment keeps the hold");
   } finally { await rm(base, { recursive: true, force: true }); }
@@ -227,7 +244,7 @@ test("session scratch: a parent escape out of a recorded directory stays destruc
 test("session scratch: a temp root, a variable, or a wildcard stays destructive", async () => {
   const base = await scratchBase();
   try {
-    const scratch = new Set([realpathSync(base), realpathSync("/tmp"), realpathSync(tmpdir())]);
+    const scratch = records(realpathSync(base), realpathSync("/tmp"), realpathSync(tmpdir()));
     for (const command of ["rm -rf /tmp", "rm -rf /tmp/", "rm -rf \"$TMPDIR\"", "rm -rf /tmp/*", `rm -rf ${base}/*`, `rm -rf ${base}/$NAME`, `rm -rf ${base}/$(echo x)`, `rm -rf ${realpathSync(tmpdir())}`]) {
       assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd, { scratch })), `expected destructive for: ${command}`);
     }
@@ -237,7 +254,7 @@ test("session scratch: a temp root, a variable, or a wildcard stays destructive"
 test("session scratch: a relative project path keeps its current classification", async () => {
   const base = await scratchBase();
   try {
-    const scratch = new Set([realpathSync(base)]);
+    const scratch = records(realpathSync(base));
     for (const [command, id] of [["rm -rf dist", "rm-rf"], ["rm -r build", "rm-recursive"], ["rm -rf ../sibling", "rm-recursive-dangerous-target"]] as const) {
       assert.deepEqual(matchPatterns("bash", { command }, cwd, { scratch }).map(hit => hit.id), matchPatterns("bash", { command }, cwd).map(hit => hit.id));
       assert.ok(matchPatterns("bash", { command }, cwd, { scratch }).some(hit => hit.id === id), `${command} is ${id}`);
@@ -249,7 +266,7 @@ test("session scratch: a relative project path keeps its current classification"
 test("session scratch: the judge reads the scratch fact in floor_hits", async () => {
   const base = await scratchBase();
   try {
-    const scratch = new Set([realpathSync(base)]);
+    const scratch = records(realpathSync(base));
     const fake = judge(0.2, 0.1);
     const verdict = await evaluateAction({ tool: "bash", input: { command: `rm -rf ${base}` }, cwd, task: "run the tests" }, { config: defaultConfig().action, judge: fake, scratch });
     const request = fake.calls[0] as { state: { floor_hits: string } };

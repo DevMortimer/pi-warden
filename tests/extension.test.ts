@@ -775,6 +775,14 @@ test("session scratch: a temp directory printed by a command counts only when th
   assert.equal((await toolCall("bash", { command: `rm -rf ${before}` }))?.block, true, "existed before the command");
 }));
 
+test("session scratch: a recorded path deleted, then made again outside the agent, stays held", async () => withScratchBase(async base => {
+  const probe = join(base, "probe-abc");
+  await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
+  await runCall("bash", { command: `rm -rf ${probe}` }, () => rm(probe, { recursive: true }));
+  await mkdir(probe);
+  assert.equal((await toolCall("bash", { command: `rm -rf ${probe}` }))?.block, true);
+}));
+
 test("session scratch: a fresh session forgets what the last one created", async () => withScratchBase(async base => {
   const probe = join(base, "probe-abc");
   await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));

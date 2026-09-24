@@ -19,8 +19,8 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, needsDoneCheck, recordOutcome as recordDoneOutcome } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
-import type { Level, PatternHit, PreviousAction, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
+import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, writeSinkTargets } from "./guard.js";
+import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import { initSchema, recordHold, recordOutcome, toHoldRecord, holdStats, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
@@ -312,8 +312,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const subagentSeen = new Set<string>();
   // Command families already steered toward filtered output this session: one steer per family.
   const largeOutputSteered = new Set<string>();
-  // Real paths the agent created under the temp directory this session; a recursive rm of only these is not destructive.
-  const sessionScratch = new Set<string>();
+  // Real paths the agent created under the temp directory this session, with the identity each had when recorded.
+  // A recursive rm of only these is not destructive; a record whose path is gone or replaced is dropped after each call.
+  const sessionScratch = new Map<string, ScratchIdentity>();
   // Per tool call id: when it started and the temp paths it may create that did not exist yet.
   const scratchPending = new Map<string, { started: number; candidates: string[] }>();
   const wakePolicy = new WakePolicy(0);
@@ -1329,8 +1330,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const scratch = scratchPending.get(event.toolCallId);
     if (scratch) {
       scratchPending.delete(event.toolCallId);
-      for (const path of createdScratch(event.toolName, event.input as Record<string, unknown>, text, scratch.started, scratch.candidates)) sessionScratch.add(path);
+      for (const [path, identity] of createdScratch(event.toolName, event.input as Record<string, unknown>, text, scratch.started, scratch.candidates)) sessionScratch.set(path, identity);
     }
+    pruneScratch(sessionScratch);
     // Repeat detection uses the original result, so its request goes out together with the output check.
     const failed = resultFailed(event.isError, event.details, event.content);
     // ── Conscience: track tool_result for the pending capability ──
