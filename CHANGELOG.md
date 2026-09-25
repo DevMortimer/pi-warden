@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.65.0
+
 ### Added
 
 - Adaptive steers per model. pi-warden counts, per model and per steer kind (`intent-mismatch`, `off-task`, `rules`, `slop`, `stuck`, `conscience`, and the other advisory notes), the steers it sent, the ones the agent followed (a course change in its next two messages), and the ones it disputed ("as I said", "false positive"). After 30 or more steers, a kind followed under 20% of the time or disputed over 40% becomes trace-only for that model; 1 in 5 is still sent, and every further 30 steers the probes decide whether it is sent again. Holds, confirm, deny, security masking, the credential notice on masked output, and the done-check are never trace-only, and per-call judgments never change. The counts stay in `steer-stats.json` in pi-warden's data folder. `/warden status` lists the trace-only kinds per model with their rates; `/warden unmute <kind> [model]` resets a pair. New config section `steers`: `adaptive` (default `true`), `minSteers` (30), `minFollowed` (0.2), `maxDisputed` (0.4), `recheckEvery` (30), `probeEvery` (5). A replay of 937 recorded sessions would make `intent-mismatch` trace-only for three models (6 to 11% followed) and nothing else.
