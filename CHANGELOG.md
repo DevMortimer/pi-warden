@@ -8,6 +8,44 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.64.1
+
+### Fixed
+
+- A recursive `rm` of recorded session scratch now keeps its hold when the same command also moves, links, copies, extracts, or mounts data: `mv`, `ln`, `cp`, `tar` (also `g`- or `bsd`-prefixed), `rsync`, `mount`, `hdiutil`, `bindfs`, or `git … clone`, anywhere in the command and also quoted or escaped (`\mv`, `"ln"`, `l''n`). The scratch tree walk runs before the command, so it could not see data the command itself put into the scratch path before its `rm`. A plain `rm -rf` of recorded scratch is still released.
+
+## 0.64.0
+
+### Added
+
+- Open loops. New agent tool `warden_loops` keeps what the agent promised to do later in this session: `add` (at most 160 characters, with an optional `when` condition such as "after CI passes"), `done`, `drop` with a reason, and `list`; its description tells the agent to add a loop whenever it promises something for later. The open loops (at most 8 and 600 characters) appear in the compaction appendix, in one end-of-run notice for the next turn (counted against the steer budget as `loops`, never twice for the same unchanged list), and in one message on resume. Loops are stored per session and project in pi-warden's data folder, so they survive compaction and resume and never reach another session or project. `/warden loops` lists them for the user.
+- New agent tool `warden_recall`: the failed attempts of this session with their error lines, the last passing check with whether the code changed since, and the saved-output paths. It prints the same sections the compaction appendix builds, from the same session state. Read-only.
+- Both run in code, with no TypeSafe request.
+
+## 0.63.0
+
+### Changed
+
+- An intent mismatch on a call with no visible effect is trace-only: the trace, the warn notice, and the status line (`N off plan (M trace-only)`) record it, and the agent gets no steer. A commit, push, merge, tag, reset, pull request, release, or publish still steers (decided in code by `isVisibleCommand`), and so does any call Jev judges `visible` at 0.8 or more, such as an install, a launched program, or a message sent from a script. The steer reaches the agent only after the call ran: on 275 recorded intent-mismatch steers over 7 days, 275 arrived after the call, and a strict course change (the agent asked the user, reverted, or changed approach) followed 8% of them. New `action.intentTraceOnly` sets which mismatches are trace-only: `"invisible"` (default), `"all"`, or `"none"` (every mismatch steers, as before).
+
+## 0.62.0
+
+### Changed
+
+- `prefs.inject` is on by default, and strict: a wrong memory is worse than none. A standing preference reaches the agent only when you typed it, in a standing form (no question and no temporary word; `now`, `until`, `this PR`, `this branch`, and `for this` join `yet`, `for now`, `today`, and `this time`), not bound to one task (a pronoun-only object such as "don't commit it", a ticket, branch, PR number, or hash), in 3 or more sessions on 2 or more days, last within 30 days, not lifted by a later message of the opposite polarity ("do use subagents here"), and not weakening a check (skipping tests, checks, reviews, or confirmations, turning warden off, or pushing, deploying, or deleting without asking; the markers are in `WEAKENS_CHECK`). At most 5 items and 400 characters, each quoted as said with its session count, ending with "If the current request says otherwise, follow the current request." Still one message per session, not a steer, and not repeated on resume.
+- `/warden prefs` shows each item as injected or the rule that kept it out ("not injected: seen in 2 sessions", "not injected: weakens a check"). `/warden prefs forget <n>` drops an item for the project for good, rewordings included; the key is kept in pi-warden's data folder.
+- New agent tool `warden_remember`: after a user correction, or a stuck, repeat, or done-check steer, within the last 5 assistant turns of the run, the agent can record one standing lesson (at most 160 characters) for the project. The same rules apply; a lesson that repeats a stored lesson or a listed preference confirms it instead of adding one. A lesson is injected only once confirmed (recorded again in a later session, or said by the user), after your preferences, marked `(agent lesson)`, and expires after 30 days without a confirmation. Lessons are stored with the date and session id under pi-warden's data folder, never in a rules file or a session file. Preference and lesson text goes to the session model only, never to TypeSafe.
+
+## 0.61.0
+
+### Added
+
+- The context saver cuts repeated runs. In a new tool result, a run of at least 20 lines and 1500 characters that exactly matches text already in context on the current branch becomes one pointer line naming where the earlier copy is and the file that holds the full text. The last 2000 characters and images are never changed. The ledger counts the removed bytes and their token-turns; `/warden status` shows the repeats cut. `context.dedupeRuns` (default `true`) turns it off. `context.dedupeMessages` (default `false`) applies the same cut to new user and custom messages; it is off by default because a repeat the user sends can itself carry meaning.
+
+### Tests
+
+- A repeated report in a new tool result, and with `context.dedupeMessages` in a custom or user message, is cut to one pointer line; messages stay whole by default; one changed line breaks the match; the tail stays; the stored copy holds the full text and reading it back is a recall; `context.dedupeRuns: false` leaves everything whole.
+
 ## 0.60.1
 
 ### Fixed

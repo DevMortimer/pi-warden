@@ -180,7 +180,7 @@ before(async () => {
   const registered = extension.commands.get("warden");
   assert.ok(registered);
   command = registered;
-  assert.equal(extension.tools.size, 0, "pi-warden registers no agent tools");
+  assert.deepEqual([...extension.tools.keys()], ["warden_remember", "warden_loops", "warden_recall"], "pi-warden registers its lesson, loops, and recall tools");
   // The runtime's action methods throw until Pi's runner binds them; capture steer messages instead.
   result.runtime.sendMessage = (message, options) => { sentMessages.push({ message: message as { customType: string; content: string }, ...(options ? { options: options as Record<string, unknown> } : {}) }); };
   result.runtime.sendUserMessage = (content: string | unknown[]) => { sentUserMessages.push(typeof content === "string" ? content : JSON.stringify(content)); };
@@ -837,6 +837,71 @@ test("an identical repeated result becomes a duplicate note with a stored copy, 
   assert.equal(await toolResult("bash", { command: "ls" }, "a\nb\n", false), undefined);
 });
 
+const relayReport = Array.from({ length: 40 }, (_, index) => `report line ${index}: module ${index} built and every check passed cleanly`).join("\n");
+const relayTail = Array.from({ length: 50 }, (_, index) => `turn 4 line ${index}: new progress since the last relay`).join("\n");
+const relayContext = () => context({ sessionManager: { getBranch: () => [
+  { id: "e1", type: "custom_message", customType: "subagent-report", content: `Turn 3\n${relayReport}`, display: true },
+] } });
+
+test("a report repeated in a new message or tool result becomes one pointer line; the stored copy holds the full text", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeMessages: true }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4, with earlier turns:\n${relayReport}\n${relayTail}`;
+  const result = await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx) as { message: { role: string; content: string } };
+  assert.equal(result.message.role, "custom");
+  const text = result.message.content;
+  const pointer = text.match(/^Turn 4, with earlier turns:\n\[pi-warden: the next 40 lines repeat an earlier subagent-report message — omitted; full text: (.+)\]\nturn 4 line 0:/);
+  assert.ok(pointer, text.slice(0, 300));
+  const path = pointer[1]!;
+  const rewritten = [text];
+  try {
+    assert.equal(await readFile(path, "utf8"), incoming, "the stored copy is the full original");
+    assert.ok(text.endsWith(relayTail), "the new part and the tail stay");
+    // A user message with an image: the text part is cut, the image keeps its place.
+    const image = { type: "image", data: "AAAA", mimeType: "image/png" };
+    const user = await fire("message_end", { message: { role: "user", content: [image, { type: "text", text: incoming }], timestamp: 2 } }, ctx) as { message: { content: Array<{ type: string; text?: string }> } };
+    rewritten.push(user.message.content[1]!.text!);
+    assert.deepEqual(user.message.content[0], image);
+    assert.match(user.message.content[1]!.text!, /the next 40 lines repeat an earlier subagent-report message/);
+    // The same repeat in a tool result.
+    const tool = await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx) as { content: Array<{ text: string }> };
+    rewritten.push(tool.content[0]!.text);
+    assert.match(tool.content[0]!.text, /the next 40 lines repeat an earlier subagent-report message — omitted; full text: /);
+    // Reading a stored copy back is a recall and returns the full text unchanged.
+    await toolCall("read", { path }, ctx);
+    assert.equal(await toolResult("read", { path }, incoming, false, ctx), undefined);
+    // An assistant reply is never rewritten.
+    assert.equal(await fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: incoming }] } }, ctx), undefined);
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /3 repeats cut/);
+    assert.match(notices.at(-1)!.text, /1 recall of the full output/);
+  } finally {
+    for (const line of rewritten.flatMap(body => [...body.matchAll(/full text: (.+)\]/g)])) await rm(join(line[1]!, ".."), { recursive: true, force: true });
+  }
+});
+
+test("messages stay whole by default while tool results are cut", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
+  assert.equal(await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx), undefined);
+  assert.equal(await fire("message_end", { message: { role: "user", content: incoming, timestamp: 2 } }, ctx), undefined);
+  const tool = await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx) as { content: Array<{ text: string }> };
+  const path = tool.content[0]!.text.match(/the next 40 lines repeat an earlier subagent-report message — omitted; full text: (.+)\]/)![1]!;
+  await rm(join(path, ".."), { recursive: true, force: true });
+});
+
+test("context.dedupeRuns false keeps repeated runs in messages and tool results, even with dedupeMessages on", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeRuns: false, dedupeMessages: true }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
+  assert.equal(await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx), undefined);
+  assert.equal(await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx), undefined);
+});
+
 test("recall kinds: a scoped search keeps the saving, a whole-file read is counted as such", async () => {
   await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false }, context: { recallTool: "grep" } , ...STACK_BAR }));
   nextAnswers = { retention: "summary_only" };
@@ -1182,7 +1247,7 @@ test("plan: a call right after a text-only message is judged against that messag
   assert.equal(planOf(assistantEntry({ type: "thinking", thinking: "hmm" }), assistantEntry(cleanCall)), undefined, "a message with no text right before is no plan");
 });
 
-test("the agent's plan comes from the message that makes the call or the text-only message right before it, and a mismatch steers", async () => {
+test("the agent's plan comes from the message that makes the call or the text-only message right before it, and a mismatch is traced", async () => {
   await grantConsent();
   prompt = "Verify the RPC endpoint end to end";
   const branch = (...tail: Array<Record<string, unknown>>) => context({ sessionManager: { getBranch: () => [
@@ -1211,9 +1276,8 @@ test("the agent's plan comes from the message that makes the call or the text-on
   sentMessages.length = 0;
   assert.equal(await toolCall("bash", { command: "npm run clean" }, earlier), undefined, "a mismatch warns; it never holds");
   assert.equal(requests.at(-1)!.state.plan, "Let me first list what is in build/ before removing anything.");
-  const steerSent = sentMessages.find(sent => sent.message.customType === "pi-warden-steer");
-  assert.match(steerSent?.message.content ?? "", /^pi-warden: this bash call does something different from what you said you were about to do \(intent mismatch 0\.91\)\. It ran\./);
-  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan\)$/);
+  assert.ok(!sentMessages.some(sent => sent.message.customType === "pi-warden-steer"), "npm run clean has no visible effect: trace-only by default");
+  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only, no visible effect\)$/);
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+bash · .*off plan$/, "the mismatch leads the line as a warn chip");
 
   // A tool-calls-only message after an earlier tool call: the text before that call described it, so no plan, no question.
@@ -1236,11 +1300,47 @@ test("the agent's plan comes from the message that makes the call or the text-on
 
   await runCommand("status");
   const status = notices.at(-1)!.text;
-  assert.match(status, /1 off plan/);
-  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action\);/);
+  assert.match(status, /1 off plan \(1 trace-only\)/);
+  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action, trace-only: invisible\);/);
   const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
   const lines = await readLog(logPath, 4, false);
   assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined], [0, undefined]], "planChars says how often the agent called without a word");
+});
+
+test("intentTraceOnly: an invisible mismatch is traced without a steer, a visible one steers; \"none\" and \"all\" set every call", async () => {
+  prompt = "Verify the RPC endpoint end to end";
+  const plan = "Let me first list what is in build/ before removing anything.";
+  const branch = (command: string) => context({ hasUI: false, sessionManager: { getBranch: () => [
+    { type: "message", message: { role: "user", content: prompt } },
+    assistantEntry({ type: "text", text: plan }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command } }),
+  ] } });
+  const intentSteers = () => sentMessages.filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content));
+  const run = async (intentTraceOnly: string | undefined, command: string, visible = 0.2) => {
+    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, ...(intentTraceOnly ? { intentTraceOnly } : {}) }, ...STACK_BAR }));
+    await sessionStart(context({ hasUI: false }));
+    sentMessages.length = 0;
+    nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, visible, intent_mismatch: 0.91, should_proceed: 1.0 };
+    assert.equal(await toolCall("bash", { command }, branch(command)), undefined, "a mismatch never holds");
+    return intentSteers().length;
+  };
+
+  // Default "invisible": no steer, no headless warn notice, and one trace line that names the mismatch.
+  assert.equal(await run(undefined, "npm run clean"), 0);
+  assert.ok(!sentMessages.some(sent => /ran with a warning/.test(sent.message.content)), "the headless warn steer drops the trace-only reason too");
+  await runCommand("trace", context({ hasUI: false }));
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.equal(trace.match(/intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only, no visible effect\)/g)?.length, 1);
+
+  // A push is visible by code, an install the judge scores visible: the steer still reaches the agent for both.
+  assert.equal(await run(undefined, "git push origin main"), 1);
+  assert.equal(await run(undefined, "npm install left-pad", 0.85), 1);
+  assert.equal(await run(undefined, "npm install left-pad", 0.5), 0);
+  // "none" restores the steer on every mismatch; "all" sends none, visible calls included.
+  assert.equal(await run("none", "npm run clean"), 1);
+  assert.equal(await run("all", "git push origin main"), 0);
+  assert.equal(await run("all", "npm run clean"), 0);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /1 off plan \(1 trace-only\)/);
 });
 
 test("plan: a text-less git push after an earlier plan and an earlier tool call is judged against that plan", async () => {
@@ -4015,14 +4115,23 @@ test("/warden completions offer every subcommand, including recommend and prefs"
   assert.deepEqual(await command.getArgumentCompletions!("pr"), [{ value: "prefs", label: "prefs" }]);
 });
 
-/** A session directory copied from the prefs fixture, dated now so it sits inside the scan window. */
-const prefsSessions = async () => {
+/**
+ * The standing-preference rules count calendar days and a 30-day window, so every prefs test runs on this fixed clock
+ * and fixed file dates, never the wall clock. The runner's Date mock reaches the extension instance Pi's loader built,
+ * and it is restored when the test ends.
+ */
+const PREFS_NOW = Date.parse("2026-01-20T12:00:00.000Z");
+const fixPrefsClock = (t: TestContext) => t.mock.timers.enable({ apis: ["Date"], now: PREFS_NOW });
+
+/** A session directory copied from the prefs fixture, each file dated by its name. */
+const prefsSessions = async (t: TestContext) => {
+  fixPrefsClock(t);
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-ext-"));
   const fixtures = resolve("tests/fixtures/prefs");
-  const now = new Date();
   for (const name of await readdir(fixtures)) {
+    const at = new Date(`${name.slice(0, 10)}T12:00:00.000Z`);
     await writeFile(join(dir, name), await readFile(join(fixtures, name)));
-    await utimes(join(dir, name), now, now);
+    await utimes(join(dir, name), at, at);
   }
   let reads = 0;
   const manager = {
@@ -4033,8 +4142,8 @@ const prefsSessions = async () => {
   return { dir, manager, reads: () => reads };
 };
 
-test("/warden prefs lists the standing preferences with counts, dates, and the hint, and writes nothing", async () => {
-  const sessions = await prefsSessions();
+test("/warden prefs lists the standing preferences with counts, dates, and the hint, and writes nothing", async t => {
+  const sessions = await prefsSessions(t);
   try {
     const ctx = context({ sessionManager: sessions.manager });
     await sessionStart(ctx);
@@ -4042,13 +4151,13 @@ test("/warden prefs lists the standing preferences with counts, dates, and the h
     notices.length = 0;
     await runCommand("prefs", ctx);
     const text = notices.at(-1)!.text;
-    assert.match(text, /^Standing preferences \(repeated in 2\+ of the last 3 sessions of this project\):/);
-    assert.match(text, /Never paste the api_key=\[redacted\] value into the chat log \(2 sessions, last 2026-01-03\)/);
-    assert.match(text, /Dont open pull requests, leave the branch local \(2 sessions, last 2026-01-02\)/);
-    assert.ok(text.endsWith("Add the ones you want to keep to pi-warden.md as rules."));
+    assert.match(text, /^Standing preferences \(repeated in 2\+ of the last 3 sessions of this project; injected from 3 sessions on 2 days\):/);
+    assert.match(text, /Never paste the api_key=\[redacted\] value into the chat log \(2 sessions on 2 days, last 2026-01-03\): not injected: seen in 2 sessions/);
+    assert.match(text, /Dont open pull requests, leave the branch local \(2 sessions on 2 days, last 2026-01-02\): not injected: seen in 2 sessions/);
+    assert.ok(text.endsWith("Add the ones you want to keep to pi-warden.md as rules; /warden prefs forget <n> drops one for good."));
     assert.doesNotMatch(text, /linter|formatter/i);
     assert.equal(networkCalls, 0, "no judgment request");
-    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "no injection by default");
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "nothing passes the injection rules");
     await runCommand("prefs", ctx);
     assert.equal(sessions.reads(), 1, "one scan per session start");
     assert.deepEqual(await readdir(sessions.dir), before);
@@ -4057,29 +4166,108 @@ test("/warden prefs lists the standing preferences with counts, dates, and the h
   }
 });
 
-test("prefs.inject sends one context message at session start, not a steer, and not again on a resume", async () => {
-  const sessions = await prefsSessions();
+/** Three earlier sessions on two fixed days (UTC), before the fixed prefs clock. */
+const STANDING_STAMPS = ["2026-01-17T12:00:00.000Z", "2026-01-19T09:00:00.000Z", "2026-01-19T10:00:00.000Z"];
+const standingSessions = async (t: TestContext, lines: readonly string[][]) => {
+  fixPrefsClock(t);
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-standing-"));
+  for (const [index, messages] of lines.entries()) {
+    const stamp = STANDING_STAMPS[index]!;
+    const entries = [
+      { type: "session", version: 3, id: `s${index}`, timestamp: stamp, cwd: temporary },
+      ...messages.map((content, n) => ({ type: "message", id: `m${n}`, parentId: null, timestamp: stamp, message: { role: "user", content } })),
+    ];
+    await writeFile(join(dir, `s${index}.jsonl`), entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    await utimes(join(dir, `s${index}.jsonl`), new Date(stamp), new Date(stamp));
+  }
+  const manager = { ...sessionManager, getSessionDir: () => dir, getSessionFile: () => join(dir, "current.jsonl"), getSessionId: () => "current-session" };
+  return { dir, manager };
+};
+const SAID = [
+  ["never force-push the release branch", "don't commit or stage it", "always skip the tests before pushing"],
+  ["ok, never force-push the release branch", "don't commit or stage it", "always skip the tests before pushing"],
+  ["please never force-push the release branch. also keep replies short", "don't commit or stage it", "always skip the tests before pushing"],
+];
+
+test("prefs.inject is on by default: one quoted context message at session start, not a steer, and not again on a resume", async t => {
+  const sessions = await standingSessions(t, SAID);
   try {
-    await writeFile(configPath(), JSON.stringify({ prefs: { inject: true }, ...STACK_BAR }));
     sentMessages.length = 0;
     await sessionStart(context({ sessionManager: sessions.manager }));
     const sent = sentMessages.filter(m => m.message.customType === "pi-warden-prefs");
     assert.equal(sent.length, 1);
-    assert.match(sent[0]!.message.content, /^Preferences this user repeated in earlier sessions of this project:\n- Never paste the api_key=\[redacted\]/);
-    assert.ok(sent[0]!.message.content.length <= 600);
+    assert.equal(sent[0]!.message.content, [
+      "Standing preferences for this project, quoted as said in earlier sessions:",
+      "- \"Never force-push the release branch\" (3 sessions)",
+      "If the current request says otherwise, follow the current request.",
+    ].join("\n"));
     assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-steer").length, 0);
     const resumed = { ...sessions.manager, getBranch: () => [{ type: "custom_message", customType: "pi-warden-prefs", content: sent[0]!.message.content }] };
     sentMessages.length = 0;
     await sessionStart(context({ sessionManager: resumed }));
     assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0);
+    await writeFile(configPath(), JSON.stringify({ prefs: { inject: false }, ...STACK_BAR }));
+    await sessionStart(context({ sessionManager: sessions.manager }));
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "inject: false sends nothing");
     assert.equal(networkCalls, 0);
   } finally {
     await rm(sessions.dir, { recursive: true, force: true });
   }
 });
 
-test("enabled: false or prefs.enabled: false reads no session file, even with inject on", async () => {
-  const sessions = await prefsSessions();
+test("/warden prefs names each item's status, and forget drops one for the project", async t => {
+  const sessions = await standingSessions(t, SAID);
+  try {
+    const ctx = context({ sessionManager: sessions.manager });
+    await sessionStart(ctx);
+    notices.length = 0;
+    await runCommand("prefs", ctx);
+    const text = notices.at(-1)!.text;
+    assert.match(text, /1\. Never force-push the release branch \(3 sessions on 2 days, last 2026-01-19\): injected/);
+    assert.match(text, /Don't commit or stage it \(3 sessions on 2 days, last 2026-01-19\): not injected: task-bound/);
+    assert.match(text, /Always skip the tests before pushing \(3 sessions on 2 days, last 2026-01-19\): not injected: weakens a check/);
+    await runCommand("prefs forget 1", ctx);
+    assert.match(notices.at(-1)!.text, /^Forgotten for this project: "Never force-push the release branch"/);
+    await runCommand("prefs", ctx);
+    assert.doesNotMatch(notices.at(-1)!.text, /force-push/);
+    await runCommand("prefs forget 9", ctx);
+    assert.match(notices.at(-1)!.text, /^Usage: \/warden prefs forget <n>/);
+    sentMessages.length = 0;
+    await sessionStart(ctx);
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "a forgotten item is not injected");
+    assert.deepEqual((await readdir(sessions.dir)).sort(), ["s0.jsonl", "s1.jsonl", "s2.jsonl"], "session files untouched");
+  } finally {
+    await rm(join(temporary, "agent", "pi-warden", "prefs"), { recursive: true, force: true });
+    await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+test("warden_remember records a lesson only within five assistant turns of a correction or a stuck, repeat, or done steer", async t => {
+  const sessions = await standingSessions(t, []);
+  const remember = (lesson: string, ctx: ReturnType<typeof context>) =>
+    extension.tools.get("warden_remember")!.definition.execute("call-r", { lesson }, undefined, undefined, ctx as unknown as ExtensionContext)
+      .then(result => (result.content[0] as { text: string }).text);
+  try {
+    const ctx = context({ sessionManager: sessions.manager });
+    await sessionStart(ctx);
+    await newPrompt("Add the export button", ctx);
+    assert.equal(await remember("Never edit the generated client by hand", ctx), "not recorded: no correction or failure to learn from");
+    await newPrompt("no, don't edit the generated client, regenerate it", ctx);
+    assert.equal(await remember("Always skip the tests when the build is slow", ctx), "not recorded: weakens a check");
+    assert.match(await remember("Never edit the generated client by hand", ctx), /^recorded: "Never edit the generated client by hand"/);
+    for (let turn = 0; turn < 6; turn++) await fire("turn_end", {}, ctx);
+    assert.equal(await remember("Always regenerate the client after a schema change", ctx), "not recorded: no correction or failure to learn from");
+    notices.length = 0;
+    await runCommand("prefs", ctx);
+    assert.match(notices.at(-1)!.text, /Never edit the generated client by hand \(agent lesson, recorded in 1 session, last 2026-01-20\): agent lesson, not yet confirmed/);
+  } finally {
+    await rm(join(temporary, "agent", "pi-warden", "prefs"), { recursive: true, force: true });
+    await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+test("enabled: false or prefs.enabled: false reads no session file, even with inject on", async t => {
+  const sessions = await prefsSessions(t);
   try {
     for (const config of [{ enabled: false, prefs: { inject: true } }, { prefs: { enabled: false, inject: true } }]) {
       await writeFile(configPath(), JSON.stringify({ ...config, ...STACK_BAR }));
@@ -4094,5 +4282,139 @@ test("enabled: false or prefs.enabled: false reads no session file, even with in
     assert.equal(sessions.reads(), 0, "the session directory was never asked for");
   } finally {
     await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+/** A session with an id, in a project directory; loops are kept per session id and project. */
+const loopsContext = (session: string, cwd = temporary) => context({ cwd, sessionManager: { ...sessionManager, getSessionId: () => session } });
+const loopsTool = (params: Record<string, unknown>, ctx: ReturnType<typeof context>) =>
+  extension.tools.get("warden_loops")!.definition.execute("call-l", params, undefined, undefined, ctx as unknown as ExtensionContext)
+    .then(result => (result.content[0] as { text: string }).text);
+const recallTool = (ctx: ReturnType<typeof context>) =>
+  extension.tools.get("warden_recall")!.definition.execute("call-c", {}, undefined, undefined, ctx as unknown as ExtensionContext)
+    .then(result => (result.content[0] as { text: string }).text);
+const loopsDir = () => join(temporary, "agent", "pi-warden", "loops");
+
+test("warden_loops: add, done, drop, and list through the tool; /warden loops shows them to the user", async () => {
+  const ctx = loopsContext("session-a");
+  try {
+    await sessionStart(ctx);
+    assert.equal(await loopsTool({ action: "add", text: "Bump the version", when: "after CI passes" }, ctx), "added #1: Bump the version (when: after CI passes)");
+    assert.equal(await loopsTool({ action: "add", text: "Rerun the flaky upload test" }, ctx), "added #2: Rerun the flaky upload test");
+    assert.equal(await loopsTool({ action: "add", text: "Answer the review thread" }, ctx), "added #3: Answer the review thread");
+    assert.equal(await loopsTool({ action: "done", id: 2 }, ctx), "done #2: Rerun the flaky upload test");
+    assert.equal(await loopsTool({ action: "drop", id: 3, reason: "the thread was resolved" }, ctx), "dropped #3: Answer the review thread");
+    assert.equal(await loopsTool({ action: "list" }, ctx), "Open loops:\n- #1 Bump the version (when: after CI passes)\n(2 closed)");
+    notices.length = 0;
+    await runCommand("loops", ctx);
+    assert.match(notices.at(-1)!.text, /^Open loops \(1\):\n- #1 Bump the version \(when: after CI passes\)\nClosed \(2\):/);
+    assert.equal(networkCalls, 0, "no judgment request");
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
+  }
+});
+
+test("warden_loops: the agent_end notice comes once per unchanged list, for the next turn, as a loops steer", async () => {
+  const ctx = loopsContext("session-notice");
+  try {
+    await sessionStart(ctx);
+    await newPrompt("Ship the release", ctx);
+    await loopsTool({ action: "add", text: "Bump the version", when: "after CI passes" }, ctx);
+    sentMessages.length = 0;
+    await agentEnd("CI is running; I will bump the version after it passes.", ctx);
+    const notices = () => sentMessages.filter(m => m.message.customType === "pi-warden-steer" && /open loop/.test(m.message.content));
+    assert.equal(notices().length, 1);
+    assert.match(notices()[0]!.message.content, /^pi-warden: 1 open loop you promised in this session:\n- #1 Bump the version \(when: after CI passes\)\n/);
+    assert.equal(notices()[0]!.options?.deliverAs, "nextTurn", "it starts no turn of its own");
+    await newPrompt("status?", ctx);
+    await agentEnd("Still waiting for CI.", ctx);
+    assert.equal(notices().length, 1, "the same unchanged list is not named again");
+    await loopsTool({ action: "add", text: "Tag the release" }, ctx);
+    await newPrompt("go on", ctx);
+    await agentEnd("Waiting.", ctx);
+    assert.equal(notices().length, 2, "a changed list is named again");
+    await loopsTool({ action: "done", id: 1 }, ctx);
+    await loopsTool({ action: "done", id: 2 }, ctx);
+    await newPrompt("done?", ctx);
+    await agentEnd("All done.", ctx);
+    assert.equal(notices().length, 2, "no notice without open loops");
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
+  }
+});
+
+test("warden_loops: open loops survive a resume, which lists them once; a new session does not", async () => {
+  const ctx = loopsContext("session-resume");
+  try {
+    await sessionStart(ctx);
+    await loopsTool({ action: "add", text: "Bump the version", when: "after CI passes" }, ctx);
+    sentMessages.length = 0;
+    await fire("session_start", { reason: "resume" }, ctx);
+    const listed = sentMessages.filter(m => m.message.customType === "pi-warden-loops");
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0]!.message.content, "Open loops from earlier in this session (warden_loops):\n- #1 Bump the version (when: after CI passes)\nClose each with warden_loops done or drop once it is finished or no longer needed.");
+    assert.equal(await loopsTool({ action: "list" }, ctx), "Open loops:\n- #1 Bump the version (when: after CI passes)");
+    const resumedAgain = loopsContext("session-resume");
+    (resumedAgain.sessionManager as { getBranch: () => unknown[] }).getBranch = () => [{ type: "custom_message", customType: "pi-warden-loops", content: listed[0]!.message.content }];
+    sentMessages.length = 0;
+    await fire("session_start", { reason: "resume" }, resumedAgain);
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-loops").length, 0, "the branch already carries the same list");
+    await fire("session_start", { reason: "startup" }, loopsContext("session-other"));
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-loops").length, 0);
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
+  }
+});
+
+test("warden_loops: a loop of session A is invisible in session B and in another project", async () => {
+  const other = await mkdtemp(join(tmpdir(), "pi-warden-loops-project-"));
+  try {
+    const a = loopsContext("session-a");
+    await sessionStart(a);
+    await loopsTool({ action: "add", text: "Bump the version" }, a);
+    const b = loopsContext("session-b");
+    await sessionStart(b);
+    assert.equal(await loopsTool({ action: "list" }, b), "No open loops.");
+    assert.equal(await loopsTool({ action: "done", id: 1 }, b), "no loop #1 in this session");
+    const elsewhere = loopsContext("session-a", other);
+    await sessionStart(elsewhere);
+    assert.equal(await loopsTool({ action: "list" }, elsewhere), "No open loops.", "the same session id in another project");
+    sentMessages.length = 0;
+    await agentEnd("done", elsewhere);
+    assert.equal(sentMessages.filter(m => /open loop/.test(m.message.content)).length, 0);
+    await sessionStart(a);
+    assert.equal(await loopsTool({ action: "list" }, a), "Open loops:\n- #1 Bump the version");
+    const noId = context();
+    assert.equal(await loopsTool({ action: "list" }, noId), "not available: this session has no id to keep loops under");
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
+    await rm(other, { recursive: true, force: true });
+  }
+});
+
+test("the compaction appendix carries the open loops, and warden_recall prints its failed, verification, and saved sections", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  const ctx = loopsContext("session-compact");
+  try {
+    await sessionStart(ctx);
+    await newPrompt("Fix the build", ctx);
+    await toolResult("bash", { command: "npm run build" }, "src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.", true, ctx);
+    await toolResult("bash", { command: "npm test" }, "all 42 tests passed", false, ctx);
+    await toolResult("edit", { path: join(temporary, "src/a.ts"), edits: [] }, "Edited src/a.ts", false, ctx);
+    await loopsTool({ action: "add", text: "Rerun the build", when: "after the type fix" }, ctx);
+    sentMessages.length = 0;
+    const compactHandlers = extension.handlers.get("session_compact") ?? [];
+    await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, ctx]);
+    const appendix = sentMessages.find(m => m.message.customType === "pi-warden-compact-evidence")!.message.content;
+    assert.match(appendix, /### Open loops\n.*\n- #1 Rerun the build \(when: after the type fix\)/);
+    const recall = await recallTool(ctx);
+    const sections = recall.split("\n\n");
+    assert.deepEqual(sections.map(section => section.split("\n", 1)[0]), ["### Tried and failed", "### Verification"]);
+    for (const section of sections) assert.ok(appendix.includes(section), `the appendix carries the same text: ${section}`);
+    assert.match(recall, /npm run build → src\/a\.ts\(3,7\): error TS2322/);
+    assert.match(recall, /last passing check: npm test; code changed since last passing check: yes/);
+    assert.equal(networkCalls, 0, "recall and loops make no judgment request");
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
   }
 });

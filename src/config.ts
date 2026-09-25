@@ -51,6 +51,8 @@ export interface ActionGuardConfig {
   intentMismatch: number;
   /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
   visibleMismatch: number;
+  /** Which intent mismatches stay in the trace without a steer: "invisible" (default) a call with no visible effect (neither a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`, nor judged `visible` at 0.8 or more), "all" every one, "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. */
+  intentTraceOnly: "invisible" | "all" | "none";
   /** Low P(should_proceed) is trace-only unless steer is enabled; hold is the inclusive threshold, not a blocking decision. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
   shouldProceed: { hold: number; steer: boolean };
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
@@ -245,6 +247,10 @@ export interface ContextConfig {
   formatConfidence: number;
   /** Append a compact evidence appendix to the summary during compaction. */
   compactAppendix: boolean;
+  /** A run of at least 20 lines and 1500 characters in a new tool result that repeats text already in context becomes one pointer line (code only). */
+  dedupeRuns: boolean;
+  /** The same for user and custom messages, when `dedupeRuns` is also on. Off by default: a repeat the user sends can itself carry meaning ("here it is again, still failing"). */
+  dedupeMessages: boolean;
   /** Prevention before the call: a bash action request asks whether the command will print far more than the agent needs. Never holds. */
   largeOutput: LargeOutputConfig;
 }
@@ -309,7 +315,7 @@ export type WardenMode = "steer" | "confirm" | "advise";
 export interface PrefsConfig {
   /** Read this project's earlier session files for preferences the user repeated (`/warden prefs`). Local, code only. */
   enabled: boolean;
-  /** At session start, send the standing preferences to the agent as one context message. Off by default. */
+  /** At session start, send the standing preferences that pass every injection rule to the agent as one context message. */
   inject: boolean;
 }
 
@@ -439,6 +445,7 @@ export function defaultConfig(): WardenConfig {
       offTask: { warn: 0.6, steer: 0.85 },
       intentMismatch: 0.9,
       visibleMismatch: 0.8,
+      intentTraceOnly: "invisible",
       shouldProceed: { hold: 0.6, steer: false },
       feedbackLog: true,
       commandRules: [],
@@ -454,7 +461,7 @@ export function defaultConfig(): WardenConfig {
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true },
     rules: { enabled: true, threshold: 0.7, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
-    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, largeOutput: { enabled: true, threshold: 0.85 } },
+    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
     judge: { cooldownMs: 60000, failuresBeforeCooldown: 3 },
@@ -479,7 +486,7 @@ export function defaultConfig(): WardenConfig {
       advanceThreshold: 0.70,
       loadThreshold: 1.0,
     },
-    prefs: { enabled: true, inject: false },
+    prefs: { enabled: true, inject: true },
   };
 }
 
@@ -680,6 +687,7 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     offTask: offTaskThreshold(raw.offTask, base.offTask),
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
     visibleMismatch: Math.min(probability(raw.visibleMismatch, base.visibleMismatch), probability(raw.intentMismatch, base.intentMismatch)),
+    intentTraceOnly: raw.intentTraceOnly === "invisible" || raw.intentTraceOnly === "all" || raw.intentTraceOnly === "none" ? raw.intentTraceOnly : base.intentTraceOnly,
     shouldProceed: {
       hold: probability((raw.shouldProceed as { hold?: number } | undefined)?.hold, base.shouldProceed.hold),
       steer: boolean((raw.shouldProceed as { steer?: boolean } | undefined)?.steer, base.shouldProceed.steer),
@@ -864,6 +872,8 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
       recallTool: isRecallTool(raw.context.recallTool) ? raw.context.recallTool : base.context.recallTool,
       formatConfidence: probability(raw.context.formatConfidence, base.context.formatConfidence),
       compactAppendix: boolean(raw.context.compactAppendix, base.context.compactAppendix),
+      dedupeRuns: boolean(raw.context.dedupeRuns, base.context.dedupeRuns),
+      dedupeMessages: boolean(raw.context.dedupeMessages, base.context.dedupeMessages),
       largeOutput: isObject(raw.context.largeOutput) ? {
         enabled: boolean(raw.context.largeOutput.enabled, base.context.largeOutput.enabled),
         threshold: probability(raw.context.largeOutput.threshold, base.context.largeOutput.threshold),

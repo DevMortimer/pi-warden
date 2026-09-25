@@ -58,9 +58,11 @@ import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
-import { buildCompactSnapshot, compactAppendix } from "./compact.js";
-import { formatPrefs, prefsMessage, scanPreferences } from "./prefs.js";
-import type { PrefsScan } from "./prefs.js";
+import { SeenText, collapseRuns, seenItem } from "./dedupe.js";
+import { buildCompactSnapshot, compactAppendix, recallText } from "./compact.js";
+import { applyLoopAction, formatLoopsForUser, formatOpenLoops, LOOP_ACTIONS, LOOP_CHARS, loopsFingerprint, loopsPath, openLoops, readLoops, writeLoops } from "./loops.js";
+import { emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, isCorrection, LESSON_CHARS, LESSON_TURNS, NO_LESSON_SIGNAL, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences, writePrefsStore } from "./prefs.js";
+import type { PrefItem, PrefsScan } from "./prefs.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
 import { actionDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
@@ -77,10 +79,10 @@ const CONFIRM_TEXT_LIMIT = 500;
 const SHELL_RULES_CHECKS = 5;
 
 /** Which guard spent the user's attention. The status line reports one count per guard. */
-export type SteerGuard = "action" | "rules" | "security" | "stuck" | "repeat" | "done" | "prose" | "runaway" | "subagent" | "conscience";
+export type SteerGuard = "action" | "rules" | "security" | "stuck" | "repeat" | "done" | "prose" | "runaway" | "subagent" | "conscience" | "loops";
 
-interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; cooldownSkips: number; steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number; restatements: number }
-const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, cooldownSkips: 0, steers: 0, steersSkipped: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0, restatements: 0 });
+interface Stats { inspected: number; judged: number; warned: number; held: number; approved: number; offPlan: number; offPlanTraceOnly: number; offTask: number; slop: number; ruleChecks: number; ruleViolations: number; pathNotes: number; stuckChecks: number; stuck: number; doneChecks: number; unverified: number; proseChecks: number; proseNudges: number; runaway: number; errors: number; cooldownSkips: number; steers: number; steersSkipped: number; steerGuards: Partial<Record<SteerGuard, number>>; subagentReports: number; subagentWoken: number; restatements: number }
+const freshStats = (): Stats => ({ inspected: 0, judged: 0, warned: 0, held: 0, approved: 0, offPlan: 0, offPlanTraceOnly: 0, offTask: 0, slop: 0, ruleChecks: 0, ruleViolations: 0, pathNotes: 0, stuckChecks: 0, stuck: 0, doneChecks: 0, unverified: 0, proseChecks: 0, proseNudges: 0, runaway: 0, errors: 0, cooldownSkips: 0, steers: 0, steersSkipped: 0, steerGuards: {}, subagentReports: 0, subagentWoken: 0, restatements: 0 });
 
 /**
  * One steer message can carry notes from more than one guard, so the per-guard numbers may add up to more than the
@@ -226,6 +228,7 @@ function agentDeliveryReasons(verdict: Verdict): string[] {
   const indexes = [
     verdict.offTaskTraceOnly ? verdict.offTaskTraceOnlyReasonIndex : undefined,
     verdict.shouldProceedTraceOnly ? verdict.shouldProceedTraceOnlyReasonIndex : undefined,
+    verdict.intentTraceOnly ? verdict.intentTraceOnlyReasonIndex : undefined,
   ].filter((index): index is number => index !== undefined && index >= 0 && index < verdict.reasons.length);
   if (!indexes.length) return verdict.reasons;
   return verdict.reasons.filter((_reason, reasonIndex) => !indexes.includes(reasonIndex));
@@ -238,6 +241,7 @@ function agentDeliveryVerdict(verdict: Verdict): Verdict {
   const deliveryVerdict: Verdict = { ...verdict, reasons };
   if (verdict.offTaskTraceOnly) delete deliveryVerdict.offTaskSteer;
   if (verdict.shouldProceedTraceOnly) delete deliveryVerdict.shouldProceedSteer;
+  if (verdict.intentTraceOnly) delete deliveryVerdict.intentMismatch;
   return deliveryVerdict;
 }
 
@@ -405,7 +409,44 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
     const dir = typeof manager.getSessionDir === "function" ? manager.getSessionDir() : undefined;
     const exclude = typeof manager.getSessionFile === "function" ? manager.getSessionFile() : undefined;
-    return prefsScan = dir ? scanPreferences({ dir, exclude, cwd: ctx.cwd }) : Promise.resolve({ prefs: [], scanned: 0, directories: 0, ms: 0 });
+    return prefsScan = dir ? scanPreferences({ dir, exclude, cwd: ctx.cwd }) : Promise.resolve({ prefs: [], candidates: [], counts: emptyWordCounts(), project: ctx.cwd, scanned: 0, directories: 0, ms: 0 });
+  };
+  /** The scan, the project's lesson file, and every listed item with its status; read fresh so `forget` numbers match. */
+  const evaluatedPrefs = async (ctx: ExtensionContext | ExtensionCommandContext): Promise<{ scan: PrefsScan; path: string; items: PrefItem[] }> => {
+    const scan = await standingPrefs(ctx);
+    const path = prefsStorePath(scan.project);
+    return { scan, path, items: evaluatePrefs(scan, await readPrefsStore(path)) };
+  };
+  // Assistant turns this session, and the turn of the last user correction or stuck, repeat, or done-check steer in this
+  // run: `warden_remember` records a lesson only within LESSON_TURNS turns of one.
+  let assistantTurns = 0;
+  let lessonSignalTurn: number | undefined;
+  // The open-loop list the last end-of-run reminder named: the same unchanged list is not named again.
+  let loopsReminded: string | undefined;
+  const LOOPS_TYPE = `${PACKAGE_NAME}-loops`;
+  /** The session's loops file, or undefined when the host gives the session no id (nothing to key it by). */
+  const loopsFile = (ctx: ExtensionContext | ExtensionCommandContext): string | undefined => {
+    const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]> | undefined;
+    const id = typeof manager?.getSessionId === "function" ? manager.getSessionId() : undefined;
+    return id ? loopsPath(ctx.cwd, id) : undefined;
+  };
+  /**
+   * On resume, one message lists the loops still open, so a session picked up later knows what it promised. Not a steer.
+   * A branch whose last loops message says the same already has it.
+   */
+  const announceLoops = async (ctx: ExtensionContext, config: WardenConfig, branch: ReadonlyArray<{ type: string; customType?: string; content?: unknown }>) => {
+    const file = loopsFile(ctx);
+    if (!file) return;
+    try {
+      const open = openLoops(await readLoops(file));
+      if (!open.length) return;
+      const content = `Open loops from earlier in this session (warden_loops):\n${formatOpenLoops(open)}\nClose each with warden_loops done or drop once it is finished or no longer needed.`;
+      const last = [...branch].reverse().find(entry => entry.type === "custom_message" && entry.customType === LOOPS_TYPE);
+      if (last?.content === content) return;
+      pi.sendMessage({ customType: LOOPS_TYPE, content, display: config.steerVisible });
+    } catch (error) {
+      console.warn("pi-warden: reading the loops file failed:", error instanceof Error ? error.message : String(error));
+    }
   };
 
   // A partially updated module graph can hand this build a config without the sections it expects; see shape.ts.
@@ -594,6 +635,47 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   };
   /** A judged output the saver left whole gets a trace line with its verdict, so the confidence gate can be calibrated.
    *  Trace only: nothing happened to the output, so the status line keeps the last real context event. */
+  /** Text already in context on the current branch, for repeated-run detection. Synced before each check, not kept by hand. */
+  const seenText = new SeenText();
+  const syncSeen = (ctx: ExtensionContext) => {
+    const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
+    // Compaction-aware when the host has it: text a compaction summarized is no longer in context, so nothing may point to it.
+    const entries = typeof manager.buildContextEntries === "function" ? manager.buildContextEntries() : typeof manager.getBranch === "function" ? manager.getBranch() : [];
+    seenText.sync(entries.map(seenItem).filter(item => item !== undefined));
+  };
+  /** `text` with each run that repeats context replaced by a pointer line, or undefined when nothing repeats or the copy cannot be stored. */
+  const dedupeText = async (ctx: ExtensionContext, config: WardenConfig, text: string, source: string): Promise<string | undefined> => {
+    const runs = seenText.find(text);
+    if (!runs.length) return undefined;
+    try {
+      const path = await saveOutput(text);
+      const collapsed = collapseRuns(text, runs, path);
+      const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(collapsed);
+      ledger.repeat(path, bytesSaved, { tool: source, bytes: Buffer.byteLength(text) });
+      savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: source, retention: "repeat", bytesSaved: String(bytesSaved) }), [
+        ...runs.map(run => `${run.lines} lines (${run.chars} characters) repeat ${run.where}`),
+        `saved ${bytesSaved} bytes; full text: ${path}`,
+        formatLedger(ledger.snapshot()),
+      ]);
+      return collapsed;
+    } catch {
+      noteError(ctx, "Could not store full text; keeping the repeated run.", undefined);
+      return undefined;
+    }
+  };
+  /** Text parts only; images and other parts keep their place and bytes. */
+  const dedupeContent = async <Part extends { type: string }>(ctx: ExtensionContext, config: WardenConfig, content: Part[], source: string): Promise<Part[] | undefined> => {
+    let changed: Part[] | undefined;
+    for (let index = 0; index < content.length; index++) {
+      const part = content[index]! as Part & { text?: unknown };
+      if (part.type !== "text" || typeof part.text !== "string") continue;
+      const text = await dedupeText(ctx, config, part.text, source);
+      if (text === undefined) continue;
+      changed ??= [...content];
+      changed[index] = { ...part, text };
+    }
+    return changed;
+  };
   const recordKeptWhole = (config: WardenConfig, tool: string, verdict: OutputVerdict, prefix = "") => {
     trace.push({ at: Date.now(), guard: "context", line: renderTemplate(config.widget.context, { tool, retention: "kept whole" }), details: [
       `${prefix}kept whole: retention ${verdict.retention}; confidence ${verdict.confidence?.toFixed(2)}; format ${verdict.format ?? "generic"}${verdict.formatConfidence === undefined ? "" : ` (${verdict.formatConfidence.toFixed(2)})`}; ${verdict.model}; ${verdict.elapsedMs} ms`,
@@ -659,6 +741,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean }): boolean => {
     const names = typeof guard === "string" ? [guard] : [...guard];
     for (const name of names) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
+    if (names.some(name => name === "stuck" || name === "repeat" || name === "done")) lessonSignalTurn = assistantTurns;
     const critical = names.every(name => CRITICAL_STEER_GUARDS.has(name));
     // A notice delivered once is already in the agent's context. Sending the repeat again costs the accounting turn it
     // forbids, so repeats are recorded only. The same goes for notices past the per-run steer budget: a steer sent during
@@ -775,6 +858,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       try { await rm(dir, { recursive: true, force: true }); } catch (err) { console.warn("pi-warden: temp cleanup failed:", err); }
     }
     ledger.reset();
+    seenText.clear();
     savingEntry = undefined;
     compressionLearner.reset();
     secretsSeen.clear();
@@ -794,6 +878,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     notifier = undefined;
     lastNotifiedAt = 0;
     prefsScan = undefined;
+    assistantTurns = 0;
+    lessonSignalTurn = undefined;
+    loopsReminded = undefined;
     // Load capability indexes (once per session, overwritten on every /warden index run).
     globalIndexFile = readIndex(indexPath("global")) ?? undefined;
     projectIndexFile = readIndex(indexPath("project", ctx.cwd)) ?? undefined;
@@ -808,18 +895,19 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (ctx.hasUI) ctx.ui.notify(msg, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: msg, display: true });
     }
     const opening = configFor(ctx);
-    if (opening.enabled && opening.prefs.enabled && opening.prefs.inject) {
-      // A resumed or reloaded session already carries the message; sending it again would repeat it in the context.
-      const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
-      if (branch.some(entry => entry.type === "custom_message" && entry.customType === PREFS_TYPE)) return;
+    // A resumed or reloaded session already carries the message; sending it again would repeat it in the context.
+    const openingBranch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
+    const prefsSent = openingBranch.some(entry => entry.type === "custom_message" && entry.customType === PREFS_TYPE);
+    if (opening.enabled && opening.prefs.enabled && opening.prefs.inject && !prefsSent) {
       try {
-        const message = prefsMessage((await standingPrefs(ctx)).prefs);
+        const message = prefsMessage((await evaluatedPrefs(ctx)).items);
         // Not a steer; one message per session; do not spend a steer unit.
         if (message) pi.sendMessage({ customType: PREFS_TYPE, content: message, display: opening.steerVisible });
       } catch (error) {
         console.warn("pi-warden: standing preferences scan failed:", error instanceof Error ? error.message : String(error));
       }
     }
+    if (opening.enabled && _event.reason === "resume") await announceLoops(ctx, opening, openingBranch);
   });
 
   // A new user prompt starts a new attempt history, a new steer budget, and a new restatement window; answering the
@@ -833,6 +921,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     doneNudged = false;
     wardenContinuation = false;
     steersThisRun = 0;
+    lessonSignalTurn = isCorrection(event.prompt ?? "") ? assistantTurns : undefined;
     finals.reset();
     runaway.reset();
     runawayStops = 0;
@@ -1104,6 +1193,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
 
   // Every turn that runs after a compression is a turn that did not carry the removed text.
   pi.on("turn_end", async (_event, ctx) => {
+    assistantTurns++;
     ledger.turnEnd();
     if (savingEntry) trace.amend(savingEntry, `at turn end: ${formatLedger(ledger.snapshot())}`);
     savingEntry = undefined;
@@ -1327,8 +1417,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // The warn notice below names the mismatch to the user; the agent gets the steer with the other notes.
     if (verdict.intentMismatch) {
       stats.offPlan++;
-      noteGuards.add("action");
-      notes.push(intentSteer(verdict));
+      if (verdict.intentTraceOnly) stats.offPlanTraceOnly++;
+      else {
+        noteGuards.add("action");
+        notes.push(intentSteer(verdict));
+      }
     }
     if (verdict.offTaskSteer) {
       stats.offTask++;
@@ -1686,6 +1779,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
       if (!compressed && !ctx.signal?.aborted && output.confidence !== undefined) recordKeptWhole(config, event.toolName, output);
     }
+    // A recall brings the stored text back on purpose, and a duplicate note has nothing left to cut.
+    if (config.context.enabled && config.context.dedupeRuns && !earlier && !recallRead && !ctx.signal?.aborted) {
+      syncSeen(ctx);
+      const deduped = await dedupeContent(ctx, config, content, event.toolName);
+      if (deduped) content = deduped;
+    }
     if (key && !earlier) ledger.remember(key, event.toolName, storedPath);
     // The banner in the result already tells the agent, so the notice rides the result content alone and is not also
     // steered. A steer sent here would join the request that carries this result and cost no extra turn
@@ -1775,6 +1874,22 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     return patch;
   });
 
+  // Opt-in: a relayed report that pastes earlier turns again keeps only its new part. Pi persists the replaced message.
+  pi.on("message_end", async (event, ctx) => {
+    const config = configFor(ctx);
+    const message = event.message;
+    if (!config.enabled || !config.context.enabled || !config.context.dedupeRuns || !config.context.dedupeMessages) return;
+    if (message.role !== "user" && message.role !== "custom") return;
+    syncSeen(ctx);
+    const source = message.role === "custom" ? `${message.customType} message` : "user message";
+    if (typeof message.content === "string") {
+      const text = await dedupeText(ctx, config, message.content, source);
+      return text === undefined ? undefined : { message: { ...message, content: text } };
+    }
+    const content = await dedupeContent(ctx, config, message.content, source);
+    return content ? { message: { ...message, content } } : undefined;
+  });
+
   // The agent has caught up and Pi will not continue on its own: the one moment a wake costs the user nothing.
   pi.on("agent_settled", async (_event, ctx) => {
     await checkSubagentReports(ctx, configFor(ctx));
@@ -1789,31 +1904,29 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Compaction evidence appendix: after compaction succeeds, send the evidence warden holds as one
   // custom message so the agent can prefer saved paths over re-running commands. This is not a steer
   // and does not spend a steer unit; it is one message per compaction, the same path steers use.
+  /** The session's evidence as the compaction appendix and `warden_recall` both read it. */
+  const evidenceSnapshot = (ctx: ExtensionContext, openLoopsText?: string) => buildCompactSnapshot({
+    savedOutputs: ledger.storedOutputs(),
+    checks: evidence.checks.map((check, index) => ({ command: check.call, passed: check.passed, runIndex: 1, indexInRun: index })),
+    holds: holds.records().filter(r => r.held).map(r => ({ tool: r.tool, preview: r.callExcerpt ?? "", outcome: r.outcome })),
+    attempts: attempts.attempts,
+    evidence,
+    activeTask: latestUserPrompt(ctx),
+    runs: 1,
+    ...(openLoopsText ? { openLoops: openLoopsText } : {}),
+  });
+
   pi.on("session_compact", async (_event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled || !config.context.compactAppendix) return;
     try {
-      const checkRecords = evidence.checks.map((check, index) => ({
-        command: check.call,
-        passed: check.passed,
-        runIndex: 1,
-        indexInRun: index,
-      }));
-      const holdRecords = holds.records().filter(r => r.held).map(r => ({
-        tool: r.tool,
-        preview: r.callExcerpt ?? "",
-        outcome: r.outcome,
-      }));
-      const task = latestUserPrompt(ctx);
-      const snapshot = buildCompactSnapshot({
-        savedOutputs: ledger.storedOutputs(),
-        checks: checkRecords,
-        holds: holdRecords,
-        attempts: attempts.attempts,
-        evidence,
-        activeTask: task,
-        runs: 1,
-      });
+      const file = loopsFile(ctx);
+      // An unreadable loops file costs the appendix its loops section, not the evidence.
+      const loopsText = file ? await readLoops(file).then(store => formatOpenLoops(openLoops(store)), (error: unknown) => {
+        record(ctx, config, "action", "loops read error", [`reading the loops file failed: ${error instanceof Error ? error.message : String(error)}`]);
+        return undefined;
+      }) : undefined;
+      const snapshot = evidenceSnapshot(ctx, loopsText);
       const appendix = compactAppendix(snapshot);
       if (!appendix) return;
       // Not a steer; one message per compaction; do not spend a steer unit.
@@ -1842,6 +1955,24 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     conscienceGeneration++;
   });
 
+  /**
+   * One short reminder of the open loops when a run ends, for the next turn: it starts no turn of its own, counts against
+   * the steer budget as `loops`, and names the same unchanged list only once.
+   */
+  const remindLoops = async (ctx: ExtensionContext, config: WardenConfig) => {
+    const file = loopsFile(ctx);
+    if (!file) return;
+    try {
+      const open = openLoops(await readLoops(file));
+      const fingerprint = loopsFingerprint(open);
+      if (!open.length || fingerprint === loopsReminded) return;
+      const notice = `pi-warden: ${open.length} open loop${open.length === 1 ? "" : "s"} you promised in this session:\n${formatOpenLoops(open)}\nClose each with warden_loops done or drop once it is finished or no longer needed.`;
+      if (steer(config, "loops", notice, { deliverAs: "nextTurn" })) loopsReminded = fingerprint;
+    } catch (error) {
+      record(ctx, config, "action", "loops reminder error", [`reading the loops file failed: ${error instanceof Error ? error.message : String(error)}`]);
+    }
+  };
+
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
@@ -1857,6 +1988,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       else steer(config, "runaway", nudge, { triggerTurn: false, display: true });
       return;
     }
+    await remindLoops(ctx, config);
     const finalMessage = finalAssistantText(event.messages);
     // Restatement is measured in code, before any judging: the run that collects five accounting replies restating the
     // same completion status is the noise the user sees, and it is invisible to every per-reply and per-call guard.
@@ -1955,9 +2087,70 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     });
   }
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "recommend"];
+  // A plain JSON Schema: Pi compiles tool schemas with TypeBox, which accepts one, and pi-warden keeps no TypeBox dependency.
+  const toolParameters = (properties: Record<string, unknown>, required: string[]) =>
+    ({ type: "object", properties, required, additionalProperties: false }) as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+  const toolReply = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined });
+  const rememberParameters = toolParameters(
+    { lesson: { type: "string", maxLength: LESSON_CHARS, description: `One standing instruction for this project, at most ${LESSON_CHARS} characters, e.g. "Never X" or "Always Y".` } },
+    ["lesson"],
+  );
+  pi.registerTool({
+    name: "warden_remember",
+    label: "warden remember",
+    description: `Record a standing lesson for this project, so later sessions keep it. Use it only right after the user corrected you, or after a mistake you had to undo; never for task notes, plans, or progress. The lesson is one instruction in a standing form (don't, never, always, stop, from now on, next time), names no ticket, branch, PR, or hash, and never skips a test, check, review, or confirmation. It reaches later sessions only once it is confirmed.`,
+    parameters: rememberParameters,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const config = configFor(ctx);
+      if (!config.enabled || !config.prefs.enabled) return toolReply(`not recorded: standing preferences are off (${config.enabled ? "prefs.enabled" : "enabled"} is false)`);
+      const signal = lessonSignalTurn !== undefined && assistantTurns - lessonSignalTurn <= LESSON_TURNS;
+      const lesson = typeof (params as { lesson?: unknown }).lesson === "string" ? (params as { lesson: string }).lesson : "";
+      if (!signal) return toolReply(NO_LESSON_SIGNAL);
+      const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
+      const session = typeof manager.getSessionId === "function" ? manager.getSessionId() : "unknown";
+      const scan = await standingPrefs(ctx);
+      const path = prefsStorePath(scan.project);
+      const result = recordLesson({ lesson, session, now: Date.now(), signal, scan, store: await readPrefsStore(path) });
+      if (result.store) await writePrefsStore(path, result.store);
+      return toolReply(result.reply);
+    },
+  });
+
+  pi.registerTool({
+    name: "warden_loops",
+    label: "warden loops",
+    description: `Keep open loops for this session, so a long session never loses a promise. Whenever you promise to do something later ("after CI passes I will bump the version", "I will come back to the flaky test"), add a loop; mark it done when you did it, or drop it with a reason when it is no longer needed. Actions: add (text, at most ${LOOP_CHARS} characters, and an optional when condition such as "after CI passes"), done (id), drop (id and reason), list. Open loops are shown again after compaction, at the end of a run, and on resume. They belong to this session only.`,
+    parameters: toolParameters({
+      action: { type: "string", enum: [...LOOP_ACTIONS], description: "add, done, drop, or list." },
+      text: { type: "string", maxLength: LOOP_CHARS, description: "For add: what you promised to do." },
+      when: { type: "string", maxLength: LOOP_CHARS, description: "For add, optional: the condition that makes it due." },
+      id: { type: "integer", minimum: 1, description: "For done and drop: the loop number." },
+      reason: { type: "string", maxLength: LOOP_CHARS, description: "For drop: why it is no longer needed." },
+    }, ["action"]),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!configFor(ctx).enabled) return toolReply("not available: pi-warden is off (enabled is false)");
+      const file = loopsFile(ctx);
+      if (!file) return toolReply("not available: this session has no id to keep loops under");
+      const result = applyLoopAction(await readLoops(file), params as Record<string, unknown>, Date.now());
+      if (result.store) await writeLoops(file, result.store);
+      return toolReply(result.reply);
+    },
+  });
+
+  pi.registerTool({
+    name: "warden_recall",
+    label: "warden recall",
+    description: "Recall what was already tried in this session before you try it again: the failed attempts with their error lines, the last passing check and whether the code changed since, and the paths of saved full outputs (read those instead of re-running the command). Read-only; takes no arguments.",
+    parameters: toolParameters({}, []),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      if (!configFor(ctx).enabled) return toolReply("not available: pi-warden is off (enabled is false)");
+      return toolReply(recallText(evidenceSnapshot(ctx)));
+    },
+  });
+
+  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend"];
   pi.registerCommand("warden", {
-    description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, and a synthetic guard test",
+    description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, open loops, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
       return matches.length ? matches : null;
@@ -1986,9 +2179,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             : `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, ${ls.labeled} labeled, ${ls.declined + ls.replanned} stood (${ls.declined + ls.replanned}/${ls.labeled}), ${ls.allowed} allowed (${ls.accepted} accepted, ${ls.regretted} regretted).`;
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}${config.typesafeBackend !== "typesafe" ? ` (${config.typesafeBackend})` : ""}; ${auth.text}`,
-            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan, ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors, ${stats.cooldownSkips} checks without Jev during a judge cooldown; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}. Steer budget: ${config.steerBudget === 0 ? "off" : `${config.steerBudget} per run`}.`,
+            `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan (${stats.offPlanTraceOnly} trace-only), ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors, ${stats.cooldownSkips} checks without Jev during a judge cooldown; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}. Steer budget: ${config.steerBudget === 0 ? "off" : `${config.steerBudget} per run`}.`,
             formatSteers(stats),
-            `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
+            `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action, trace-only: ${config.action.intentTraceOnly}); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),
             ...(config.learning.patternAnalysis ? [`Learning: ${(await generateRecommendations(ctx.cwd)).length} recommendations, steer effectiveness ${Math.round((await analyzeSteerEffectivenessReport(ctx.cwd)).overall * 100)}% (use /warden recommend for details)`] : []),
             `${formatHolds(holds.snapshot(), config.action.feedbackLog ? holdLog?.path : undefined)}${holdLog?.lastFailure ? ` Log write failed: ${holdLog.lastFailure}.` : ""}`,
@@ -2013,9 +2206,23 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           void opened?.closed.then(fallback, fallback);
           return;
         }
+        if (action === "loops") {
+          const file = loopsFile(ctx);
+          report(file ? formatLoopsForUser(await readLoops(file)) : "No loops: this session has no id to keep them under.");
+          return;
+        }
         if (action === "prefs") {
           if (!config.enabled || !config.prefs.enabled) { report(`Standing preferences are off (${config.enabled ? "prefs.enabled" : "enabled"} is false); no session files were read.`); return; }
-          report(formatPrefs(await standingPrefs(ctx)));
+          const { scan, path, items } = await evaluatedPrefs(ctx);
+          if (argument === "forget") {
+            const index = Number(tokens[2]);
+            const item = Number.isInteger(index) ? items[index - 1] : undefined;
+            if (!item) { report(`Usage: /warden prefs forget <n>, where n is an item number from /warden prefs (1 to ${items.length}).`, "warning"); return; }
+            await writePrefsStore(path, forgetPref(await readPrefsStore(path), item));
+            report(`Forgotten for this project: "${item.text}". It is not listed or injected again.`);
+            return;
+          }
+          report(formatPrefs(scan, items));
           return;
         }
         if (action === "recommend") {

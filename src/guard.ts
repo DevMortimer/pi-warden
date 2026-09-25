@@ -180,6 +180,10 @@ export interface Verdict {
   plan?: string;
   /** True when Jev finds the call at odds with the agent's stated plan and the call can change something; the agent is told. */
   intentMismatch?: boolean;
+  /** The intent mismatch is recorded in the trace but the agent is not told (`action.intentTraceOnly`). */
+  intentTraceOnly?: boolean;
+  /** Index of the trace-only intent-mismatch reason; any prepend must adjust this index. */
+  intentTraceOnlyReasonIndex?: number;
   /** True when Jev finds the call unrelated to the request on a call that can change something. Still steered in the reason log, but the steer message is suppressed until AUC improves above 0.51. */
   offTaskSteer?: boolean;
   /** True when should_proceed is below the hold threshold; the agent is told to pause and ask. */
@@ -693,6 +697,17 @@ export function tempRootOf(real: string, roots = tempRoots()): string | undefine
 
 /** A privilege-raising command word anywhere in a command. */
 const PRIVILEGED = /(?:^|[\s;&|("'`])(?:sudo|doas|su|pkexec|run0)(?=\s|$)/m;
+
+/**
+ * Command words that can put existing data under a temp path before a later rm deletes it: a move, a link (`rm -rf
+ * link/` follows it), a copy or extract that can carry links (`cp -R`, `tar -x`, `git clone`), a sync that removes its
+ * source, a mount. The birth-time walk runs before the command, so it cannot see what the command itself moves in. Any
+ * `cp` or `tar` counts, whatever its flags. Read on `unquoted` text, so `\mv`, `"ln"`, and `l''n` count too.
+ */
+const MOVES_IN = /(?:^|[\s;&|(`/])(?:(?:g|bsd)?(?:mv|ln|cp|tar)|rsync|mount|hdiutil|bindfs|git(?=\s)[^;&|\n]*\sclone)(?=[\s;&|)`]|$)/m;
+
+/** A command with its quotes and backslashes removed, so a quoted or escaped command word reads as the word it runs. */
+const unquoted = (command: string): string => command.replace(/\$(?=['"])|['"\\]/g, "");
 
 /** A literal absolute path: no quotes left inside, no glob, brace, tilde, variable, escape, or substitution. */
 const LITERAL_PATH = /^\/[^*?[\]{}$`~\\"'\s]*$/;
@@ -1334,8 +1349,10 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
     applySqlTargets(raw, hits, exempt);
     applyGitState(raw, hits, cwd);
-    // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else: no scratch.
-    const scratch = PRIVILEGED.test(command) || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
+    // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else,
+    // and one that moves, links, copies, or extracts data can fill a path after the birth-time walk: no scratch.
+    const movesIn = MOVES_IN.test(unquoted(raw)) || MOVES_IN.test(unquoted(command));
+    const scratch = PRIVILEGED.test(command) || movesIn || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
     for (const segment of splitShell(command)) {
       const hit = classifyRm(segment, cwd, scratch);
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
@@ -2192,11 +2209,20 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   // object to on recorded sessions, a plan-drifting file edit far less so.
   const visibleDrift = judgment.intentMismatch !== undefined && (judgment.visible ?? 0) >= VISIBLE_THRESHOLD && judgment.intentMismatch >= config.visibleMismatch;
   const mismatch = judgment.intentMismatch !== undefined && canChange && (judgment.intentMismatch >= config.intentMismatch || visibleDrift);
+  // The steer reaches the agent after the call ran (275 of 275 recorded steers), and a strict course change followed 8% of
+  // them. A call with no visible effect keeps the finding in the trace only; a visible one still tells the agent. Visible
+  // is either rule: the code's (commit, push, merge, tag, reset, pull request, release, publish) or the judge's `visible`
+  // score at 0.8, which also covers an install, a launched program, or a message sent from a script.
+  const visibleEffect = (view?.shell === true && isVisibleCommand(view.command)) || (judgment.visible ?? 0) >= VISIBLE_THRESHOLD;
+  const intentTraceOnly = mismatch && (config.intentTraceOnly === "all" || (config.intentTraceOnly === "invisible" && !visibleEffect));
+  let intentTraceOnlyReasonIndex: number | undefined;
   if (mismatch) {
     level = higher(level, "warn");
+    if (intentTraceOnly) intentTraceOnlyReasonIndex = reasons.length;
+    const traceOnly = intentTraceOnly ? `; trace-only${config.intentTraceOnly === "invisible" ? ", no visible effect" : ""}` : "";
     reasons.push(visibleDrift && judgment.intentMismatch! < config.intentMismatch
-      ? `intent mismatch ${percent(judgment.intentMismatch!)} on a visible action (${percent(judgment.visible!)}; a commit, push, merge, publish, or launch the plan did not describe)`
-      : `intent mismatch ${percent(judgment.intentMismatch!)} (the call differs from the agent's stated plan)`);
+      ? `intent mismatch ${percent(judgment.intentMismatch!)} on a visible action (${percent(judgment.visible!)}; a commit, push, merge, publish, or launch the plan did not describe${traceOnly})`
+      : `intent mismatch ${percent(judgment.intentMismatch!)} (the call differs from the agent's stated plan${traceOnly})`);
   }
   // Poor calibration makes this diagnostic-only unless the user opts into steers.
   let shouldProceedSteer = false;
@@ -2212,6 +2238,10 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   const verdict: Verdict = withPlan({ level, source: "typesafe", summary, patterns, reasons, judgment });
   if (mismatch) verdict.intentMismatch = true;
+  if (intentTraceOnlyReasonIndex !== undefined) {
+    verdict.intentTraceOnly = true;
+    verdict.intentTraceOnlyReasonIndex = intentTraceOnlyReasonIndex;
+  }
   if (offTaskSteer) verdict.offTaskSteer = true;
   if (offTaskTraceOnly) verdict.offTaskTraceOnly = true;
   // Large output steers and never changes the level: the saver compresses what prints, this asks the agent to print less.
@@ -2283,6 +2313,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     verdict.reasons = [`user approved in the latest message (${percent(judgment.approved)})`, ...reasons];
     if (verdict.offTaskTraceOnlyReasonIndex !== undefined) verdict.offTaskTraceOnlyReasonIndex++;
     if (verdict.shouldProceedTraceOnlyReasonIndex !== undefined) verdict.shouldProceedTraceOnlyReasonIndex++;
+    if (verdict.intentTraceOnlyReasonIndex !== undefined) verdict.intentTraceOnlyReasonIndex++;
   }
   return verdict;
 }

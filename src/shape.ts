@@ -42,13 +42,13 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     steerVisible: source.steerVisible ?? false,
     notices: source.notices ?? false,
     steerBudget: typeof source.steerBudget === "number" && source.steerBudget >= 0 ? source.steerBudget : 3,
-    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, shouldProceed: { hold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
+    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "invisible", shouldProceed: { hold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, diffLimit: 3000, tailLimit: 1000 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false }),
     rules: section("rules", { ...off, threshold: 1, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
-    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, largeOutput: { ...off, threshold: 1 } }),
+    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
     // A stale config module leaves the judge trusted: never pausing is today's behaviour, not a new failure mode.
@@ -84,11 +84,15 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   }
   // The large-output question was added inside the context section later than the section itself; an older config module leaves it undefined and the question is not asked.
   if (typeof config.context.largeOutput !== "object" || config.context.largeOutput === null) config.context = { ...config.context, largeOutput: { ...off, threshold: 1 } };
+  // Run deduplication was added inside the context section later than the section itself; an older config module leaves it undefined and nothing is cut.
+  if (typeof config.context.dedupeRuns !== "boolean") config.context = { ...config.context, dedupeRuns: false };
+  if (typeof config.context.dedupeMessages !== "boolean") config.context = { ...config.context, dedupeMessages: false };
   if (typeof config.widget.panelWidth !== "string" && typeof config.widget.panelWidth !== "number") config.widget = { ...config.widget, panelWidth: "40%" };
   // The feedback log flag was added inside the action section later than the section itself; an older config module leaves it undefined and the log stays on.
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };
   if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.9 };
   if (typeof config.action.visibleMismatch !== "number") config.action = { ...config.action, visibleMismatch: 0.8 };
+  if (config.action.intentTraceOnly !== "invisible" && config.action.intentTraceOnly !== "all" && config.action.intentTraceOnly !== "none") config.action = { ...config.action, intentTraceOnly: "invisible" };
   if (typeof config.action.shouldProceed !== "object" || config.action.shouldProceed === null || typeof config.action.shouldProceed.hold !== "number") config.action = { ...config.action, shouldProceed: { hold: 0.6, steer: false } };
   if (typeof config.action.shouldProceed.steer !== "boolean") config.action = { ...config.action, shouldProceed: { ...config.action.shouldProceed, steer: false } };
   if (typeof config.action.escalationThreshold !== "number") config.action = { ...config.action, escalationThreshold: 0.85 };

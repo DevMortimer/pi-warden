@@ -1,6 +1,6 @@
 /**
  * Session accounting for the context saver, so its value can be measured instead of assumed:
- * how often large outputs appear, how many were compressed or dropped as duplicates, how much was removed, how many
+ * how often large outputs appear, how many were compressed, dropped as duplicates, or cut as repeated runs, how much was removed, how many
  * turns that removal was spared from (token-turns), and how often the agent went back for the full text. A recall means
  * the excerpt was not enough; a whole-file recall also undoes the saving, a scoped one keeps it. Deterministic; no requests.
  */
@@ -10,6 +10,8 @@ export interface ContextLedgerSnapshot {
   compressed: number;
   /** Results replaced by a duplicate note because an identical result already exists in this session. */
   duplicates: number;
+  /** Results and messages whose repeated runs were replaced by pointers because the same text is already in context; one stored copy each. */
+  repeats: number;
   bytesSaved: number;
   /** Assistant turns completed since the session started. */
   turns: number;
@@ -31,6 +33,7 @@ export class ContextLedger {
   private large = 0;
   private compressed = 0;
   private duplicates = 0;
+  private repeats = 0;
   private bytesSaved = 0;
   /** `bytesSaved` minus the savings of outputs a whole-file recall put back into context. */
   private bytesAbsent = 0;
@@ -71,6 +74,14 @@ export class ContextLedger {
     this.bytesAbsent += bytesSaved;
   }
 
+  /** Repeated runs of one text were replaced by pointer lines; `path` holds the full text, so reading it back is a recall. */
+  repeat(path: string, bytesSaved: number, source: { tool: string; bytes: number }): void {
+    this.repeats++;
+    this.bytesSaved += bytesSaved;
+    this.bytesAbsent += bytesSaved;
+    this.stored.set(path, { recalled: false, restored: false, saved: bytesSaved, tool: source.tool, bytes: source.bytes });
+  }
+
   /** One LLM turn finished: everything removed so far was absent from this turn's prompt. */
   turnEnd(): void {
     this.turns++;
@@ -97,7 +108,7 @@ export class ContextLedger {
   }
 
   snapshot(): ContextLedgerSnapshot {
-    return { large: this.large, compressed: this.compressed, duplicates: this.duplicates, bytesSaved: this.bytesSaved, turns: this.turns, tokenTurnsSaved: this.tokenTurnsSaved, recalls: this.recalls, recallsFull: this.recallsFull };
+    return { large: this.large, compressed: this.compressed, duplicates: this.duplicates, repeats: this.repeats, bytesSaved: this.bytesSaved, turns: this.turns, tokenTurnsSaved: this.tokenTurnsSaved, recalls: this.recalls, recallsFull: this.recallsFull };
   }
 
   /** Paths to temp files for cleanup at session start. Internal only — paths never leave the machine. */
@@ -111,7 +122,7 @@ export class ContextLedger {
   }
 
   reset(): void {
-    this.large = 0; this.compressed = 0; this.duplicates = 0; this.bytesSaved = 0; this.bytesAbsent = 0; this.turns = 0; this.tokenTurnsSaved = 0; this.recalls = 0; this.recallsFull = 0;
+    this.large = 0; this.compressed = 0; this.duplicates = 0; this.repeats = 0; this.bytesSaved = 0; this.bytesAbsent = 0; this.turns = 0; this.tokenTurnsSaved = 0; this.recalls = 0; this.recallsFull = 0;
     this.stored.clear();
     this.seen.clear();
   }
@@ -119,9 +130,10 @@ export class ContextLedger {
 
 /** One line for /warden status. Says when there is nothing to report instead of printing zeros. */
 export function formatLedger(snapshot: ContextLedgerSnapshot): string {
-  if (snapshot.large === 0 && snapshot.duplicates === 0) return "Context saver: no tool output large enough to consider this session.";
+  if (snapshot.large === 0 && snapshot.duplicates === 0 && snapshot.repeats === 0) return "Context saver: no tool output large enough to consider this session.";
   const kb = (snapshot.bytesSaved / 1024).toFixed(1);
-  const recallRate = snapshot.compressed ? Math.round((snapshot.recalls / snapshot.compressed) * 100) : 0;
+  const stored = snapshot.compressed + snapshot.repeats;
+  const recallRate = stored ? Math.round((snapshot.recalls / stored) * 100) : 0;
   const scoped = snapshot.recalls - snapshot.recallsFull;
-  return `Context saver: ${snapshot.large} large outputs, ${snapshot.compressed} compressed, ${snapshot.duplicates} duplicate${snapshot.duplicates === 1 ? "" : "s"} dropped, ${kb} KB removed (~${Math.round(snapshot.bytesSaved / 4)} tokens), ~${snapshot.tokenTurnsSaved} token-turns spared over ${snapshot.turns} turns, ${snapshot.recalls} recall${snapshot.recalls === 1 ? "" : "s"} of the full output (${recallRate}%; ${snapshot.recallsFull} whole-file, ${scoped} scoped).`;
+  return `Context saver: ${snapshot.large} large outputs, ${snapshot.compressed} compressed, ${snapshot.duplicates} duplicate${snapshot.duplicates === 1 ? "" : "s"} dropped, ${snapshot.repeats ? `${snapshot.repeats} repeat${snapshot.repeats === 1 ? "" : "s"} cut, ` : ""}${kb} KB removed (~${Math.round(snapshot.bytesSaved / 4)} tokens), ~${snapshot.tokenTurnsSaved} token-turns spared over ${snapshot.turns} turns, ${snapshot.recalls} recall${snapshot.recalls === 1 ? "" : "s"} of the full output (${recallRate}%; ${snapshot.recallsFull} whole-file, ${scoped} scoped).`;
 }

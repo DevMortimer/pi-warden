@@ -349,6 +349,38 @@ test("session scratch: a privileged rm of scratch stays destructive", async () =
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
+test("session scratch: a command that moves, links, copies, or extracts data in before its rm stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const probe = join(base, "probe-abc");
+    await mkdir(probe);
+    const scratch = records(realpathSync(probe));
+    const moveIns = [
+      `mv ~/work ${probe}/ && rm -rf ${probe}`,
+      `ln -s ~/work ${probe}/w; rm -rf ${probe}/w/`,
+      `rsync -a --remove-source-files ~/work/ ${probe}/ && rm -rf ${probe}`,
+      `mount -t nfs host:/data ${probe} && rm -rf ${probe}`,
+      `hdiutil attach disk.dmg -mountpoint ${probe} && rm -rf ${probe}`,
+      `bindfs ~/work ${probe} && rm -rf ${probe}`,
+      `\\mv ~/work ${probe}/ && rm -rf ${probe}`,
+      `"ln" -s ~/work ${probe}/w && rm -rf ${probe}/w/`,
+      `l''n -s ~/work ${probe}/w && rm -rf ${probe}/w/`,
+      `/bin/mv ~/work ${probe}/ && rm -rf ${probe}`,
+      `cp -R ~/work ${probe}/ && rm -rf ${probe}`,
+      `cp -a ~/work ${probe}/ && rm -rf ${probe}`,
+      `tar -xf ~/work.tar -C ${probe} && rm -rf ${probe}`,
+      `tar xf ~/work.tar -C ${probe} && rm -rf ${probe}`,
+      `git clone ~/work ${probe}/w && rm -rf ${probe}`,
+      `git -C ~ clone ~/work ${probe}/w && rm -rf ${probe}`,
+      `(cd ~ && mv work ${probe}/) && rm -rf ${probe}`,
+    ];
+    for (const command of moveIns) {
+      assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd, { scratch, platform: "darwin" })), `expected destructive for: ${command}`);
+    }
+    assert.deepEqual(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" }).map(hit => hit.id), ["rm-session-scratch"], "a plain rm of recorded scratch is still released");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
 test("session scratch: on linux a recorded mkdir then rm -rf stays destructive", async () => {
   const base = await scratchBase();
   try {
@@ -977,11 +1009,17 @@ test("the agent's plan travels with the request and is judged for intent mismatc
   assert.equal(drift.level, "warn");
   assert.equal(drift.intentMismatch, true);
   assert.equal(drift.judgment?.intentMismatch, 0.9);
-  assert.match(drift.reasons.join("; "), /intent mismatch 0\.90 \(the call differs from the agent's stated plan\)/);
+  assert.match(drift.reasons.join("; "), /intent mismatch 0\.90 \(the call differs from the agent's stated plan; trace-only, no visible effect\)/);
+  assert.equal(drift.intentTraceOnly, true, "rm has no effect outside the working tree: trace-only by default");
   assert.equal(drift.plan, "Let me first list what is in build/ before removing anything.");
   assert.match(formatVerdict(drift), /off plan · warn$/);
   assert.match(intentSteer(drift), /^pi-warden: this bash call does something different from what you said you were about to do \(intent mismatch 0\.90\)\. It ran\./);
   assert.match(intentSteer(drift), /at most one short sentence/, "the steer bounds the demanded reply instead of inviting an accounting");
+
+  const told = await evaluateAction({ tool: "bash", input: { command: "rm -rf build" }, cwd, task: "clean the build", plan: "Let me first list what is in build/ before removing anything." }, { config: { ...config.action, intentTraceOnly: "none" }, judge: withIntent(0.9) });
+  assert.equal(told.intentMismatch, true);
+  assert.equal(told.intentTraceOnly, undefined, "\"none\" restores the steer for every mismatch");
+  assert.match(told.reasons.join("; "), /intent mismatch 0\.90 \(the call differs from the agent's stated plan\)/);
 
   const readOnly = await evaluateAction({ tool: "bash", input: { command: "npm run check:manifest" }, cwd, task: "clean the build", plan: "I will delete build/ now." }, { config: config.action, judge: withIntent(0.9, 0.05) });
   assert.equal(readOnly.level, "allow", "a call that changes nothing is never warned about for drifting from the plan");
@@ -1019,6 +1057,17 @@ test("a visible action (commit, push, merge, launch) needs less plan mismatch to
   assert.match(drift.reasons.join("; "), /intent mismatch 0\.83 on a visible action \(0\.96; a commit, push, merge, publish, or launch the plan did not describe\)/);
   assert.match(intentSteer(drift), /and its effect is visible outside the working tree/);
   assert.match(formatVerdict(drift), /off plan · warn$/);
+  assert.equal(drift.intentTraceOnly, undefined, "a push and a pull request keep the steer by default");
+  const install = { tool: "bash", input: { command: "npm install left-pad" }, cwd, task: "get the PR ready", plan: "I will run the tests once more before touching the PR." };
+  const judgedVisible = await evaluateAction(install, { config, judge: withVisible(0.91, 0.85) });
+  assert.equal(judgedVisible.intentMismatch, true);
+  assert.equal(judgedVisible.intentTraceOnly, undefined, "not visible by code, but the judge scores it visible: the steer stays");
+  const judgedLocal = await evaluateAction(install, { config, judge: withVisible(0.91, 0.5) });
+  assert.equal(judgedLocal.intentTraceOnly, true, "neither code nor judge finds a visible effect: trace-only");
+  const silenced = await evaluateAction(call, { config: { ...config, intentTraceOnly: "all" }, judge: withVisible(0.83, 0.96) });
+  assert.equal(silenced.intentTraceOnly, true, "\"all\" keeps even a visible mismatch in the trace only");
+  assert.equal(silenced.intentTraceOnlyReasonIndex, silenced.reasons.findIndex(reason => reason.startsWith("intent mismatch")));
+  assert.match(silenced.reasons.join("; "), /the plan did not describe; trace-only\)/);
   const quiet = await evaluateAction(call, { config, judge: withVisible(0.83, 0.2) });
   assert.equal(quiet.intentMismatch, undefined, "the same mismatch on an action nobody else sees is below the bar");
   assert.equal(quiet.level, "allow");
