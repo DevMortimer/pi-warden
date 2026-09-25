@@ -8,11 +8,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Added
 
-- The context saver cuts repeated runs. In a new tool result, user message, or custom message, a run of at least 20 lines and 1500 characters that exactly matches text already in context on the current branch becomes one pointer line naming where the earlier copy is and the file that holds the full text. The last 2000 characters and images are never changed. The ledger counts the removed bytes and their token-turns; `/warden status` shows the repeats cut. `context.dedupeRuns` (default `true`) turns it off.
+- The context saver cuts repeated runs. In a new tool result, a run of at least 20 lines and 1500 characters that exactly matches text already in context on the current branch becomes one pointer line naming where the earlier copy is and the file that holds the full text. The last 2000 characters and images are never changed. The ledger counts the removed bytes and their token-turns; `/warden status` shows the repeats cut. `context.dedupeRuns` (default `true`) turns it off. `context.dedupeMessages` (default `false`) applies the same cut to new user and custom messages; it is off by default because a repeat the user sends can itself carry meaning.
 
 ### Tests
 
-- A repeated report in a new custom message, user message, and tool result is cut to one pointer line; one changed line breaks the match; the tail stays; the stored copy holds the full text and reading it back is a recall; `context.dedupeRuns: false` leaves everything whole.
+- A repeated report in a new tool result, and with `context.dedupeMessages` in a custom or user message, is cut to one pointer line; messages stay whole by default; one changed line breaks the match; the tail stays; the stored copy holds the full text and reading it back is a recall; `context.dedupeRuns: false` leaves everything whole.
 
 ## 0.60.1
 

@@ -1824,11 +1824,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     return patch;
   });
 
-  // A relayed report that pastes earlier turns again keeps only its new part. Pi persists the replaced message.
+  // Opt-in: a relayed report that pastes earlier turns again keeps only its new part. Pi persists the replaced message.
   pi.on("message_end", async (event, ctx) => {
     const config = configFor(ctx);
     const message = event.message;
-    if (!config.enabled || !config.context.enabled || !config.context.dedupeRuns) return;
+    if (!config.enabled || !config.context.enabled || !config.context.dedupeRuns || !config.context.dedupeMessages) return;
     if (message.role !== "user" && message.role !== "custom") return;
     syncSeen(ctx);
     const source = message.role === "custom" ? `${message.customType} message` : "user message";

@@ -48,7 +48,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false }),
     rules: section("rules", { ...off, threshold: 1, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
-    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, largeOutput: { ...off, threshold: 1 } }),
+    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
     // A stale config module leaves the judge trusted: never pausing is today's behaviour, not a new failure mode.
@@ -86,6 +86,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.context.largeOutput !== "object" || config.context.largeOutput === null) config.context = { ...config.context, largeOutput: { ...off, threshold: 1 } };
   // Run deduplication was added inside the context section later than the section itself; an older config module leaves it undefined and nothing is cut.
   if (typeof config.context.dedupeRuns !== "boolean") config.context = { ...config.context, dedupeRuns: false };
+  if (typeof config.context.dedupeMessages !== "boolean") config.context = { ...config.context, dedupeMessages: false };
   if (typeof config.widget.panelWidth !== "string" && typeof config.widget.panelWidth !== "number") config.widget = { ...config.widget, panelWidth: "40%" };
   // The feedback log flag was added inside the action section later than the section itself; an older config module leaves it undefined and the log stays on.
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };

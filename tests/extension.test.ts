@@ -844,7 +844,7 @@ const relayContext = () => context({ sessionManager: { getBranch: () => [
 ] } });
 
 test("a report repeated in a new message or tool result becomes one pointer line; the stored copy holds the full text", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeMessages: true }, ...STACK_BAR }));
   nextAnswers = { retention: "all" };
   const ctx = relayContext();
   const incoming = `Turn 4, with earlier turns:\n${relayReport}\n${relayTail}`;
@@ -881,8 +881,20 @@ test("a report repeated in a new message or tool result becomes one pointer line
   }
 });
 
-test("context.dedupeRuns false keeps repeated runs in messages and tool results", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeRuns: false }, ...STACK_BAR }));
+test("messages stay whole by default while tool results are cut", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
+  assert.equal(await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx), undefined);
+  assert.equal(await fire("message_end", { message: { role: "user", content: incoming, timestamp: 2 } }, ctx), undefined);
+  const tool = await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx) as { content: Array<{ text: string }> };
+  const path = tool.content[0]!.text.match(/the next 40 lines repeat an earlier subagent-report message — omitted; full text: (.+)\]/)![1]!;
+  await rm(join(path, ".."), { recursive: true, force: true });
+});
+
+test("context.dedupeRuns false keeps repeated runs in messages and tool results, even with dedupeMessages on", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeRuns: false, dedupeMessages: true }, ...STACK_BAR }));
   nextAnswers = { retention: "all" };
   const ctx = relayContext();
   const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
