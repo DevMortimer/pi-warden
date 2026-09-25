@@ -349,6 +349,38 @@ test("session scratch: a privileged rm of scratch stays destructive", async () =
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
+test("session scratch: a command that moves, links, copies, or extracts data in before its rm stays destructive", async () => {
+  const base = await scratchBase();
+  try {
+    const probe = join(base, "probe-abc");
+    await mkdir(probe);
+    const scratch = records(realpathSync(probe));
+    const moveIns = [
+      `mv ~/work ${probe}/ && rm -rf ${probe}`,
+      `ln -s ~/work ${probe}/w; rm -rf ${probe}/w/`,
+      `rsync -a --remove-source-files ~/work/ ${probe}/ && rm -rf ${probe}`,
+      `mount -t nfs host:/data ${probe} && rm -rf ${probe}`,
+      `hdiutil attach disk.dmg -mountpoint ${probe} && rm -rf ${probe}`,
+      `bindfs ~/work ${probe} && rm -rf ${probe}`,
+      `\\mv ~/work ${probe}/ && rm -rf ${probe}`,
+      `"ln" -s ~/work ${probe}/w && rm -rf ${probe}/w/`,
+      `l''n -s ~/work ${probe}/w && rm -rf ${probe}/w/`,
+      `/bin/mv ~/work ${probe}/ && rm -rf ${probe}`,
+      `cp -R ~/work ${probe}/ && rm -rf ${probe}`,
+      `cp -a ~/work ${probe}/ && rm -rf ${probe}`,
+      `tar -xf ~/work.tar -C ${probe} && rm -rf ${probe}`,
+      `tar xf ~/work.tar -C ${probe} && rm -rf ${probe}`,
+      `git clone ~/work ${probe}/w && rm -rf ${probe}`,
+      `git -C ~ clone ~/work ${probe}/w && rm -rf ${probe}`,
+      `(cd ~ && mv work ${probe}/) && rm -rf ${probe}`,
+    ];
+    for (const command of moveIns) {
+      assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd, { scratch, platform: "darwin" })), `expected destructive for: ${command}`);
+    }
+    assert.deepEqual(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" }).map(hit => hit.id), ["rm-session-scratch"], "a plain rm of recorded scratch is still released");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
 test("session scratch: on linux a recorded mkdir then rm -rf stays destructive", async () => {
   const base = await scratchBase();
   try {
