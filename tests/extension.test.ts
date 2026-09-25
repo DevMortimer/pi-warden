@@ -180,7 +180,7 @@ before(async () => {
   const registered = extension.commands.get("warden");
   assert.ok(registered);
   command = registered;
-  assert.equal(extension.tools.size, 0, "pi-warden registers no agent tools");
+  assert.deepEqual([...extension.tools.keys()], ["warden_remember"], "pi-warden registers one agent tool, for standing lessons");
   // The runtime's action methods throw until Pi's runner binds them; capture steer messages instead.
   result.runtime.sendMessage = (message, options) => { sentMessages.push({ message: message as { customType: string; content: string }, ...(options ? { options: options as Record<string, unknown> } : {}) }); };
   result.runtime.sendUserMessage = (content: string | unknown[]) => { sentUserMessages.push(typeof content === "string" ? content : JSON.stringify(content)); };
@@ -436,6 +436,31 @@ test("multi-block results: retention is decided per text block, order and non-te
   assert.equal(requests.filter(request => "retention" in request.questions).length, 2, "each large text block earns its own retention request");
   await runCommand("trace", context({ hasUI: false }));
   assert.match(sentMessages.at(-1)!.message.content, /text block 1 of 2[\s\S]*text block 2 of 2/, "the trace names each compressed block");
+  assert.ok(!/kept whole/.test(sentMessages.at(-1)!.message.content), "a compressed block is not also traced as kept whole");
+});
+
+test("a judged output the saver keeps whole leaves its verdict in the trace, with no notice or steer", async () => {
+  await grantConsent();
+  nextAnswers = { retention: "all" };
+  const full = "progress complete\n".repeat(1000);
+  const noticesBefore = notices.length;
+  assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "the output stays whole");
+  assert.equal(notices.length, noticesBefore, "no notice");
+  assert.equal(sentMessages.length, 0, "no steer");
+  assert.ok(!widgets.some(lines => lines?.some(line => /kept whole/.test(line))), "the status line does not change");
+  const first = "first block\n".repeat(1000);
+  const last = "last block!\n".repeat(1000);
+  await fire("tool_result", { toolName: "read", input: {}, toolCallId: "mixed-whole", isError: false, content: [{ type: "text", text: first }, { type: "text", text: last }] });
+  await runCommand("trace", context({ hasUI: false }));
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.match(trace, /kept whole: retention all; confidence 0\.20; format \w+ \(0\.80\); [^;]+; \d+ ms/, "retention, confidence, format, and format confidence are traced");
+  assert.match(trace, /text block 1 of 2: kept whole: retention all[\s\S]*text block 2 of 2: kept whole: retention all/, "each kept block gets its own line");
+  assert.ok(!widgets.some(lines => lines?.some(line => /kept whole/.test(line))), "nor for kept blocks");
+  // Below tailMinChars the output is never judged for retention, so nothing is traced.
+  const entries = trace.match(/kept whole:/g)!.length;
+  assert.equal(await toolResult("bash", { command: "ls" }, "a\nb\n", false), undefined);
+  await runCommand("trace", context({ hasUI: false }));
+  assert.equal(sentMessages.at(-1)!.message.content.match(/kept whole:/g)!.length, entries);
 });
 
 test("a credential in one text block banners that block only; siblings stay untouched", async () => {
@@ -810,6 +835,71 @@ test("an identical repeated result becomes a duplicate note with a stored copy, 
   // Below duplicateMinChars nothing is replaced.
   assert.equal(await toolResult("bash", { command: "ls" }, "a\nb\n", false), undefined);
   assert.equal(await toolResult("bash", { command: "ls" }, "a\nb\n", false), undefined);
+});
+
+const relayReport = Array.from({ length: 40 }, (_, index) => `report line ${index}: module ${index} built and every check passed cleanly`).join("\n");
+const relayTail = Array.from({ length: 50 }, (_, index) => `turn 4 line ${index}: new progress since the last relay`).join("\n");
+const relayContext = () => context({ sessionManager: { getBranch: () => [
+  { id: "e1", type: "custom_message", customType: "subagent-report", content: `Turn 3\n${relayReport}`, display: true },
+] } });
+
+test("a report repeated in a new message or tool result becomes one pointer line; the stored copy holds the full text", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeMessages: true }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4, with earlier turns:\n${relayReport}\n${relayTail}`;
+  const result = await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx) as { message: { role: string; content: string } };
+  assert.equal(result.message.role, "custom");
+  const text = result.message.content;
+  const pointer = text.match(/^Turn 4, with earlier turns:\n\[pi-warden: the next 40 lines repeat an earlier subagent-report message — omitted; full text: (.+)\]\nturn 4 line 0:/);
+  assert.ok(pointer, text.slice(0, 300));
+  const path = pointer[1]!;
+  const rewritten = [text];
+  try {
+    assert.equal(await readFile(path, "utf8"), incoming, "the stored copy is the full original");
+    assert.ok(text.endsWith(relayTail), "the new part and the tail stay");
+    // A user message with an image: the text part is cut, the image keeps its place.
+    const image = { type: "image", data: "AAAA", mimeType: "image/png" };
+    const user = await fire("message_end", { message: { role: "user", content: [image, { type: "text", text: incoming }], timestamp: 2 } }, ctx) as { message: { content: Array<{ type: string; text?: string }> } };
+    rewritten.push(user.message.content[1]!.text!);
+    assert.deepEqual(user.message.content[0], image);
+    assert.match(user.message.content[1]!.text!, /the next 40 lines repeat an earlier subagent-report message/);
+    // The same repeat in a tool result.
+    const tool = await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx) as { content: Array<{ text: string }> };
+    rewritten.push(tool.content[0]!.text);
+    assert.match(tool.content[0]!.text, /the next 40 lines repeat an earlier subagent-report message — omitted; full text: /);
+    // Reading a stored copy back is a recall and returns the full text unchanged.
+    await toolCall("read", { path }, ctx);
+    assert.equal(await toolResult("read", { path }, incoming, false, ctx), undefined);
+    // An assistant reply is never rewritten.
+    assert.equal(await fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: incoming }] } }, ctx), undefined);
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /3 repeats cut/);
+    assert.match(notices.at(-1)!.text, /1 recall of the full output/);
+  } finally {
+    for (const line of rewritten.flatMap(body => [...body.matchAll(/full text: (.+)\]/g)])) await rm(join(line[1]!, ".."), { recursive: true, force: true });
+  }
+});
+
+test("messages stay whole by default while tool results are cut", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
+  assert.equal(await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx), undefined);
+  assert.equal(await fire("message_end", { message: { role: "user", content: incoming, timestamp: 2 } }, ctx), undefined);
+  const tool = await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx) as { content: Array<{ text: string }> };
+  const path = tool.content[0]!.text.match(/the next 40 lines repeat an earlier subagent-report message — omitted; full text: (.+)\]/)![1]!;
+  await rm(join(path, ".."), { recursive: true, force: true });
+});
+
+test("context.dedupeRuns false keeps repeated runs in messages and tool results, even with dedupeMessages on", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeRuns: false, dedupeMessages: true }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
+  assert.equal(await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx), undefined);
+  assert.equal(await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx), undefined);
 });
 
 test("recall kinds: a scoped search keeps the saving, a whole-file read is counted as such", async () => {
@@ -1660,6 +1750,33 @@ test("rules: a heredoc or echo write in bash is judged as a write before the cal
     assert.match(trace, /rules · bash src\/h\.ts, \.env · skipped/);
     assert.match(trace, /shell write not judged \(src\/h\.ts\): the content arrives through a pipe/);
     assert.match(trace, /shell write not judged \(\.env\): the content uses shell expansion/);
+  } finally {
+    await rm(rulesFile, { force: true });
+  }
+});
+
+test("rules: appends to one file in one bash call are one rules request; past five files the rest are skipped", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, ...STACK_BAR }));
+  const rulesFile = join(temporary, "pi-warden.md");
+  try {
+    await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
+    nextAnswers = { irreversible: 0.05, off_task: 0.05, scope: "expected_step" };
+    requests.length = 0;
+    const appends = Array.from({ length: 40 }, (_, index) => `echo 'line ${index}' >> notes.md`).join("\n");
+    await toolCall("bash", { command: appends });
+    const rules = requests.filter(request => "rule_no-console-statements" in request.questions);
+    assert.equal(rules.length, 1, "40 appends to one file are one rules request");
+    assert.equal(rules[0]!.state.content, Array.from({ length: 40 }, (_, index) => `line ${index}\n`).join(""));
+
+    requests.length = 0;
+    const files = Array.from({ length: 7 }, (_, index) => `echo 'part ${index}' > part${index}.md`).join("\n");
+    await toolCall("bash", { command: files });
+    const capped = requests.filter(request => "rule_no-console-statements" in request.questions);
+    assert.deepEqual(capped.map(request => request.state.path), ["part0.md", "part1.md", "part2.md", "part3.md", "part4.md"]);
+    await runCommand("trace", context({ hasUI: false }));
+    const trace = sentMessages.at(-1)!.message.content;
+    assert.match(trace, /shell write not judged \(part5\.md\): only the first 5 files a command writes are judged/);
+    assert.match(trace, /shell write not judged \(part6\.md\): only the first 5 files a command writes are judged/);
   } finally {
     await rm(rulesFile, { force: true });
   }
@@ -2784,6 +2901,46 @@ test("conscience: steer budget exhausted blocks delivery", async () => {
   assert.match(traceText, /budget/, "trace should note budget exhaustion");
 });
 
+test("conscience: a capability held with no_policy is never sent later by the agent_end reminder", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  nextModel = "jev-other";
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(!result?.message, "the activation gate holds the first recommendation");
+  await agentEnd("I designed the landing page.");
+  const reminders = sentMessages.filter(m => /Reminder: consider/.test(m.message.content));
+  assert.deepEqual(reminders, [], "the reminder must not deliver what the gate held");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /no policy for current hash\/model/);
+});
+
+test("conscience: the agent_end reminder still sends a capability that passed the activation gate", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(result?.message, "the first recommendation passes the gate");
+  // The run ended on a tool call, not a final text reply.
+  await fire("agent_end", { messages: [{ role: "user", content: prompt ?? "" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] }, context());
+  const reminders = sentMessages.filter(m => /Reminder: consider using the "impeccable" skill/.test(m.message.content));
+  assert.equal(reminders.length, 1);
+});
+
+test("conscience: no agent_end reminder after the run ended with a final text reply", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(result?.message, "the first recommendation passes the gate");
+  await agentEnd("I designed the landing page.");
+  const reminders = sentMessages.filter(m => /Reminder: consider/.test(m.message.content));
+  assert.deepEqual(reminders, [], "the agent already answered");
+});
+
 test("conscience: session_start during assessment produces stale trace", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
   const skills = [conscienceSkill("impeccable", "UI design")];
@@ -3033,13 +3190,13 @@ test("conscience: reminder fires once, second agent_end says unresolved", async 
   sentMessages.length = 0;
   await promptWithSkills("design a landing page", skills);
   // agent_end: fresh assessment re-selects, budgets allow → one reminder
-  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "text", text: "Done" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const reminders1 = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.ok(reminders1.length >= 1, `first agent_end should send a reminder, got ${reminders1.length}`);
   assert.match(reminders1[0]!.message.content, /impeccable/);
   // Second agent_end for same prompt: reminderSent=true → no second reminder
   sentMessages.length = 0;
-  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "text", text: "Done again" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "design a landing page" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const reminders2 = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.equal(reminders2.length, 0, "second agent_end should not send a reminder");
   // agent_settled should show unresolved
@@ -3057,7 +3214,7 @@ test("conscience: reminder suppressed on awaiting_user and when nudges exhausted
   nextAnswers = { conscience_disposition: "awaiting_user", c1: 3 };
   sentMessages.length = 0;
   await promptWithSkills("what style?", skills);
-  await fire("agent_end", { messages: [{ role: "user", content: "what style?" }, { role: "assistant", content: [{ type: "text", text: "Which style?" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "what style?" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const remindersAwaiting = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.equal(remindersAwaiting.length, 0, "reminder suppressed when awaiting_user");
   // Test 2: maxNudges=1, already spent → suppresses reminder
@@ -3066,12 +3223,12 @@ test("conscience: reminder suppressed on awaiting_user and when nudges exhausted
   sentMessages.length = 0;
   await promptWithSkills("design a page", skills);
   // First agent_end spends the one nudge
-  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "text", text: "Done" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const firstReminder = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.ok(firstReminder.length >= 1, "first agent_end should send the one allowed reminder");
   // Second agent_end: nudgesThisPrompt=1 >= maxNudges=1 → suppressed
   sentMessages.length = 0;
-  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "text", text: "Done again" }], stopReason: "stop" }] });
+  await fire("agent_end", { messages: [{ role: "user", content: "design a page" }, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" }] });
   const remindersBudget = sentMessages.filter(m => m.message.customType === "pi-warden-steer" && m.message.content.includes("Reminder"));
   assert.equal(remindersBudget.length, 0, "reminder suppressed when maxNudges exhausted");
 });
@@ -3953,14 +4110,28 @@ test("conscience: a rejected key traces key_rejected, and missing consent still 
   assert.match(traceText, /skipReason: no_consent/);
 });
 
-/** A session directory copied from the prefs fixture, dated now so it sits inside the scan window. */
-const prefsSessions = async () => {
+test("/warden completions offer every subcommand, including recommend and prefs", async () => {
+  assert.deepEqual(await command.getArgumentCompletions!("rec"), [{ value: "recommend", label: "recommend" }]);
+  assert.deepEqual(await command.getArgumentCompletions!("pr"), [{ value: "prefs", label: "prefs" }]);
+});
+
+/**
+ * The standing-preference rules count calendar days and a 30-day window, so every prefs test runs on this fixed clock
+ * and fixed file dates, never the wall clock. The runner's Date mock reaches the extension instance Pi's loader built,
+ * and it is restored when the test ends.
+ */
+const PREFS_NOW = Date.parse("2026-01-20T12:00:00.000Z");
+const fixPrefsClock = (t: TestContext) => t.mock.timers.enable({ apis: ["Date"], now: PREFS_NOW });
+
+/** A session directory copied from the prefs fixture, each file dated by its name. */
+const prefsSessions = async (t: TestContext) => {
+  fixPrefsClock(t);
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-ext-"));
   const fixtures = resolve("tests/fixtures/prefs");
-  const now = new Date();
   for (const name of await readdir(fixtures)) {
+    const at = new Date(`${name.slice(0, 10)}T12:00:00.000Z`);
     await writeFile(join(dir, name), await readFile(join(fixtures, name)));
-    await utimes(join(dir, name), now, now);
+    await utimes(join(dir, name), at, at);
   }
   let reads = 0;
   const manager = {
@@ -3971,8 +4142,8 @@ const prefsSessions = async () => {
   return { dir, manager, reads: () => reads };
 };
 
-test("/warden prefs lists the standing preferences with counts, dates, and the hint, and writes nothing", async () => {
-  const sessions = await prefsSessions();
+test("/warden prefs lists the standing preferences with counts, dates, and the hint, and writes nothing", async t => {
+  const sessions = await prefsSessions(t);
   try {
     const ctx = context({ sessionManager: sessions.manager });
     await sessionStart(ctx);
@@ -3980,13 +4151,13 @@ test("/warden prefs lists the standing preferences with counts, dates, and the h
     notices.length = 0;
     await runCommand("prefs", ctx);
     const text = notices.at(-1)!.text;
-    assert.match(text, /^Standing preferences \(repeated in 2\+ of the last 3 sessions of this project\):/);
-    assert.match(text, /Never paste the api_key=\[redacted\] value into the chat log \(2 sessions, last 2026-01-03\)/);
-    assert.match(text, /Dont open pull requests, leave the branch local \(2 sessions, last 2026-01-02\)/);
-    assert.ok(text.endsWith("Add the ones you want to keep to pi-warden.md as rules."));
+    assert.match(text, /^Standing preferences \(repeated in 2\+ of the last 3 sessions of this project; injected from 3 sessions on 2 days\):/);
+    assert.match(text, /Never paste the api_key=\[redacted\] value into the chat log \(2 sessions on 2 days, last 2026-01-03\): not injected: seen in 2 sessions/);
+    assert.match(text, /Dont open pull requests, leave the branch local \(2 sessions on 2 days, last 2026-01-02\): not injected: seen in 2 sessions/);
+    assert.ok(text.endsWith("Add the ones you want to keep to pi-warden.md as rules; /warden prefs forget <n> drops one for good."));
     assert.doesNotMatch(text, /linter|formatter/i);
     assert.equal(networkCalls, 0, "no judgment request");
-    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "no injection by default");
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "nothing passes the injection rules");
     await runCommand("prefs", ctx);
     assert.equal(sessions.reads(), 1, "one scan per session start");
     assert.deepEqual(await readdir(sessions.dir), before);
@@ -3995,29 +4166,108 @@ test("/warden prefs lists the standing preferences with counts, dates, and the h
   }
 });
 
-test("prefs.inject sends one context message at session start, not a steer, and not again on a resume", async () => {
-  const sessions = await prefsSessions();
+/** Three earlier sessions on two fixed days (UTC), before the fixed prefs clock. */
+const STANDING_STAMPS = ["2026-01-17T12:00:00.000Z", "2026-01-19T09:00:00.000Z", "2026-01-19T10:00:00.000Z"];
+const standingSessions = async (t: TestContext, lines: readonly string[][]) => {
+  fixPrefsClock(t);
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-standing-"));
+  for (const [index, messages] of lines.entries()) {
+    const stamp = STANDING_STAMPS[index]!;
+    const entries = [
+      { type: "session", version: 3, id: `s${index}`, timestamp: stamp, cwd: temporary },
+      ...messages.map((content, n) => ({ type: "message", id: `m${n}`, parentId: null, timestamp: stamp, message: { role: "user", content } })),
+    ];
+    await writeFile(join(dir, `s${index}.jsonl`), entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    await utimes(join(dir, `s${index}.jsonl`), new Date(stamp), new Date(stamp));
+  }
+  const manager = { ...sessionManager, getSessionDir: () => dir, getSessionFile: () => join(dir, "current.jsonl"), getSessionId: () => "current-session" };
+  return { dir, manager };
+};
+const SAID = [
+  ["never force-push the release branch", "don't commit or stage it", "always skip the tests before pushing"],
+  ["ok, never force-push the release branch", "don't commit or stage it", "always skip the tests before pushing"],
+  ["please never force-push the release branch. also keep replies short", "don't commit or stage it", "always skip the tests before pushing"],
+];
+
+test("prefs.inject is on by default: one quoted context message at session start, not a steer, and not again on a resume", async t => {
+  const sessions = await standingSessions(t, SAID);
   try {
-    await writeFile(configPath(), JSON.stringify({ prefs: { inject: true }, ...STACK_BAR }));
     sentMessages.length = 0;
     await sessionStart(context({ sessionManager: sessions.manager }));
     const sent = sentMessages.filter(m => m.message.customType === "pi-warden-prefs");
     assert.equal(sent.length, 1);
-    assert.match(sent[0]!.message.content, /^Preferences this user repeated in earlier sessions of this project:\n- Never paste the api_key=\[redacted\]/);
-    assert.ok(sent[0]!.message.content.length <= 600);
+    assert.equal(sent[0]!.message.content, [
+      "Standing preferences for this project, quoted as said in earlier sessions:",
+      "- \"Never force-push the release branch\" (3 sessions)",
+      "If the current request says otherwise, follow the current request.",
+    ].join("\n"));
     assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-steer").length, 0);
     const resumed = { ...sessions.manager, getBranch: () => [{ type: "custom_message", customType: "pi-warden-prefs", content: sent[0]!.message.content }] };
     sentMessages.length = 0;
     await sessionStart(context({ sessionManager: resumed }));
     assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0);
+    await writeFile(configPath(), JSON.stringify({ prefs: { inject: false }, ...STACK_BAR }));
+    await sessionStart(context({ sessionManager: sessions.manager }));
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "inject: false sends nothing");
     assert.equal(networkCalls, 0);
   } finally {
     await rm(sessions.dir, { recursive: true, force: true });
   }
 });
 
-test("enabled: false or prefs.enabled: false reads no session file, even with inject on", async () => {
-  const sessions = await prefsSessions();
+test("/warden prefs names each item's status, and forget drops one for the project", async t => {
+  const sessions = await standingSessions(t, SAID);
+  try {
+    const ctx = context({ sessionManager: sessions.manager });
+    await sessionStart(ctx);
+    notices.length = 0;
+    await runCommand("prefs", ctx);
+    const text = notices.at(-1)!.text;
+    assert.match(text, /1\. Never force-push the release branch \(3 sessions on 2 days, last 2026-01-19\): injected/);
+    assert.match(text, /Don't commit or stage it \(3 sessions on 2 days, last 2026-01-19\): not injected: task-bound/);
+    assert.match(text, /Always skip the tests before pushing \(3 sessions on 2 days, last 2026-01-19\): not injected: weakens a check/);
+    await runCommand("prefs forget 1", ctx);
+    assert.match(notices.at(-1)!.text, /^Forgotten for this project: "Never force-push the release branch"/);
+    await runCommand("prefs", ctx);
+    assert.doesNotMatch(notices.at(-1)!.text, /force-push/);
+    await runCommand("prefs forget 9", ctx);
+    assert.match(notices.at(-1)!.text, /^Usage: \/warden prefs forget <n>/);
+    sentMessages.length = 0;
+    await sessionStart(ctx);
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "a forgotten item is not injected");
+    assert.deepEqual((await readdir(sessions.dir)).sort(), ["s0.jsonl", "s1.jsonl", "s2.jsonl"], "session files untouched");
+  } finally {
+    await rm(join(temporary, "agent", "pi-warden", "prefs"), { recursive: true, force: true });
+    await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+test("warden_remember records a lesson only within five assistant turns of a correction or a stuck, repeat, or done steer", async t => {
+  const sessions = await standingSessions(t, []);
+  const remember = (lesson: string, ctx: ReturnType<typeof context>) =>
+    extension.tools.get("warden_remember")!.definition.execute("call-r", { lesson }, undefined, undefined, ctx as unknown as ExtensionContext)
+      .then(result => (result.content[0] as { text: string }).text);
+  try {
+    const ctx = context({ sessionManager: sessions.manager });
+    await sessionStart(ctx);
+    await newPrompt("Add the export button", ctx);
+    assert.equal(await remember("Never edit the generated client by hand", ctx), "not recorded: no correction or failure to learn from");
+    await newPrompt("no, don't edit the generated client, regenerate it", ctx);
+    assert.equal(await remember("Always skip the tests when the build is slow", ctx), "not recorded: weakens a check");
+    assert.match(await remember("Never edit the generated client by hand", ctx), /^recorded: "Never edit the generated client by hand"/);
+    for (let turn = 0; turn < 6; turn++) await fire("turn_end", {}, ctx);
+    assert.equal(await remember("Always regenerate the client after a schema change", ctx), "not recorded: no correction or failure to learn from");
+    notices.length = 0;
+    await runCommand("prefs", ctx);
+    assert.match(notices.at(-1)!.text, /Never edit the generated client by hand \(agent lesson, recorded in 1 session, last 2026-01-20\): agent lesson, not yet confirmed/);
+  } finally {
+    await rm(join(temporary, "agent", "pi-warden", "prefs"), { recursive: true, force: true });
+    await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+test("enabled: false or prefs.enabled: false reads no session file, even with inject on", async t => {
+  const sessions = await prefsSessions(t);
   try {
     for (const config of [{ enabled: false, prefs: { inject: true } }, { prefs: { enabled: false, inject: true } }]) {
       await writeFile(configPath(), JSON.stringify({ ...config, ...STACK_BAR }));

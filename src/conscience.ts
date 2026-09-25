@@ -273,10 +273,11 @@ function isExcluded(id: string, exclude: string[]): boolean {
  * Name parts that mark a tool as destructive. A recommendation to run such a tool is never worth the risk
  * of the agent calling it on a prompt that only mentioned the subject.
  */
-const DESTRUCTIVE_MARKERS = new Set(["delete", "drop", "destroy", "remove", "purge", "wipe", "reset", "truncate"]);
+const DESTRUCTIVE_MARKERS = new Set(["delete", "drop", "destroy", "remove", "purge", "wipe", "reset", "truncate", "kill", "force", "uninstall", "revoke", "erase", "clear"]);
 
+/** camelCase is split before lowercasing, so `deleteIssue` and `mcp__db__truncateTable` show their verb. */
 function words(text: string): string[] {
-  return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
 
 /**
@@ -289,6 +290,33 @@ export function isDestructiveTool(name: string, ...descriptions: Array<string | 
   return descriptions.some(d => d !== undefined && DESTRUCTIVE_MARKERS.has(words(d)[0] ?? ""));
 }
 
+/**
+ * Tools that only run on one platform. A recommendation to use one elsewhere costs the agent a turn to find out
+ * it is missing, and it then answers about the tool instead of the task.
+ */
+export const PLATFORM_BOUND_TOOLS: Readonly<Record<string, NodeJS.Platform>> = {
+  powershell: "win32",
+  pwsh: "win32",
+  cmd: "win32",
+};
+
+const PLATFORM_ONLY_DESCRIPTIONS: Array<{ platform: NodeJS.Platform; pattern: RegExp }> = [
+  { platform: "win32", pattern: /\bwindows[- ]only\b|\bonly (?:on|for) windows\b/i },
+  { platform: "darwin", pattern: /\b(?:macos|mac os|os x)[- ]only\b|\bonly (?:on|for) (?:macos|mac os|os x)\b/i },
+];
+
+/** True when the tool name or a description binds the tool to a platform other than `platform`. */
+export function isPlatformIneligibleTool(
+  name: string,
+  platform: NodeJS.Platform,
+  ...descriptions: Array<string | undefined>
+): boolean {
+  const bound = PLATFORM_BOUND_TOOLS[name.toLowerCase()];
+  if (bound !== undefined && bound !== platform) return true;
+  return PLATFORM_ONLY_DESCRIPTIONS.some(({ platform: only, pattern }) =>
+    only !== platform && descriptions.some(d => d !== undefined && pattern.test(d)));
+}
+
 /** Filter candidates by eligibility rules, capped at MAX_ELIGIBLE per category. Attaches index entries when available. */
 export function eligibleCandidates(
   skills: Skill[],
@@ -298,6 +326,7 @@ export function eligibleCandidates(
   suppliedSkills: string[],
   globalIndex?: { entries: IndexEntry[] } | undefined,
   projectIndex?: { entries: IndexEntry[] } | undefined,
+  platform: NodeJS.Platform = process.platform,
 ): { candidates: Candidate[]; skillOverflow: boolean; toolOverflow: boolean } {
   const candidates: Candidate[] = [];
   let skillOverflow = false;
@@ -342,6 +371,7 @@ export function eligibleCandidates(
       const sourceHash = toolSourceHash(tool.name, tool.description);
       const entry = findEntry(tool.name, sourceHash);
       if (isDestructiveTool(tool.name, tool.description, entry?.lead)) continue;
+      if (isPlatformIneligibleTool(tool.name, platform, tool.description, entry?.lead)) continue;
       if (count >= MAX_ELIGIBLE) { toolOverflow = true; break; }
       candidates.push({
         kind: "tool",
@@ -411,6 +441,8 @@ export interface ConscienceDeps {
   globalIndex?: { entries: IndexEntry[] } | undefined;
   /** Pre-loaded project index, if any. */
   projectIndex?: { entries: IndexEntry[] } | undefined;
+  /** Platform the agent's tools run on. Injected for testability; defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -472,7 +504,7 @@ export async function assess(
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: deps.judgmentsOff ?? "no_consent" };
   }
 
-  const { candidates, skillOverflow, toolOverflow } = eligibleCandidates(skills, tools, config, activeSkills, suppliedSkills, deps.globalIndex, deps.projectIndex);
+  const { candidates, skillOverflow, toolOverflow } = eligibleCandidates(skills, tools, config, activeSkills, suppliedSkills, deps.globalIndex, deps.projectIndex, deps.platform);
   if (candidates.length === 0) {
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: "no_match" };
   }

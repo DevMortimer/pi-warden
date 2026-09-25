@@ -10,6 +10,95 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - An intent mismatch on a call with no visible effect is trace-only: the trace, the warn notice, and the status line (`N off plan (M trace-only)`) record it, and the agent gets no steer. A commit, push, merge, tag, reset, pull request, release, or publish still steers (decided in code by `isVisibleCommand`), and so does any call Jev judges `visible` at 0.8 or more, such as an install, a launched program, or a message sent from a script. The steer reaches the agent only after the call ran: on 275 recorded intent-mismatch steers over 7 days, 275 arrived after the call, and a strict course change (the agent asked the user, reverted, or changed approach) followed 8% of them. New `action.intentTraceOnly` sets which mismatches are trace-only: `"invisible"` (default), `"all"`, or `"none"` (every mismatch steers, as before).
 
+## 0.62.0
+
+### Changed
+
+- `prefs.inject` is on by default, and strict: a wrong memory is worse than none. A standing preference reaches the agent only when you typed it, in a standing form (no question and no temporary word; `now`, `until`, `this PR`, `this branch`, and `for this` join `yet`, `for now`, `today`, and `this time`), not bound to one task (a pronoun-only object such as "don't commit it", a ticket, branch, PR number, or hash), in 3 or more sessions on 2 or more days, last within 30 days, not lifted by a later message of the opposite polarity ("do use subagents here"), and not weakening a check (skipping tests, checks, reviews, or confirmations, turning warden off, or pushing, deploying, or deleting without asking; the markers are in `WEAKENS_CHECK`). At most 5 items and 400 characters, each quoted as said with its session count, ending with "If the current request says otherwise, follow the current request." Still one message per session, not a steer, and not repeated on resume.
+- `/warden prefs` shows each item as injected or the rule that kept it out ("not injected: seen in 2 sessions", "not injected: weakens a check"). `/warden prefs forget <n>` drops an item for the project for good, rewordings included; the key is kept in pi-warden's data folder.
+- New agent tool `warden_remember`: after a user correction, or a stuck, repeat, or done-check steer, within the last 5 assistant turns of the run, the agent can record one standing lesson (at most 160 characters) for the project. The same rules apply; a lesson that repeats a stored lesson or a listed preference confirms it instead of adding one. A lesson is injected only once confirmed (recorded again in a later session, or said by the user), after your preferences, marked `(agent lesson)`, and expires after 30 days without a confirmation. Lessons are stored with the date and session id under pi-warden's data folder, never in a rules file or a session file. Preference and lesson text goes to the session model only, never to TypeSafe.
+
+## 0.61.0
+
+### Added
+
+- The context saver cuts repeated runs. In a new tool result, a run of at least 20 lines and 1500 characters that exactly matches text already in context on the current branch becomes one pointer line naming where the earlier copy is and the file that holds the full text. The last 2000 characters and images are never changed. The ledger counts the removed bytes and their token-turns; `/warden status` shows the repeats cut. `context.dedupeRuns` (default `true`) turns it off. `context.dedupeMessages` (default `false`) applies the same cut to new user and custom messages; it is off by default because a repeat the user sends can itself carry meaning.
+
+### Tests
+
+- A repeated report in a new tool result, and with `context.dedupeMessages` in a custom or user message, is cut to one pointer line; messages stay whole by default; one changed line breaks the match; the tail stays; the stored copy holds the full text and reading it back is a recall; `context.dedupeRuns: false` leaves everything whole.
+
+## 0.60.1
+
+### Fixed
+
+- Message text in a command is no longer read as a command. The quoted values of `--body`, `-b`, `--title`, `-t`, and `--notes` on `gh pr|issue|release create|edit|comment`, and of `-m` and `--message` on `git commit` and `git tag`, are blanked before the patterns run, also in `=` form and as `$'…'`. A body that held `;`, `&&`, or new lines was cut into segments before, so a PR body that quoted `rm -rf /` was held as destructive. A value with `$(`, backticks, or an unclosed quote is still read, because the shell runs it.
+- A recursive `rm` right after a backtick (`` `rm -rf ~` ``) is now classified like one after `$(`.
+
+## 0.60.0
+
+### Changed
+
+- `git reset --hard` warns instead of holding when the working tree is clean: `git status --porcelain` in the call's directory prints nothing. The check runs once with a 2-second timeout; a failed or timed-out check holds.
+- `git push --force-with-lease` now holds by default. It warns only when every target branch is named in the command or is the current branch, no target is `main`, `master`, or the remote's HEAD branch, and the command has no plain `--force`/`-f`. A `+` or delete refspec, `--all`, `--mirror`, `--tags`, an unknown flag, a detached HEAD, or `push.default=matching` on a bare push keeps the hold.
+- Both relaxations read only a plain single `git reset` or `git push` command. A `cd`, `-C`, quote, variable, or second command keeps the hold.
+- The conscience no longer sends its `agent_end` reminder when the run ended with a final text reply. The agent has answered; a reminder then started a new turn to revisit a finished answer.
+
+### Fixed
+
+- `git reset --hard` with global options before `reset` (`git -C dir`, `--git-dir`, `--work-tree`, `-c key=value`) is held. Before, the pattern needed `reset` right after `git`, so `git -C dir reset --hard` was neither held nor warned.
+- `git push --force`, `-f`, and `--force-with-lease` with the same global options before `push` (`git -C dir push --force`) are held. The push patterns had the same gap.
+
+### Tests
+
+- A clean and a changed tree for `reset --hard`, and a failed status check. Lease pushes to a feature branch, to `main`, `master`, and the remote HEAD branch, with plain `--force`, with a bare push that tracks the default branch, and outside a repository. A conscience run that ended with a final reply sends no reminder. `reset --hard` with `-C`, `--git-dir`, `--work-tree`, and `-c` on a clean tree is held. `push --force`, `-f`, and `--force-with-lease` with those options are held.
+
+## 0.59.5
+
+### Fixed
+
+- Shell writes that gave neither a judged write nor a skip are now judged. `exec > f; echo x` judges the text the later commands print into `f`; a redirected `{ echo x; } > f` or `(echo x) > f` group judges the text its commands print, and a group that also runs a program is skipped with a reason; `env echo x > f` treats `env` as a wrapper; a target such as `/dev/../tmp/p/f` is normalized before the `/dev/` test; a partly quoted heredoc delimiter (`<<E"OF"`) ends at `EOF` and keeps the body literal, as in bash.
+- One bash command no longer starts one rules request per write. Writes to the same file are joined into one request (40 `>>` appends to one file are one request), and past five files a command writes, the rest are recorded in the trace as skipped. The action request lists each file once.
+- The done-check no longer counts `grep -rn screenshot src`, `idb list-targets`, or `flutter test test/unit/x_test.dart` as visual proof. A `done.visualTools.commandWords` word counts only after a `commands` head, `flutter test` counts only for an `integration_test/` or golden path (or `--update-goldens`), and `idb` only for its `screenshot` or `ui` subcommand. `chrome`, `chromium`, and `google-chrome` are now `commands` heads that count with a screenshot flag (`chrome --headless --screenshot=…`), so a headless-browser screenshot is proof and `chromium --version` is not.
+- The conscience now drops camelCase destructive tools (`deleteIssue`, `dropTable`, `mcp__db__truncateTable`) and tools whose name or leading description verb is `kill`, `force`, `uninstall`, `revoke`, `erase`, or `clear` (`kill_process`, `force_push`, `uninstall_package`).
+
+## 0.59.4
+
+### Fixed
+
+- A prompt no longer authorizes a recursive `rm` of `/`, `.`, `./`, `..`, `~`, `*`, or `$HOME`. Before, "Clean up build/ please." released the hold on `rm -rf /`: the target `/` was found in `build/`. The `rm-recursive-dangerous-target` hit is now never authorized by a prompt. A path the prompt authorizes must appear as a whole word (a space, quote, bracket, or punctuation before and after it), so `old/build` and `build.gradle` no longer authorize `rm -rf build`, and a root-like, home, variable, or one-character target is never matched.
+- `git grep` takes the read-only fast path only with listed flags. `--open=sh` (git accepts any abbreviation of `--open-files-in-pager`) and `-O` bundled after other flags (`-lOnode`) run a program on the matched files, and both skipped the judge.
+- The `/warden index` directory is a host path only when neither it nor a directory between it and Pi's agent directory is a symlink, and its real path is inside the agent directory. A symlinked index directory could make the home directory a host path, so an overwrite of a shell profile was not held.
+- The read-only fast path no longer takes commands that write a file named in their arguments: `sort -o`, `uniq` with an output file, `tree -o` and `tree -R`, and `xxd -r` or `xxd` with an output file.
+
+### Tests
+
+- Tests for each case above: the root-like `rm` prompts, the `git grep` pager forms and common safe flags, a symlinked index directory, and the writing forms of `sort`, `uniq`, `tree`, and `xxd`.
+
+## 0.59.3
+
+### Fixed
+
+- The conscience no longer recommends a tool that cannot run on this platform. `powershell`, `pwsh`, and `cmd` are dropped from the tool candidates when the platform is not Windows, and a tool whose description says Windows-only or macOS-only is dropped on the other platforms. Skills are not filtered. In a run on macOS the conscience recommended `tool:powershell` at P(useful) 0.91; its end-of-run reminder then made the agent spend a turn checking for `pwsh` and answer about PowerShell instead of the task. The reminder re-runs the same assessment, so it can no longer name such a tool either.
+- The conscience's end-of-run reminder now passes the same activation gate as the first recommendation. Before, a capability held with `no_policy` (question hash or answering model not in the policy) was still sent later as `Reminder: consider using …`, which bypassed the gate that should fail closed.
+
+## 0.59.2
+
+### Changed
+
+- The `large_output` score of a judged `bash` call is now recorded. The action trace entry shows it (`large-output 0.12` in the details, a `largeOutput` template token), and the holds database keeps it in `scores`. The hold signature still hashes only the irreversible score and the reasons, so hold matching is unchanged. Before, the question never steered in field use and nothing showed whether it scored low or was never asked.
+- The context saver traces the outputs it judged and kept whole. One `context` trace entry per output (per text block for a multi-block result) records the retention, confidence, format, and format confidence, so the `context.confidence` gate can be calibrated. Trace only: no notice, no steer, and the status line does not change.
+
+### Fixed
+
+- `/warden recommend` is offered in the command completions (`/warden rec` completes to it) and has a row in `docs/commands.md`.
+
+## 0.59.1
+
+### Fixed
+
+- A write or edit of a `/warden index` file is no longer held as "overwrites a file outside the project". `/warden index` asks the agent to write `global.json` and `projects/<hash>.json` in `pi-warden/index/` under Pi's agent directory, and in a hold-precision review 3 of the 4 approved outside-project overwrite holds were these files. That directory is now always a host path for the outside-project rule. The rest of the agent directory is still held: `auth.json`, `settings.json`, pi-warden's own `config.json`, and other extensions' data. Every other check still applies there.
+
 ## 0.59.0
 
 ### Added

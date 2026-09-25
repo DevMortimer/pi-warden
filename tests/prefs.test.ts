@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import {
-  CLAUSE_CHARS, emptyWordCounts, extractPreferences, formatPrefs, groupPreferences, isHumanTyped, jaccard, MESSAGE_CHARS, PREFS_HINT,
-  PREFS_LEAD, prefsMessage, scanPreferences, tokens,
+  CLAUSE_CHARS, emptyPrefsStore, emptyWordCounts, evaluatePrefs, extractPreferences, formatPrefs, groupPreferences, isHumanTyped, jaccard, PREFS_HINT,
+  scanPreferences, tokens,
 } from "../src/prefs.js";
 
 const FIXTURES = resolve("tests/fixtures/prefs");
@@ -77,7 +77,7 @@ test("grouping: near-duplicates share a group; polarity keeps opposites apart", 
     { clause: "Never squash commits", session: "s1", at: at(1) },
     { clause: "Always squash commits", session: "s2", at: at(2) },
   ]);
-  assert.deepEqual(prefs, [{ text: "Dont use tabs in the makefile", sessions: 2, lastAt: at(2) }]);
+  assert.deepEqual(prefs.map(pref => [pref.text, pref.sessions, pref.lastAt]), [["Dont use tabs in the makefile", 2, at(2)]]);
 });
 
 test("the 2-session threshold: repeats inside one session do not count; ranking is sessions, then recency", () => {
@@ -119,22 +119,16 @@ test("scan: the window drops old sessions and caps the count; a missing director
   assert.equal(capped.scanned, 1);
   assert.deepEqual(capped.prefs, []);
   const missing = await scanPreferences({ dir: join(dir, "absent"), now: NOW });
-  assert.deepEqual(missing, { prefs: [], scanned: 0, directories: 1, ms: missing.ms });
+  assert.deepEqual([missing.prefs, missing.candidates, missing.scanned, missing.directories], [[], [], 0, 1]);
 });
 
-test("command output lists count and last date, with the hint; the message is capped", async () => {
+test("command output lists each item with count, days, last date, and status, with the hint", async () => {
   const scan = await scanPreferences({ dir, exclude: CURRENT, now: NOW });
-  const text = formatPrefs(scan);
-  assert.match(text, /^Standing preferences \(repeated in 2\+ of the last 3 sessions of this project\):/);
-  assert.match(text, /1\. Never paste the api_key=\[redacted\] value into the chat log \(2 sessions, last 2026-01-03\)/);
+  const text = formatPrefs(scan, evaluatePrefs(scan, emptyPrefsStore(), NOW));
+  assert.match(text, /^Standing preferences \(repeated in 2\+ of the last 3 sessions of this project; injected from 3 sessions on 2 days\):/);
+  assert.match(text, /1\. Never paste the api_key=\[redacted\] value into the chat log \(2 sessions on 2 days, last 2026-01-03\): not injected: seen in 2 sessions/);
   assert.ok(text.endsWith(PREFS_HINT));
-  assert.match(formatPrefs({ prefs: [], scanned: 1, directories: 1, ms: 0 }), /No standing preferences: nothing was repeated in 2 or more of the last 1 session of this project\./);
-  const message = prefsMessage(scan.prefs)!;
-  assert.ok(message.startsWith(PREFS_LEAD));
-  assert.equal(message.split("\n- ").length - 1, 3);
-  const many = Array.from({ length: 10 }, (_, index) => ({ text: `${"x".repeat(150)} ${index}`, sessions: 2, lastAt: NOW }));
-  assert.ok(prefsMessage(many)!.length <= MESSAGE_CHARS);
-  assert.equal(prefsMessage([]), undefined);
+  assert.match(formatPrefs({ scanned: 1, directories: 1 }, []), /No standing preferences: nothing was repeated in 2 or more of the last 1 session of this project, and the agent recorded no lesson\./);
 });
 
 test("scan time on the fixture stays small and the files are untouched", async () => {
@@ -159,7 +153,7 @@ test("detection: relayed orders and messages from other agents are not the user"
 test("detection: a temporary hold is not a standing preference", () => {
   assert.deepEqual(extractPreferences("don't commit the migration yet"), []);
   assert.deepEqual(extractPreferences("always skip the e2e suite for now"), []);
-  assert.deepEqual(extractPreferences("don't push until the checks pass"), ["Don't push until the checks pass"]);
+  assert.deepEqual(extractPreferences("don't push until the checks pass"), []);
 });
 
 test("grouping: differently worded clauses that share a rare subject word are one preference", () => {
@@ -221,7 +215,8 @@ test("scan: sessions from another worktree of the same repository are read; othe
     const scan = await scanPreferences({ dir: own, cwd: main, now: NOW });
     assert.equal(scan.directories, 3, "the project, its worktree, and a subdirectory of it");
     assert.deepEqual(scan.prefs.map(pref => [pref.text, pref.sessions]), [["Never force-push the release branch", 3]]);
-    assert.match(formatPrefs(scan), /of the last 3 sessions of this project and its worktrees/);
+    assert.match(formatPrefs(scan, evaluatePrefs(scan, emptyPrefsStore(), NOW)), /of the last 3 sessions of this project and its worktrees/);
+    assert.equal(scan.project, main, "the lesson file is keyed by the main worktree");
     const alone = await scanPreferences({ dir: own, now: NOW });
     assert.equal(alone.directories, 1, "without a working directory only the project's own sessions are read");
     const outside = await scanPreferences({ dir: own, cwd: base, now: NOW });

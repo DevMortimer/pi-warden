@@ -1,4 +1,4 @@
-import { isAbsolute } from "node:path";
+import { isAbsolute, posix } from "node:path";
 
 /**
  * File writes whose content is literal in a shell command: heredocs into `cat`/`tee`, `echo`/`printf` redirections,
@@ -45,6 +45,8 @@ interface Segment {
   input?: { kind: "heredoc" | "here-string"; text: string; expanded: boolean };
   stdin?: "pipe" | "file";
   substitution: boolean;
+  /** Set on the segment after `)` or at `}`: its redirects take the output of segments `start` to `end` (exclusive). */
+  group?: { start: number; end: number };
 }
 
 const EXPANSION_START = /[A-Za-z_{(0-9@*#?$!-]/;
@@ -61,6 +63,34 @@ function closeParen(command: string, open: number): number {
     if (char === ")" && --depth === 0) return index + 1;
   }
   return command.length;
+}
+
+/**
+ * The heredoc operator at `index`: bash removes the quotes from the delimiter word (`<<E"OF"` ends at `EOF`), and any
+ * quoted or escaped part keeps the body literal.
+ */
+function heredocOperator(command: string, index: number): { delimiter: string; tabs: boolean; literal: boolean; end: number } | undefined {
+  let at = index + 2;
+  const tabs = command[at] === "-";
+  if (tabs) at++;
+  while (command[at] === " " || command[at] === "\t") at++;
+  let delimiter = "";
+  let literal = false;
+  while (at < command.length && !/[\s;&|<>()]/.test(command[at]!)) {
+    const char = command[at]!;
+    if (char === "'" || char === "\"") {
+      const close = command.indexOf(char, at + 1);
+      if (close < 0 || command.slice(at + 1, close).includes("\n")) return undefined;
+      delimiter += char === "\"" ? command.slice(at + 1, close).replace(/\\(["\\$`])/g, "$1") : command.slice(at + 1, close);
+      literal = true;
+      at = close + 1;
+      continue;
+    }
+    if (char === "\\") { delimiter += command[at + 1] ?? ""; literal = true; at += 2; continue; }
+    delimiter += char;
+    at++;
+  }
+  return delimiter ? { delimiter, tabs, literal, end: at } : undefined;
 }
 
 /** Bash's heredoc rules for an unquoted delimiter: `\$`, `` \` ``, `\\` and a line continuation are escapes; other backslashes stay. */
@@ -87,8 +117,13 @@ function scan(command: string): Segment[] {
   let inputFile = false;
   let hereString = false;
   let pending: Array<{ segment: Segment; delimiter: string; tabs: boolean; literal: boolean }> = [];
+  /** Where each open `{` or `(` group starts in `segments`. */
+  const groups: number[] = [];
   const endWord = () => {
     if (!word) return;
+    const bare = !segment.words.length && !redirect && !hereString && !inputFile;
+    if (bare && word.text === "{") { groups.push(segments.length); word = undefined; return; }
+    if (bare && word.text === "}" && groups.length) { segment.group = { start: groups.pop()!, end: segments.length }; word = undefined; return; }
     if (redirect) { redirect.target = word; segment.redirects.push(redirect); redirect = undefined; }
     else if (hereString) { segment.input = { kind: "here-string", text: `${word.text}\n`, expanded: word.expanded }; hereString = false; }
     else if (inputFile) { segment.stdin = "file"; inputFile = false; }
@@ -193,11 +228,11 @@ function scan(command: string): Segment[] {
     }
     if (char === "<") {
       endWord();
-      const heredoc = /^<<(-?)[ \t]*(?:"([^"\n]*)"|'([^'\n]*)'|\\?([^\s;&|<>()]+))/.exec(command.slice(index));
       if (command.startsWith("<<<", index)) { hereString = true; index += 3; continue; }
+      const heredoc = command.startsWith("<<", index) ? heredocOperator(command, index) : undefined;
       if (heredoc) {
-        pending.push({ segment, delimiter: heredoc[2] ?? heredoc[3] ?? heredoc[4]!, tabs: heredoc[1] === "-", literal: heredoc[4] === undefined || heredoc[0].includes("\\") });
-        index += heredoc[0].length;
+        pending.push({ segment, delimiter: heredoc.delimiter, tabs: heredoc.tabs, literal: heredoc.literal });
+        index = heredoc.end;
         continue;
       }
       inputFile = true;
@@ -223,7 +258,15 @@ function scan(command: string): Segment[] {
       redirect = { fd, append: appending };
       continue;
     }
-    if (char === ";" || char === "&" || char === "|" || char === "(" || char === ")") {
+    if (char === "(") { endSegment(); groups.push(segments.length); index++; continue; }
+    if (char === ")") {
+      endSegment();
+      const start = groups.pop();
+      if (start !== undefined) segment.group = { start, end: segments.length };
+      index++;
+      continue;
+    }
+    if (char === ";" || char === "&" || char === "|") {
       const double = (char === "&" || char === "|" || char === ";") && next === char;
       const piped = char === "|" && !double;
       endSegment(piped);
@@ -238,11 +281,19 @@ function scan(command: string): Segment[] {
   return segments;
 }
 
-const WRAPPERS = new Set(["command", "builtin", "exec"]);
+const WRAPPERS = new Set(["command", "builtin", "exec", "env"]);
+/** `env` options that take the next word as their value. */
+const ENV_VALUE_FLAGS = new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]);
 
 function headIndex(words: readonly Word[]): number {
   let index = 0;
-  while (index < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!.text) || WRAPPERS.has(words[index]!.text))) index++;
+  while (index < words.length) {
+    const text = words[index]!.text;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(text) && !WRAPPERS.has(text)) break;
+    index++;
+    if (text !== "env") continue;
+    while (index < words.length && words[index]!.text.startsWith("-")) index += ENV_VALUE_FLAGS.has(words[index]!.text) ? 2 : 1;
+  }
   return index;
 }
 
@@ -349,25 +400,53 @@ export function shellWrites(command: string, options: { home?: string } = {}): S
   const writes: ShellWrite[] = [];
   const skips: ShellSkip[] = [];
   let movedDirectory = false;
-  for (const segment of scan(command)) {
+  const segments = scan(command);
+  /** Segments whose output a group redirect takes, so `exec > file` does not also claim it. */
+  const grouped = new Set<number>();
+  for (const segment of segments) {
+    if (segment.group && stdoutTargets(segment).length) for (let index = segment.group.start; index < segment.group.end; index++) grouped.add(index);
+  }
+  /** After `exec > file`, every later command without its own stdout redirect writes to the file. */
+  let execTargets: Target[] = [];
+  segments.forEach((segment, position) => {
     const head = headIndex(segment.words);
-    const name = (segment.words[head]?.text ?? "").replace(/^.*\//, "");
+    const name = commandName(segment, head);
     const args = segment.words.slice(head + 1);
-    if (name === "cd" || name === "pushd" || name === "popd") { movedDirectory = true; continue; }
+    if (name === "cd" || name === "pushd" || name === "popd") { movedDirectory = true; return; }
+    const own = stdoutTargets(segment);
+    if (segment.group) {
+      if (own.length) emit(own, () => groupSource(segments, segment.group!));
+      return;
+    }
+    if (name === "" && segment.words.slice(0, head).some(word => word.text === "exec")) {
+      if (own.length) execTargets = own;
+      return;
+    }
     // `> file` and `: > file` truncate: an empty file has nothing to judge.
-    if (name === "" || name === ":" || name === "true") continue;
-    if (name === "sed" && args.some(arg => /^-[A-Za-z]*i/.test(arg.text) || arg.text.startsWith("--in-place"))) { skips.push({ reason: "sed -i edits a file in place; the new content is not in the command text" }); continue; }
-    if (name === "patch") { skips.push({ reason: "patch applies a diff; the resulting file is not in the command text" }); continue; }
-    if (name === "git" && args.find(arg => !arg.text.startsWith("-"))?.text === "apply") { skips.push({ reason: "git apply applies a diff; the resulting file is not in the command text" }); continue; }
-    const targets = segment.redirects.filter(item => item.fd === "1" || item.fd === "&").map(item => ({ word: item.target!, append: item.append }));
+    if (name === "" || name === ":" || name === "true") return;
+    if (name === "sed" && args.some(arg => /^-[A-Za-z]*i/.test(arg.text) || arg.text.startsWith("--in-place"))) { skips.push({ reason: "sed -i edits a file in place; the new content is not in the command text" }); return; }
+    if (name === "patch") { skips.push({ reason: "patch applies a diff; the resulting file is not in the command text" }); return; }
+    if (name === "git" && args.find(arg => !arg.text.startsWith("-"))?.text === "apply") { skips.push({ reason: "git apply applies a diff; the resulting file is not in the command text" }); return; }
+    const targets = [...own];
+    if (!own.length && !grouped.has(position) && execTargets.length) {
+      targets.push(...execTargets);
+      // The file stays open: whatever this command prints, the next one appends after it.
+      execTargets = execTargets.map(target => ({ ...target, append: true }));
+    }
     if (name === "tee") {
       const append = args.some(arg => /^-[A-Za-z]*a/.test(arg.text) || arg.text === "--append");
       for (const arg of args) if (!arg.text.startsWith("-") || arg.text === "-") targets.push({ word: arg, append });
     }
-    const files = targets.filter(target => !/^\/dev\//.test(target.word.text));
-    if (!files.length) continue;
-    const source = contentOf(segment, name, name === "tee" ? [] : args);
-    if (!source) continue;
+    emit(targets, () => contentOf(segment, name, name === "tee" ? [] : args));
+  });
+  return { writes, skips };
+
+  function emit(targets: readonly Target[], read: () => ReturnType<typeof contentOf>): void {
+    // `/dev/../tmp/f` is a file under /tmp, not a device.
+    const files = targets.filter(target => !/^\/dev\//.test(posix.normalize(target.word.text)));
+    if (!files.length) return;
+    const source = read();
+    if (!source) return;
     for (const target of files) {
       const path = target.word.expanded ? undefined : expandHome(target.word, options.home);
       if (path === undefined || !path) { skips.push({ path: target.word.text, reason: "the target path uses shell expansion" }); continue; }
@@ -376,5 +455,52 @@ export function shellWrites(command: string, options: { home?: string } = {}): S
       writes.push({ path, content: source.content, append: target.append, via: source.via });
     }
   }
-  return { writes, skips };
+}
+
+interface Target { word: Word; append: boolean }
+
+function stdoutTargets(segment: Segment): Target[] {
+  return segment.redirects.filter(item => item.fd === "1" || item.fd === "&").map(item => ({ word: item.target!, append: item.append }));
+}
+
+function commandName(segment: Segment, head: number): string {
+  return (segment.words[head]?.text ?? "").replace(/^.*\//, "");
+}
+
+/**
+ * The text a `{ ...; }` or `( ... )` group prints, in order. Undefined when no command in it is an authoring form: a
+ * group of programs is output, not authoring. A command with its own stdout redirect prints nothing into the group.
+ */
+function groupSource(segments: readonly Segment[], group: { start: number; end: number }): ReturnType<typeof contentOf> {
+  let content = "";
+  let via: ShellWrite["via"] | undefined;
+  let program = false;
+  for (const inner of segments.slice(group.start, group.end)) {
+    if (inner.group) return { reason: "the command group holds another group, which is not judged" };
+    if (stdoutTargets(inner).length) continue;
+    const head = headIndex(inner.words);
+    const name = commandName(inner, head);
+    if (name === "" || name === ":" || name === "true" || name === "cd" || name === "pushd" || name === "popd") continue;
+    const source = contentOf(inner, name, name === "tee" ? [] : inner.words.slice(head + 1));
+    if (!source) { program = true; continue; }
+    if ("reason" in source) return source;
+    content += source.content;
+    via ??= source.via;
+  }
+  if (via === undefined) return undefined;
+  if (program) return { reason: "the command group also runs a program whose output is not in the command text" };
+  return { content, via };
+}
+
+/**
+ * One write per path, in first-seen order: appends to a path join their text, and a later truncating write replaces
+ * what came before it. Forty `>>` lines to one file are one file to judge.
+ */
+export function mergeWrites(writes: readonly ShellWrite[]): ShellWrite[] {
+  const byPath = new Map<string, ShellWrite>();
+  for (const write of writes) {
+    const earlier = byPath.get(write.path);
+    byPath.set(write.path, earlier && write.append ? { ...earlier, content: earlier.content + write.content } : { ...write });
+  }
+  return [...byPath.values()];
 }

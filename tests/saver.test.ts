@@ -16,10 +16,10 @@ test("the ledger counts candidates, compressions, token-turns, and first recalls
   assert.equal(ledger.noteAccess("cat /tmp/pi-warden-output-a/output.txt | tail", "scoped"), "/tmp/pi-warden-output-a/output.txt", "a second access is reported but not counted twice");
   assert.equal(ledger.noteAccess(JSON.stringify({ path: "/tmp/unrelated.txt" })), undefined);
   const snapshot = ledger.snapshot();
-  assert.deepEqual(snapshot, { large: 2, compressed: 2, duplicates: 0, bytesSaved: 48_000, turns: 3, tokenTurnsSaved: 10_000 + 10_000 + 12_000, recalls: 1, recallsFull: 1 });
+  assert.deepEqual(snapshot, { large: 2, compressed: 2, duplicates: 0, repeats: 0, bytesSaved: 48_000, turns: 3, tokenTurnsSaved: 10_000 + 10_000 + 12_000, recalls: 1, recallsFull: 1 });
   assert.match(formatLedger(snapshot), /2 large outputs, 2 compressed, 0 duplicates dropped, 46\.9 KB removed \(~12000 tokens\), ~32000 token-turns spared over 3 turns, 1 recall of the full output \(50%; 1 whole-file, 0 scoped\)/);
   ledger.reset();
-  assert.deepEqual(ledger.snapshot(), { large: 0, compressed: 0, duplicates: 0, bytesSaved: 0, turns: 0, tokenTurnsSaved: 0, recalls: 0, recallsFull: 0 });
+  assert.deepEqual(ledger.snapshot(), { large: 0, compressed: 0, duplicates: 0, repeats: 0, bytesSaved: 0, turns: 0, tokenTurnsSaved: 0, recalls: 0, recallsFull: 0 });
 });
 
 test("token-turns are removed tokens times the turns the removal has been in effect", () => {
@@ -65,4 +65,18 @@ test("duplicates are remembered by content key, keep the first stored copy, and 
   ledger.noteAccess(JSON.stringify({ command: "findstr /n /c:\"x\" C:\\Temp\\pi-warden-output-d\\output.txt" }), "scoped");
   assert.deepEqual([ledger.snapshot().recalls, ledger.snapshot().recallsFull], [1, 0]);
   assert.match(formatLedger(ledger.snapshot()), /1 recall of the full output \(100%; 0 whole-file, 1 scoped\)/);
+});
+
+test("repeated runs count in the ledger, earn token-turns, and a read of their stored copy is a recall", () => {
+  const ledger = new ContextLedger();
+  ledger.repeat("/tmp/pi-warden-output-r/output.txt", 8_000, { tool: "subagent-report message", bytes: 10_000 });
+  ledger.turnEnd();
+  ledger.turnEnd();
+  const snapshot = ledger.snapshot();
+  assert.deepEqual([snapshot.repeats, snapshot.bytesSaved, snapshot.tokenTurnsSaved], [1, 8_000, 4_000]);
+  assert.match(formatLedger(snapshot), /0 large outputs, 0 compressed, 0 duplicates dropped, 1 repeat cut, 7\.8 KB removed/);
+  assert.equal(ledger.noteAccess(JSON.stringify({ path: "/tmp/pi-warden-output-r/output.txt" })), "/tmp/pi-warden-output-r/output.txt");
+  ledger.turnEnd();
+  assert.equal(ledger.snapshot().tokenTurnsSaved, 4_000, "a whole-file recall puts the text back, so it stops counting");
+  assert.match(formatLedger(ledger.snapshot()), /1 recall of the full output \(100%; 1 whole-file, 0 scoped\)/);
 });

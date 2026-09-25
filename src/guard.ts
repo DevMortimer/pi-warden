@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import type { Stats } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ask, choice, noul, score } from "pi-typesafe";
@@ -10,8 +11,9 @@ import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./sh
 import type { TaskSpine } from "./shape.js";
 import { globToRegExp } from "./rules.js";
 import type { RulesSourceConfig } from "./rules.js";
+import { indexDir } from "./index-cmd.js";
 import { resolveRulesFile } from "./rules-file.js";
-import { shellWrites } from "./shell-writes.js";
+import { mergeWrites, shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
@@ -273,10 +275,14 @@ const PRINTS_SECRET = new RegExp(String.raw`\bprintenv\b[^\n;&|]*\s${SECRET_NAME
 /** A double-quoted string that expands a credential variable prints it; it is not inert data text. */
 const SECRET_EXPANSION = new RegExp(String.raw`\$\{?${SECRET_NAME}(?!\w)`, "i");
 
+// `git` plus any global options before the subcommand: `-C dir`, `--git-dir=x`, `--work-tree x`, `-c key=value` point the
+// command at another repository, and a pattern that needs the subcommand right after `git` misses them.
+const GIT = String.raw`\bgit(?:\s+-[-\w.]*(?:=\S*)?(?:\s+(?:"[^"]*"|'[^']*'|[^-\s]\S*))?)*`;
+
 export const SHELL_RULES: Rule[] = [
-  { id: "git-force-push", severity: "destructive", label: "git force push", test: /\bgit\s+push\b[^\n;&|]*\s(?:-f|--force)(?![-\w])/ },
-  { id: "git-force-with-lease", severity: "risky", label: "git push --force-with-lease", test: /\bgit\s+push\b[^\n;&|]*--force-with-lease/ },
-  { id: "git-reset-hard", severity: "destructive", label: "git reset --hard", test: /\bgit\s+reset\b[^\n;&|]*--hard/ },
+  { id: "git-force-push", severity: "destructive", label: "git force push", test: new RegExp(String.raw`${GIT}\s+push\b[^\n;&|]*\s(?:-f|--force)(?![-\w])`) },
+  { id: "git-force-with-lease", severity: "destructive", label: "git push --force-with-lease", test: new RegExp(String.raw`${GIT}\s+push\b[^\n;&|]*--force-with-lease`) },
+  { id: "git-reset-hard", severity: "destructive", label: "git reset --hard", test: new RegExp(String.raw`${GIT}\s+reset\b[^\n;&|]*--hard`) },
   { id: "git-clean", severity: "destructive", label: "git clean (removes untracked files)", test: /\bgit\s+clean\b[^\n;&|]*\s-[a-zA-Z]*[fFxX]/ },
   { id: "git-checkout-discard", severity: "risky", label: "git checkout/restore discards working changes", test: /\bgit\s+checkout\s+(?:--\s+\S|(?:\.|\*)(?=\s|$))|\bgit\s+restore\b(?:(?![^\n;&|]*--staged)|(?=[^\n;&|]*(?:--worktree|\s-\w*W)))/ },
   { id: "git-branch-force-delete", severity: "risky", label: "git branch -D", test: /\bgit\s+branch\b[^\n;&|]*\s-D\b/ },
@@ -410,6 +416,71 @@ function isDataSegment(segment: string): boolean {
   return DATA_HEADS.has(head);
 }
 
+const GH_MESSAGE_FLAGS = new Set(["--body", "-b", "--title", "-t", "--notes"]);
+const GH_MESSAGE_OBJECTS = new Set(["pr", "issue", "release"]);
+const GH_MESSAGE_VERBS = new Set(["create", "edit", "comment"]);
+const GIT_FLAG_SUBCOMMANDS = new Set(["commit", "tag"]);
+
+/** Whether `flag`, read after `words` of one simple command, takes a message as its value. */
+function isMessageFlag(words: string[], flag: string): boolean {
+  let index = 0;
+  while (index < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!) || WRAPPERS.has(words[index]!))) index++;
+  const head = words[index]?.replace(/^.*\//, "");
+  const rest = words.slice(index + 1);
+  if (head === "gh") return GH_MESSAGE_OBJECTS.has(rest[0] ?? "") && GH_MESSAGE_VERBS.has(rest[1] ?? "") && GH_MESSAGE_FLAGS.has(flag);
+  if (head !== "git") return false;
+  // `git -c alias.x=!cmd` runs a shell command, so a config override keeps the whole command in scope.
+  if (rest.some(word => word === "-c" || word.startsWith("--config"))) return false;
+  let sub = 0;
+  while (sub < rest.length && rest[sub]!.startsWith("-")) sub += rest[sub] === "-C" ? 2 : 1;
+  return GIT_FLAG_SUBCOMMANDS.has(rest[sub] ?? "") && sub < rest.length && (flag === "--message" || /^-[a-zA-Z]*m$/.test(flag));
+}
+
+/**
+ * Blanks the quoted values of message flags (`gh pr create --body`, `git commit -m`, and their `=` forms) across the
+ * whole command. It reads quotes before separators, so a body that holds `;`, `&&`, or new lines stays one value;
+ * `splitShell` alone would cut it into segments that look like commands. A value with `$(`, backticks, or an unclosed
+ * quote is kept, because the shell runs or re-reads it.
+ */
+function blankMessageFlags(command: string): string {
+  let out = "";
+  let words: string[] = [];
+  let word = "";
+  let pending = false;
+  const flush = () => {
+    if (!word) return;
+    pending = isMessageFlag(words, word);
+    words.push(word);
+    word = "";
+  };
+  for (let index = 0; index < command.length;) {
+    const char = command[index]!;
+    if (/[\n;&|]/.test(char)) { flush(); words = []; pending = false; out += char; index++; continue; }
+    if (/\s/.test(char)) { flush(); out += char; index++; continue; }
+    if (char === "\\") { word += command.slice(index, index + 2); out += command.slice(index, index + 2); index += 2; continue; }
+    const ansi = char === "$" && command[index + 1] === "'";
+    if (char !== "'" && char !== "\"" && !ansi) { word += char; out += char; index++; continue; }
+    const open = ansi ? index + 1 : index;
+    const quote = command[open]!;
+    let end = open + 1;
+    while (end < command.length && command[end] !== quote) end += quote !== "'" || ansi ? (command[end] === "\\" ? 2 : 1) : 1;
+    if (end >= command.length) return out + command.slice(index);
+    const raw = command.slice(index, end + 1);
+    const inner = command.slice(open + 1, end);
+    const flagValue = (word === "" && pending) || (word.endsWith("=") && isMessageFlag(words, word.slice(0, -1)));
+    if (flagValue && !SUBSTITUTION.test(inner)) {
+      out += `${quote}[text]${quote}`;
+      word += `${quote}[text]${quote}`;
+    } else {
+      out += raw;
+      word += raw;
+    }
+    pending = false;
+    index = end + 1;
+  }
+  return out;
+}
+
 export interface ScannedCommand {
   /** The command with data text blanked; what the pattern rules read. */
   text: string;
@@ -446,12 +517,14 @@ export function stripDataText(command: string): ScannedCommand {
     if (close < lines.length) out.push(lines[close]!);
     index = close;
   }
-  const joined = out.join("\n");
+  const scanned = out.join("\n");
+  const joined = blankMessageFlags(scanned);
   const segments = splitShell(joined);
   // A shell sink anywhere may run text written earlier in the same command (`cat <<EOF > run.sh` then `bash run.sh`), so nothing is treated as data.
   if (segments.some(segment => { const head = headOf(segment); return head !== undefined && SHELL_SINKS.has(head); })) return { text: command, stripped: false };
   if (/\b(?:ba|z|da|k)?sh\s+-[a-zA-Z]*c\b/.test(joined)) return { text: command, stripped: false };
   let text = joined;
+  if (joined !== scanned) stripped = true;
   for (const segment of segments) {
     if (!isDataSegment(segment) || !/["']/.test(segment)) continue;
     const blanked = blankQuotes(segment);
@@ -464,12 +537,12 @@ export function stripDataText(command: string): ScannedCommand {
 
 /**
  * rm with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
- * risky. A quote or parenthesis before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
+ * risky. A quote, parenthesis, or backtick before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
  */
 function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords): PatternHit | undefined {
-  const match = /(?:^|[\s"'(])rm\s+(.*)$/.exec(segment);
+  const match = /(?:^|[\s"'(`])rm\s+(.*)$/.exec(segment);
   if (!match) return undefined;
-  const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["')]+$/, ""));
+  const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["')`]+$/, ""));
   const flags = tokens.filter(token => token.startsWith("-"));
   const targets = tokens.filter(token => !token.startsWith("-"));
   const recursive = flags.some(flag => flag === "--recursive" || (/^-[a-zA-Z]+$/.test(flag) && /[rR]/.test(flag)));
@@ -576,6 +649,38 @@ export function hostPaths(env: NodeJS.ProcessEnv = process.env): string[] {
     if (real && dirname(real) !== real) roots.add(real);
   }
   return [...roots];
+}
+
+/**
+ * The host paths plus pi-warden's index directory, the only place outside the project a warden command asks the agent to
+ * write. The rest of Pi's agent directory stays held: `auth.json`, `settings.json`, pi-warden's own `config.json`, and
+ * other extensions' data.
+ */
+export function wardenHostPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const index = safeIndexDir(env);
+  return [...new Set([...hostPaths(env), ...(index ? [index] : [])])];
+}
+
+/**
+ * The real index directory, or undefined when a symlink could move it: the index directory or a directory between it
+ * and the agent directory is a symlink, or its real path is not inside the real agent directory.
+ */
+function safeIndexDir(env: NodeJS.ProcessEnv): string | undefined {
+  const index = resolve(indexDir(env));
+  // indexDir is `<agent dir>/pi-warden/index`.
+  const agent = dirname(dirname(index));
+  for (let dir = index; dir !== agent && dirname(dir) !== dir; dir = dirname(dir)) {
+    try {
+      if (lstatSync(dir).isSymbolicLink()) return undefined;
+    } catch (error) {
+      // Not created yet: realTarget resolves what exists above it.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+    }
+  }
+  const real = realTarget(index);
+  const realAgent = realTarget(agent);
+  if (!real || !realAgent || !real.startsWith(realAgent + sep)) return undefined;
+  return real;
 }
 
 /** Whether a target lies in a host path, after `..` and symlinks are resolved. An unresolvable target is not in one. */
@@ -1061,6 +1166,98 @@ function applySqlTargets(raw: string, hits: Map<string, PatternHit>, exempt: Rea
   }
 }
 
+// ---------------------------------------------------------------------------
+// Git state: a hard reset of a clean tree loses no uncommitted work, and a lease push to a named feature branch cannot
+// overwrite the default branch. Only a plain single `git reset`/`git push` command is read; anything else (a `cd`, `-C`,
+// a quote, a variable, a second command) keeps the hold, as does any git call that fails or times out.
+
+const GIT_STATE_TIMEOUT_MS = 2000;
+const PLAIN_COMMAND = /^[\w@%+=:,./~^-]+(?:[ \t]+[\w@%+=:,./~^-]+)*$/;
+const LEASE_PUSH_FLAGS = /^(?:--force-with-lease(?:=\S+)?|--force-if-includes|-u|--set-upstream|-q|--quiet|-v|--verbose|-n|--dry-run|--progress|--atomic|--no-verify)$/;
+
+function plainGitWords(command: string, subcommand: string): string[] | undefined {
+  const text = command.trim();
+  if (!PLAIN_COMMAND.test(text)) return undefined;
+  const words = text.split(/[ \t]+/);
+  return words[0] === "git" && words[1] === subcommand ? words.slice(2) : undefined;
+}
+
+/** Trimmed stdout of a git call in `cwd`; undefined when git fails, times out, or `cwd` is not a work tree. */
+function gitOutput(cwd: string, args: readonly string[]): string | undefined {
+  // GIT_OPTIONAL_LOCKS=0: `git status` would otherwise refresh the index and could race the agent's own git calls.
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: GIT_STATE_TIMEOUT_MS, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  return result.status === 0 && typeof result.stdout === "string" ? result.stdout.trim() : undefined;
+}
+
+/** `git reset --hard` in `cwd` loses nothing uncommitted: one `git status --porcelain` call prints nothing. */
+export function cleanHardReset(command: string, cwd: string | undefined): boolean {
+  if (!cwd || !plainGitWords(command, "reset")) return false;
+  return gitOutput(cwd, ["status", "--porcelain"]) === "";
+}
+
+/**
+ * `git push --force-with-lease` whose every target branch is named or is the current branch, and is not `main`,
+ * `master`, or the remote's HEAD branch. A plain `--force`/`-f`, a `+` refspec, a delete, `--all`/`--mirror`/`--tags`,
+ * or any flag not in LEASE_PUSH_FLAGS keeps the hold.
+ */
+export function safeLeasePush(command: string, cwd: string | undefined): boolean {
+  const words = cwd ? plainGitWords(command, "push") : undefined;
+  if (!cwd || !words) return false;
+  const positionals: string[] = [];
+  for (const word of words) {
+    if (word.startsWith("-")) { if (!LEASE_PUSH_FLAGS.test(word)) return false; }
+    else positionals.push(word);
+  }
+  let remote = positionals[0];
+  const refspecs = positionals.slice(1);
+  if (remote !== undefined && !/^[\w.-]+$/.test(remote)) return false;
+  const targets: string[] = [];
+  let current: string | undefined;
+  const currentBranch = () => (current ??= gitOutput(cwd, ["symbolic-ref", "-q", "--short", "HEAD"]) || undefined);
+  if (!refspecs.length) {
+    const branch = currentBranch();
+    if (!branch) return false;
+    targets.push(branch);
+    // push.default=matching pushes every branch with a remote namesake, not only the current one.
+    const pushDefault = gitOutput(cwd, ["config", "--default", "simple", "--get", "push.default"]);
+    if (pushDefault === undefined || !["simple", "current", "upstream", "tracking"].includes(pushDefault)) return false;
+    // The branch's upstream is where a bare push goes under push.default=upstream, whatever its name. The pattern also
+    // matches branches below it (`feat` matches `feat/x`), so only the line for the branch itself is read.
+    const refs = gitOutput(cwd, ["for-each-ref", "--format=%(refname)%09%(upstream:remotename)%09%(upstream:lstrip=3)", `refs/heads/${branch}`]);
+    if (refs === undefined) return false;
+    const [, upstreamRemote, upstreamBranch] = refs.split("\n").map(line => line.split("\t")).find(([ref]) => ref === `refs/heads/${branch}`) ?? [];
+    if (upstreamBranch) targets.push(upstreamBranch);
+    remote ??= upstreamRemote || "origin";
+  }
+  for (const refspec of refspecs) {
+    if (refspec.startsWith("+") || refspec.startsWith(":")) return false;
+    let target = refspec.includes(":") ? refspec.slice(refspec.indexOf(":") + 1) : refspec;
+    if (target.startsWith("refs/heads/")) target = target.slice("refs/heads/".length);
+    else if (target.startsWith("refs/")) return false;
+    if (target === "HEAD" || target === "@") {
+      const branch = currentBranch();
+      if (!branch) return false;
+      target = branch;
+    }
+    if (!target) return false;
+    targets.push(target);
+  }
+  const remoteHead = gitOutput(cwd, ["for-each-ref", "--format=%(symref:lstrip=3)", `refs/remotes/${remote ?? "origin"}/HEAD`]);
+  if (remoteHead === undefined) return false;
+  const defaults = new Set(["main", "master", ...(remoteHead ? [remoteHead] : [])]);
+  return targets.every(target => !defaults.has(target));
+}
+
+/** Lowers the reset and lease-push hits to a warning when the repository state makes them safe. */
+function applyGitState(command: string, hits: Map<string, PatternHit>, cwd: string | undefined): void {
+  if (hits.get("git-reset-hard")?.severity === "destructive" && cleanHardReset(command, cwd)) {
+    hits.set("git-reset-hard", { id: "git-reset-hard", severity: "risky", label: "git reset --hard on a clean working tree" });
+  }
+  if (hits.get("git-force-with-lease")?.severity === "destructive" && !hits.has("git-force-push") && safeLeasePush(command, cwd)) {
+    hits.set("git-force-with-lease", { id: "git-force-with-lease", severity: "risky", label: "git push --force-with-lease to a branch that is not the default" });
+  }
+}
+
 interface CompiledUserRule extends Rule { message?: string; action?: "dialog" | "hold"; }
 
 /** Compiled user rules and exempt ids; passed from the config so matchPatterns stays pure. */
@@ -1140,6 +1337,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     const command = stripDataText(raw).text;
     for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
     applySqlTargets(raw, hits, exempt);
+    applyGitState(raw, hits, cwd);
     // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else: no scratch.
     const scratch = PRIVILEGED.test(command) || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
     for (const segment of splitShell(command)) {
@@ -1389,6 +1587,61 @@ function isReadOnlySed(segment: string): boolean {
   return quiet && scripts === 1 && script !== undefined && isLiteralWord(script.raw) && SED_PRINT.test(script.word);
 }
 
+// `git grep` flags that only choose what is searched and how matches print. `-O`/`--open-files-in-pager` runs a program
+// and git accepts any unambiguous abbreviation of a long option (`--open=sh`), so a flag not listed here fails.
+const GIT_GREP_SHORT = new Set("nlLiIwcEFPGvhHoqaWz0123456789");
+/** Short flags whose value is the rest of the word or the next word. */
+const GIT_GREP_SHORT_VALUE = new Set("ABCefm");
+const GIT_GREP_LONG = new Set([
+  "line-number", "files-with-matches", "name-only", "files-without-match", "ignore-case", "word-regexp", "count", "extended-regexp",
+  "basic-regexp", "fixed-strings", "perl-regexp", "invert-match", "heading", "break", "color", "no-color", "cached", "untracked",
+  "no-index", "recurse-submodules", "max-depth", "context", "after-context", "before-context", "function-context", "show-function",
+  "all-match", "and", "or", "not", "full-name", "null", "only-matching", "column", "quiet", "text", "max-count", "threads",
+  "exclude-standard", "no-exclude-standard", "textconv", "no-textconv", "no-recursive", "recursive",
+]);
+
+/** The words after `git grep` use only listed flags. Words after `--` are pathspecs. */
+function isReadOnlyGitGrep(words: readonly string[]): boolean {
+  for (let k = 0; k < words.length; k++) {
+    const raw = words[k]!;
+    if (raw === "--") return true;
+    // The shell removes quotes and backslashes, so `'-O'sh` reaches git as `-Osh`.
+    const word = raw.replace(/["'\\]/g, "");
+    if (!word.startsWith("-") || word === "-") continue;
+    if (word.startsWith("--")) {
+      if (!GIT_GREP_LONG.has(word.slice(2).replace(/=.*$/s, ""))) return false;
+      continue;
+    }
+    for (let c = 1; c < word.length; c++) {
+      const flag = word[c]!;
+      if (GIT_GREP_SHORT_VALUE.has(flag)) { if (c === word.length - 1) k++; break; }
+      if (!GIT_GREP_SHORT.has(flag)) return false;
+    }
+  }
+  return true;
+}
+
+/** Operands of a command: words that are not flags, skipping the value of each flag in `valued`. */
+function operandsOf(words: readonly string[], valued: ReadonlySet<string>): string[] {
+  const operands: string[] = [];
+  for (let k = 0; k < words.length; k++) {
+    const word = words[k]!;
+    if (word === "--") { operands.push(...words.slice(k + 1)); break; }
+    if (word.startsWith("-") && word !== "-") { if (valued.has(word)) k++; continue; }
+    operands.push(word);
+  }
+  return operands;
+}
+
+/** Listed commands that write a file named in their arguments: `sort -o`, `uniq in out`, `tree -o`/`-R`, `xxd -r` or `xxd in out`. */
+function writesOutputFile(head: string, words: readonly string[]): boolean {
+  if (head === "sort") return words.some(word => /^-[A-Za-z]*o|^--o/.test(word));
+  if (head === "tree") return words.some(word => /^-[A-Za-z]*[oR]|^--o/.test(word));
+  if (head === "uniq") return operandsOf(words, new Set(["-f", "-s", "-w"])).length > 1;
+  if (head === "xxd") return words.some(word => /^-[A-Za-z]*r|^--?revert/.test(word)) || operandsOf(words, new Set(["-c", "-g", "-l", "-o", "-s", "-n", "-cols", "-len", "-seek", "-groupsize", "-name"])).length > 1;
+  return false;
+}
+
 export function isReadOnlyCommand(command: string): boolean {
   // `<(...)` runs its body like `$(...)` does.
   if (!command.trim() || /\$\(|`|<\(/.test(command)) return false;
@@ -1407,8 +1660,9 @@ export function isReadOnlyCommand(command: string): boolean {
       const rest = tokens.slice(index + 1).join(" ");
       const sub = tokens[index + 1];
       if (!sub) return false;
-      // `--output` makes log and diff write a file; `-O` makes grep run a pager program.
-      if (/(?:^|\s)(?:--output\b|--open-files-in-pager\b|-O)/.test(rest)) return false;
+      // `--output` makes log and diff write a file.
+      if (/(?:^|\s)--output\b/.test(rest)) return false;
+      if (sub === "grep") { if (!isReadOnlyGitGrep(tokens.slice(index + 2))) return false; continue; }
       if (READ_ONLY_GIT_LIST.has(sub)) { if (tokens[index + 2] !== "list") return false; continue; }
       if (sub === "branch") { if (/\s-[a-zA-Z]*[dDmMcCu]|--(?:delete|move|copy|set-upstream|unset-upstream|edit-description)/.test(` ${rest}`)) return false; continue; }
       if (sub === "remote") { if (tokens.slice(index + 2).some(token => !token.startsWith("-"))) return false; continue; }
@@ -1419,6 +1673,7 @@ export function isReadOnlyCommand(command: string): boolean {
     }
     if (head === "find" && /-(?:delete|exec\w*|ok\w*|fprint\w*|fls)\b/.test(segment)) return false;
     if (head === "sed") { if (!isReadOnlySed(segment)) return false; continue; }
+    if (writesOutputFile(head, tokens.slice(index + 1))) return false;
     if (!READ_ONLY_COMMANDS.has(head)) return false;
   }
   return true;
@@ -1444,8 +1699,8 @@ export function describeAction(tool: string, input: Record<string, unknown>, cwd
   if (view) {
     summary.command = redact(truncate(view.command, COMMAND_LIMIT));
     // Jev sees the full text; this names the part of it that is written or printed rather than executed.
-    if (stripDataText(view.command).stripped) summary.dataText = "heredoc bodies and quoted arguments of echo/printf/grep/git commit in this command are text that is written, printed, searched, or recorded, not executed";
-    const written = tool === "bash" ? shellWrites(view.command, { home: homedir() }).writes : [];
+    if (stripDataText(view.command).stripped) summary.dataText = "heredoc bodies and quoted arguments of echo/printf/grep, git commit messages, and gh message flags in this command are text that is written, printed, searched, or recorded, not executed";
+    const written = tool === "bash" ? mergeWrites(shellWrites(view.command, { home: homedir() }).writes) : [];
     if (written.length) {
       summary.writes = written.map(write => `${write.append ? "appends to" : "writes"} ${displayPath(write.path, cwd).path}`);
       summary.excerpt = redact(sample(written.map(write => write.content).join("\n"), EXCERPT_LIMIT));
@@ -2165,16 +2420,18 @@ export function scopeMatches(prompt: string, scope: ViolationScope): boolean {
   if (!scope.paths?.length) return true; // no file paths = verb alone determines authorization
   const lower = prompt.toLowerCase();
   return scope.paths.every(p => {
+    // A root-like target (`/`, `.`, `./*`, `..`, `~`, `$HOME`) or a one-character one is found in almost any prompt.
+    if (UNSCOPED_TARGET.test(p.replace(/\/+$/, ""))) return false;
     const lowerPath = p.toLowerCase();
-    // Exact path match: the full path appears in the prompt, not as a prefix of a longer
-    // path. "eval/reports" must NOT match "eval/reports-old".
+    // Exact path match: the full path appears in the prompt as a whole word, not inside a longer
+    // path. "eval/reports" must NOT match "eval/reports-old" or "old/eval/reports".
     const checkExact = (haystack: string, needle: string): boolean => {
-      const i = haystack.indexOf(needle);
-      if (i === -1) return false;
-      const afterIdx = i + needle.length;
-      if (afterIdx >= haystack.length) return true;
-      const c = haystack.charCodeAt(afterIdx);
-      return c === 0x20 || c === 0x2f || c === 0x2c;
+      for (let i = haystack.indexOf(needle); i !== -1; i = haystack.indexOf(needle, i + 1)) {
+        if (i > 0 && !PATH_BEFORE.test(haystack[i - 1]!)) continue;
+        const after = haystack.slice(i + needle.length);
+        if (after === "" || PATH_AFTER.test(after)) return true;
+      }
+      return false;
     };
     if (checkExact(lower, lowerPath)) return true;
     // Trailing slash in path: also match when prompt omits it
@@ -2191,7 +2448,7 @@ export function scopeMatches(prompt: string, scope: ViolationScope): boolean {
  * Scope matching for command-scoped violations requires the full command text.
  * Scope matching for path-scoped violations requires every path to appear exactly. */
 export function authorize(prompt: string, violation: Violation): Authorization {
-  if (!isAuthEligible(violation.severity)) return { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
+  if (!isAuthEligible(violation.severity) || NEVER_AUTHORIZED.has(violation.patternFamily ?? violation.id)) return { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
   const verbs = ACTION_VERBS[violation.patternFamily ?? violation.id] ?? [];
   const actionMatched = verbs.some(v => prompt.toLowerCase().includes(v));
   if (!actionMatched) return { authorized: false, actionMatched: false, scopeMatched: false, negated: false };
@@ -2200,6 +2457,18 @@ export function authorize(prompt: string, violation: Violation): Authorization {
   const scopeMatched = scopeMatches(prompt, violation.scope ?? {});
   return { authorized: actionMatched && scopeMatched, actionMatched, scopeMatched, negated: false };
 }
+
+/** Hits no prompt authorizes: a recursive rm of `/`, `~`, `$HOME`, a parent, or a path outside the project. */
+const NEVER_AUTHORIZED = new Set(["rm-recursive-dangerous-target"]);
+/** Targets too short or too general to name in a prompt: empty or one character, only `.`, `/`, `~`, `*`, or home or variable based. */
+const UNSCOPED_TARGET = /^(?:.?|[./~*]+|~.*|.*\$.*)$/s;
+/** What may stand before a path named in the prompt: the start, a space, a quote, a bracket, or punctuation. */
+const PATH_BEFORE = /[\s"'`(\[,:;]/;
+/**
+ * What may follow it: a slash, a space, a quote, a bracket, or punctuation that ends the word (`build.` but not
+ * `build.gradle`). Not `?`: "Remove tmp?" asks, it does not authorize.
+ */
+const PATH_AFTER = /^(?:[\s/"'`)\],:;!]|\.(?:$|\s))/;
 
 function collapseSpace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
