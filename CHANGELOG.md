@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.62.0
+
 ### Changed
 
 - `prefs.inject` is on by default, and strict: a wrong memory is worse than none. A standing preference reaches the agent only when you typed it, in a standing form (no question and no temporary word; `now`, `until`, `this PR`, `this branch`, and `for this` join `yet`, `for now`, `today`, and `this time`), not bound to one task (a pronoun-only object such as "don't commit it", a ticket, branch, PR number, or hash), in 3 or more sessions on 2 or more days, last within 30 days, not lifted by a later message of the opposite polarity ("do use subagents here"), and not weakening a check (skipping tests, checks, reviews, or confirmations, turning warden off, or pushing, deploying, or deleting without asking; the markers are in `WEAKENS_CHECK`). At most 5 items and 400 characters, each quoted as said with its session count, ending with "If the current request says otherwise, follow the current request." Still one message per session, not a steer, and not repeated on resume.
