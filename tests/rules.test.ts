@@ -181,7 +181,9 @@ test("describeTarget: a write is sampled and redacted; an edit carries each new 
   assert.equal(edit?.edits?.length, 2, "blank new text is dropped");
   assert.equal(edit?.edits?.[0]?.id, "edit_1");
   assert.match(edit!.edits![0]!.before!, /export async function findUser/, "context lines around the old text");
+  assert.match(edit!.edits![0]!.after!, /export async function findUser\(id: string\) \{\n  const row = await db\.get\(id\);\n  console\.log\(row\);\n  return row;\n\}/, "the same lines with the edit applied");
   assert.equal(edit?.edits?.[1]?.before, undefined, "old text not found: no context");
+  assert.equal(edit?.edits?.[1]?.after, undefined);
   assert.equal(describeTarget("write", { path: "/tmp/outside.ts", content: "x" }, cwd), undefined);
   assert.equal(describeTarget("bash", { command: "ls" }, cwd), undefined);
   assert.equal(describeTarget("write", { path: "src/empty.ts", content: "   " }, cwd), undefined);
@@ -262,13 +264,13 @@ test("rulesSteer names the rule, quotes its text, points at the edit, and makes 
     editId: "edit_2", editPreview: "console.log(row);",
   };
   const once = rulesSteer(verdict, new Map([["no-console-statements", 1]]));
-  assert.equal(once, "pi-warden: the content just written to src/user.ts in edit 2 (starting \"console.log(row);\") violates project rule from pi-warden.md: \"No console statements\" (0.91): Code must not contain `console.log`. Use the logger. Fix it in your next edit.");
+  assert.equal(once, "pi-warden: the content just written to src/user.ts in edit 2 (starting \"console.log(row);\") violates project rule: \"No console statements\" (0.91): Code must not contain `console.log`. Use the logger. Fix it in your next edit.");
   const third = rulesSteer(verdict, new Map([["no-console-statements", 3]]));
   assert.match(third, /\(0\.91; 3rd time this session\)/);
   assert.match(third, /Treat this as a standing rule for the rest of the session\.$/);
   const { editId: _editId, editPreview: _editPreview, ...located } = verdict;
   const aggregate = rulesSteer({ ...located, aggregate: true, sources: ["AGENTS.md"], findings: [{ id: "rules", name: "the project's AGENTS.md", outcome: "violation", violation: 0.8, body: "" }] }, new Map());
-  assert.match(aggregate, /^pi-warden: the content just written to src\/user\.ts breaks a rule stated in AGENTS\.md: "the project's AGENTS\.md" \(0\.80\)\. Fix it/);
+  assert.match(aggregate, /^pi-warden: the content just written to src\/user\.ts breaks a project rule: "the project's AGENTS\.md" \(0\.80\)\. Fix it/);
 });
 
 test("sensitive paths: glob → note, once per path per session, with the note in the steer", () => {
@@ -438,4 +440,118 @@ test("no rule set means gitIgnored is not called, even for a gitignored path", a
   } finally {
     await rm(noRulesDir, { recursive: true, force: true });
   }
+});
+// The weak-model bench's rules steers: each rule check below reads the state the way the rule question asks, so a
+// request that lacks the edited result, or blames an edit for code it kept, fails these tests.
+const BENCH_RULES = [
+  "# No partial implementations",
+  "Implement features fully. A comment that says \"for now\", \"simplified\", or \"later\", or a stub body, is a violation.",
+  "",
+  "# Every exported function documents its return value",
+  "An exported function or arrow constant in `src/` carries a JSDoc block with a `@returns` tag directly above it.",
+].join("\n");
+
+const undocumentedExport = (code: string) => /export function/.test(code) && !/@returns[^\n]*\n\s*\*\/\nexport function/.test(code);
+const partial = (code: string) => /for now|simplified|later|TODO/i.test(code);
+
+/** Flags a rule only when the edit's result breaks it and the pre-edit lines did not, as the rule question asks. */
+function introducedJudge(): Judge & { requests: Array<{ state: Record<string, unknown>; questions: Record<string, { instructions: string }> }> } {
+  const checks: Record<string, (code: string) => boolean> = { "no-partial-implementations": partial, "every-exported-function-documents-its-return-value": undocumentedExport };
+  const judge = {
+    requests: [] as Array<{ state: Record<string, unknown>; questions: Record<string, { instructions: string }> }>,
+    async evaluate(request: unknown) {
+      const body = request as { state: { content?: string; edits?: Array<{ before?: string; after?: string; newText: string }> }; questions: Record<string, { instructions: string }> };
+      judge.requests.push(body as never);
+      const answers: Record<string, unknown> = {};
+      for (const id of Object.keys(body.questions)) {
+        const breaks = checks[id.replace(/^rule_/, "")];
+        if (!breaks) continue;
+        const introduced = body.state.content !== undefined
+          ? breaks(body.state.content)
+          : (body.state.edits ?? []).some(edit => (edit.after === undefined ? breaks(edit.newText) : breaks(edit.after) && !breaks(edit.before ?? "")));
+        const violation = introduced ? 0.9 : 0.05;
+        answers[id] = { type: "choice", choice: introduced ? "violation" : "compliant", confidence: 0.9, probabilities: { compliant: 0.95 - violation, violation, not_applicable: 0.025, insufficient_context: 0.025 } };
+      }
+      return { model: "jev-test", elapsedMs: 7, usage: { input_tokens: 10, output_tokens: 0 }, answers } as never;
+    },
+  };
+  return judge;
+}
+
+const SLUG_JS = "/**\n * URL slug for a room or event title.\n * @returns {string} lower-case words joined by single dashes\n */\nexport function slugify(title) {\n  return title.toLowerCase().replace(/[^a-z0-9]+/g, \"-\").replace(/^-|-$/g, \"\");\n}\n";
+const CART_JS = "/**\n * Cart total line for the front-desk printout.\n * @returns {string}\n */\nexport function cartLine(cents) {\n  return \"Cart total: $\" + (cents / 100).toFixed(2);\n}\n";
+const STYLES_CSS = "body { margin: 0; font-family: system-ui, sans-serif; color: #222; }\n.site-header { background: #333333; color: #ffffff; padding: 12px 24px; display: flex; justify-content: space-between; }\n.site-header a { color: #dddddd; }\nmain { padding: 24px; }\n";
+
+async function benchProject(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rules-bench-"));
+  await mkdir(join(dir, "src", "modules"), { recursive: true });
+  await mkdir(join(dir, "public"), { recursive: true });
+  await writeFile(join(dir, "src", "slug.js"), SLUG_JS);
+  await writeFile(join(dir, "src", "modules", "cart.js"), CART_JS);
+  await writeFile(join(dir, "public", "styles.css"), STYLES_CSS);
+  return dir;
+}
+
+const benchSet = (): RuleSet => ({ sources: ["pi-warden.md"], rules: parseRules(BENCH_RULES), alwaysDropped: 0 });
+
+test("rule questions ask whether the change introduces a violation, judged on the edited result", () => {
+  const question = buildRulesRequest({ tool: "write", path: "src/a.js", content: "x" }, benchSet()).questions["rule_every-exported-function-documents-its-return-value"] as { instructions: string; criteria: Record<string, string> };
+  assert.match(question.instructions, /^Does this change to `path` introduce a violation of this one project rule\?/);
+  assert.match(question.instructions, /Judge the edit by `after`/);
+  assert.match(question.instructions, /a violation already in `before` is not introduced by this edit/);
+  assert.doesNotMatch(question.instructions, /Judge only the newly written content/);
+  assert.equal(question.criteria.violation, "The change introduces a violation of this rule.");
+});
+
+test("bench false positive: an edit to a function body under its @returns JSDoc is not a missing @returns", async () => {
+  const dir = await benchProject();
+  try {
+    const judge = introducedJudge();
+    const oldText = "  return title.toLowerCase().replace(/[^a-z0-9]+/g, \"-\").replace(/^-|-$/g, \"\");";
+    const newText = "  return title.normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\").toLowerCase().replace(/[^a-z0-9]+/g, \"-\").replace(/^-|-$/g, \"\");";
+    const verdict = await evaluateRules("edit", { path: "src/slug.js", edits: [{ oldText, newText }] }, { cwd: dir, config: rulesConfig(), set: benchSet(), judge, timeoutMs: 1000 });
+    const [edit] = judge.requests[0]!.state.edits as Array<{ after: string }>;
+    assert.equal(edit!.after, SLUG_JS.replace(oldText, newText), "the whole function with its JSDoc, as edited");
+    assert.equal(verdict.source, "typesafe");
+    assert.deepEqual(verdict.findings, []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("bench false positive: an import added above a documented function is not a missing @returns, in either of two edits", async () => {
+  const dir = await benchProject();
+  try {
+    const judge = introducedJudge();
+    const edits = [
+      { oldText: "/**\n * Cart total line", newText: "import { money } from \"../format.js\";\n\n/**\n * Cart total line" },
+      { oldText: "  return \"Cart total: $\" + (cents / 100).toFixed(2);", newText: "  return \"Cart total: \" + money(cents);" },
+    ];
+    const verdict = await evaluateRules("edit", { path: "src/modules/cart.js", edits }, { cwd: dir, config: rulesConfig(), set: benchSet(), judge, timeoutMs: 1000 });
+    const shown = judge.requests[0]!.state.edits as Array<{ after: string }>;
+    assert.match(shown[0]!.after, /^import \{ money \} from "\.\.\/format\.js";\n\n\/\*\*\n \* Cart total line[\s\S]*@returns \{string\}\n \*\/\nexport function cartLine/);
+    assert.match(shown[1]!.after, /@returns \{string\}\n \*\/\nexport function cartLine\(cents\) \{\n  return "Cart total: " \+ money\(cents\);/);
+    assert.deepEqual(verdict.findings, []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("bench false positive: a one-line colour change is not a partial implementation", async () => {
+  const dir = await benchProject();
+  try {
+    const judge = introducedJudge();
+    const edits = [{ oldText: ".site-header { background: #333333;", newText: ".site-header { background: #1e40af;" }, { oldText: ".site-header a { color: #dddddd; }", newText: ".site-header a { color: #bfdbfe; }" }];
+    const verdict = await evaluateRules("edit", { path: "public/styles.css", edits }, { cwd: dir, config: rulesConfig(), set: benchSet(), judge, timeoutMs: 1000 });
+    assert.match((judge.requests[0]!.state.edits as Array<{ after: string }>)[0]!.after, /\.site-header \{ background: #1e40af; color: #ffffff;/);
+    assert.deepEqual(verdict.findings, []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("bench true positive: an edit that removes a required @returns is still caught, and the steer names only the rule and the file", async () => {
+  const dir = await benchProject();
+  try {
+    const judge = introducedJudge();
+    const verdict = await evaluateRules("edit", { path: "src/slug.js", edits: [{ oldText: "/**\n * URL slug for a room or event title.\n * @returns {string} lower-case words joined by single dashes\n */", newText: "/** URL slug for a room or event title. */" }, { oldText: "export function slugify(title) {", newText: "export function slugify(title) {\n  if (!title) return \"\";" }] }, { cwd: dir, config: rulesConfig(), set: benchSet(), judge, timeoutMs: 1000 });
+    assert.deepEqual(verdict.findings.map(finding => finding.id), ["every-exported-function-documents-its-return-value"]);
+    const told = rulesSteer(verdict, new Map());
+    assert.match(told, /^pi-warden: the content just written to src\/slug\.js .*violates project rule: "Every exported function documents its return value" \(0\.90\)/);
+    assert.doesNotMatch(told, /pi-warden\.md|config|trace|hold|\.pi\//);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

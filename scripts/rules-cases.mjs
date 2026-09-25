@@ -32,6 +32,10 @@ Every exported function must declare its return type explicitly rather than rely
 
 # Boolean names start with is/has/should/can
 A boolean variable or property must be named with a predicate prefix such as \`is\`, \`has\`, \`should\`, or \`can\`.
+
+# Every exported function documents its return value
+paths: src/**/*.js
+An exported function or arrow constant in \`src/\` carries a JSDoc block with a \`@returns\` tag directly above it.
 `;
 
 const cases = [
@@ -48,6 +52,9 @@ const cases = [
   { name: 'compliant test with console in a string', tool: 'write', path: 'tests/logger.test.ts', content: 'import { test } from "node:test";\nimport assert from "node:assert/strict";\nimport { format } from "../src/logger.js";\n\ntest("format names the level", () => {\n  assert.equal(format("warn", "x"), "[warn] x");\n  assert.ok(!format("warn", "console.log").includes("undefined"));\n});\n', expect: [] },
   { name: 'markdown doc mentioning console.log', tool: 'write', path: 'docs/debugging.md', content: '# Debugging\n\nDo not leave `console.log` calls in committed code; use the logger.\n', expect: [] },
   { name: 'two edits, violation in the second', tool: 'edit', path: 'src/user.ts', edits: [{ oldText: 'const row = await db.get(id);', newText: 'const row = await db.get(id.trim());' }, { oldText: 'return row;', newText: 'console.log(row);\nreturn row;' }], expect: ['no-console-statements'], edit: 'edit_2' },
+  { name: 'body edit under a @returns JSDoc', tool: 'edit', path: 'src/slug.js', edits: [{ oldText: '  return title.toLowerCase();', newText: '  return title.normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").toLowerCase();' }], expect: [] },
+  { name: 'import added above a documented function', tool: 'edit', path: 'src/slug.js', edits: [{ oldText: '/**\n * URL slug', newText: 'import { money } from "./format.js";\n\n/**\n * URL slug' }, { oldText: '  return title.toLowerCase();', newText: '  return money(title.length);' }], expect: [] },
+  { name: 'edit removes a required @returns', tool: 'edit', path: 'src/slug.js', edits: [{ oldText: '/**\n * URL slug for a room or event title.\n * @returns {string} lower-case slug\n */', newText: '/** URL slug for a room or event title. */' }], expect: ['every-exported-function-documents-its-return-value'] },
 ];
 
 const cwd = mkdtempSync(join(tmpdir(), 'pi-warden-rules-cases-'));
@@ -55,6 +62,7 @@ writeFileSync(join(cwd, 'pi-warden.md'), RULES);
 mkdirSync(join(cwd, 'src'), { recursive: true });
 writeFileSync(join(cwd, 'src', 'queue.ts'), 'export function drain(items: string[]): string[] {\n  return items;\n}\n');
 writeFileSync(join(cwd, 'src', 'user.ts'), 'import { db } from "./db.js";\n\nexport async function findUser(id: string): Promise<Row | undefined> {\n  const row = await db.get(id);\n  return row;\n}\n');
+writeFileSync(join(cwd, 'src', 'slug.js'), '/**\n * URL slug for a room or event title.\n * @returns {string} lower-case slug\n */\nexport function slugify(title) {\n  return title.toLowerCase();\n}\n');
 
 const judge = createTypeSafe({ maxRequests: 40 });
 const config = defaultConfig();

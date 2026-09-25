@@ -1692,7 +1692,7 @@ test("rules: a write in a project with pi-warden.md gets its own request beside 
     const action = requests.find(request => "irreversible" in request.questions)!;
     assert.ok(!Object.keys(action.questions).some(key => key.startsWith("rule_")), "rule questions do not ride the action request");
     assert.equal(sentMessages.length, 1, "slop and rules arrive as one steer");
-    assert.match(sentMessages[0]!.message.content, /^pi-warden: the content just written to src\/r\.ts has stub or placeholder code[\s\S]*\n\npi-warden: the content just written to src\/r\.ts violates project rule from pi-warden\.md: "No console statements" \(0\.80\): Code must not contain `console\.log`\. Fix it in your next edit\.$/);
+    assert.match(sentMessages[0]!.message.content, /^pi-warden: the content just written to src\/r\.ts has stub or placeholder code[\s\S]*\n\npi-warden: the content just written to src\/r\.ts violates project rule: "No console statements" \(0\.80\): Code must not contain `console\.log`\. Fix it in your next edit\.$/);
     assert.ok(notices.some(notice => /warden · rules · src\/r\.ts: No console statements \(0\.80\)/.test(notice.text)));
     assert.ok(widgets.at(-1)!.some(line => /^VIOLATION\s+rules\s+write src\/r\.ts · 2 rules · No console statements 0\.80$/.test(line)), JSON.stringify(widgets.at(-1)));
 
@@ -1732,7 +1732,7 @@ test("rules: a write in a project with pi-warden.md gets its own request beside 
     const aggregate = requests.find(request => "rules" in request.questions)!;
     assert.ok(aggregate, "one aggregate question");
     assert.match(String(aggregate.state.rules), /Never commit console\.log/);
-    assert.match(sentMessages.at(-1)!.message.content, /breaks a rule stated in README\.md: "the project's README\.md" \(0\.80\)/);
+    assert.match(sentMessages.at(-1)!.message.content, /breaks a project rule: "the project's README\.md" \(0\.80\)/);
     await writeFile(join(temporary, ".pi", "pi-warden.json"), JSON.stringify({ rules: { fallback: false } }));
     requests.length = 0;
     await toolCall("write", { path: join(temporary, "src", "g.ts"), content: "console.log(3)" });
@@ -1839,7 +1839,7 @@ test("a held write gets no rules or slop steer; the approved retry is judged aga
     nextAnswers = { irreversible: 0.95, off_task: 0.05, scope: "expected_step", approved: 0.95, ...findings };
     assert.equal(await toolCall("write", input), undefined);
     assert.equal(sentMessages.length, 1);
-    assert.match(sentMessages[0]!.message.content, /^pi-warden: the content just written to src\/held\.ts has stub or placeholder code[\s\S]*\n\npi-warden: the content just written to src\/held\.ts violates project rule from pi-warden\.md: "No console statements" \(0\.80\)[^;]/, "first hit: the held write did not count");
+    assert.match(sentMessages[0]!.message.content, /^pi-warden: the content just written to src\/held\.ts has stub or placeholder code[\s\S]*\n\npi-warden: the content just written to src\/held\.ts violates project rule: "No console statements" \(0\.80\)[^;]/, "first hit: the held write did not count");
   } finally {
     await rm(rulesFile, { force: true });
   }
@@ -1859,7 +1859,7 @@ test("a confirm-dialog write gets its rules and slop steer only after the user a
     confirmResult = true;
     assert.equal(await toolCall("write", input), undefined);
     assert.equal(sentMessages.length, 1);
-    assert.match(sentMessages[0]!.message.content, /^pi-warden: the content just written to src\/dialog\.ts has stub[\s\S]*violates project rule from pi-warden\.md: "No console statements"/);
+    assert.match(sentMessages[0]!.message.content, /^pi-warden: the content just written to src\/dialog\.ts has stub[\s\S]*violates project rule: "No console statements"/);
   } finally {
     await rm(rulesFile, { force: true });
   }
