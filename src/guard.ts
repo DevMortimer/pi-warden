@@ -180,6 +180,10 @@ export interface Verdict {
   plan?: string;
   /** True when Jev finds the call at odds with the agent's stated plan and the call can change something; the agent is told. */
   intentMismatch?: boolean;
+  /** The intent mismatch is recorded in the trace but the agent is not told (`action.intentTraceOnly`). */
+  intentTraceOnly?: boolean;
+  /** Index of the trace-only intent-mismatch reason; any prepend must adjust this index. */
+  intentTraceOnlyReasonIndex?: number;
   /** True when Jev finds the call unrelated to the request on a call that can change something. Still steered in the reason log, but the steer message is suppressed until AUC improves above 0.51. */
   offTaskSteer?: boolean;
   /** True when should_proceed is below the hold threshold; the agent is told to pause and ask. */
@@ -2192,11 +2196,20 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   // object to on recorded sessions, a plan-drifting file edit far less so.
   const visibleDrift = judgment.intentMismatch !== undefined && (judgment.visible ?? 0) >= VISIBLE_THRESHOLD && judgment.intentMismatch >= config.visibleMismatch;
   const mismatch = judgment.intentMismatch !== undefined && canChange && (judgment.intentMismatch >= config.intentMismatch || visibleDrift);
+  // The steer reaches the agent after the call ran (275 of 275 recorded steers), and a strict course change followed 8% of
+  // them. A call with no visible effect keeps the finding in the trace only; a visible one still tells the agent. Visible
+  // is either rule: the code's (commit, push, merge, tag, reset, pull request, release, publish) or the judge's `visible`
+  // score at 0.8, which also covers an install, a launched program, or a message sent from a script.
+  const visibleEffect = (view?.shell === true && isVisibleCommand(view.command)) || (judgment.visible ?? 0) >= VISIBLE_THRESHOLD;
+  const intentTraceOnly = mismatch && (config.intentTraceOnly === "all" || (config.intentTraceOnly === "invisible" && !visibleEffect));
+  let intentTraceOnlyReasonIndex: number | undefined;
   if (mismatch) {
     level = higher(level, "warn");
+    if (intentTraceOnly) intentTraceOnlyReasonIndex = reasons.length;
+    const traceOnly = intentTraceOnly ? `; trace-only${config.intentTraceOnly === "invisible" ? ", no visible effect" : ""}` : "";
     reasons.push(visibleDrift && judgment.intentMismatch! < config.intentMismatch
-      ? `intent mismatch ${percent(judgment.intentMismatch!)} on a visible action (${percent(judgment.visible!)}; a commit, push, merge, publish, or launch the plan did not describe)`
-      : `intent mismatch ${percent(judgment.intentMismatch!)} (the call differs from the agent's stated plan)`);
+      ? `intent mismatch ${percent(judgment.intentMismatch!)} on a visible action (${percent(judgment.visible!)}; a commit, push, merge, publish, or launch the plan did not describe${traceOnly})`
+      : `intent mismatch ${percent(judgment.intentMismatch!)} (the call differs from the agent's stated plan${traceOnly})`);
   }
   // Poor calibration makes this diagnostic-only unless the user opts into steers.
   let shouldProceedSteer = false;
@@ -2212,6 +2225,10 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   const verdict: Verdict = withPlan({ level, source: "typesafe", summary, patterns, reasons, judgment });
   if (mismatch) verdict.intentMismatch = true;
+  if (intentTraceOnlyReasonIndex !== undefined) {
+    verdict.intentTraceOnly = true;
+    verdict.intentTraceOnlyReasonIndex = intentTraceOnlyReasonIndex;
+  }
   if (offTaskSteer) verdict.offTaskSteer = true;
   if (offTaskTraceOnly) verdict.offTaskTraceOnly = true;
   // Large output steers and never changes the level: the saver compresses what prints, this asks the agent to print less.
@@ -2283,6 +2300,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     verdict.reasons = [`user approved in the latest message (${percent(judgment.approved)})`, ...reasons];
     if (verdict.offTaskTraceOnlyReasonIndex !== undefined) verdict.offTaskTraceOnlyReasonIndex++;
     if (verdict.shouldProceedTraceOnlyReasonIndex !== undefined) verdict.shouldProceedTraceOnlyReasonIndex++;
+    if (verdict.intentTraceOnlyReasonIndex !== undefined) verdict.intentTraceOnlyReasonIndex++;
   }
   return verdict;
 }

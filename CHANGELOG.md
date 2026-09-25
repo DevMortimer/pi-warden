@@ -8,13 +8,19 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
-## 0.63.0
+## 0.64.0
 
 ### Added
 
 - Open loops. New agent tool `warden_loops` keeps what the agent promised to do later in this session: `add` (at most 160 characters, with an optional `when` condition such as "after CI passes"), `done`, `drop` with a reason, and `list`; its description tells the agent to add a loop whenever it promises something for later. The open loops (at most 8 and 600 characters) appear in the compaction appendix, in one end-of-run notice for the next turn (counted against the steer budget as `loops`, never twice for the same unchanged list), and in one message on resume. Loops are stored per session and project in pi-warden's data folder, so they survive compaction and resume and never reach another session or project. `/warden loops` lists them for the user.
 - New agent tool `warden_recall`: the failed attempts of this session with their error lines, the last passing check with whether the code changed since, and the saved-output paths. It prints the same sections the compaction appendix builds, from the same session state. Read-only.
 - Both run in code, with no TypeSafe request.
+
+## 0.63.0
+
+### Changed
+
+- An intent mismatch on a call with no visible effect is trace-only: the trace, the warn notice, and the status line (`N off plan (M trace-only)`) record it, and the agent gets no steer. A commit, push, merge, tag, reset, pull request, release, or publish still steers (decided in code by `isVisibleCommand`), and so does any call Jev judges `visible` at 0.8 or more, such as an install, a launched program, or a message sent from a script. The steer reaches the agent only after the call ran: on 275 recorded intent-mismatch steers over 7 days, 275 arrived after the call, and a strict course change (the agent asked the user, reverted, or changed approach) followed 8% of them. New `action.intentTraceOnly` sets which mismatches are trace-only: `"invisible"` (default), `"all"`, or `"none"` (every mismatch steers, as before).
 
 ## 0.62.0
 
