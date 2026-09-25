@@ -698,6 +698,17 @@ export function tempRootOf(real: string, roots = tempRoots()): string | undefine
 /** A privilege-raising command word anywhere in a command. */
 const PRIVILEGED = /(?:^|[\s;&|("'`])(?:sudo|doas|su|pkexec|run0)(?=\s|$)/m;
 
+/**
+ * Command words that can put existing data under a temp path before a later rm deletes it: a move, a link (`rm -rf
+ * link/` follows it), a copy or extract that can carry links (`cp -R`, `tar -x`, `git clone`), a sync that removes its
+ * source, a mount. The birth-time walk runs before the command, so it cannot see what the command itself moves in. Any
+ * `cp` or `tar` counts, whatever its flags. Read on `unquoted` text, so `\mv`, `"ln"`, and `l''n` count too.
+ */
+const MOVES_IN = /(?:^|[\s;&|(`/])(?:(?:g|bsd)?(?:mv|ln|cp|tar)|rsync|mount|hdiutil|bindfs|git(?=\s)[^;&|\n]*\sclone)(?=[\s;&|)`]|$)/m;
+
+/** A command with its quotes and backslashes removed, so a quoted or escaped command word reads as the word it runs. */
+const unquoted = (command: string): string => command.replace(/\$(?=['"])|['"\\]/g, "");
+
 /** A literal absolute path: no quotes left inside, no glob, brace, tilde, variable, escape, or substitution. */
 const LITERAL_PATH = /^\/[^*?[\]{}$`~\\"'\s]*$/;
 
@@ -1338,8 +1349,10 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
     applySqlTargets(raw, hits, exempt);
     applyGitState(raw, hits, cwd);
-    // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else: no scratch.
-    const scratch = PRIVILEGED.test(command) || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
+    // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else,
+    // and one that moves, links, copies, or extracts data can fill a path after the birth-time walk: no scratch.
+    const movesIn = MOVES_IN.test(unquoted(raw)) || MOVES_IN.test(unquoted(command));
+    const scratch = PRIVILEGED.test(command) || movesIn || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
     for (const segment of splitShell(command)) {
       const hit = classifyRm(segment, cwd, scratch);
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.

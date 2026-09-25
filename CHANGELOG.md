@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.64.1
+
+### Fixed
+
+- A recursive `rm` of recorded session scratch now keeps its hold when the same command also moves, links, copies, extracts, or mounts data: `mv`, `ln`, `cp`, `tar` (also `g`- or `bsd`-prefixed), `rsync`, `mount`, `hdiutil`, `bindfs`, or `git … clone`, anywhere in the command and also quoted or escaped (`\mv`, `"ln"`, `l''n`). The scratch tree walk runs before the command, so it could not see data the command itself put into the scratch path before its `rm`. A plain `rm -rf` of recorded scratch is still released.
+
 ## 0.64.0
 
 ### Added
