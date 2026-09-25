@@ -180,7 +180,7 @@ before(async () => {
   const registered = extension.commands.get("warden");
   assert.ok(registered);
   command = registered;
-  assert.deepEqual([...extension.tools.keys()], ["warden_remember"], "pi-warden registers one agent tool, for standing lessons");
+  assert.deepEqual([...extension.tools.keys()], ["warden_remember", "warden_loops", "warden_recall"], "pi-warden registers its lesson, loops, and recall tools");
   // The runtime's action methods throw until Pi's runner binds them; capture steer messages instead.
   result.runtime.sendMessage = (message, options) => { sentMessages.push({ message: message as { customType: string; content: string }, ...(options ? { options: options as Record<string, unknown> } : {}) }); };
   result.runtime.sendUserMessage = (content: string | unknown[]) => { sentUserMessages.push(typeof content === "string" ? content : JSON.stringify(content)); };
@@ -4282,5 +4282,139 @@ test("enabled: false or prefs.enabled: false reads no session file, even with in
     assert.equal(sessions.reads(), 0, "the session directory was never asked for");
   } finally {
     await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+/** A session with an id, in a project directory; loops are kept per session id and project. */
+const loopsContext = (session: string, cwd = temporary) => context({ cwd, sessionManager: { ...sessionManager, getSessionId: () => session } });
+const loopsTool = (params: Record<string, unknown>, ctx: ReturnType<typeof context>) =>
+  extension.tools.get("warden_loops")!.definition.execute("call-l", params, undefined, undefined, ctx as unknown as ExtensionContext)
+    .then(result => (result.content[0] as { text: string }).text);
+const recallTool = (ctx: ReturnType<typeof context>) =>
+  extension.tools.get("warden_recall")!.definition.execute("call-c", {}, undefined, undefined, ctx as unknown as ExtensionContext)
+    .then(result => (result.content[0] as { text: string }).text);
+const loopsDir = () => join(temporary, "agent", "pi-warden", "loops");
+
+test("warden_loops: add, done, drop, and list through the tool; /warden loops shows them to the user", async () => {
+  const ctx = loopsContext("session-a");
+  try {
+    await sessionStart(ctx);
+    assert.equal(await loopsTool({ action: "add", text: "Bump the version", when: "after CI passes" }, ctx), "added #1: Bump the version (when: after CI passes)");
+    assert.equal(await loopsTool({ action: "add", text: "Rerun the flaky upload test" }, ctx), "added #2: Rerun the flaky upload test");
+    assert.equal(await loopsTool({ action: "add", text: "Answer the review thread" }, ctx), "added #3: Answer the review thread");
+    assert.equal(await loopsTool({ action: "done", id: 2 }, ctx), "done #2: Rerun the flaky upload test");
+    assert.equal(await loopsTool({ action: "drop", id: 3, reason: "the thread was resolved" }, ctx), "dropped #3: Answer the review thread");
+    assert.equal(await loopsTool({ action: "list" }, ctx), "Open loops:\n- #1 Bump the version (when: after CI passes)\n(2 closed)");
+    notices.length = 0;
+    await runCommand("loops", ctx);
+    assert.match(notices.at(-1)!.text, /^Open loops \(1\):\n- #1 Bump the version \(when: after CI passes\)\nClosed \(2\):/);
+    assert.equal(networkCalls, 0, "no judgment request");
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
+  }
+});
+
+test("warden_loops: the agent_end notice comes once per unchanged list, for the next turn, as a loops steer", async () => {
+  const ctx = loopsContext("session-notice");
+  try {
+    await sessionStart(ctx);
+    await newPrompt("Ship the release", ctx);
+    await loopsTool({ action: "add", text: "Bump the version", when: "after CI passes" }, ctx);
+    sentMessages.length = 0;
+    await agentEnd("CI is running; I will bump the version after it passes.", ctx);
+    const notices = () => sentMessages.filter(m => m.message.customType === "pi-warden-steer" && /open loop/.test(m.message.content));
+    assert.equal(notices().length, 1);
+    assert.match(notices()[0]!.message.content, /^pi-warden: 1 open loop you promised in this session:\n- #1 Bump the version \(when: after CI passes\)\n/);
+    assert.equal(notices()[0]!.options?.deliverAs, "nextTurn", "it starts no turn of its own");
+    await newPrompt("status?", ctx);
+    await agentEnd("Still waiting for CI.", ctx);
+    assert.equal(notices().length, 1, "the same unchanged list is not named again");
+    await loopsTool({ action: "add", text: "Tag the release" }, ctx);
+    await newPrompt("go on", ctx);
+    await agentEnd("Waiting.", ctx);
+    assert.equal(notices().length, 2, "a changed list is named again");
+    await loopsTool({ action: "done", id: 1 }, ctx);
+    await loopsTool({ action: "done", id: 2 }, ctx);
+    await newPrompt("done?", ctx);
+    await agentEnd("All done.", ctx);
+    assert.equal(notices().length, 2, "no notice without open loops");
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
+  }
+});
+
+test("warden_loops: open loops survive a resume, which lists them once; a new session does not", async () => {
+  const ctx = loopsContext("session-resume");
+  try {
+    await sessionStart(ctx);
+    await loopsTool({ action: "add", text: "Bump the version", when: "after CI passes" }, ctx);
+    sentMessages.length = 0;
+    await fire("session_start", { reason: "resume" }, ctx);
+    const listed = sentMessages.filter(m => m.message.customType === "pi-warden-loops");
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0]!.message.content, "Open loops from earlier in this session (warden_loops):\n- #1 Bump the version (when: after CI passes)\nClose each with warden_loops done or drop once it is finished or no longer needed.");
+    assert.equal(await loopsTool({ action: "list" }, ctx), "Open loops:\n- #1 Bump the version (when: after CI passes)");
+    const resumedAgain = loopsContext("session-resume");
+    (resumedAgain.sessionManager as { getBranch: () => unknown[] }).getBranch = () => [{ type: "custom_message", customType: "pi-warden-loops", content: listed[0]!.message.content }];
+    sentMessages.length = 0;
+    await fire("session_start", { reason: "resume" }, resumedAgain);
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-loops").length, 0, "the branch already carries the same list");
+    await fire("session_start", { reason: "startup" }, loopsContext("session-other"));
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-loops").length, 0);
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
+  }
+});
+
+test("warden_loops: a loop of session A is invisible in session B and in another project", async () => {
+  const other = await mkdtemp(join(tmpdir(), "pi-warden-loops-project-"));
+  try {
+    const a = loopsContext("session-a");
+    await sessionStart(a);
+    await loopsTool({ action: "add", text: "Bump the version" }, a);
+    const b = loopsContext("session-b");
+    await sessionStart(b);
+    assert.equal(await loopsTool({ action: "list" }, b), "No open loops.");
+    assert.equal(await loopsTool({ action: "done", id: 1 }, b), "no loop #1 in this session");
+    const elsewhere = loopsContext("session-a", other);
+    await sessionStart(elsewhere);
+    assert.equal(await loopsTool({ action: "list" }, elsewhere), "No open loops.", "the same session id in another project");
+    sentMessages.length = 0;
+    await agentEnd("done", elsewhere);
+    assert.equal(sentMessages.filter(m => /open loop/.test(m.message.content)).length, 0);
+    await sessionStart(a);
+    assert.equal(await loopsTool({ action: "list" }, a), "Open loops:\n- #1 Bump the version");
+    const noId = context();
+    assert.equal(await loopsTool({ action: "list" }, noId), "not available: this session has no id to keep loops under");
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
+    await rm(other, { recursive: true, force: true });
+  }
+});
+
+test("the compaction appendix carries the open loops, and warden_recall prints its failed, verification, and saved sections", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  const ctx = loopsContext("session-compact");
+  try {
+    await sessionStart(ctx);
+    await newPrompt("Fix the build", ctx);
+    await toolResult("bash", { command: "npm run build" }, "src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.", true, ctx);
+    await toolResult("bash", { command: "npm test" }, "all 42 tests passed", false, ctx);
+    await toolResult("edit", { path: join(temporary, "src/a.ts"), edits: [] }, "Edited src/a.ts", false, ctx);
+    await loopsTool({ action: "add", text: "Rerun the build", when: "after the type fix" }, ctx);
+    sentMessages.length = 0;
+    const compactHandlers = extension.handlers.get("session_compact") ?? [];
+    await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, ctx]);
+    const appendix = sentMessages.find(m => m.message.customType === "pi-warden-compact-evidence")!.message.content;
+    assert.match(appendix, /### Open loops\n.*\n- #1 Rerun the build \(when: after the type fix\)/);
+    const recall = await recallTool(ctx);
+    const sections = recall.split("\n\n");
+    assert.deepEqual(sections.map(section => section.split("\n", 1)[0]), ["### Tried and failed", "### Verification"]);
+    for (const section of sections) assert.ok(appendix.includes(section), `the appendix carries the same text: ${section}`);
+    assert.match(recall, /npm run build → src\/a\.ts\(3,7\): error TS2322/);
+    assert.match(recall, /last passing check: npm test; code changed since last passing check: yes/);
+    assert.equal(networkCalls, 0, "recall and loops make no judgment request");
+  } finally {
+    await rm(loopsDir(), { recursive: true, force: true });
   }
 });
