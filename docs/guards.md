@@ -273,7 +273,18 @@ Sources, in order: `pi-warden.md` at the root; else the files listed in `rules.f
 
 Path scoping in config: `rules.exclude` globs are never sent to Jev (secrets, generated, vendored files); `rules.skip` globs are files the rules do not apply to (tests, docs); a per-rule `paths:` line narrows one rule. `rules.sensitivePaths` maps a glob to a note, for example `"migrations/**": "Tell the user this touches a migration and add a rollback"`; a write or edit under a matching path gives the agent that note once per path, offline, with no request.
 
-From the tuning set (`scripts/rules-cases.mjs`, 8 rules, 13 cases, all as expected): `console.log` in code scores 1.00, a bare TODO 1.00 and a `TODO(QUEUE-41)` 0.00, an empty catch 0.99, a `switch` without `default` 0.96, a hardcoded token 0.88, a missing return type 0.99 with a bad boolean name 0.96 on the same write. A compliant module, a test that mentions `console.log` in a string, and a Markdown doc about `console.log` score nothing. The locator points at the right one of two edits. Not covered: content past the sample limits. Shell writes reuse the `write` questions; no separate measurement. Those numbers predate the edit wording that judges each edit on `after` (0.65.1); the set now has a ninth rule (`@returns` above an exported function) and three cases for it (a body edit and an added import under the JSDoc, both compliant, and an edit that drops the `@returns`), not yet measured.
+From the tuning set (`scripts/rules-cases.mjs`, 8 rules, 13 cases, all as expected): `console.log` in code scores 1.00, a bare TODO 1.00 and a `TODO(QUEUE-41)` 0.00, an empty catch 0.99, a `switch` without `default` 0.96, a hardcoded token 0.88, a missing return type 0.99 with a bad boolean name 0.96 on the same write. A compliant module, a test that mentions `console.log` in a string, and a Markdown doc about `console.log` score nothing. The locator points at the right one of two edits. Not covered: content past the sample limits. Shell writes reuse the `write` questions; no separate measurement. Those numbers predate 0.65.1.
+
+0.65.1 judges each edit on `after` (the lines around it with the edit applied) and asks whether the change introduces a violation. The set grew to 9 rules and 16 cases: a rule that an exported function in `src/**/*.js` has a `@returns` JSDoc directly above it, and three cases for it. Both question wordings were run once on the same set (live, 2026-09-25, 16 requests each):
+
+| case | 0.65.0 (`newText` only) | 0.65.1 (`after`) |
+| --- | --- | --- |
+| body edit under a `@returns` JSDoc (compliant) | below 0.20, ok | below 0.20, ok |
+| import added above a documented function, plus a body edit (compliant) | 0.78, **false positive** | 0.43, ok |
+| edit that replaces the JSDoc with one without `@returns` (violation) | 0.52, **missed** | 0.99, ok |
+| total as expected | 14/16 | 16/16 |
+
+The other 13 cases stayed as expected in both runs, and each expected finding moved by 0.01 or less, except the bad boolean name (0.93 before, 0.80 after, still above the 0.7 threshold). The weak-model bench's body-edit false positive did not reproduce on this short fixture under either wording; the added-import one did, and 0.65.1 clears it.
 
 Ideas borrowed with thanks from [jevrealtimecodecheck](https://github.com/MrDesjardins/jevrealtimecodecheck) (rules as headings, the four outcomes) and [wince](https://github.com/TinyFrontier/wince) (path globs, sensitive paths, judge the change and not its story, the locator question).
 
