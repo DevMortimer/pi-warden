@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.63.0
+
 ### Added
 
 - Open loops. New agent tool `warden_loops` keeps what the agent promised to do later in this session: `add` (at most 160 characters, with an optional `when` condition such as "after CI passes"), `done`, `drop` with a reason, and `list`; its description tells the agent to add a loop whenever it promises something for later. The open loops (at most 8 and 600 characters) appear in the compaction appendix, in one end-of-run notice for the next turn (counted against the steer budget as `loops`, never twice for the same unchanged list), and in one message on resume. Loops are stored per session and project in pi-warden's data folder, so they survive compaction and resume and never reach another session or project. `/warden loops` lists them for the user.
