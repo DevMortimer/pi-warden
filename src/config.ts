@@ -319,6 +319,22 @@ export interface PrefsConfig {
   inject: boolean;
 }
 
+/** Per-model steer adaptation: a steer kind a model rarely follows or often disputes becomes trace-only for it. */
+export interface SteersConfig {
+  /** Make a steer kind trace-only for a model that rarely follows or often disputes it. */
+  adaptive: boolean;
+  /** Steers observed for a (model, kind) pair before it can become trace-only. */
+  minSteers: number;
+  /** Trace-only when the followed share is under this. Kinds with no follow measure are judged by disputes alone. */
+  minFollowed: number;
+  /** Trace-only when the disputed share is over this. */
+  maxDisputed: number;
+  /** A trace-only pair is re-checked after this many further steers. */
+  recheckEvery: number;
+  /** While trace-only, 1 in this many steers is still sent, so the re-check has fresh data. */
+  probeEvery: number;
+}
+
 export interface LearningConfig {
   /** Enable adaptive thresholds based on learning data. */
   adaptiveThresholds: boolean;
@@ -415,6 +431,8 @@ export interface WardenConfig {
    * steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the final
    * status. 0 disables the budget. Critical guards (stuck, done, runaway, subagent wake) always deliver. */
   steerBudget: number;
+  /** Per-model steer adaptation. */
+  steers: SteersConfig;
   /** Learning and adaptation settings. */
   learning: LearningConfig;
   /** Broad-consideration coach: recommends or loads skills and tools before the agent acts. */
@@ -425,7 +443,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 8;
+export const CONFIG_SCHEMA = 9;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -470,6 +488,7 @@ export function defaultConfig(): WardenConfig {
     steerVisible: false,
     notices: false,
     steerBudget: 3,
+    steers: { adaptive: true, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 },
     learning: { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 },
     conscience: {
       enabled: false,
@@ -897,6 +916,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     steerVisible: boolean(raw.steerVisible, base.steerVisible),
     notices: boolean(raw.notices, base.notices),
     steerBudget: typeof raw.steerBudget === "number" && Number.isInteger(raw.steerBudget) && raw.steerBudget >= 0 ? raw.steerBudget : base.steerBudget,
+    steers: applySteers(base.steers, raw.steers),
     learning: applyLearning(base.learning, raw.learning),
     conscience: applyConscience(base.conscience, raw.conscience),
     prefs: applyPrefs(base.prefs, raw.prefs),
@@ -906,6 +926,18 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
 function applyPrefs(base: PrefsConfig, raw: unknown): PrefsConfig {
   if (!isObject(raw)) return base;
   return { enabled: boolean(raw.enabled, base.enabled), inject: boolean(raw.inject, base.inject) };
+}
+
+function applySteers(base: SteersConfig, raw: unknown): SteersConfig {
+  if (!isObject(raw)) return base;
+  return {
+    adaptive: boolean(raw.adaptive, base.adaptive),
+    minSteers: positiveInteger(raw.minSteers, base.minSteers),
+    minFollowed: probability(raw.minFollowed, base.minFollowed),
+    maxDisputed: probability(raw.maxDisputed, base.maxDisputed),
+    recheckEvery: positiveInteger(raw.recheckEvery, base.recheckEvery),
+    probeEvery: positiveInteger(raw.probeEvery, base.probeEvery),
+  };
 }
 
 function applyLearning(base: LearningConfig, raw: unknown): LearningConfig {

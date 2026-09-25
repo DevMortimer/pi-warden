@@ -69,6 +69,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
   "steerVisible": false,
   "notices": false,
   "steerBudget": 3,
+  "steers": { "adaptive": true, "minSteers": 30, "minFollowed": 0.2, "maxDisputed": 0.4, "recheckEvery": 30, "probeEvery": 5 },
   "typesafeBackend": "typesafe"
 }
 ```
@@ -149,6 +150,12 @@ After building, `/warden index` reports which skill and tool descriptions would 
 | `steerVisible` | Show steer messages in the transcript instead of only in the trace panel. |
 | `notices` | Print the per-call warning notices (`warden · …`) in the transcript. Off by default; the widget, the trace panel, and `/warden trace` always show every event. |
 | `steerBudget` | Steers delivered to the agent per run before further non-critical ones are recorded in the trace only. Every delivered steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the final status. `0` disables the budget. Critical guards (stuck, done, runaway recovery, subagent wake) always deliver. |
+| `steers.adaptive` | Default `true`. A steer kind that a model rarely follows or often disputes becomes trace-only for that model; see [adaptive steers](guards.md#adaptive-steers-per-model). User file only. |
+| `steers.minSteers` | Observed steers of one kind for one model before that pair can become trace-only. Default `30`. |
+| `steers.minFollowed` | Trace-only when the share followed is under this. Default `0.2`. Kinds with no follow measure (`prose`, `sensitive-path`) are judged by disputes alone. |
+| `steers.maxDisputed` | Trace-only when the share disputed is over this. Default `0.4`. |
+| `steers.recheckEvery` | A trace-only pair is re-checked after this many further steers. Default `30`. |
+| `steers.probeEvery` | While trace-only, 1 in this many steers is still sent, so the re-check has fresh data. Default `5`. |
 
 ## Project config
 

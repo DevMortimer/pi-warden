@@ -1343,6 +1343,43 @@ test("intentTraceOnly: an invisible mismatch is traced without a steer, a visibl
   assert.match(notices.at(-1)!.text, /1 off plan \(1 trace-only\)/);
 });
 
+test("adaptive steers: an intent-mismatch steer the model does not follow becomes trace-only for that model, is probed, and unmutes", async () => {
+  prompt = "Verify the RPC endpoint end to end";
+  const plan = "Let me first list what is in build/ before removing anything.";
+  const command = "git push origin main";
+  const model = (id: string) => ({ model: { provider: "test", id } });
+  const branch = (id: string) => context({ hasUI: false, ...model(id), sessionManager: { getBranch: () => [
+    { type: "message", message: { role: "user", content: prompt } },
+    assistantEntry({ type: "text", text: plan }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command } }),
+  ] } });
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, steers: { minSteers: 2, recheckEvery: 4, probeEvery: 2 }, ...STACK_BAR }));
+  const intentSteers = () => sentMessages.filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content)).length;
+  /** One mismatching push; the agent's next two messages carry on without a course change. Returns whether the steer was sent. */
+  const run = async (id: string) => {
+    await sessionStart(context({ hasUI: false, ...model(id) }));
+    sentMessages.length = 0;
+    nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, visible: 0.9, intent_mismatch: 0.95, should_proceed: 1.0 };
+    assert.equal(await toolCall("bash", { command }, branch(id)), undefined, "a mismatch never holds, muted or not");
+    const sent = intentSteers();
+    for (const text of ["Pushed.", "Continuing with the next step."]) await fire("message_end", { message: { role: "assistant", content: [{ type: "text", text }, { type: "toolCall", id: "c", name: "bash", arguments: { command: "ls" } }] } }, context({ hasUI: false, ...model(id) }));
+    return sent;
+  };
+  assert.deepEqual([await run("a"), await run("a")], [1, 1], "under minSteers every steer is sent");
+  assert.equal(await run("b"), 1, "another model has its own counts");
+  assert.equal(await run("a"), 1, "the first steer after muting is a probe");
+  assert.equal(await run("a"), 0, "then trace-only");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /steer trace-only · intent-mismatch · test\/a/);
+  await runCommand("status", context({ hasUI: false, ...model("a") }));
+  assert.match(sentMessages.at(-1)!.message.content, /trace-only per model: test\/a: intent-mismatch \(\d+ steers, 0% followed, 0% disputed\)/);
+  await runCommand("unmute intent-mismatch", context({ hasUI: false, ...model("a") }));
+  assert.match(sentMessages.at(-1)!.message.content, /Reset intent-mismatch for test\/a/);
+  assert.equal(await run("a"), 1, "after unmute the steer is sent again");
+  await runCommand("unmute intent-mismatch test/b", context({ hasUI: false }));
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, steers: { adaptive: false }, ...STACK_BAR }));
+  await runCommand("unmute intent-mismatch", context({ hasUI: false, ...model("a") }));
+});
+
 test("plan: a text-less git push after an earlier plan and an earlier tool call is judged against that plan", async () => {
   await grantConsent();
   prompt = "Tidy the docs";
