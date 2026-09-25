@@ -17,7 +17,7 @@ assistant
 
 pi-warden (steer message to the agent)
   pi-warden: the content just written to scripts/demo_rail_decisions.py violates
-  project rule from pi-warden.md: "No hardcoded secrets" (0.88): Source and config
+  project rule: "No hardcoded secrets" (0.88): Source and config
   code must not contain passwords, API keys, tokens, or connection URLs (including
   Supabase DSNs and `FLY_API_TOKEN` values). They come from settings
   (`utils/config.py`) or the environ… [77 more chars]. Fix it in your next edit.
@@ -52,7 +52,7 @@ pi-warden (steer message to the agent)
   unused imports and variables, duplicated logic, and unreachable branches; ...
 
   pi-warden: the content just written to ... in edit 2 (starting "await apply_decision(...")
-  violates project rule from pi-warden.md: "No partial implementations" (0.73): A comment
+  violates project rule: "No partial implementations" (0.73): A comment
   or docstring that says "simplified for now", "temporary", "for now just", ... Fix it in
   your next edit.
 

@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- The rules guard no longer blames an edit for code that the edit kept. Each edit's request now carries `after`, the lines of `before` with the edit applied, and each rule question asks whether the change introduces a violation, judged on `after`, instead of judging `newText` alone with `before` as context only. In the weak-model bench, three of the four rules steers that were noise flagged a missing `@returns` for an edit to a function body or an added import, with the JSDoc still directly above the function. An edit that drops a required `@returns` is still flagged.
+- A rules steer names the rule and the written file only; it no longer names the rules file (`from pi-warden.md`), which sent one weak model to read pi-warden's own config and trace.
 
 ## 0.65.0
 
