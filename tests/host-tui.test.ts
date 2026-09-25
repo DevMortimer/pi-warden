@@ -106,7 +106,7 @@ test("every guard mounts on a host whose TUI has a mouse region", async () => {
   assert.ok(sessionEvent);
   await sessionEvent.handler({}, host.ctx);
 
-  assert.equal(host.events.length, 12, "12 event hooks registered");
+  assert.equal(host.events.length, 13, "13 event hooks registered");
   assert.deepEqual([...host.commands.keys()], ["warden"], "1 command: /warden");
   assert.ok(host.shortcuts.size >= 1, "at least 1 shortcut registered");
 });
@@ -140,7 +140,7 @@ test("every guard mounts on a host whose TUI has no mouse region", async () => {
     assert.ok(sessionEvent);
     await sessionEvent.handler({}, host.ctx);
 
-    assert.equal(host.events.length, 12, "12 event hooks registered — same as with MouseRegion");
+    assert.equal(host.events.length, 13, "13 event hooks registered — same as with MouseRegion");
     assert.deepEqual([...host.commands.keys()], ["warden"], "1 command: /warden");
     assert.ok(host.shortcuts.size >= 1, "at least 1 shortcut");
   } finally {
