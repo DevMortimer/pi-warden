@@ -12,6 +12,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 - `/warden prefs` shows each item as injected or the rule that kept it out ("not injected: seen in 2 sessions", "not injected: weakens a check"). `/warden prefs forget <n>` drops an item for the project for good, rewordings included; the key is kept in pi-warden's data folder.
 - New agent tool `warden_remember`: after a user correction, or a stuck, repeat, or done-check steer, within the last 5 assistant turns of the run, the agent can record one standing lesson (at most 160 characters) for the project. The same rules apply; a lesson that repeats a stored lesson or a listed preference confirms it instead of adding one. A lesson is injected only once confirmed (recorded again in a later session, or said by the user), after your preferences, marked `(agent lesson)`, and expires after 30 days without a confirmation. Lessons are stored with the date and session id under pi-warden's data folder, never in a rules file or a session file. Preference and lesson text goes to the session model only, never to TypeSafe.
 
+## 0.60.1
+
+### Fixed
+
+- Message text in a command is no longer read as a command. The quoted values of `--body`, `-b`, `--title`, `-t`, and `--notes` on `gh pr|issue|release create|edit|comment`, and of `-m` and `--message` on `git commit` and `git tag`, are blanked before the patterns run, also in `=` form and as `$'…'`. A body that held `;`, `&&`, or new lines was cut into segments before, so a PR body that quoted `rm -rf /` was held as destructive. A value with `$(`, backticks, or an unclosed quote is still read, because the shell runs it.
+- A recursive `rm` right after a backtick (`` `rm -rf ~` ``) is now classified like one after `$(`.
+
 ## 0.60.0
 
 ### Changed

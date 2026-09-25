@@ -412,6 +412,71 @@ function isDataSegment(segment: string): boolean {
   return DATA_HEADS.has(head);
 }
 
+const GH_MESSAGE_FLAGS = new Set(["--body", "-b", "--title", "-t", "--notes"]);
+const GH_MESSAGE_OBJECTS = new Set(["pr", "issue", "release"]);
+const GH_MESSAGE_VERBS = new Set(["create", "edit", "comment"]);
+const GIT_FLAG_SUBCOMMANDS = new Set(["commit", "tag"]);
+
+/** Whether `flag`, read after `words` of one simple command, takes a message as its value. */
+function isMessageFlag(words: string[], flag: string): boolean {
+  let index = 0;
+  while (index < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!) || WRAPPERS.has(words[index]!))) index++;
+  const head = words[index]?.replace(/^.*\//, "");
+  const rest = words.slice(index + 1);
+  if (head === "gh") return GH_MESSAGE_OBJECTS.has(rest[0] ?? "") && GH_MESSAGE_VERBS.has(rest[1] ?? "") && GH_MESSAGE_FLAGS.has(flag);
+  if (head !== "git") return false;
+  // `git -c alias.x=!cmd` runs a shell command, so a config override keeps the whole command in scope.
+  if (rest.some(word => word === "-c" || word.startsWith("--config"))) return false;
+  let sub = 0;
+  while (sub < rest.length && rest[sub]!.startsWith("-")) sub += rest[sub] === "-C" ? 2 : 1;
+  return GIT_FLAG_SUBCOMMANDS.has(rest[sub] ?? "") && sub < rest.length && (flag === "--message" || /^-[a-zA-Z]*m$/.test(flag));
+}
+
+/**
+ * Blanks the quoted values of message flags (`gh pr create --body`, `git commit -m`, and their `=` forms) across the
+ * whole command. It reads quotes before separators, so a body that holds `;`, `&&`, or new lines stays one value;
+ * `splitShell` alone would cut it into segments that look like commands. A value with `$(`, backticks, or an unclosed
+ * quote is kept, because the shell runs or re-reads it.
+ */
+function blankMessageFlags(command: string): string {
+  let out = "";
+  let words: string[] = [];
+  let word = "";
+  let pending = false;
+  const flush = () => {
+    if (!word) return;
+    pending = isMessageFlag(words, word);
+    words.push(word);
+    word = "";
+  };
+  for (let index = 0; index < command.length;) {
+    const char = command[index]!;
+    if (/[\n;&|]/.test(char)) { flush(); words = []; pending = false; out += char; index++; continue; }
+    if (/\s/.test(char)) { flush(); out += char; index++; continue; }
+    if (char === "\\") { word += command.slice(index, index + 2); out += command.slice(index, index + 2); index += 2; continue; }
+    const ansi = char === "$" && command[index + 1] === "'";
+    if (char !== "'" && char !== "\"" && !ansi) { word += char; out += char; index++; continue; }
+    const open = ansi ? index + 1 : index;
+    const quote = command[open]!;
+    let end = open + 1;
+    while (end < command.length && command[end] !== quote) end += quote !== "'" || ansi ? (command[end] === "\\" ? 2 : 1) : 1;
+    if (end >= command.length) return out + command.slice(index);
+    const raw = command.slice(index, end + 1);
+    const inner = command.slice(open + 1, end);
+    const flagValue = (word === "" && pending) || (word.endsWith("=") && isMessageFlag(words, word.slice(0, -1)));
+    if (flagValue && !SUBSTITUTION.test(inner)) {
+      out += `${quote}[text]${quote}`;
+      word += `${quote}[text]${quote}`;
+    } else {
+      out += raw;
+      word += raw;
+    }
+    pending = false;
+    index = end + 1;
+  }
+  return out;
+}
+
 export interface ScannedCommand {
   /** The command with data text blanked; what the pattern rules read. */
   text: string;
@@ -448,12 +513,14 @@ export function stripDataText(command: string): ScannedCommand {
     if (close < lines.length) out.push(lines[close]!);
     index = close;
   }
-  const joined = out.join("\n");
+  const scanned = out.join("\n");
+  const joined = blankMessageFlags(scanned);
   const segments = splitShell(joined);
   // A shell sink anywhere may run text written earlier in the same command (`cat <<EOF > run.sh` then `bash run.sh`), so nothing is treated as data.
   if (segments.some(segment => { const head = headOf(segment); return head !== undefined && SHELL_SINKS.has(head); })) return { text: command, stripped: false };
   if (/\b(?:ba|z|da|k)?sh\s+-[a-zA-Z]*c\b/.test(joined)) return { text: command, stripped: false };
   let text = joined;
+  if (joined !== scanned) stripped = true;
   for (const segment of segments) {
     if (!isDataSegment(segment) || !/["']/.test(segment)) continue;
     const blanked = blankQuotes(segment);
@@ -466,12 +533,12 @@ export function stripDataText(command: string): ScannedCommand {
 
 /**
  * rm with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
- * risky. A quote or parenthesis before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
+ * risky. A quote, parenthesis, or backtick before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
  */
 function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords): PatternHit | undefined {
-  const match = /(?:^|[\s"'(])rm\s+(.*)$/.exec(segment);
+  const match = /(?:^|[\s"'(`])rm\s+(.*)$/.exec(segment);
   if (!match) return undefined;
-  const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["')]+$/, ""));
+  const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["')`]+$/, ""));
   const flags = tokens.filter(token => token.startsWith("-"));
   const targets = tokens.filter(token => !token.startsWith("-"));
   const recursive = flags.some(flag => flag === "--recursive" || (/^-[a-zA-Z]+$/.test(flag) && /[rR]/.test(flag)));
@@ -1628,7 +1695,7 @@ export function describeAction(tool: string, input: Record<string, unknown>, cwd
   if (view) {
     summary.command = redact(truncate(view.command, COMMAND_LIMIT));
     // Jev sees the full text; this names the part of it that is written or printed rather than executed.
-    if (stripDataText(view.command).stripped) summary.dataText = "heredoc bodies and quoted arguments of echo/printf/grep/git commit in this command are text that is written, printed, searched, or recorded, not executed";
+    if (stripDataText(view.command).stripped) summary.dataText = "heredoc bodies and quoted arguments of echo/printf/grep, git commit messages, and gh message flags in this command are text that is written, printed, searched, or recorded, not executed";
     const written = tool === "bash" ? mergeWrites(shellWrites(view.command, { home: homedir() }).writes) : [];
     if (written.length) {
       summary.writes = written.map(write => `${write.append ? "appends to" : "writes"} ${displayPath(write.path, cwd).path}`);
