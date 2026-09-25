@@ -67,14 +67,20 @@ export interface CompactSnapshot {
   verification: Verification | undefined;
   stuck: StuckState | undefined;
   activeTask: string | undefined;
+  /** The session's open loops, already formatted and capped by `formatOpenLoops`; absent or empty when none is open. */
+  openLoops?: string;
 }
 
 function clip(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`;
 }
 
-function render(snapshot: CompactSnapshot): string {
-  const sections: string[] = [];
+type SectionName = "failed" | "verification" | "loops" | "checks" | "stuck" | "holds" | "saved" | "task";
+
+/** Every section in appendix order; `warden_recall` prints some of the same strings, so the two never disagree. */
+function renderSections(snapshot: CompactSnapshot): Array<[SectionName, string]> {
+  const sections: Array<[SectionName, string]> = [];
+  const push = (name: SectionName, text: string) => sections.push([name, text]);
 
   if (snapshot.failedAttempts.length) {
     const items = snapshot.failedAttempts.map(attempt => {
@@ -83,7 +89,7 @@ function render(snapshot: CompactSnapshot): string {
       const entry = error ? `${call} → ${clip(error, FAILED_ENTRY_CHARS - call.length - 3)}` : call;
       return `- ${entry}`;
     }).join("\n");
-    sections.push(`### Tried and failed\nDo not retry these unchanged.\n${items}`);
+    push("failed", `### Tried and failed\nDo not retry these unchanged.\n${items}`);
   }
 
   if (snapshot.verification) {
@@ -91,38 +97,46 @@ function render(snapshot: CompactSnapshot): string {
     const line = v.kind === "passed"
       ? `- last passing check: ${redact(v.command)}; code changed since last passing check: ${v.changedSince ? "yes" : "no"}`
       : "- no check has passed yet; code was changed";
-    sections.push(`### Verification\n${line}`);
+    push("verification", `### Verification\n${line}`);
+  }
+
+  if (snapshot.openLoops) {
+    push("loops", `### Open loops\nPromised earlier in this session and not done yet; close each with warden_loops done or drop.\n${snapshot.openLoops}`);
   }
 
   if (snapshot.checks.length) {
     const items = snapshot.checks
       .map(c => `- ${c.passed ? "✓" : "✗"} ${c.when}: ${redact(c.command)}`)
       .join("\n");
-    sections.push(`### Last checks\n${items}`);
+    push("checks", `### Last checks\n${items}`);
   }
 
   if (snapshot.stuck) {
-    sections.push(`### Stuck state\n- failures: ${snapshot.stuck.failures} of the last ${snapshot.stuck.window} tool results`);
+    push("stuck", `### Stuck state\n- failures: ${snapshot.stuck.failures} of the last ${snapshot.stuck.window} tool results`);
   }
 
   if (snapshot.holds.length) {
     const items = snapshot.holds
       .map(h => `- ${redact(h.tool)}: ${redact(h.outcome)}${h.preview ? ` (${redact(h.preview)})` : ""}`)
       .join("\n");
-    sections.push(`### Held actions\n${items}`);
+    push("holds", `### Held actions\n${items}`);
   }
 
   if (snapshot.savedOutputs.length) {
     const items = snapshot.savedOutputs
       .map(item => `- ${item.tool ? `${redact(item.tool)} → ` : ""}${redact(item.path)}${item.bytes === undefined ? "" : ` (${item.bytes} bytes)`}`)
       .join("\n");
-    sections.push(`### Saved full outputs\n${items}`);
+    push("saved", `### Saved full outputs\n${items}`);
   }
 
   if (snapshot.activeTask) {
-    sections.push(`### Active task\n${redact(snapshot.activeTask)}`);
+    push("task", `### Active task\n${redact(snapshot.activeTask)}`);
   }
+  return sections;
+}
 
+function render(snapshot: CompactSnapshot): string {
+  const sections = renderSections(snapshot).map(([, text]) => text);
   if (sections.length === 0) return "";
 
   return [
@@ -135,8 +149,9 @@ function render(snapshot: CompactSnapshot): string {
 }
 
 /**
- * Lower-value content goes first when the appendix is over the cap. Failed attempts and the verification line are
- * never reduced here; they come first in the text, so the final cut reaches them last.
+ * Lower-value content goes first when the appendix is over the cap. Failed attempts, the verification line, and the
+ * open loops (at most 600 characters) are never reduced here; they come first in the text, so the final cut reaches
+ * them last.
  */
 const REDUCERS: ReadonlyArray<(s: CompactSnapshot) => CompactSnapshot> = [
   s => ({ ...s, savedOutputs: s.savedOutputs.slice(-SAVED_KEEP_WHEN_OVER) }),
@@ -160,6 +175,19 @@ export function compactAppendix(snapshot: CompactSnapshot): string {
   if (appendix.length <= MAX_CHARS) return appendix;
   const marker = "\n… [truncated]";
   return appendix.slice(0, MAX_CHARS - marker.length) + marker;
+}
+
+/**
+ * `warden_recall`: what was already tried in this session, from the same snapshot and the same section text as the
+ * compaction appendix: the failed attempts with their error lines, the last passing check with whether the code
+ * changed since, and the saved-output paths. Capped like the appendix.
+ */
+export function recallText(snapshot: CompactSnapshot): string {
+  const kept = renderSections(snapshot).filter(([name]) => name === "failed" || name === "verification" || name === "saved").map(([, text]) => text);
+  const text = kept.length ? kept.join("\n\n") : "Nothing recorded yet in this session: no failed attempt, no check, and no saved output.";
+  if (text.length <= MAX_CHARS) return text;
+  const marker = "\n… [truncated]";
+  return text.slice(0, MAX_CHARS - marker.length) + marker;
 }
 
 const ERROR_LINE = /\b(?:error|errors|fail(?:ed|ure|s)?|exception|cannot|can't|could not|not found|no such|denied|refused|invalid|unexpected|missing|undefined|timed? ?out|abort(?:ed)?|panic|fatal|traceback)\b|✗|✖|✘/i;
@@ -213,6 +241,7 @@ export function buildCompactSnapshot(options: {
   evidence?: Pick<RunEvidence, "mutations" | "checks" | "checksBeforeMutation">;
   activeTask: string | undefined;
   runs: number;
+  openLoops?: string;
 }): CompactSnapshot {
   const savedOutputs: SavedOutput[] = options.savedOutputs.map(o => ({
     tool: o.tool,
@@ -248,5 +277,6 @@ export function buildCompactSnapshot(options: {
     verification: options.evidence ? verificationOf(options.evidence) : undefined,
     stuck,
     activeTask,
+    ...(options.openLoops ? { openLoops: options.openLoops } : {}),
   };
 }

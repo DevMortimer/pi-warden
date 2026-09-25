@@ -326,6 +326,18 @@ Only the newest tool result or message is ever changed, before it enters the ses
 
 Set `context.enabled: false` to turn it off. Full-output files can contain secrets and stay in the OS temporary directory until removed.
 
+## Open loops and recall
+
+Two agent tools let the agent hand warden what it must not lose in a long session. Both run in code, with no Jev request.
+
+- **`warden_loops`** keeps the promises of this session. The tool tells the agent to add a loop whenever it promises to do something later. Actions: `add` (text of at most 160 characters, and an optional `when` condition such as "after CI passes"), `done <id>`, `drop <id> <reason>`, and `list`. Text is redacted when it is added. The open loops come back three ways, capped at 8 items and 600 characters with a count of the rest:
+  - in the compaction appendix, as the `Open loops` section, after the failed attempts and the verification line and never cut before them;
+  - at the end of a run, as one short notice for the next turn (it starts no turn of its own). It counts against `steerBudget` as `loops`, and the same unchanged list is never named twice;
+  - on resume, as one message (`pi-warden-loops`) that lists the open loops; not sent again when the branch already ends with the same list.
+
+  Loops are stored per session and per project in pi-warden's data folder, so they survive compaction and resume; a loop of one session never shows in another session or another project. `/warden loops` lists them for the user.
+- **`warden_recall`** answers "what did I already try?" for this session: the failed attempts with their error lines, the last passing check with whether the code changed since, and the saved-output paths. It prints the same section text the compaction appendix builds from the same session state, so the two never disagree. Read-only; it takes no arguments.
+
 ## Subagent triage
 
 Async subagents report as custom messages (`subagent-notify`, `subagent-incremental-child-notify`, and the control and supervisor variants), and Pi appends each one to the main agent's context itself. warden cannot hold those messages back, so the decision is narrower: does this report need the agent awake? The scan runs on `agent_settled`, when Pi will not continue on its own, which is the one moment a wake costs nothing.
@@ -367,6 +379,6 @@ Nudges from the rules, slop, stuck, done, prose, security, runaway, and subagent
 Two bounds keep a closing run from turning into six accounting replies that all restate the final status (each delivered steer costs the agent at least one LLM turn, and the model fills that turn with a status restatement):
 
 - A notice delivered once is not re-sent. A repeat (same text, scores ignored) is recorded in the trace with its text under `steer recorded, not delivered`; the first copy is already in the agent's context.
-- `steerBudget` (default 3) caps the steers one run can demand. Further non-critical notices are recorded only; the same notice can deliver on the next run. Stuck, done, runaway recovery, and subagent wake are critical and always deliver, because their message starts the turn it asks for. The quick repeat steer (counted as `repeat`) is not critical.
+- `steerBudget` (default 3) caps the steers one run can demand. Further non-critical notices are recorded only; the same notice can deliver on the next run. Stuck, done, runaway recovery, and subagent wake are critical and always deliver, because their message starts the turn it asks for. The quick repeat steer (counted as `repeat`) and the open-loops notice (counted as `loops`) are not critical.
 
 At the end of a run the final message is also compared with the run's earlier final messages, in code, with no request. A reply whose substantive sentences mostly restate an earlier reply of the same run is counted as a restatement in the trace and `/warden status`; it is never steered, because a nudge cannot retract the reply and would cost the turn it warns against.
