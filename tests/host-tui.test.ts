@@ -36,6 +36,7 @@ function createHost() {
     on(type: string, handler: (event: unknown, ctx: unknown) => unknown) { events.push({ type, handler }); },
     registerCommand(name: string, def: { description: string; handler: (...args: unknown[]) => unknown }) { commands.set(name, def); },
     registerShortcut(_key: string, def: { description: string; handler: (...args: unknown[]) => unknown }) { shortcuts.set("ctrl+shift+w", def); },
+    registerTool() {},
     sendMessage() {},
   };
 

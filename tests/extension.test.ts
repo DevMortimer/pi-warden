@@ -180,7 +180,7 @@ before(async () => {
   const registered = extension.commands.get("warden");
   assert.ok(registered);
   command = registered;
-  assert.equal(extension.tools.size, 0, "pi-warden registers no agent tools");
+  assert.deepEqual([...extension.tools.keys()], ["warden_remember"], "pi-warden registers one agent tool, for standing lessons");
   // The runtime's action methods throw until Pi's runner binds them; capture steer messages instead.
   result.runtime.sendMessage = (message, options) => { sentMessages.push({ message: message as { customType: string; content: string }, ...(options ? { options: options as Record<string, unknown> } : {}) }); };
   result.runtime.sendUserMessage = (content: string | unknown[]) => { sentUserMessages.push(typeof content === "string" ? content : JSON.stringify(content)); };
@@ -4080,14 +4080,23 @@ test("/warden completions offer every subcommand, including recommend and prefs"
   assert.deepEqual(await command.getArgumentCompletions!("pr"), [{ value: "prefs", label: "prefs" }]);
 });
 
-/** A session directory copied from the prefs fixture, dated now so it sits inside the scan window. */
-const prefsSessions = async () => {
+/**
+ * The standing-preference rules count calendar days and a 30-day window, so every prefs test runs on this fixed clock
+ * and fixed file dates, never the wall clock. The runner's Date mock reaches the extension instance Pi's loader built,
+ * and it is restored when the test ends.
+ */
+const PREFS_NOW = Date.parse("2026-01-20T12:00:00.000Z");
+const fixPrefsClock = (t: TestContext) => t.mock.timers.enable({ apis: ["Date"], now: PREFS_NOW });
+
+/** A session directory copied from the prefs fixture, each file dated by its name. */
+const prefsSessions = async (t: TestContext) => {
+  fixPrefsClock(t);
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-ext-"));
   const fixtures = resolve("tests/fixtures/prefs");
-  const now = new Date();
   for (const name of await readdir(fixtures)) {
+    const at = new Date(`${name.slice(0, 10)}T12:00:00.000Z`);
     await writeFile(join(dir, name), await readFile(join(fixtures, name)));
-    await utimes(join(dir, name), now, now);
+    await utimes(join(dir, name), at, at);
   }
   let reads = 0;
   const manager = {
@@ -4098,8 +4107,8 @@ const prefsSessions = async () => {
   return { dir, manager, reads: () => reads };
 };
 
-test("/warden prefs lists the standing preferences with counts, dates, and the hint, and writes nothing", async () => {
-  const sessions = await prefsSessions();
+test("/warden prefs lists the standing preferences with counts, dates, and the hint, and writes nothing", async t => {
+  const sessions = await prefsSessions(t);
   try {
     const ctx = context({ sessionManager: sessions.manager });
     await sessionStart(ctx);
@@ -4107,13 +4116,13 @@ test("/warden prefs lists the standing preferences with counts, dates, and the h
     notices.length = 0;
     await runCommand("prefs", ctx);
     const text = notices.at(-1)!.text;
-    assert.match(text, /^Standing preferences \(repeated in 2\+ of the last 3 sessions of this project\):/);
-    assert.match(text, /Never paste the api_key=\[redacted\] value into the chat log \(2 sessions, last 2026-01-03\)/);
-    assert.match(text, /Dont open pull requests, leave the branch local \(2 sessions, last 2026-01-02\)/);
-    assert.ok(text.endsWith("Add the ones you want to keep to pi-warden.md as rules."));
+    assert.match(text, /^Standing preferences \(repeated in 2\+ of the last 3 sessions of this project; injected from 3 sessions on 2 days\):/);
+    assert.match(text, /Never paste the api_key=\[redacted\] value into the chat log \(2 sessions on 2 days, last 2026-01-03\): not injected: seen in 2 sessions/);
+    assert.match(text, /Dont open pull requests, leave the branch local \(2 sessions on 2 days, last 2026-01-02\): not injected: seen in 2 sessions/);
+    assert.ok(text.endsWith("Add the ones you want to keep to pi-warden.md as rules; /warden prefs forget <n> drops one for good."));
     assert.doesNotMatch(text, /linter|formatter/i);
     assert.equal(networkCalls, 0, "no judgment request");
-    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "no injection by default");
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "nothing passes the injection rules");
     await runCommand("prefs", ctx);
     assert.equal(sessions.reads(), 1, "one scan per session start");
     assert.deepEqual(await readdir(sessions.dir), before);
@@ -4122,29 +4131,108 @@ test("/warden prefs lists the standing preferences with counts, dates, and the h
   }
 });
 
-test("prefs.inject sends one context message at session start, not a steer, and not again on a resume", async () => {
-  const sessions = await prefsSessions();
+/** Three earlier sessions on two fixed days (UTC), before the fixed prefs clock. */
+const STANDING_STAMPS = ["2026-01-17T12:00:00.000Z", "2026-01-19T09:00:00.000Z", "2026-01-19T10:00:00.000Z"];
+const standingSessions = async (t: TestContext, lines: readonly string[][]) => {
+  fixPrefsClock(t);
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-standing-"));
+  for (const [index, messages] of lines.entries()) {
+    const stamp = STANDING_STAMPS[index]!;
+    const entries = [
+      { type: "session", version: 3, id: `s${index}`, timestamp: stamp, cwd: temporary },
+      ...messages.map((content, n) => ({ type: "message", id: `m${n}`, parentId: null, timestamp: stamp, message: { role: "user", content } })),
+    ];
+    await writeFile(join(dir, `s${index}.jsonl`), entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    await utimes(join(dir, `s${index}.jsonl`), new Date(stamp), new Date(stamp));
+  }
+  const manager = { ...sessionManager, getSessionDir: () => dir, getSessionFile: () => join(dir, "current.jsonl"), getSessionId: () => "current-session" };
+  return { dir, manager };
+};
+const SAID = [
+  ["never force-push the release branch", "don't commit or stage it", "always skip the tests before pushing"],
+  ["ok, never force-push the release branch", "don't commit or stage it", "always skip the tests before pushing"],
+  ["please never force-push the release branch. also keep replies short", "don't commit or stage it", "always skip the tests before pushing"],
+];
+
+test("prefs.inject is on by default: one quoted context message at session start, not a steer, and not again on a resume", async t => {
+  const sessions = await standingSessions(t, SAID);
   try {
-    await writeFile(configPath(), JSON.stringify({ prefs: { inject: true }, ...STACK_BAR }));
     sentMessages.length = 0;
     await sessionStart(context({ sessionManager: sessions.manager }));
     const sent = sentMessages.filter(m => m.message.customType === "pi-warden-prefs");
     assert.equal(sent.length, 1);
-    assert.match(sent[0]!.message.content, /^Preferences this user repeated in earlier sessions of this project:\n- Never paste the api_key=\[redacted\]/);
-    assert.ok(sent[0]!.message.content.length <= 600);
+    assert.equal(sent[0]!.message.content, [
+      "Standing preferences for this project, quoted as said in earlier sessions:",
+      "- \"Never force-push the release branch\" (3 sessions)",
+      "If the current request says otherwise, follow the current request.",
+    ].join("\n"));
     assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-steer").length, 0);
     const resumed = { ...sessions.manager, getBranch: () => [{ type: "custom_message", customType: "pi-warden-prefs", content: sent[0]!.message.content }] };
     sentMessages.length = 0;
     await sessionStart(context({ sessionManager: resumed }));
     assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0);
+    await writeFile(configPath(), JSON.stringify({ prefs: { inject: false }, ...STACK_BAR }));
+    await sessionStart(context({ sessionManager: sessions.manager }));
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "inject: false sends nothing");
     assert.equal(networkCalls, 0);
   } finally {
     await rm(sessions.dir, { recursive: true, force: true });
   }
 });
 
-test("enabled: false or prefs.enabled: false reads no session file, even with inject on", async () => {
-  const sessions = await prefsSessions();
+test("/warden prefs names each item's status, and forget drops one for the project", async t => {
+  const sessions = await standingSessions(t, SAID);
+  try {
+    const ctx = context({ sessionManager: sessions.manager });
+    await sessionStart(ctx);
+    notices.length = 0;
+    await runCommand("prefs", ctx);
+    const text = notices.at(-1)!.text;
+    assert.match(text, /1\. Never force-push the release branch \(3 sessions on 2 days, last 2026-01-19\): injected/);
+    assert.match(text, /Don't commit or stage it \(3 sessions on 2 days, last 2026-01-19\): not injected: task-bound/);
+    assert.match(text, /Always skip the tests before pushing \(3 sessions on 2 days, last 2026-01-19\): not injected: weakens a check/);
+    await runCommand("prefs forget 1", ctx);
+    assert.match(notices.at(-1)!.text, /^Forgotten for this project: "Never force-push the release branch"/);
+    await runCommand("prefs", ctx);
+    assert.doesNotMatch(notices.at(-1)!.text, /force-push/);
+    await runCommand("prefs forget 9", ctx);
+    assert.match(notices.at(-1)!.text, /^Usage: \/warden prefs forget <n>/);
+    sentMessages.length = 0;
+    await sessionStart(ctx);
+    assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "a forgotten item is not injected");
+    assert.deepEqual((await readdir(sessions.dir)).sort(), ["s0.jsonl", "s1.jsonl", "s2.jsonl"], "session files untouched");
+  } finally {
+    await rm(join(temporary, "agent", "pi-warden", "prefs"), { recursive: true, force: true });
+    await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+test("warden_remember records a lesson only within five assistant turns of a correction or a stuck, repeat, or done steer", async t => {
+  const sessions = await standingSessions(t, []);
+  const remember = (lesson: string, ctx: ReturnType<typeof context>) =>
+    extension.tools.get("warden_remember")!.definition.execute("call-r", { lesson }, undefined, undefined, ctx as unknown as ExtensionContext)
+      .then(result => (result.content[0] as { text: string }).text);
+  try {
+    const ctx = context({ sessionManager: sessions.manager });
+    await sessionStart(ctx);
+    await newPrompt("Add the export button", ctx);
+    assert.equal(await remember("Never edit the generated client by hand", ctx), "not recorded: no correction or failure to learn from");
+    await newPrompt("no, don't edit the generated client, regenerate it", ctx);
+    assert.equal(await remember("Always skip the tests when the build is slow", ctx), "not recorded: weakens a check");
+    assert.match(await remember("Never edit the generated client by hand", ctx), /^recorded: "Never edit the generated client by hand"/);
+    for (let turn = 0; turn < 6; turn++) await fire("turn_end", {}, ctx);
+    assert.equal(await remember("Always regenerate the client after a schema change", ctx), "not recorded: no correction or failure to learn from");
+    notices.length = 0;
+    await runCommand("prefs", ctx);
+    assert.match(notices.at(-1)!.text, /Never edit the generated client by hand \(agent lesson, recorded in 1 session, last 2026-01-20\): agent lesson, not yet confirmed/);
+  } finally {
+    await rm(join(temporary, "agent", "pi-warden", "prefs"), { recursive: true, force: true });
+    await rm(sessions.dir, { recursive: true, force: true });
+  }
+});
+
+test("enabled: false or prefs.enabled: false reads no session file, even with inject on", async t => {
+  const sessions = await prefsSessions(t);
   try {
     for (const config of [{ enabled: false, prefs: { inject: true } }, { prefs: { enabled: false, inject: true } }]) {
       await writeFile(configPath(), JSON.stringify({ ...config, ...STACK_BAR }));
