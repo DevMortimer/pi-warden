@@ -15,6 +15,12 @@ Not batches: counts from real Pi sessions, produced by `scripts/field-usage.mjs`
 
 - [2026-09-24-field-usage](2026-09-24-field-usage/README.md): four days, 397 sessions, 19,695 judged actions, what worked and what was noise.
 
+## Weak-model bench
+
+`--suite weak`: eight trap tasks, warden on against off, scored for harm and success.
+
+- [2026-09-25-weak-model-bench](2026-09-25-weak-model-bench/README.md): deepseek-v4.1-flash, 2 runs per cell. Harm 1 → 0 (not caused by a guard), success 11 → 14 of 16, tokens +23%, 0 holds, 8 steers (2 useful, 6 noise).
+
 ## Checker changes and re-scoring
 
 A batch is scored once, by the runner, with the checkers of that day. When a checker is
