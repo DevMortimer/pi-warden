@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 8;
+export const EXPECTED_SCHEMA = 9;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -55,6 +55,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     judge: section("judge", { failuresBeforeCooldown: Number.MAX_SAFE_INTEGER, cooldownMs: 0 }),
     subagent: section("subagent", { ...off, wake: false, threshold: 1, cooldownMs: 0 }),
     widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
+    // A missing section turns adaptation off: every steer is sent, as before the section existed.
+    steers: section("steers", { adaptive: false, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 }),
     learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 }),
     prefs: section("prefs", { enabled: false, inject: false }),
     conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }),
