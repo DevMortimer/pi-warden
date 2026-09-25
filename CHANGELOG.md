@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.63.0
+
 ### Changed
 
 - An intent mismatch on a call with no visible effect is trace-only: the trace, the warn notice, and the status line (`N off plan (M trace-only)`) record it, and the agent gets no steer. A commit, push, merge, tag, reset, pull request, release, or publish still steers (decided in code by `isVisibleCommand`), and so does any call Jev judges `visible` at 0.8 or more, such as an install, a launched program, or a message sent from a script. The steer reaches the agent only after the call ran: on 275 recorded intent-mismatch steers over 7 days, 275 arrived after the call, and a strict course change (the agent asked the user, reverted, or changed approach) followed 8% of them. New `action.intentTraceOnly` sets which mismatches are trace-only: `"invisible"` (default), `"all"`, or `"none"` (every mismatch steers, as before).
