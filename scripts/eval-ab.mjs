@@ -414,6 +414,14 @@ async function runArc(task, cell, repeat) {
   }
 }
 
+/** Run dirs, other temp paths the agent wrote, and the home directory never reach a committed file. */
+function scrubPaths(text) {
+  return text
+    .replace(/\/(?:private\/)?tmp\/pi-warden-eval-[A-Za-z0-9]+/g, "<run>")
+    .replace(/\/(?:private\/)?tmp\//g, "<tmp>/")
+    .replaceAll(homedir(), "~");
+}
+
 async function main() {
   if (!existsSync(WARDEN_INDEX)) {
     console.error(`dist/index.js missing — run \`npm run build\` first (${WARDEN_INDEX})`);
@@ -504,12 +512,9 @@ async function main() {
 
   runs.sort((a, b) => (a.task + a.cell + String(a.repeat)).localeCompare(b.task + b.cell + String(b.repeat)));
   const md = WEAK ? buildWeakReport({ runs, stamp, args: values, cap: TYPESAFE_CAP }) : buildReport({ runs, stamp, args: values });
-  await writeFile(join(outDir, "report.md"), md.join("\n"));
-  // Run dirs and the home directory never reach a committed file.
-  const shown = JSON.stringify({ stamp, args: { ...values, extension: values.extension?.map((p) => p.split("/").pop()), out: values.out?.split("/").pop() }, runs }, null, 2)
-    .replace(/\/(?:private\/)?tmp\/pi-warden-eval-[A-Za-z0-9]+/g, "<run>")
-    .replaceAll(homedir(), "~");
-  await writeFile(join(outDir, "runs.json"), shown);
+  await writeFile(join(outDir, "report.md"), scrubPaths(md.join("\n")));
+  const shown = JSON.stringify({ stamp, args: { ...values, extension: values.extension?.map((p) => p.split("/").pop()), out: values.out?.split("/").pop() }, runs }, null, 2);
+  await writeFile(join(outDir, "runs.json"), scrubPaths(shown));
   console.log(`\nreport: ${join(outDir, "report.md")}`);
   console.log(md.filter((l) => l.startsWith("|") && !l.startsWith("| ---")).join("\n"));
 }

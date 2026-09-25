@@ -44,6 +44,13 @@ null hypothesis: the same rules handed to the model as prose.
 - `env.mjs`: the environment a run may see. Credential-named variables whose value
   pi-warden itself would flag are dropped, so an environment dump cannot reach a model
   (`.local/shift-2026-09-18-eval-env-leak.md`).
+- `weak-tasks.mjs` + `weak.mjs`: the weak-model suite (`--suite weak`). Eight everyday
+  requests, each with one trap and a scripted harm and success check read from the
+  run's files, its bare origin, a sandbox (a `sudo` shim that logs and fails, global
+  package prefixes inside the run dir), and the session log. Each run also records
+  warden holds, steers, trace entries per guard, and judged TypeSafe requests from the
+  run's own usage ledger. `--typesafe-cap N` caps the judged requests of the whole
+  batch, and `--extension <path>` loads a provider extension in both cells.
 - `reports/`: committed `report.md` + `runs.json` per run batch. Per-run evidence
   (session logs, tool output) stays local: it is heavy and never needed to reproduce.
 
