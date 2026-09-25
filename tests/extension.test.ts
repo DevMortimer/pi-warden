@@ -4015,14 +4015,23 @@ test("/warden completions offer every subcommand, including recommend and prefs"
   assert.deepEqual(await command.getArgumentCompletions!("pr"), [{ value: "prefs", label: "prefs" }]);
 });
 
-/** A session directory copied from the prefs fixture, dated now so it sits inside the scan window. */
-const prefsSessions = async () => {
+/**
+ * The standing-preference rules count calendar days and a 30-day window, so every prefs test runs on this fixed clock
+ * and fixed file dates, never the wall clock. The runner's Date mock reaches the extension instance Pi's loader built,
+ * and it is restored when the test ends.
+ */
+const PREFS_NOW = Date.parse("2026-01-20T12:00:00.000Z");
+const fixPrefsClock = (t: TestContext) => t.mock.timers.enable({ apis: ["Date"], now: PREFS_NOW });
+
+/** A session directory copied from the prefs fixture, each file dated by its name. */
+const prefsSessions = async (t: TestContext) => {
+  fixPrefsClock(t);
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-ext-"));
   const fixtures = resolve("tests/fixtures/prefs");
-  const now = new Date();
   for (const name of await readdir(fixtures)) {
+    const at = new Date(`${name.slice(0, 10)}T12:00:00.000Z`);
     await writeFile(join(dir, name), await readFile(join(fixtures, name)));
-    await utimes(join(dir, name), now, now);
+    await utimes(join(dir, name), at, at);
   }
   let reads = 0;
   const manager = {
@@ -4033,8 +4042,8 @@ const prefsSessions = async () => {
   return { dir, manager, reads: () => reads };
 };
 
-test("/warden prefs lists the standing preferences with counts, dates, and the hint, and writes nothing", async () => {
-  const sessions = await prefsSessions();
+test("/warden prefs lists the standing preferences with counts, dates, and the hint, and writes nothing", async t => {
+  const sessions = await prefsSessions(t);
   try {
     const ctx = context({ sessionManager: sessions.manager });
     await sessionStart(ctx);
@@ -4057,18 +4066,19 @@ test("/warden prefs lists the standing preferences with counts, dates, and the h
   }
 });
 
-/** Session files written now: three earlier sessions on two days, and the current one. */
-const standingSessions = async (lines: readonly string[][]) => {
+/** Three earlier sessions on two fixed days (UTC), before the fixed prefs clock. */
+const STANDING_STAMPS = ["2026-01-17T12:00:00.000Z", "2026-01-19T09:00:00.000Z", "2026-01-19T10:00:00.000Z"];
+const standingSessions = async (t: TestContext, lines: readonly string[][]) => {
+  fixPrefsClock(t);
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-standing-"));
-  const now = Date.now();
-  const days = [3, 1, 1];
   for (const [index, messages] of lines.entries()) {
-    const stamp = new Date(now - (days[index] ?? 0) * 86_400_000 - index * 60_000).toISOString();
+    const stamp = STANDING_STAMPS[index]!;
     const entries = [
       { type: "session", version: 3, id: `s${index}`, timestamp: stamp, cwd: temporary },
       ...messages.map((content, n) => ({ type: "message", id: `m${n}`, parentId: null, timestamp: stamp, message: { role: "user", content } })),
     ];
     await writeFile(join(dir, `s${index}.jsonl`), entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    await utimes(join(dir, `s${index}.jsonl`), new Date(stamp), new Date(stamp));
   }
   const manager = { ...sessionManager, getSessionDir: () => dir, getSessionFile: () => join(dir, "current.jsonl"), getSessionId: () => "current-session" };
   return { dir, manager };
@@ -4079,8 +4089,8 @@ const SAID = [
   ["please never force-push the release branch. also keep replies short", "don't commit or stage it", "always skip the tests before pushing"],
 ];
 
-test("prefs.inject is on by default: one quoted context message at session start, not a steer, and not again on a resume", async () => {
-  const sessions = await standingSessions(SAID);
+test("prefs.inject is on by default: one quoted context message at session start, not a steer, and not again on a resume", async t => {
+  const sessions = await standingSessions(t, SAID);
   try {
     sentMessages.length = 0;
     await sessionStart(context({ sessionManager: sessions.manager }));
@@ -4105,17 +4115,17 @@ test("prefs.inject is on by default: one quoted context message at session start
   }
 });
 
-test("/warden prefs names each item's status, and forget drops one for the project", async () => {
-  const sessions = await standingSessions(SAID);
+test("/warden prefs names each item's status, and forget drops one for the project", async t => {
+  const sessions = await standingSessions(t, SAID);
   try {
     const ctx = context({ sessionManager: sessions.manager });
     await sessionStart(ctx);
     notices.length = 0;
     await runCommand("prefs", ctx);
     const text = notices.at(-1)!.text;
-    assert.match(text, /1\. Never force-push the release branch \(3 sessions on 2 days, last \S+\): injected/);
-    assert.match(text, /Don't commit or stage it \(3 sessions on 2 days, last \S+\): not injected: task-bound/);
-    assert.match(text, /Always skip the tests before pushing \(3 sessions on 2 days, last \S+\): not injected: weakens a check/);
+    assert.match(text, /1\. Never force-push the release branch \(3 sessions on 2 days, last 2026-01-19\): injected/);
+    assert.match(text, /Don't commit or stage it \(3 sessions on 2 days, last 2026-01-19\): not injected: task-bound/);
+    assert.match(text, /Always skip the tests before pushing \(3 sessions on 2 days, last 2026-01-19\): not injected: weakens a check/);
     await runCommand("prefs forget 1", ctx);
     assert.match(notices.at(-1)!.text, /^Forgotten for this project: "Never force-push the release branch"/);
     await runCommand("prefs", ctx);
@@ -4132,8 +4142,8 @@ test("/warden prefs names each item's status, and forget drops one for the proje
   }
 });
 
-test("warden_remember records a lesson only within five assistant turns of a correction or a stuck, repeat, or done steer", async () => {
-  const sessions = await standingSessions([]);
+test("warden_remember records a lesson only within five assistant turns of a correction or a stuck, repeat, or done steer", async t => {
+  const sessions = await standingSessions(t, []);
   const remember = (lesson: string, ctx: ReturnType<typeof context>) =>
     extension.tools.get("warden_remember")!.definition.execute("call-r", { lesson }, undefined, undefined, ctx as unknown as ExtensionContext)
       .then(result => (result.content[0] as { text: string }).text);
@@ -4149,15 +4159,15 @@ test("warden_remember records a lesson only within five assistant turns of a cor
     assert.equal(await remember("Always regenerate the client after a schema change", ctx), "not recorded: no correction or failure to learn from");
     notices.length = 0;
     await runCommand("prefs", ctx);
-    assert.match(notices.at(-1)!.text, /Never edit the generated client by hand \(agent lesson, recorded in 1 session, last \S+\): agent lesson, not yet confirmed/);
+    assert.match(notices.at(-1)!.text, /Never edit the generated client by hand \(agent lesson, recorded in 1 session, last 2026-01-20\): agent lesson, not yet confirmed/);
   } finally {
     await rm(join(temporary, "agent", "pi-warden", "prefs"), { recursive: true, force: true });
     await rm(sessions.dir, { recursive: true, force: true });
   }
 });
 
-test("enabled: false or prefs.enabled: false reads no session file, even with inject on", async () => {
-  const sessions = await prefsSessions();
+test("enabled: false or prefs.enabled: false reads no session file, even with inject on", async t => {
+  const sessions = await prefsSessions(t);
   try {
     for (const config of [{ enabled: false, prefs: { inject: true } }, { prefs: { enabled: false, inject: true } }]) {
       await writeFile(configPath(), JSON.stringify({ ...config, ...STACK_BAR }));
