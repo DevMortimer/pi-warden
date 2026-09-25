@@ -837,6 +837,71 @@ test("an identical repeated result becomes a duplicate note with a stored copy, 
   assert.equal(await toolResult("bash", { command: "ls" }, "a\nb\n", false), undefined);
 });
 
+const relayReport = Array.from({ length: 40 }, (_, index) => `report line ${index}: module ${index} built and every check passed cleanly`).join("\n");
+const relayTail = Array.from({ length: 50 }, (_, index) => `turn 4 line ${index}: new progress since the last relay`).join("\n");
+const relayContext = () => context({ sessionManager: { getBranch: () => [
+  { id: "e1", type: "custom_message", customType: "subagent-report", content: `Turn 3\n${relayReport}`, display: true },
+] } });
+
+test("a report repeated in a new message or tool result becomes one pointer line; the stored copy holds the full text", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeMessages: true }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4, with earlier turns:\n${relayReport}\n${relayTail}`;
+  const result = await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx) as { message: { role: string; content: string } };
+  assert.equal(result.message.role, "custom");
+  const text = result.message.content;
+  const pointer = text.match(/^Turn 4, with earlier turns:\n\[pi-warden: the next 40 lines repeat an earlier subagent-report message — omitted; full text: (.+)\]\nturn 4 line 0:/);
+  assert.ok(pointer, text.slice(0, 300));
+  const path = pointer[1]!;
+  const rewritten = [text];
+  try {
+    assert.equal(await readFile(path, "utf8"), incoming, "the stored copy is the full original");
+    assert.ok(text.endsWith(relayTail), "the new part and the tail stay");
+    // A user message with an image: the text part is cut, the image keeps its place.
+    const image = { type: "image", data: "AAAA", mimeType: "image/png" };
+    const user = await fire("message_end", { message: { role: "user", content: [image, { type: "text", text: incoming }], timestamp: 2 } }, ctx) as { message: { content: Array<{ type: string; text?: string }> } };
+    rewritten.push(user.message.content[1]!.text!);
+    assert.deepEqual(user.message.content[0], image);
+    assert.match(user.message.content[1]!.text!, /the next 40 lines repeat an earlier subagent-report message/);
+    // The same repeat in a tool result.
+    const tool = await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx) as { content: Array<{ text: string }> };
+    rewritten.push(tool.content[0]!.text);
+    assert.match(tool.content[0]!.text, /the next 40 lines repeat an earlier subagent-report message — omitted; full text: /);
+    // Reading a stored copy back is a recall and returns the full text unchanged.
+    await toolCall("read", { path }, ctx);
+    assert.equal(await toolResult("read", { path }, incoming, false, ctx), undefined);
+    // An assistant reply is never rewritten.
+    assert.equal(await fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: incoming }] } }, ctx), undefined);
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /3 repeats cut/);
+    assert.match(notices.at(-1)!.text, /1 recall of the full output/);
+  } finally {
+    for (const line of rewritten.flatMap(body => [...body.matchAll(/full text: (.+)\]/g)])) await rm(join(line[1]!, ".."), { recursive: true, force: true });
+  }
+});
+
+test("messages stay whole by default while tool results are cut", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
+  assert.equal(await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx), undefined);
+  assert.equal(await fire("message_end", { message: { role: "user", content: incoming, timestamp: 2 } }, ctx), undefined);
+  const tool = await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx) as { content: Array<{ text: string }> };
+  const path = tool.content[0]!.text.match(/the next 40 lines repeat an earlier subagent-report message — omitted; full text: (.+)\]/)![1]!;
+  await rm(join(path, ".."), { recursive: true, force: true });
+});
+
+test("context.dedupeRuns false keeps repeated runs in messages and tool results, even with dedupeMessages on", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeRuns: false, dedupeMessages: true }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const ctx = relayContext();
+  const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
+  assert.equal(await fire("message_end", { message: { role: "custom", customType: "subagent-report", content: incoming, display: true, timestamp: 1 } }, ctx), undefined);
+  assert.equal(await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx), undefined);
+});
+
 test("recall kinds: a scoped search keeps the saving, a whole-file read is counted as such", async () => {
   await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false }, context: { recallTool: "grep" } , ...STACK_BAR }));
   nextAnswers = { retention: "summary_only" };

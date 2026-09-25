@@ -58,6 +58,7 @@ import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
+import { SeenText, collapseRuns, seenItem } from "./dedupe.js";
 import { buildCompactSnapshot, compactAppendix } from "./compact.js";
 import { emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, isCorrection, LESSON_CHARS, LESSON_TURNS, NO_LESSON_SIGNAL, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences, writePrefsStore } from "./prefs.js";
 import type { PrefItem, PrefsScan } from "./prefs.js";
@@ -604,6 +605,47 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   };
   /** A judged output the saver left whole gets a trace line with its verdict, so the confidence gate can be calibrated.
    *  Trace only: nothing happened to the output, so the status line keeps the last real context event. */
+  /** Text already in context on the current branch, for repeated-run detection. Synced before each check, not kept by hand. */
+  const seenText = new SeenText();
+  const syncSeen = (ctx: ExtensionContext) => {
+    const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
+    // Compaction-aware when the host has it: text a compaction summarized is no longer in context, so nothing may point to it.
+    const entries = typeof manager.buildContextEntries === "function" ? manager.buildContextEntries() : typeof manager.getBranch === "function" ? manager.getBranch() : [];
+    seenText.sync(entries.map(seenItem).filter(item => item !== undefined));
+  };
+  /** `text` with each run that repeats context replaced by a pointer line, or undefined when nothing repeats or the copy cannot be stored. */
+  const dedupeText = async (ctx: ExtensionContext, config: WardenConfig, text: string, source: string): Promise<string | undefined> => {
+    const runs = seenText.find(text);
+    if (!runs.length) return undefined;
+    try {
+      const path = await saveOutput(text);
+      const collapsed = collapseRuns(text, runs, path);
+      const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(collapsed);
+      ledger.repeat(path, bytesSaved, { tool: source, bytes: Buffer.byteLength(text) });
+      savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: source, retention: "repeat", bytesSaved: String(bytesSaved) }), [
+        ...runs.map(run => `${run.lines} lines (${run.chars} characters) repeat ${run.where}`),
+        `saved ${bytesSaved} bytes; full text: ${path}`,
+        formatLedger(ledger.snapshot()),
+      ]);
+      return collapsed;
+    } catch {
+      noteError(ctx, "Could not store full text; keeping the repeated run.", undefined);
+      return undefined;
+    }
+  };
+  /** Text parts only; images and other parts keep their place and bytes. */
+  const dedupeContent = async <Part extends { type: string }>(ctx: ExtensionContext, config: WardenConfig, content: Part[], source: string): Promise<Part[] | undefined> => {
+    let changed: Part[] | undefined;
+    for (let index = 0; index < content.length; index++) {
+      const part = content[index]! as Part & { text?: unknown };
+      if (part.type !== "text" || typeof part.text !== "string") continue;
+      const text = await dedupeText(ctx, config, part.text, source);
+      if (text === undefined) continue;
+      changed ??= [...content];
+      changed[index] = { ...part, text };
+    }
+    return changed;
+  };
   const recordKeptWhole = (config: WardenConfig, tool: string, verdict: OutputVerdict, prefix = "") => {
     trace.push({ at: Date.now(), guard: "context", line: renderTemplate(config.widget.context, { tool, retention: "kept whole" }), details: [
       `${prefix}kept whole: retention ${verdict.retention}; confidence ${verdict.confidence?.toFixed(2)}; format ${verdict.format ?? "generic"}${verdict.formatConfidence === undefined ? "" : ` (${verdict.formatConfidence.toFixed(2)})`}; ${verdict.model}; ${verdict.elapsedMs} ms`,
@@ -786,6 +828,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       try { await rm(dir, { recursive: true, force: true }); } catch (err) { console.warn("pi-warden: temp cleanup failed:", err); }
     }
     ledger.reset();
+    seenText.clear();
     savingEntry = undefined;
     compressionLearner.reset();
     secretsSeen.clear();
@@ -1701,6 +1744,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       }
       if (!compressed && !ctx.signal?.aborted && output.confidence !== undefined) recordKeptWhole(config, event.toolName, output);
     }
+    // A recall brings the stored text back on purpose, and a duplicate note has nothing left to cut.
+    if (config.context.enabled && config.context.dedupeRuns && !earlier && !recallRead && !ctx.signal?.aborted) {
+      syncSeen(ctx);
+      const deduped = await dedupeContent(ctx, config, content, event.toolName);
+      if (deduped) content = deduped;
+    }
     if (key && !earlier) ledger.remember(key, event.toolName, storedPath);
     // The banner in the result already tells the agent, so the notice rides the result content alone and is not also
     // steered. A steer sent here would join the request that carries this result and cost no extra turn
@@ -1788,6 +1837,22 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
     if (nudge) steer(config, "stuck", nudge);
     return patch;
+  });
+
+  // Opt-in: a relayed report that pastes earlier turns again keeps only its new part. Pi persists the replaced message.
+  pi.on("message_end", async (event, ctx) => {
+    const config = configFor(ctx);
+    const message = event.message;
+    if (!config.enabled || !config.context.enabled || !config.context.dedupeRuns || !config.context.dedupeMessages) return;
+    if (message.role !== "user" && message.role !== "custom") return;
+    syncSeen(ctx);
+    const source = message.role === "custom" ? `${message.customType} message` : "user message";
+    if (typeof message.content === "string") {
+      const text = await dedupeText(ctx, config, message.content, source);
+      return text === undefined ? undefined : { message: { ...message, content: text } };
+    }
+    const content = await dedupeContent(ctx, config, message.content, source);
+    return content ? { message: { ...message, content } } : undefined;
   });
 
   // The agent has caught up and Pi will not continue on its own: the one moment a wake costs the user nothing.

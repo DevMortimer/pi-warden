@@ -16,6 +16,16 @@ How to keep this current: add the entry in the same pull request as the change, 
 - `/warden prefs` shows each item as injected or the rule that kept it out ("not injected: seen in 2 sessions", "not injected: weakens a check"). `/warden prefs forget <n>` drops an item for the project for good, rewordings included; the key is kept in pi-warden's data folder.
 - New agent tool `warden_remember`: after a user correction, or a stuck, repeat, or done-check steer, within the last 5 assistant turns of the run, the agent can record one standing lesson (at most 160 characters) for the project. The same rules apply; a lesson that repeats a stored lesson or a listed preference confirms it instead of adding one. A lesson is injected only once confirmed (recorded again in a later session, or said by the user), after your preferences, marked `(agent lesson)`, and expires after 30 days without a confirmation. Lessons are stored with the date and session id under pi-warden's data folder, never in a rules file or a session file. Preference and lesson text goes to the session model only, never to TypeSafe.
 
+## 0.61.0
+
+### Added
+
+- The context saver cuts repeated runs. In a new tool result, a run of at least 20 lines and 1500 characters that exactly matches text already in context on the current branch becomes one pointer line naming where the earlier copy is and the file that holds the full text. The last 2000 characters and images are never changed. The ledger counts the removed bytes and their token-turns; `/warden status` shows the repeats cut. `context.dedupeRuns` (default `true`) turns it off. `context.dedupeMessages` (default `false`) applies the same cut to new user and custom messages; it is off by default because a repeat the user sends can itself carry meaning.
+
+### Tests
+
+- A repeated report in a new tool result, and with `context.dedupeMessages` in a custom or user message, is cut to one pointer line; messages stay whole by default; one changed line breaks the match; the tail stays; the stored copy holds the full text and reading it back is a recall; `context.dedupeRuns: false` leaves everything whole.
+
 ## 0.60.1
 
 ### Fixed
