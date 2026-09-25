@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Next release starts here. -->
+<!-- Empty. Next release starts here. -->
+
+## 0.64.1
 
 ### Fixed
 
