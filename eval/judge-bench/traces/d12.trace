@@ -1,0 +1,12 @@
+>>> read ok {"path":"CONTRIBUTING.md"}
+# Contributing
+
+Thanks for helping! Please open an isue before large changes, so we can agree on the aproach.
+
+Run the tests before you send a pull request, and keep commits focussed.
+>>> edit ok {"path":"CONTRIBUTING.md","oldText":"Please open an isue before large changes, so we can agree on the aproach.","newText":"Please open an issue before large changes, so we can agree on the approach."}
+Successfully replaced text in CONTRIBUTING.md.
+>>> edit ok {"path":"CONTRIBUTING.md","oldText":"keep commits focussed.","newText":"keep commits focused."}
+Successfully replaced text in CONTRIBUTING.md.
+>>> final
+Fixed three typos in CONTRIBUTING.md: "isue", "aproach" and "focussed".

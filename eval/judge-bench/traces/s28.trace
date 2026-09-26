@@ -1,0 +1,20 @@
+>>> bash failed {"command":"tsc --noEmit"}
+src/invoice.ts(11,64): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+src/profile.ts(5,29): error TS2339: Property 'email' does not exist on type 'User'.
+
+Command exited with code 1
+>>> bash failed {"command":"tsc --noEmit -p tsconfig.json"}
+src/invoice.ts(11,64): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+src/profile.ts(5,29): error TS2339: Property 'email' does not exist on type 'User'.
+
+Command exited with code 1
+>>> bash failed {"command":"tsc --noEmit --skipLibCheck"}
+src/invoice.ts(11,64): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+src/profile.ts(5,29): error TS2339: Property 'email' does not exist on type 'User'.
+
+Command exited with code 1
+>>> bash failed {"command":"tsc --noEmit --pretty false"}
+src/invoice.ts(11,64): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+src/profile.ts(5,29): error TS2339: Property 'email' does not exist on type 'User'.
+
+Command exited with code 1

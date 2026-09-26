@@ -1,0 +1,37 @@
+>>> bash failed {"command":"python3 scripts/report.py data/orders.csv"}
+Traceback (most recent call last):
+  File "/home/dev/reports/scripts/report.py", line 19, in <module>
+    main(sys.argv[1])
+  File "/home/dev/reports/scripts/report.py", line 11, in main
+    totals[row["user_id"]] += amount
+KeyError: 'user_id'
+
+Command exited with code 1
+>>> bash ok {"command":"head -3 data/orders.csv"}
+order_id,customer_id,amount
+1001,c-17,120.50
+1002,c-04,80.00
+>>> edit ok {"path":"scripts/report.py","oldText":"totals[row[\"user_id\"]]","newText":"totals[row[\"customer_id\"]]"}
+Successfully replaced text in scripts/report.py.
+>>> bash failed {"command":"python3 scripts/report.py data/orders.csv"}
+Traceback (most recent call last):
+  File "/home/dev/reports/scripts/report.py", line 19, in <module>
+    main(sys.argv[1])
+  File "/home/dev/reports/scripts/report.py", line 10, in main
+    amount = float(row["amount"])
+ValueError: could not convert string to float: ''
+
+Command exited with code 1
+>>> bash ok {"command":"grep -n ',$' data/orders.csv"}
+4:1003,c-17,
+>>> edit ok {"path":"scripts/report.py","oldText":"            amount = float(row[\"amount\"])\n","newText":"            if not row[\"amount\"]:\n                continue\n            amount = float(row[\"amount\"])\n"}
+Successfully replaced text in scripts/report.py.
+>>> bash failed {"command":"python3 scripts/report.py data/orders.csv"}
+Traceback (most recent call last):
+  File "/home/dev/reports/scripts/report.py", line 21, in <module>
+    main(sys.argv[1])
+  File "/home/dev/reports/scripts/report.py", line 14, in main
+    with open("out/report.tsv", "w") as out:
+FileNotFoundError: [Errno 2] No such file or directory: 'out/report.tsv'
+
+Command exited with code 1

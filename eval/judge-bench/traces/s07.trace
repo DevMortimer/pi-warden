@@ -1,0 +1,33 @@
+>>> bash failed {"command":"go test ./..."}
+# example.com/inventory/inv [example.com/inventory/inv.test]
+inv/stock.go:8:14: undefined: ParseSKU
+inv/sku_test.go:6:14: undefined: ParseSKU
+inv/sku.go:4:2: "fmt" imported and not used
+inv/sku.go:5:2: "strconv" imported and not used
+inv/sku.go:6:2: "strings" imported and not used
+FAIL	example.com/inventory/inv [build failed]
+FAIL
+
+Command exited with code 1
+>>> edit ok {"path":"inv/sku.go","oldText":"type SKU struct {\n\tCategory string\n\tNumber   int\n}\n","newText":"type SKU struct {\n\tCategory string\n\tNumber   int\n}\n\nfunc ParseSKU(s string) (SKU, error) {\n\tcategory, number, ok := strings.Cut(s, \"_\")\n\tif !ok {\n\t\treturn SKU{}, fmt.Errorf(\"parse sku %q: missing separator\", s)\n\t}\n\tn, err := strconv.Atoi(number)\n\tif err != nil {\n\t\treturn SKU{}, fmt.Errorf(\"parse sku %q: %w\", s, err)\n\t}\n\treturn SKU{Category: category, Number: n}, nil\n}\n"}
+Successfully replaced text in inv/sku.go.
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestParseSKU (0.00s)
+    sku_test.go:8: ParseSKU: parse sku "TOOLS-0042": missing separator
+--- FAIL: TestReserve (0.00s)
+    sku_test.go:18: Reserve: reserve TOOLS-0042: parse sku "TOOLS-0042": missing separator
+FAIL
+FAIL	example.com/inventory/inv	0.370s
+FAIL
+
+Command exited with code 1
+>>> edit ok {"path":"inv/sku.go","oldText":"strings.Cut(s, \"_\")","newText":"strings.Cut(s, \"-\")"}
+Successfully replaced text in inv/sku.go.
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestReserve (0.00s)
+    sku_test.go:18: Reserve: reserve TOOLS-0042: insufficient stock: have 5, want 3
+FAIL
+FAIL	example.com/inventory/inv	0.440s
+FAIL
+
+Command exited with code 1

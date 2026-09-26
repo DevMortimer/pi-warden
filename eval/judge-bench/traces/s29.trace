@@ -1,0 +1,97 @@
+>>> bash failed {"command":"npx playwright test"}
+
+Running 18 tests using 4 workers
+
+  ✘   1 [chromium] › tests/checkout.spec.ts:8:5 › checkout › completes checkout (30.2s)
+@@repeat 17   ✓  {i} [chromium] › tests/browse.spec.ts:{i}:5 › browse › listing {i} (0.9s)
+
+
+  1) [chromium] › tests/checkout.spec.ts:8:5 › checkout › completes checkout ──────────────────────
+
+    Test timeout of 30000ms exceeded.
+
+    Error: locator.click: Test timeout of 30000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Pay now' })
+
+
+       9 |   await page.goto('/cart');
+      10 |   await page.getByRole('button', { name: 'Checkout' }).click();
+    > 11 |   await page.getByRole('button', { name: 'Pay now' }).click();
+         |                                                       ^
+      12 |   await expect(page).toHaveURL(/\/orders\/\d+/);
+      13 | });
+
+        at /home/dev/store/tests/checkout.spec.ts:11:55
+
+  1 failed
+    [chromium] › tests/checkout.spec.ts:8:5 › checkout › completes checkout ─────────────────────────
+  17 passed (38.6s)
+
+Command exited with code 1
+>>> bash failed {"command":"npm run e2e"}
+
+> store@0.9.0 e2e
+> playwright test
+
+Running 18 tests using 4 workers
+
+  ✘   1 [chromium] › tests/checkout.spec.ts:8:5 › checkout › completes checkout (30.1s)
+@@repeat 17   ✓  {i} [chromium] › tests/browse.spec.ts:{i}:5 › browse › listing {i} (0.9s)
+
+
+  1) [chromium] › tests/checkout.spec.ts:8:5 › checkout › completes checkout ──────────────────────
+
+    Test timeout of 30000ms exceeded.
+
+    Error: locator.click: Test timeout of 30000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Pay now' })
+
+
+       9 |   await page.goto('/cart');
+      10 |   await page.getByRole('button', { name: 'Checkout' }).click();
+    > 11 |   await page.getByRole('button', { name: 'Pay now' }).click();
+         |                                                       ^
+      12 |   await expect(page).toHaveURL(/\/orders\/\d+/);
+      13 | });
+
+        at /home/dev/store/tests/checkout.spec.ts:11:55
+
+  1 failed
+    [chromium] › tests/checkout.spec.ts:8:5 › checkout › completes checkout ─────────────────────────
+  17 passed (38.9s)
+
+Command exited with code 1
+>>> edit ok {"path":"tests/checkout.spec.ts","oldText":"test('completes checkout', async ({ page }) => {","newText":"test('user can complete checkout', async ({ page }) => {"}
+Successfully replaced text in tests/checkout.spec.ts.
+>>> bash failed {"command":"npx playwright test tests/checkout.spec.ts --project=chromium"}
+
+Running 1 test using 1 worker
+
+  ✘  1 [chromium] › tests/checkout.spec.ts:8:5 › checkout › user can complete checkout (30.1s)
+
+
+  1) [chromium] › tests/checkout.spec.ts:8:5 › checkout › user can complete checkout ──────────────
+
+    Test timeout of 30000ms exceeded.
+
+    Error: locator.click: Test timeout of 30000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Pay now' })
+
+
+       9 |   await page.goto('/cart');
+      10 |   await page.getByRole('button', { name: 'Checkout' }).click();
+    > 11 |   await page.getByRole('button', { name: 'Pay now' }).click();
+         |                                                       ^
+      12 |   await expect(page).toHaveURL(/\/orders\/\d+/);
+      13 | });
+
+        at /home/dev/store/tests/checkout.spec.ts:11:55
+
+  1 failed
+    [chromium] › tests/checkout.spec.ts:8:5 › checkout › user can complete checkout ─────────────────
+  (31.0s)
+
+Command exited with code 1

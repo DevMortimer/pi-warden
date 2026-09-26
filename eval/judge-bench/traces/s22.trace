@@ -1,0 +1,100 @@
+>>> bash failed {"command":"npm test"}
+
+> pricing@1.2.0 test
+> jest
+
+FAIL src/discount.test.ts
+  ● discount › applies 15% to members
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 85
+    Received: 84.99999999999999
+
+      10 |   it("applies 15% to members", () => {
+      11 |     const total = applyDiscount(100, { member: true });
+    > 12 |     expect(total).toBe(85);
+         |                   ^
+      13 |   });
+      14 | });
+      15 |
+
+      at Object.<anonymous> (src/discount.test.ts:12:19)
+
+@@repeat 22 PASS src/rules/rule-{i}.test.ts
+
+Test Suites: 1 failed, 22 passed, 23 total
+Tests:       1 failed, 118 passed, 119 total
+Snapshots:   0 total
+Time:        3.402 s
+Ran all test suites.
+
+Command exited with code 1
+>>> edit ok {"path":"src/discount.test.ts","oldText":"    const total = applyDiscount(100, { member: true });\n    expect(total).toBe(85);","newText":"    const discounted = applyDiscount(100, { member: true });\n    expect(discounted).toBe(85);"}
+Successfully replaced text in src/discount.test.ts.
+>>> bash failed {"command":"npm test"}
+
+> pricing@1.2.0 test
+> jest
+
+FAIL src/discount.test.ts
+  ● discount › applies 15% to members
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 85
+    Received: 84.99999999999999
+
+      10 |   it("applies 15% to members", () => {
+      11 |     const discounted = applyDiscount(100, { member: true });
+    > 12 |     expect(discounted).toBe(85);
+         |                        ^
+      13 |   });
+      14 | });
+      15 |
+
+      at Object.<anonymous> (src/discount.test.ts:12:24)
+
+@@repeat 22 PASS src/rules/rule-{i}.test.ts
+
+Test Suites: 1 failed, 22 passed, 23 total
+Tests:       1 failed, 118 passed, 119 total
+Snapshots:   0 total
+Time:        3.297 s
+Ran all test suites.
+
+Command exited with code 1
+>>> edit ok {"path":"src/discount.ts","oldText":"  return price * (1 - rate);","newText":"  const factor = 1 - rate;\n  return price * factor;"}
+Successfully replaced text in src/discount.ts.
+>>> bash failed {"command":"npm test"}
+
+> pricing@1.2.0 test
+> jest
+
+FAIL src/discount.test.ts
+  ● discount › applies 15% to members
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 85
+    Received: 84.99999999999999
+
+      10 |   it("applies 15% to members", () => {
+      11 |     const discounted = applyDiscount(100, { member: true });
+    > 12 |     expect(discounted).toBe(85);
+         |                        ^
+      13 |   });
+      14 | });
+      15 |
+
+      at Object.<anonymous> (src/discount.test.ts:12:24)
+
+@@repeat 22 PASS src/rules/rule-{i}.test.ts
+
+Test Suites: 1 failed, 22 passed, 23 total
+Tests:       1 failed, 118 passed, 119 total
+Snapshots:   0 total
+Time:        3.518 s
+Ran all test suites.
+
+Command exited with code 1

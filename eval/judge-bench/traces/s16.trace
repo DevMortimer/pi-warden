@@ -1,0 +1,136 @@
+>>> bash failed {"command":"make test"}
+sbcl --script tests.lisp
+Unhandled SB-INT:SIMPLE-FILE-ERROR in thread #<SB-THREAD:THREAD tid=259 "main thread" RUNNING
+                                                {80052E0003}>:
+  Couldn't load "src/util.lisp": file does not exist.
+
+Backtrace for: #<SB-THREAD:THREAD tid=259 "main thread" RUNNING {80052E0003}>
+0: (SB-DEBUG::DEBUGGER-DISABLED-HOOK #<SB-INT:SIMPLE-FILE-ERROR "~@<Couldn't load ~S: file does not exist.~@:>" {8005281BF3}> #<unused argument> :QUIT T)
+1: (SB-DEBUG::RUN-HOOK *INVOKE-DEBUGGER-HOOK* #<SB-INT:SIMPLE-FILE-ERROR "~@<Couldn't load ~S: file does not exist.~@:>" {8005281BF3}>)
+2: (INVOKE-DEBUGGER #<SB-INT:SIMPLE-FILE-ERROR "~@<Couldn't load ~S: file does not exist.~@:>" {8005281BF3}>)
+3: (ERROR SB-INT:SIMPLE-FILE-ERROR :PATHNAME "src/util.lisp" :FORMAT-CONTROL "~@<Couldn't load ~S: file does not exist.~@:>" :FORMAT-ARGUMENTS ("src/util.lisp"))
+4: (LOAD "src/util.lisp" :VERBOSE NIL :PRINT NIL :IF-DOES-NOT-EXIST :ERROR :EXTERNAL-FORMAT :DEFAULT)
+5: (SB-INT:SIMPLE-EVAL-IN-LEXENV (LOAD "src/util.lisp") #<NULL-LEXENV>)
+6: (EVAL-TLF (LOAD "src/util.lisp") 0 NIL)
+7: ((LABELS SB-FASL::EVAL-FORM :IN SB-INT:LOAD-AS-SOURCE) (LOAD "src/util.lisp") 0)
+8: ((LAMBDA (SB-KERNEL:FORM &KEY :CURRENT-INDEX &ALLOW-OTHER-KEYS) :IN SB-INT:LOAD-AS-SOURCE) (LOAD "src/util.lisp") :CURRENT-INDEX 0)
+9: (SB-C::%DO-FORMS-FROM-INFO #<FUNCTION (LAMBDA (SB-KERNEL:FORM &KEY :CURRENT-INDEX &ALLOW-OTHER-KEYS) :IN SB-INT:LOAD-AS-SOURCE) {106F70E0B}> #<SB-C::SOURCE-INFO {80052907B3}> SB-C::INPUT-ERROR-IN-LOAD)
+10: (SB-INT:LOAD-AS-SOURCE #<SB-SYS:FD-STREAM for "file /home/dev/textlib/tests.lisp" {80052808B3}> :VERBOSE NIL :PRINT NIL :CONTEXT "loading")
+11: ((LABELS SB-FASL::LOAD-STREAM-1 :IN LOAD) #<SB-SYS:FD-STREAM for "file /home/dev/textlib/tests.lisp" {80052808B3}> NIL)
+12: (SB-FASL::CALL-WITH-LOAD-BINDINGS #<FUNCTION (LABELS SB-FASL::LOAD-STREAM-1 :IN LOAD) {106F709EB}> #<SB-SYS:FD-STREAM for "file /home/dev/textlib/tests.lisp" {80052808B3}> NIL #<SB-SYS:FD-STREAM for "file /home/dev/textlib/tests.lisp" {80052808B3}>)
+13: (LOAD #<SB-SYS:FD-STREAM for "file /home/dev/textlib/tests.lisp" {80052808B3}> :VERBOSE NIL :PRINT NIL :IF-DOES-NOT-EXIST :ERROR :EXTERNAL-FORMAT :DEFAULT)
+14: ((FLET SB-IMPL::LOAD-SCRIPT :IN SB-IMPL::PROCESS-SCRIPT) #<SB-SYS:FD-STREAM for "file /home/dev/textlib/tests.lisp" {80052808B3}>)
+15: ((FLET SB-UNIX::BODY :IN SB-IMPL::PROCESS-SCRIPT))
+16: ((FLET "WITHOUT-INTERRUPTS-BODY-" :IN SB-IMPL::PROCESS-SCRIPT))
+17: (SB-IMPL::PROCESS-SCRIPT "tests.lisp")
+18: (SB-IMPL::TOPLEVEL-INIT)
+19: ((FLET SB-UNIX::BODY :IN SB-IMPL::START-LISP))
+20: ((FLET "WITHOUT-INTERRUPTS-BODY-3" :IN SB-IMPL::START-LISP))
+21: (SB-IMPL::%START-LISP)
+
+unhandled condition in --disable-debugger mode, quitting
+make: *** [test] Error 1
+
+Command exited with code 2
+>>> bash ok {"command":"ls src"}
+text.lisp
+>>> edit ok {"path":"tests.lisp","oldText":"(load \"src/util.lisp\")","newText":"(load \"src/text.lisp\")"}
+Successfully replaced text in tests.lisp.
+>>> bash failed {"command":"make test"}
+sbcl --script tests.lisp
+PASS upcase-0
+PASS upcase-1
+PASS upcase-2
+PASS upcase-3
+PASS upcase-4
+PASS upcase-5
+PASS upcase-6
+PASS upcase-7
+PASS upcase-8
+PASS upcase-9
+PASS upcase-10
+PASS upcase-11
+PASS upcase-12
+PASS upcase-13
+PASS upcase-14
+PASS upcase-15
+PASS upcase-16
+PASS upcase-17
+PASS upcase-18
+PASS upcase-19
+PASS upcase-20
+PASS upcase-21
+PASS upcase-22
+PASS upcase-23
+PASS upcase-24
+PASS upcase-25
+PASS upcase-26
+PASS upcase-27
+PASS upcase-28
+PASS upcase-29
+FAIL trim-tabs: expected "abc", got "	abc	"
+FAIL split-spaces: expected ("a" "b" "c"), got ("a" "" "b" "" "" "c")
+PASS join-comma
+31 passed, 2 failed
+make: *** [test] Error 1
+
+Command exited with code 2
+>>> read ok {"path":"src/text.lisp"}
+(defun trim-string (s)
+  "Remove surrounding whitespace from S."
+  (string-trim '(#\Space #\Newline) s))
+
+(defun split-words (s)
+  "Split S on spaces."
+  (let ((words '()) (start 0))
+    (loop for i from 0 to (length s)
+          do (when (or (= i (length s)) (char= (char s i) #\Space))
+               (push (subseq s start i) words)
+               (setf start (1+ i))))
+    (nreverse words)))
+
+(defun join-words (words separator)
+  "Join WORDS with SEPARATOR."
+  (format nil (concatenate 'string "~{~A~^" separator "~}") words))
+
+>>> edit ok {"path":"src/text.lisp","oldText":"#\\Space #\\Newline","newText":"#\\Space #\\Tab #\\Newline"}
+Successfully replaced text in src/text.lisp.
+>>> bash failed {"command":"make test"}
+sbcl --script tests.lisp
+PASS upcase-0
+PASS upcase-1
+PASS upcase-2
+PASS upcase-3
+PASS upcase-4
+PASS upcase-5
+PASS upcase-6
+PASS upcase-7
+PASS upcase-8
+PASS upcase-9
+PASS upcase-10
+PASS upcase-11
+PASS upcase-12
+PASS upcase-13
+PASS upcase-14
+PASS upcase-15
+PASS upcase-16
+PASS upcase-17
+PASS upcase-18
+PASS upcase-19
+PASS upcase-20
+PASS upcase-21
+PASS upcase-22
+PASS upcase-23
+PASS upcase-24
+PASS upcase-25
+PASS upcase-26
+PASS upcase-27
+PASS upcase-28
+PASS upcase-29
+PASS trim-tabs
+FAIL split-spaces: expected ("a" "b" "c"), got ("a" "" "b" "" "" "c")
+PASS join-comma
+32 passed, 1 failed
+make: *** [test] Error 1
+
+Command exited with code 2

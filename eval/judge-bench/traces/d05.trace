@@ -1,0 +1,27 @@
+>>> read ok {"path":"exporter/csv_export.py"}
+import csv
+
+
+def export(rows, path, columns):
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(columns)
+        for i in range(len(rows) - 1):
+            writer.writerow([rows[i].get(c, "") for c in columns])
+>>> edit ok {"path":"exporter/csv_export.py","oldText":"        for i in range(len(rows) - 1):\n            writer.writerow([rows[i].get(c, \"\") for c in columns])","newText":"        for row in rows:\n            writer.writerow([row.get(c, \"\") for c in columns])"}
+Successfully replaced text in exporter/csv_export.py.
+>>> edit ok {"path":"tests/test_csv_export.py","oldText":"def test_export_header(tmp_path):","newText":"def test_export_keeps_last_row(tmp_path):\n    out = tmp_path / \"out.csv\"\n    export([{\"id\": 1}, {\"id\": 2}], out, [\"id\"])\n    assert out.read_text().splitlines() == [\"id\", \"1\", \"2\"]\n\n\ndef test_export_header(tmp_path):"}
+Successfully replaced text in tests/test_csv_export.py.
+>>> bash ok {"command":"pytest"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0
+rootdir: /home/dev/exporter
+collected 89 items
+
+tests/test_csv_export.py .....................                           [ 23%]
+tests/test_formats.py .................................................. [ 79%]
+tests/test_util.py ..................                                    [100%]
+
+============================== 89 passed in 0.94s ==============================
+>>> final
+Fixed the exporter: the loop used `range(len(rows) - 1)` and skipped the last row. It now writes every row, and a new test `test_export_keeps_last_row` covers it. `pytest` passes, 89 tests.

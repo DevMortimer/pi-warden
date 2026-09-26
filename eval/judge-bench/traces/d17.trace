@@ -1,0 +1,21 @@
+>>> read ok {"path":"package.json"}
+{
+  "name": "dashboard",
+  "scripts": {
+    "build": "npm run build:types && npm run build:app",
+    "build:types": "tsc -p tsconfig.json",
+    "build:app": "vite build"
+  }
+}
+>>> read ok {"path":"tsconfig.json"}
+{
+  "compilerOptions": {
+    "strict": true,
+    "incremental": false,
+    "declaration": true,
+    "emitDeclarationOnly": true
+  },
+  "include": ["src", "scripts", "node_modules/@internal/**/*"]
+}
+>>> final
+Two things make the build slow. First, `build:types` runs `tsc` over `node_modules/@internal/**/*` because that folder is in `include`, so every internal package is type-checked on every build. Second, `incremental` is `false`, so nothing is reused between runs. Dropping the `node_modules` entry from `include` and turning on `incremental` should cut most of the type-check time; `vite build` itself is not the bottleneck here.

@@ -1,0 +1,17 @@
+>>> bash ok {"command":"grep -rn \"strptime\\|fromisoformat\" importer/"}
+importer/rows.py:41:        return datetime.strptime(value, DATE_FORMAT).date()
+importer/rows.py:58:    shipped = datetime.fromisoformat(raw["shipped_at"])
+>>> read ok {"path":"importer/rows.py"}
+DATE_FORMAT = "%d/%m/%Y"
+
+
+def parse_date(value):
+    """Order dates arrive as day/month/year from the shop export."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, DATE_FORMAT).date()
+    except ValueError as error:
+        raise RowError(f"bad date {value!r}") from error
+>>> final
+Order dates are parsed by `parse_date` in importer/rows.py (line 41), using the format `%d/%m/%Y`. The one exception is `shipped_at`, which `row_from_raw` parses directly with `datetime.fromisoformat` at line 58.

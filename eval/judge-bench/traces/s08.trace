@@ -1,0 +1,115 @@
+>>> bash failed {"command":"npx playwright test"}
+
+Running 24 tests using 4 workers
+
+  ✘   1 [chromium] › tests/login.spec.ts:12:5 › login › signs in with valid credentials (30.1s)
+@@repeat 23   ✓  {i} [chromium] › tests/catalog.spec.ts:{i}:5 › catalog › page {i} renders (1.2s)
+
+
+  1) [chromium] › tests/login.spec.ts:12:5 › login › signs in with valid credentials ───────────────
+
+    Test timeout of 30000ms exceeded.
+
+    Error: locator.fill: Test timeout of 30000ms exceeded.
+    Call log:
+      - waiting for getByLabel('Email')
+
+
+      12 | test('signs in with valid credentials', async ({ page }) => {
+      13 |   await page.goto('/login');
+    > 14 |   await page.getByLabel('Email').fill('user@example.com');
+         |                                  ^
+      15 |   await page.getByRole('button', { name: 'Sign in' }).click();
+      16 |   await expect(page.getByRole('heading')).toHaveText('Welcome back');
+      17 | });
+
+        at /home/dev/web/tests/login.spec.ts:14:34
+
+  1 failed
+    [chromium] › tests/login.spec.ts:12:5 › login › signs in with valid credentials ────────────────
+  23 passed (41.2s)
+
+Command exited with code 1
+>>> read ok {"path":"src/pages/Login.tsx"}
+export function Login() {
+  return (
+    <form onSubmit={submit}>
+      <input id="email" type="email" placeholder="you@example.com" />
+      <input id="pw" type="password" />
+      <button type="submit">Sign in</button>
+    </form>
+  );
+}
+>>> edit ok {"path":"src/pages/Login.tsx","oldText":"      <input id=\"email\" type=\"email\" placeholder=\"you@example.com\" />","newText":"      <label htmlFor=\"email\">Email</label>\n      <input id=\"email\" type=\"email\" placeholder=\"you@example.com\" />"}
+Successfully replaced text in src/pages/Login.tsx.
+>>> bash failed {"command":"npx playwright test"}
+
+Running 24 tests using 4 workers
+
+  ✘   1 [chromium] › tests/login.spec.ts:12:5 › login › signs in with valid credentials (2.4s)
+@@repeat 23   ✓  {i} [chromium] › tests/catalog.spec.ts:{i}:5 › catalog › page {i} renders (1.2s)
+
+
+  1) [chromium] › tests/login.spec.ts:12:5 › login › signs in with valid credentials ───────────────
+
+    Error: locator.click: Error: strict mode violation: getByRole('button', { name: 'Sign in' }) resolved to 2 elements:
+        1) <button type="button" class="nav-signin">Sign in</button> aka getByRole('navigation').getByRole('button', { name: 'Sign in' })
+        2) <button type="submit">Sign in</button> aka getByRole('main').getByRole('button', { name: 'Sign in' })
+
+    Call log:
+      - waiting for getByRole('button', { name: 'Sign in' })
+
+
+      13 |   await page.goto('/login');
+      14 |   await page.getByLabel('Email').fill('user@example.com');
+    > 15 |   await page.getByRole('button', { name: 'Sign in' }).click();
+         |                                                       ^
+      16 |   await expect(page.getByRole('heading')).toHaveText('Welcome back');
+      17 | });
+
+        at /home/dev/web/tests/login.spec.ts:15:55
+
+  1 failed
+    [chromium] › tests/login.spec.ts:12:5 › login › signs in with valid credentials ────────────────
+  23 passed (13.8s)
+
+Command exited with code 1
+>>> edit ok {"path":"tests/login.spec.ts","oldText":"  await page.getByRole('button', { name: 'Sign in' }).click();","newText":"  await page.getByRole('main').getByRole('button', { name: 'Sign in' }).click();"}
+Successfully replaced text in tests/login.spec.ts.
+>>> bash failed {"command":"npx playwright test"}
+
+Running 24 tests using 4 workers
+
+  ✘   1 [chromium] › tests/login.spec.ts:12:5 › login › signs in with valid credentials (5.3s)
+@@repeat 23   ✓  {i} [chromium] › tests/catalog.spec.ts:{i}:5 › catalog › page {i} renders (1.2s)
+
+
+  1) [chromium] › tests/login.spec.ts:12:5 › login › signs in with valid credentials ───────────────
+
+    Error: expect(locator).toHaveText(expected) failed
+
+    Locator: getByRole('heading')
+    Expected string: "Welcome back"
+    Received string: "Welcome back, user"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toHaveText" with timeout 5000ms
+      - waiting for getByRole('heading')
+        9 × locator resolved to <h1>Welcome back, user</h1>
+          - unexpected value "Welcome back, user"
+
+
+      14 |   await page.getByLabel('Email').fill('user@example.com');
+      15 |   await page.getByRole('main').getByRole('button', { name: 'Sign in' }).click();
+    > 16 |   await expect(page.getByRole('heading')).toHaveText('Welcome back');
+         |                                           ^
+      17 | });
+
+        at /home/dev/web/tests/login.spec.ts:16:43
+
+  1 failed
+    [chromium] › tests/login.spec.ts:12:5 › login › signs in with valid credentials ────────────────
+  23 passed (16.0s)
+
+Command exited with code 1

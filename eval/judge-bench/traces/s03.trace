@@ -1,0 +1,115 @@
+>>> bash failed {"command":"npx vitest run"}
+
+ RUN  v2.1.8 /home/dev/slugs
+
+@@repeat 18  ✓ src/strings/case-{i}.test.ts (12 tests) 6ms
+ ❯ src/slug.test.ts (18 tests | 1 failed) 14ms
+   × slugify > strips diacritics 5ms
+     → expected 'café-crème' to be 'cafe-creme' // Object.is equality
+@@repeat 19  ✓ src/strings/format-{i}.test.ts (10 tests) 4ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/slug.test.ts > slugify > strips diacritics
+AssertionError: expected 'café-crème' to be 'cafe-creme' // Object.is equality
+
+- Expected
++ Received
+
+- cafe-creme
++ café-crème
+
+ ❯ src/slug.test.ts:21:31
+     19|
+     20|   it("strips diacritics", () => {
+     21|     expect(slugify("Café Crème")).toBe("cafe-creme");
+       |                               ^
+     22|   });
+     23|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed | 37 passed (38)
+      Tests  1 failed | 402 passed (403)
+   Start at  10:14:02
+   Duration  3.21s (transform 412ms, setup 0ms, collect 2.10s, tests 311ms, environment 4ms, prepare 1.52s)
+
+Command exited with code 1
+>>> edit ok {"path":"src/slug.ts","oldText":"  return text\n    .toLowerCase()","newText":"  return text\n    .normalize(\"NFKD\")\n    .replace(/[\\u0300-\\u036f]/g, \"\")\n    .toLowerCase()"}
+Successfully replaced text in src/slug.ts.
+>>> bash failed {"command":"npx vitest run"}
+
+ RUN  v2.1.8 /home/dev/slugs
+
+@@repeat 18  ✓ src/strings/case-{i}.test.ts (12 tests) 6ms
+ ❯ src/slug.test.ts (18 tests | 1 failed) 13ms
+   × slugify > collapses repeated separators 4ms
+     → expected 'a--b' to be 'a-b' // Object.is equality
+@@repeat 19  ✓ src/strings/format-{i}.test.ts (10 tests) 4ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/slug.test.ts > slugify > collapses repeated separators
+AssertionError: expected 'a--b' to be 'a-b' // Object.is equality
+
+- Expected
++ Received
+
+- a-b
++ a--b
+
+ ❯ src/slug.test.ts:29:28
+     27|
+     28|   it("collapses repeated separators", () => {
+     29|     expect(slugify("a - b")).toBe("a-b");
+       |                            ^
+     30|   });
+     31|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed | 37 passed (38)
+      Tests  1 failed | 402 passed (403)
+   Start at  10:16:40
+   Duration  3.08s (transform 398ms, setup 0ms, collect 2.02s, tests 305ms, environment 4ms, prepare 1.49s)
+
+Command exited with code 1
+>>> edit ok {"path":"src/slug.ts","oldText":"    .replace(/[^a-z0-9]/g, \"-\")","newText":"    .replace(/[^a-z0-9]+/g, \"-\")"}
+Successfully replaced text in src/slug.ts.
+>>> bash failed {"command":"npx vitest run"}
+
+ RUN  v2.1.8 /home/dev/slugs
+
+@@repeat 18  ✓ src/strings/case-{i}.test.ts (12 tests) 6ms
+ ❯ src/slug.test.ts (18 tests | 1 failed) 12ms
+   × slugify > trims leading and trailing separators 4ms
+     → expected '-hello-' to be 'hello' // Object.is equality
+@@repeat 19  ✓ src/strings/format-{i}.test.ts (10 tests) 4ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/slug.test.ts > slugify > trims leading and trailing separators
+AssertionError: expected '-hello-' to be 'hello' // Object.is equality
+
+- Expected
++ Received
+
+- hello
++ -hello-
+
+ ❯ src/slug.test.ts:33:30
+     31|
+     32|   it("trims leading and trailing separators", () => {
+     33|     expect(slugify(" Hello! ")).toBe("hello");
+       |                              ^
+     34|   });
+     35|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed | 37 passed (38)
+      Tests  1 failed | 402 passed (403)
+   Start at  10:18:11
+   Duration  3.15s (transform 405ms, setup 0ms, collect 2.06s, tests 309ms, environment 4ms, prepare 1.50s)
+
+Command exited with code 1

@@ -1,0 +1,12 @@
+>>> read ok {"path":"package.json"}
+{
+  "name": "report-tool",
+  "type": "commonjs",
+  "dependencies": {
+    "chalk": "^5.3.0"
+  }
+}
+>>> bash ok {"command":"grep -rn \"require(\\\"chalk\\\")\" src"}
+src/print.js:1:const chalk = require("chalk");
+>>> final
+`ERR_REQUIRE_ESM` means CommonJS code called `require()` on a package that is ESM-only. Here, src/print.js does `require("chalk")`, and chalk 5 ships only as an ES module, while your package is `"type": "commonjs"`. Either pin chalk to 4.x, which still supports `require`, or load it with `await import("chalk")` (or move the project to ESM).

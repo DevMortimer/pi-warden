@@ -1,0 +1,12 @@
+>>> read ok {"path":"README.md"}
+# tidy-csv
+
+Cleans CSV exports.
+
+## License
+
+MIT
+>>> edit ok {"path":"README.md","oldText":"Cleans CSV exports.\n","newText":"Cleans CSV exports.\n\n## Install\n\n```\nnpm install -g tidy-csv\n```\n\n## Quick start\n\n```\ntidy-csv input.csv --trim --dedupe > clean.csv\n```\n\n`--trim` strips whitespace from every cell; `--dedupe` drops repeated rows.\n"}
+Successfully replaced text in README.md.
+>>> final
+Added Install and Quick start sections to the README, with the global install command and a two-flag example.

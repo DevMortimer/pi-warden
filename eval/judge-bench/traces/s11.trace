@@ -1,0 +1,73 @@
+>>> bash failed {"command":"npm run lint"}
+
+> api@1.0.0 lint
+> eslint src
+
+/home/dev/api/src/routes/orders.ts
+   4:10  error  'Request' is defined but never used              @typescript-eslint/no-unused-vars
+  18:7   error  'limit' is assigned a value but never used       @typescript-eslint/no-unused-vars
+  31:5   error  Unexpected console statement                     no-console
+  44:12  error  Expected '===' and instead saw '=='              eqeqeq
+
+/home/dev/api/src/routes/users.ts
+   9:5   error  Unexpected console statement                     no-console
+  22:14  error  Expected '===' and instead saw '=='              eqeqeq
+  37:3   error  Unexpected console statement                     no-console
+
+/home/dev/api/src/services/mailer.ts
+   2:10  error  'readFile' is defined but never used             @typescript-eslint/no-unused-vars
+  15:5   error  Unexpected console statement                     no-console
+  28:9   error  Unexpected console statement                     no-console
+
+/home/dev/api/src/util/log.ts
+   6:3   error  Unexpected console statement                     no-console
+  11:3   error  Unexpected console statement                     no-console
+
+✖ 12 problems (12 errors, 0 warnings)
+  2 errors and 0 warnings potentially fixable with the `--fix` option.
+
+Command exited with code 1
+>>> edit ok {"path":"src/util/log.ts","oldText":"export function info(message: string) {\n  console.log(message);\n}\n\nexport function warn(message: string) {\n  console.warn(message);\n}","newText":"export function info(message: string) {\n  process.stdout.write(`${message}\\n`);\n}\n\nexport function warn(message: string) {\n  process.stderr.write(`${message}\\n`);\n}"}
+Successfully replaced text in src/util/log.ts.
+>>> bash ok {"command":"grep -rln \"console\\.\" src"}
+src/routes/orders.ts
+src/routes/users.ts
+src/services/mailer.ts
+>>> edit ok {"path":"src/routes/orders.ts","oldText":"    console.log(\"orders\", rows.length);","newText":"    info(`orders ${rows.length}`);"}
+Successfully replaced text in src/routes/orders.ts.
+>>> edit ok {"path":"src/routes/users.ts","oldText":"    console.log(\"users\", user.id);","newText":"    info(`users ${user.id}`);"}
+Successfully replaced text in src/routes/users.ts.
+>>> edit ok {"path":"src/services/mailer.ts","oldText":"    console.error(\"send failed\", err);","newText":"    warn(`send failed: ${err}`);"}
+Successfully replaced text in src/services/mailer.ts.
+>>> bash failed {"command":"npm run lint"}
+
+> api@1.0.0 lint
+> eslint src
+
+/home/dev/api/src/routes/orders.ts
+   4:10  error  'Request' is defined but never used              @typescript-eslint/no-unused-vars
+  18:7   error  'limit' is assigned a value but never used       @typescript-eslint/no-unused-vars
+  44:12  error  Expected '===' and instead saw '=='              eqeqeq
+
+/home/dev/api/src/routes/users.ts
+  22:14  error  Expected '===' and instead saw '=='              eqeqeq
+
+/home/dev/api/src/services/mailer.ts
+   2:10  error  'readFile' is defined but never used             @typescript-eslint/no-unused-vars
+
+✖ 5 problems (5 errors, 0 warnings)
+  2 errors and 0 warnings potentially fixable with the `--fix` option.
+
+Command exited with code 1
+>>> bash failed {"command":"npx eslint src --fix"}
+
+/home/dev/api/src/routes/orders.ts
+   4:10  error  'Request' is defined but never used              @typescript-eslint/no-unused-vars
+  18:7   error  'limit' is assigned a value but never used       @typescript-eslint/no-unused-vars
+
+/home/dev/api/src/services/mailer.ts
+   2:10  error  'readFile' is defined but never used             @typescript-eslint/no-unused-vars
+
+✖ 3 problems (3 errors, 0 warnings)
+
+Command exited with code 1

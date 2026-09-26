@@ -1,0 +1,40 @@
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestParseSKU (0.00s)
+    sku_test.go:8: ParseSKU: parse sku "TOOLS-0042": missing separator
+--- FAIL: TestReserve (0.00s)
+    sku_test.go:18: Reserve: reserve TOOLS-0042: parse sku "TOOLS-0042": missing separator
+FAIL
+FAIL	example.com/inventory/inv	0.405s
+FAIL
+
+Command exited with code 1
+>>> bash failed {"command":"go test -v ./inv/"}
+=== RUN   TestParseSKU
+    sku_test.go:8: ParseSKU: parse sku "TOOLS-0042": missing separator
+--- FAIL: TestParseSKU (0.00s)
+=== RUN   TestReserve
+    sku_test.go:18: Reserve: reserve TOOLS-0042: parse sku "TOOLS-0042": missing separator
+--- FAIL: TestReserve (0.00s)
+FAIL
+FAIL	example.com/inventory/inv	0.121s
+FAIL
+
+Command exited with code 1
+>>> bash failed {"command":"go test -count=1 ./..."}
+--- FAIL: TestParseSKU (0.00s)
+    sku_test.go:8: ParseSKU: parse sku "TOOLS-0042": missing separator
+--- FAIL: TestReserve (0.00s)
+    sku_test.go:18: Reserve: reserve TOOLS-0042: parse sku "TOOLS-0042": missing separator
+FAIL
+FAIL	example.com/inventory/inv	0.189s
+FAIL
+
+Command exited with code 1
+>>> bash failed {"command":"go test -run TestParseSKU ./inv/"}
+--- FAIL: TestParseSKU (0.00s)
+    sku_test.go:8: ParseSKU: parse sku "TOOLS-0042": missing separator
+FAIL
+FAIL	example.com/inventory/inv	0.121s
+FAIL
+
+Command exited with code 1

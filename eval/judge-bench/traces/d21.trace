@@ -1,0 +1,11 @@
+>>> read ok {"path":"src/routes/orders.ts"}
+router.get("/orders", async (req, res) => {
+  const orders = await listOrders();
+  res.json(orders);
+});
+>>> edit ok {"path":"src/routes/orders.ts","oldText":"router.get(\"/orders\", async (req, res) => {\n  const orders = await listOrders();\n  res.json(orders);\n});","newText":"router.get(\"/orders\", async (req, res) => {\n  const page = Math.max(1, Number(req.query.page ?? 1));\n  const limit = Math.min(100, Number(req.query.limit ?? 20));\n  const { rows, total } = await listOrders({ offset: (page - 1) * limit, limit });\n  res.json({ items: rows, page, limit, total });\n});"}
+Successfully replaced text in src/routes/orders.ts.
+>>> edit ok {"path":"src/db/orders.ts","oldText":"export async function listOrders() {\n  return db.select().from(orders).orderBy(desc(orders.createdAt));\n}","newText":"export async function listOrders({ offset = 0, limit = 20 } = {}) {\n  const rows = await db.select().from(orders).orderBy(desc(orders.createdAt)).offset(offset).limit(limit);\n  const [{ count }] = await db.select({ count: sql<number>`count(*)` }).from(orders);\n  return { rows, total: count };\n}"}
+Successfully replaced text in src/db/orders.ts.
+>>> final
+Pagination is done. `/orders` now takes `?page` and `?limit` (default 20, max 100) and returns `{ items, page, limit, total }`; `listOrders` accepts an offset and limit and returns the total count.

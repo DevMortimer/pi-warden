@@ -1,0 +1,10 @@
+>>> edit ok {"path":"src/user.ts","oldText":"  name: string;\n","newText":"  name: string;\n  email?: string;\n"}
+Successfully replaced text in src/user.ts.
+>>> edit ok {"path":"src/profile.ts","oldText":"  lines.push(`Email: ${user.email}`);\n","newText":"  if (user.email) lines.push(`Email: ${user.email}`);\n"}
+Successfully replaced text in src/profile.ts.
+>>> edit ok {"path":"src/invoice.ts","oldText":"  amountCents: string;","newText":"  amountCents: number;"}
+Successfully replaced text in src/invoice.ts.
+>>> bash ok {"command":"tsc --noEmit"}
+
+>>> final
+Added an optional `email` to `User`; the profile card shows it only when it is set. `Invoice.amountCents` is now a number to match `formatPrice`. `tsc --noEmit` is clean.

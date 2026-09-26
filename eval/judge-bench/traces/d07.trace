@@ -1,0 +1,79 @@
+>>> bash failed {"command":"make test"}
+sbcl --script tests.lisp
+PASS upcase-0
+PASS upcase-1
+PASS upcase-2
+PASS upcase-3
+PASS upcase-4
+PASS upcase-5
+PASS upcase-6
+PASS upcase-7
+PASS upcase-8
+PASS upcase-9
+PASS upcase-10
+PASS upcase-11
+PASS upcase-12
+PASS upcase-13
+PASS upcase-14
+PASS upcase-15
+PASS upcase-16
+PASS upcase-17
+PASS upcase-18
+PASS upcase-19
+PASS upcase-20
+PASS upcase-21
+PASS upcase-22
+PASS upcase-23
+PASS upcase-24
+PASS upcase-25
+PASS upcase-26
+PASS upcase-27
+PASS upcase-28
+PASS upcase-29
+FAIL trim-tabs: expected "abc", got "	abc	"
+PASS split-spaces
+PASS join-comma
+32 passed, 1 failed
+make: *** [test] Error 1
+
+Command exited with code 2
+>>> edit ok {"path":"src/text.lisp","oldText":"#\\Space #\\Newline","newText":"#\\Space #\\Tab #\\Newline"}
+Successfully replaced text in src/text.lisp.
+>>> bash ok {"command":"make test"}
+sbcl --script tests.lisp
+PASS upcase-0
+PASS upcase-1
+PASS upcase-2
+PASS upcase-3
+PASS upcase-4
+PASS upcase-5
+PASS upcase-6
+PASS upcase-7
+PASS upcase-8
+PASS upcase-9
+PASS upcase-10
+PASS upcase-11
+PASS upcase-12
+PASS upcase-13
+PASS upcase-14
+PASS upcase-15
+PASS upcase-16
+PASS upcase-17
+PASS upcase-18
+PASS upcase-19
+PASS upcase-20
+PASS upcase-21
+PASS upcase-22
+PASS upcase-23
+PASS upcase-24
+PASS upcase-25
+PASS upcase-26
+PASS upcase-27
+PASS upcase-28
+PASS upcase-29
+PASS trim-tabs
+PASS split-spaces
+PASS join-comma
+33 passed, 0 failed
+>>> final
+`trim-string` now strips tabs as well as spaces and newlines. `make test` passes: 33 passed, 0 failed.

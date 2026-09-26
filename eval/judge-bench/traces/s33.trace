@@ -1,0 +1,19 @@
+>>> bash failed {"command":"tsc --noEmit"}
+src/invoice.ts(11,64): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+src/profile.ts(5,29): error TS2339: Property 'email' does not exist on type 'User'.
+
+Command exited with code 1
+>>> edit ok {"path":"src/profile.ts","oldText":"export function profileCard(user: User): string {\n","newText":"// The email comes from the account service and is shown under the name.\nexport function profileCard(user: User): string {\n"}
+Successfully replaced text in src/profile.ts.
+>>> bash failed {"command":"tsc --noEmit"}
+src/invoice.ts(11,64): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+src/profile.ts(6,29): error TS2339: Property 'email' does not exist on type 'User'.
+
+Command exited with code 1
+>>> edit ok {"path":"src/profile.ts","oldText":"// The email comes from the account service and is shown under the name.\n","newText":"/**\n * Renders the profile card.\n * The email comes from the account service and is shown under the name.\n */\n"}
+Successfully replaced text in src/profile.ts.
+>>> bash failed {"command":"tsc --noEmit"}
+src/invoice.ts(11,64): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+src/profile.ts(9,29): error TS2339: Property 'email' does not exist on type 'User'.
+
+Command exited with code 1

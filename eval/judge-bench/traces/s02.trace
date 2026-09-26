@@ -1,0 +1,124 @@
+>>> bash failed {"command":"npm test"}
+
+> shop-web@2.3.0 test
+> jest
+
+FAIL src/cart/cart.test.ts
+  ● cart › applies the bulk discount at 10 items
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 90
+    Received: 100
+
+      41 |     const cart = makeCart([{ sku: "A", qty: 10, price: 10 }]);
+      42 |     applyDiscounts(cart);
+    > 43 |     expect(cart.total).toBe(90);
+         |                        ^
+      44 |   });
+      45 |
+      46 |   it("keeps the discount when an item is removed", () => {
+
+      at Object.<anonymous> (src/cart/cart.test.ts:43:24)
+
+PASS src/catalog/search.test.ts
+PASS src/catalog/filters.test.ts
+@@repeat 14 PASS src/components/forms/field-{i}.test.tsx
+@@repeat 12 PASS src/components/layout/panel-{i}.test.tsx
+@@repeat 11 PASS src/hooks/use-query-{i}.test.ts
+PASS src/checkout/address.test.ts
+
+Test Suites: 1 failed, 40 passed, 41 total
+Tests:       1 failed, 212 passed, 213 total
+Snapshots:   14 passed, 14 total
+Time:        6.842 s
+Ran all test suites.
+
+Command exited with code 1
+>>> read ok {"path":"src/cart/discounts.ts"}
+export const BULK_THRESHOLD = 10;
+export const BULK_RATE = 0.1;
+
+export function applyDiscounts(cart: Cart): void {
+  const qty = cart.items.reduce((n, item) => n + item.qty, 0);
+  cart.discount = qty > BULK_THRESHOLD ? cart.subtotal * BULK_RATE : 0;
+  cart.total = cart.subtotal - cart.discount;
+}
+>>> edit ok {"path":"src/cart/discounts.ts","oldText":"qty > BULK_THRESHOLD","newText":"qty >= BULK_THRESHOLD"}
+Successfully replaced text in src/cart/discounts.ts.
+>>> bash failed {"command":"npm test"}
+
+> shop-web@2.3.0 test
+> jest
+
+FAIL src/cart/cart.test.ts
+  ● cart › keeps the discount when an item is removed
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 99
+    Received: 110
+
+      50 |     applyDiscounts(cart);
+      51 |     cart.remove("B");
+    > 52 |     expect(cart.total).toBe(99);
+         |                        ^
+      53 |   });
+      54 |
+      55 |   it("rounds the discounted total to cents", () => {
+
+      at Object.<anonymous> (src/cart/cart.test.ts:52:24)
+
+PASS src/catalog/search.test.ts
+PASS src/catalog/filters.test.ts
+@@repeat 14 PASS src/components/forms/field-{i}.test.tsx
+@@repeat 12 PASS src/components/layout/panel-{i}.test.tsx
+@@repeat 11 PASS src/hooks/use-query-{i}.test.ts
+PASS src/checkout/address.test.ts
+
+Test Suites: 1 failed, 40 passed, 41 total
+Tests:       1 failed, 212 passed, 213 total
+Snapshots:   14 passed, 14 total
+Time:        6.511 s
+Ran all test suites.
+
+Command exited with code 1
+>>> edit ok {"path":"src/cart/cart.ts","oldText":"    this.items = this.items.filter(item => item.sku !== sku);\n    this.subtotal = sum(this.items);\n","newText":"    this.items = this.items.filter(item => item.sku !== sku);\n    this.subtotal = sum(this.items);\n    applyDiscounts(this);\n"}
+Successfully replaced text in src/cart/cart.ts.
+>>> bash failed {"command":"npm test"}
+
+> shop-web@2.3.0 test
+> jest
+
+FAIL src/cart/cart.test.ts
+  ● cart › rounds the discounted total to cents
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 29.99
+    Received: 29.988000000000003
+
+      57 |     const cart = makeCart([{ sku: "C", qty: 12, price: 2.777 }]);
+      58 |     applyDiscounts(cart);
+    > 59 |     expect(cart.total).toBe(29.99);
+         |                        ^
+      60 |   });
+      61 | });
+      62 |
+
+      at Object.<anonymous> (src/cart/cart.test.ts:59:24)
+
+PASS src/catalog/search.test.ts
+PASS src/catalog/filters.test.ts
+@@repeat 14 PASS src/components/forms/field-{i}.test.tsx
+@@repeat 12 PASS src/components/layout/panel-{i}.test.tsx
+@@repeat 11 PASS src/hooks/use-query-{i}.test.ts
+PASS src/checkout/address.test.ts
+
+Test Suites: 1 failed, 40 passed, 41 total
+Tests:       1 failed, 212 passed, 213 total
+Snapshots:   14 passed, 14 total
+Time:        6.704 s
+Ran all test suites.
+
+Command exited with code 1

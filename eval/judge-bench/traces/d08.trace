@@ -1,0 +1,29 @@
+>>> read ok {"path":"src/retry.ts"}
+export async function retry<T>(fn: () => Promise<T>, { maxAttempts = 3, delayMs = 100 } = {}): Promise<T> {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (error) {
+      attempt++;
+      await sleep(delayMs * attempt);
+    }
+  }
+}
+>>> edit ok {"path":"src/retry.ts","oldText":"      attempt++;\n      await sleep(delayMs * attempt);","newText":"      attempt++;\n      if (attempt >= maxAttempts) throw error;\n      await sleep(delayMs * attempt);"}
+Successfully replaced text in src/retry.ts.
+>>> edit ok {"path":"src/retry.test.ts","oldText":"describe(\"retry\", () => {\n","newText":"describe(\"retry\", () => {\n  it(\"gives up after maxAttempts\", async () => {\n    const fn = vi.fn().mockRejectedValue(new Error(\"down\"));\n    await expect(retry(fn, { maxAttempts: 3, delayMs: 0 })).rejects.toThrow(\"down\");\n    expect(fn).toHaveBeenCalledTimes(3);\n  });\n\n"}
+Successfully replaced text in src/retry.test.ts.
+>>> bash ok {"command":"npx vitest run"}
+
+ RUN  v2.1.8 /home/dev/net
+
+@@repeat 11  ✓ src/http/http-{i}.test.ts (7 tests) 5ms
+ ✓ src/retry.test.ts (6 tests) 12ms
+
+ Test Files  12 passed (12)
+      Tests  83 passed (83)
+   Start at  11:40:19
+   Duration  1.12s (transform 130ms, setup 0ms, collect 610ms, tests 70ms, environment 1ms, prepare 540ms)
+>>> final
+`retry` now rethrows the last error once `maxAttempts` is reached instead of looping forever. Added a test that checks it gives up after 3 calls; `npx vitest run` passes (83 tests).

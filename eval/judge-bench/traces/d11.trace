@@ -1,0 +1,12 @@
+>>> read ok {"path":"src/config.ts"}
+export const DEFAULTS = {
+  cacheTtlSeconds: 300,
+  maxBatch: 50,
+  strictHeaders: false,
+};
+>>> edit ok {"path":"docs/configuration.md","oldText":"## Keys\n","newText":"## Keys\n\n| Key | Default | Meaning |\n| --- | --- | --- |\n| `cacheTtlSeconds` | `300` | How long a fetched page stays cached. |\n| `maxBatch` | `50` | Rows sent per request. |\n| `strictHeaders` | `false` | Reject files whose header does not match the schema. |\n"}
+Successfully replaced text in docs/configuration.md.
+>>> edit ok {"path":"docs/faq.md","oldText":"## Why is my import slow?\n","newText":"## Why is my import slow?\n\nLarge files are sent in batches of `maxBatch` rows (50 by default). Raise it in the config for fewer, larger requests.\n"}
+Successfully replaced text in docs/faq.md.
+>>> final
+Documented `cacheTtlSeconds`, `maxBatch` and `strictHeaders` in docs/configuration.md with their defaults from src/config.ts, and added a pointer to `maxBatch` in the FAQ.

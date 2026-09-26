@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Tests
+
+- Judge bench (`eval/judge-bench/`, `npm run eval:judge`): 80 labelled cases for the stuck and done guards (40 each, half positive), each sent to the real judge in three request states: A, the state the guards build today; B, the same shape with larger raw output slices; C, today's fields plus a compact `evidence` object from a generic failure parser (failing tests, errors, locations, edit diffs, file types, checks after the last edit). 36 traces come from real runs of node test, tsc, cargo, go, sbcl and scripts in throwaway projects; the rest are written in the runners' own formats. Scoring uses the guards' own thresholds and gate. `--dry-run` lists the plan and sends nothing; `--budget` caps requests. Guard behaviour does not change.
 
 ## 0.66.0
 

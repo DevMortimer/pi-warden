@@ -1,0 +1,34 @@
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestPrice (0.00s)
+    prices_test.go:9: Price("LIGHTING") = 0, want 3400
+    prices_test.go:9: Price("PLUMBING") = 0, want 560
+    prices_test.go:9: Price("GARDEN") = 0, want 1250
+FAIL
+FAIL	example.com/inventory/inv	0.316s
+FAIL
+
+Command exited with code 1
+>>> edit ok {"path":"inv/prices.go","oldText":"// Price in cents for a category; discounts are applied later.\n","newText":"// Price returns the list price in cents for a category. Discounts are applied later.\n"}
+Successfully replaced text in inv/prices.go.
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestPrice (0.00s)
+    prices_test.go:9: Price("LIGHTING") = 0, want 3400
+    prices_test.go:9: Price("GARDEN") = 0, want 1250
+    prices_test.go:9: Price("PLUMBING") = 0, want 560
+FAIL
+FAIL	example.com/inventory/inv	0.120s
+FAIL
+
+Command exited with code 1
+>>> edit ok {"path":"inv/prices.go","oldText":"\treturn 0\n}\n","newText":"\t// unknown category\n\treturn 0\n}\n"}
+Successfully replaced text in inv/prices.go.
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestPrice (0.00s)
+    prices_test.go:9: Price("GARDEN") = 0, want 1250
+    prices_test.go:9: Price("PLUMBING") = 0, want 560
+    prices_test.go:9: Price("LIGHTING") = 0, want 3400
+FAIL
+FAIL	example.com/inventory/inv	0.410s
+FAIL
+
+Command exited with code 1

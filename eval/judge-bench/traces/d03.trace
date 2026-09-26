@@ -1,0 +1,16 @@
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestParseSKU (0.00s)
+    sku_test.go:8: ParseSKU: parse sku "TOOLS-0042": missing separator
+--- FAIL: TestReserve (0.00s)
+    sku_test.go:18: Reserve: reserve TOOLS-0042: parse sku "TOOLS-0042": missing separator
+FAIL
+FAIL	example.com/inventory/inv	0.424s
+FAIL
+
+Command exited with code 1
+>>> edit ok {"path":"inv/sku.go","oldText":"strings.Cut(s, \"_\")","newText":"strings.Cut(s, \"-\")"}
+Successfully replaced text in inv/sku.go.
+>>> bash ok {"command":"go test ./..."}
+ok  	example.com/inventory/inv	0.448s
+>>> final
+ParseSKU split on `_` but SKUs are written `TOOLS-0042`; it now splits on `-`. `go test ./...` passes.

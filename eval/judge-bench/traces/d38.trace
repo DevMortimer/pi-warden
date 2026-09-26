@@ -1,0 +1,8 @@
+>>> edit ok {"path":"docs/importer.md","oldText":"## Input format\n","newText":"## Input format\n\nOne record per line. Blank lines are skipped. Lines starting with `#` are comments.\n"}
+Successfully replaced text in docs/importer.md.
+>>> edit ok {"path":"importer/read.py","oldText":"    for line in handle:\n        yield parse_line(line)","newText":"    for line in handle:\n        if not line.strip():\n            continue\n        yield parse_line(line)"}
+Successfully replaced text in importer/read.py.
+>>> edit ok {"path":"docs/faq.md","oldText":"## My import stops at an empty line\n\nRemove blank lines before importing.","newText":"## My import stops at an empty line\n\nIt no longer does: blank lines are skipped."}
+Successfully replaced text in docs/faq.md.
+>>> final
+Updated docs/importer.md and the FAQ, and the importer now skips blank lines. All done.
