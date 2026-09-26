@@ -23,6 +23,8 @@ export interface Steer {
 export interface TraceSummary {
   entries: number;
   guards: Record<string, number>;
+  /** Waste notes by detector, read from the trace detail line `detector: <name>`. */
+  waste: Record<string, number>;
   judgmentsOff: string[];
 }
 
@@ -31,6 +33,7 @@ export function snapshotDiff(before: Snapshot, after: Snapshot): { removed: stri
 export function fileCount(dir: string): number;
 export function callsWithResults(events: unknown[]): WeakCall[];
 export function steersInOrder(events: unknown[]): Steer[];
+export function turnsOf(events: unknown[]): number;
 export function repeatedFailures(calls: Pick<WeakCall, "tool" | "input" | "failed">[]): number;
 export function traceGuards(traceDir: string): TraceSummary;
 export function judgedRequests(agentDir: string): number;
