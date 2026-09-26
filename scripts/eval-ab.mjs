@@ -38,10 +38,11 @@
  * `--extension` loads a provider extension in both cells.
  *
  * `--waste on|off|both` sets the warden config's `waste` section in the run's own
- * pi-warden config: `on`/`off` keep the usual control/warden cells with the warden
- * cell's waste guard on or off, and `both` replaces them with two warden cells,
- * `warden-waste-off` and `warden-waste-on`, so the guard is compared against itself
- * and everything else stays identical.
+ * pi-warden config, its `enabled` switch and its `tip` together: `on`/`off` keep the
+ * usual control/warden cells with the warden cell's waste guard (notes and tip) on or
+ * off, and `both` replaces them with two warden cells, `warden-waste-off` and
+ * `warden-waste-on`, so the guard is compared against itself and everything else stays
+ * identical.
  */
 
 import { parseArgs } from "node:util";
@@ -227,7 +228,7 @@ async function prepareAgentDir(base, allowance = null, waste = null) {
   await writeFile(join(agentDir, "pi-warden", "config.json"), JSON.stringify({
     typesafe: true,
     ...(allowance === null ? {} : { maxRequests: Math.max(1, allowance) }),
-    ...(waste === null ? {} : { waste: { enabled: waste } }),
+    ...(waste === null ? {} : { waste: { enabled: waste, tip: waste } }),
   }));
   return agentDir;
 }
