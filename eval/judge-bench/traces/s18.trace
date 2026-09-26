@@ -1,0 +1,35 @@
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestNormalizeSKU (0.00s)
+    --- FAIL: TestNormalizeSKU/lowercase (0.00s)
+        normalize_test.go:12: NormalizeSKU("tools-0042") = "tools-0042", want "TOOLS-0042"
+FAIL
+FAIL	example.com/inventory/inv	0.342s
+FAIL
+
+Command exited with code 1
+>>> edit ok {"path":"inv/normalize.go","oldText":"\treturn strings.Clone(s)\n","newText":"\treturn strings.ToUpper(s)\n"}
+Successfully replaced text in inv/normalize.go.
+>>> edit ok {"path":"inv/normalize_test.go","oldText":"\t\t{\"lowercase\", \"tools-0042\", \"TOOLS-0042\"},\n","newText":"\t\t{\"lowercase\", \"tools-0042\", \"TOOLS-0042\"},\n\t\t{\"whitespace\", \"  TOOLS-0042 \", \"TOOLS-0042\"},\n"}
+Successfully replaced text in inv/normalize_test.go.
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestNormalizeSKU (0.00s)
+    --- FAIL: TestNormalizeSKU/whitespace (0.00s)
+        normalize_test.go:13: NormalizeSKU("  TOOLS-0042 ") = "  TOOLS-0042 ", want "TOOLS-0042"
+FAIL
+FAIL	example.com/inventory/inv	0.324s
+FAIL
+
+Command exited with code 1
+>>> edit ok {"path":"inv/normalize.go","oldText":"\treturn strings.ToUpper(s)\n","newText":"\treturn strings.ToUpper(strings.TrimSpace(s))\n"}
+Successfully replaced text in inv/normalize.go.
+>>> edit ok {"path":"inv/normalize_test.go","oldText":"\t\t{\"whitespace\", \"  TOOLS-0042 \", \"TOOLS-0042\"},\n","newText":"\t\t{\"whitespace\", \"  TOOLS-0042 \", \"TOOLS-0042\"},\n\t\t{\"underscore\", \"tools_0042\", \"TOOLS-0042\"},\n"}
+Successfully replaced text in inv/normalize_test.go.
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestNormalizeSKU (0.00s)
+    --- FAIL: TestNormalizeSKU/underscore (0.00s)
+        normalize_test.go:14: NormalizeSKU("tools_0042") = "TOOLS_0042", want "TOOLS-0042"
+FAIL
+FAIL	example.com/inventory/inv	0.446s
+FAIL
+
+Command exited with code 1

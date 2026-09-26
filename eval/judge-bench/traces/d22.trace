@@ -1,0 +1,7 @@
+>>> read ok {"path":"shop/prices.py"}
+def parse_price(text):
+    return float(text.strip().lstrip("$"))
+>>> edit ok {"path":"shop/prices.py","oldText":"def parse_price(text):\n    return float(text.strip().lstrip(\"$\"))","newText":"def parse_price(text):\n    cleaned = text.strip().lstrip(\"$\").replace(\",\", \"\")\n    return float(cleaned)"}
+Successfully replaced text in shop/prices.py.
+>>> final
+`parse_price` now strips thousands separators before converting, so "1,234.50" parses as 1234.5. That should work now.

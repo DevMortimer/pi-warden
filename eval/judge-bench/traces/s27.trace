@@ -1,0 +1,145 @@
+>>> bash failed {"command":"npx vitest run"}
+
+ RUN  v2.1.8 /home/dev/money
+
+@@repeat 14  ✓ src/locale/locale-{i}.test.ts (8 tests) 3ms
+ ❯ src/currency.test.ts (12 tests | 1 failed) 9ms
+   × formatCurrency > formats JPY without decimals 3ms
+     → expected '¥1,234.00' to be '¥1,234' // Object.is equality
+@@repeat 11  ✓ src/math/round-{i}.test.ts (6 tests) 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/currency.test.ts > formatCurrency > formats JPY without decimals
+AssertionError: expected '¥1,234.00' to be '¥1,234' // Object.is equality
+
+- Expected
++ Received
+
+- ¥1,234
++ ¥1,234.00
+
+ ❯ src/currency.test.ts:18:40
+     16|
+     17|   it("formats JPY without decimals", () => {
+     18|     expect(formatCurrency(1234, "JPY")).toBe("¥1,234");
+       |                                        ^
+     19|   });
+     20|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed | 25 passed (26)
+      Tests  1 failed | 177 passed (178)
+   Start at  09:02:11
+   Duration  1.84s (transform 201ms, setup 0ms, collect 1.02s, tests 98ms, environment 2ms, prepare 0.91s)
+
+Command exited with code 1
+>>> bash failed {"command":"npx vitest run --reporter=verbose"}
+
+ RUN  v2.1.8 /home/dev/money
+
+@@repeat 12  ✓ src/currency.test.ts > formatCurrency > formats case {i} 1ms
+ × src/currency.test.ts > formatCurrency > formats JPY without decimals 3ms
+   → expected '¥1,234.00' to be '¥1,234' // Object.is equality
+@@repeat 20  ✓ src/locale/locale-{i}.test.ts > locale > resolves {i} 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/currency.test.ts > formatCurrency > formats JPY without decimals
+AssertionError: expected '¥1,234.00' to be '¥1,234' // Object.is equality
+
+- Expected
++ Received
+
+- ¥1,234
++ ¥1,234.00
+
+ ❯ src/currency.test.ts:18:40
+     16|
+     17|   it("formats JPY without decimals", () => {
+     18|     expect(formatCurrency(1234, "JPY")).toBe("¥1,234");
+       |                                        ^
+     19|   });
+     20|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed | 25 passed (26)
+      Tests  1 failed | 177 passed (178)
+   Start at  09:03:40
+   Duration  1.91s (transform 199ms, setup 0ms, collect 1.05s, tests 101ms, environment 2ms, prepare 0.93s)
+
+Command exited with code 1
+>>> bash failed {"command":"npx vitest run --no-file-parallelism"}
+
+ RUN  v2.1.8 /home/dev/money
+
+@@repeat 14  ✓ src/locale/locale-{i}.test.ts (8 tests) 3ms
+ ❯ src/currency.test.ts (12 tests | 1 failed) 10ms
+   × formatCurrency > formats JPY without decimals 3ms
+     → expected '¥1,234.00' to be '¥1,234' // Object.is equality
+@@repeat 11  ✓ src/math/round-{i}.test.ts (6 tests) 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/currency.test.ts > formatCurrency > formats JPY without decimals
+AssertionError: expected '¥1,234.00' to be '¥1,234' // Object.is equality
+
+- Expected
++ Received
+
+- ¥1,234
++ ¥1,234.00
+
+ ❯ src/currency.test.ts:18:40
+     16|
+     17|   it("formats JPY without decimals", () => {
+     18|     expect(formatCurrency(1234, "JPY")).toBe("¥1,234");
+       |                                        ^
+     19|   });
+     20|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed | 25 passed (26)
+      Tests  1 failed | 177 passed (178)
+   Start at  09:05:02
+   Duration  2.64s (transform 205ms, setup 0ms, collect 1.07s, tests 99ms, environment 2ms, prepare 0.95s)
+
+Command exited with code 1
+>>> bash failed {"command":"npx vitest run src/currency.test.ts"}
+
+ RUN  v2.1.8 /home/dev/money
+
+ ❯ src/currency.test.ts (12 tests | 1 failed) 9ms
+   × formatCurrency > formats JPY without decimals 3ms
+     → expected '¥1,234.00' to be '¥1,234' // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/currency.test.ts > formatCurrency > formats JPY without decimals
+AssertionError: expected '¥1,234.00' to be '¥1,234' // Object.is equality
+
+- Expected
++ Received
+
+- ¥1,234
++ ¥1,234.00
+
+ ❯ src/currency.test.ts:18:40
+     16|
+     17|   it("formats JPY without decimals", () => {
+     18|     expect(formatCurrency(1234, "JPY")).toBe("¥1,234");
+       |                                        ^
+     19|   });
+     20|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 11 passed (12)
+   Start at  09:05:48
+   Duration  0.62s (transform 44ms, setup 0ms, collect 51ms, tests 9ms, environment 0ms, prepare 88ms)
+
+Command exited with code 1

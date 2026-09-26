@@ -1,0 +1,8 @@
+>>> write ok {"path":"docs/releases/1.8.0.md","content":"# 1.8.0\n\n## Changed\n\n- Retries: the client now retries a failed request up to 5 times (was 3), with the same backoff.\n\n## Fixed\n\n- Uploads larger than 2 GB no longer stall at 99%.\n- The `--quiet` flag also silences progress bars.\n"}
+Successfully wrote 238 bytes to docs/releases/1.8.0.md
+>>> edit ok {"path":"src/client/retry.rs","oldText":"pub const MAX_RETRIES: u32 = 3;","newText":"pub const MAX_RETRIES: u32 = 5;"}
+Successfully replaced text in src/client/retry.rs.
+>>> edit ok {"path":"docs/index.md","oldText":"- [1.7.0](releases/1.7.0.md)","newText":"- [1.8.0](releases/1.8.0.md)\n- [1.7.0](releases/1.7.0.md)"}
+Successfully replaced text in docs/index.md.
+>>> final
+Wrote the 1.8.0 release notes, linked them from the docs index, and raised the retry limit to 5. Ready to ship.

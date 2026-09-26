@@ -1,0 +1,1172 @@
+>>> edit ok {"path":"test/cal.test.js","oldText":"// edge cases\n","newText":"// edge cases\ntest(\"weekStart maps Sunday to the previous Monday\", () => {\n  assert.equal(isoDate(weekStart(parseIso(\"2026-09-27\"))), \"2026-09-21\");\n});\n"}
+Successfully replaced text in test/cal.test.js.
+>>> bash failed {"command":"npm test"}
+
+> calendar@1.0.0 test
+> node --test --test-reporter=tap
+
+TAP version 13
+# Subtest: addDays +0 from 2026-01-01
+ok 1 - addDays +0 from 2026-01-01
+  ---
+  duration_ms: 0.935334
+  type: 'test'
+  ...
+# Subtest: addDays +1 from 2026-01-01
+ok 2 - addDays +1 from 2026-01-01
+  ---
+  duration_ms: 0.059583
+  type: 'test'
+  ...
+# Subtest: addDays +2 from 2026-01-01
+ok 3 - addDays +2 from 2026-01-01
+  ---
+  duration_ms: 0.038167
+  type: 'test'
+  ...
+# Subtest: addDays +3 from 2026-01-01
+ok 4 - addDays +3 from 2026-01-01
+  ---
+  duration_ms: 0.033208
+  type: 'test'
+  ...
+# Subtest: addDays +4 from 2026-01-01
+ok 5 - addDays +4 from 2026-01-01
+  ---
+  duration_ms: 0.061958
+  type: 'test'
+  ...
+# Subtest: addDays +5 from 2026-01-01
+ok 6 - addDays +5 from 2026-01-01
+  ---
+  duration_ms: 0.042292
+  type: 'test'
+  ...
+# Subtest: addDays +6 from 2026-01-01
+ok 7 - addDays +6 from 2026-01-01
+  ---
+  duration_ms: 0.028292
+  type: 'test'
+  ...
+# Subtest: addDays +7 from 2026-01-01
+ok 8 - addDays +7 from 2026-01-01
+  ---
+  duration_ms: 0.031667
+  type: 'test'
+  ...
+# Subtest: addDays +8 from 2026-01-01
+ok 9 - addDays +8 from 2026-01-01
+  ---
+  duration_ms: 0.035333
+  type: 'test'
+  ...
+# Subtest: addDays +9 from 2026-01-01
+ok 10 - addDays +9 from 2026-01-01
+  ---
+  duration_ms: 0.063
+  type: 'test'
+  ...
+# Subtest: addDays +10 from 2026-01-01
+ok 11 - addDays +10 from 2026-01-01
+  ---
+  duration_ms: 0.03175
+  type: 'test'
+  ...
+# Subtest: addDays +11 from 2026-01-01
+ok 12 - addDays +11 from 2026-01-01
+  ---
+  duration_ms: 0.021
+  type: 'test'
+  ...
+# Subtest: addDays +12 from 2026-01-01
+ok 13 - addDays +12 from 2026-01-01
+  ---
+  duration_ms: 0.01625
+  type: 'test'
+  ...
+# Subtest: addDays +13 from 2026-01-01
+ok 14 - addDays +13 from 2026-01-01
+  ---
+  duration_ms: 0.01525
+  type: 'test'
+  ...
+# Subtest: addDays +14 from 2026-01-01
+ok 15 - addDays +14 from 2026-01-01
+  ---
+  duration_ms: 0.013458
+  type: 'test'
+  ...
+# Subtest: addDays +15 from 2026-01-01
+ok 16 - addDays +15 from 2026-01-01
+  ---
+  duration_ms: 0.015667
+  type: 'test'
+  ...
+# Subtest: addDays +16 from 2026-01-01
+ok 17 - addDays +16 from 2026-01-01
+  ---
+  duration_ms: 0.015542
+  type: 'test'
+  ...
+# Subtest: addDays +17 from 2026-01-01
+ok 18 - addDays +17 from 2026-01-01
+  ---
+  duration_ms: 0.012167
+  type: 'test'
+  ...
+# Subtest: addDays +18 from 2026-01-01
+ok 19 - addDays +18 from 2026-01-01
+  ---
+  duration_ms: 0.0115
+  type: 'test'
+  ...
+# Subtest: addDays +19 from 2026-01-01
+ok 20 - addDays +19 from 2026-01-01
+  ---
+  duration_ms: 0.011666
+  type: 'test'
+  ...
+# Subtest: addDays +20 from 2026-01-01
+ok 21 - addDays +20 from 2026-01-01
+  ---
+  duration_ms: 0.01175
+  type: 'test'
+  ...
+# Subtest: addDays +21 from 2026-01-01
+ok 22 - addDays +21 from 2026-01-01
+  ---
+  duration_ms: 0.011666
+  type: 'test'
+  ...
+# Subtest: addDays +22 from 2026-01-01
+ok 23 - addDays +22 from 2026-01-01
+  ---
+  duration_ms: 0.012083
+  type: 'test'
+  ...
+# Subtest: addDays +23 from 2026-01-01
+ok 24 - addDays +23 from 2026-01-01
+  ---
+  duration_ms: 0.0125
+  type: 'test'
+  ...
+# Subtest: addDays +24 from 2026-01-01
+ok 25 - addDays +24 from 2026-01-01
+  ---
+  duration_ms: 0.012209
+  type: 'test'
+  ...
+# Subtest: addDays +25 from 2026-01-01
+ok 26 - addDays +25 from 2026-01-01
+  ---
+  duration_ms: 0.022375
+  type: 'test'
+  ...
+# Subtest: addDays +26 from 2026-01-01
+ok 27 - addDays +26 from 2026-01-01
+  ---
+  duration_ms: 0.013875
+  type: 'test'
+  ...
+# Subtest: addDays +27 from 2026-01-01
+ok 28 - addDays +27 from 2026-01-01
+  ---
+  duration_ms: 0.011208
+  type: 'test'
+  ...
+# Subtest: addDays +28 from 2026-01-01
+ok 29 - addDays +28 from 2026-01-01
+  ---
+  duration_ms: 0.014292
+  type: 'test'
+  ...
+# Subtest: addDays +29 from 2026-01-01
+ok 30 - addDays +29 from 2026-01-01
+  ---
+  duration_ms: 0.0135
+  type: 'test'
+  ...
+# Subtest: addDays +30 from 2026-01-01
+ok 31 - addDays +30 from 2026-01-01
+  ---
+  duration_ms: 0.010167
+  type: 'test'
+  ...
+# Subtest: addDays +31 from 2026-01-01
+ok 32 - addDays +31 from 2026-01-01
+  ---
+  duration_ms: 0.013291
+  type: 'test'
+  ...
+# Subtest: addDays +32 from 2026-01-01
+ok 33 - addDays +32 from 2026-01-01
+  ---
+  duration_ms: 0.010667
+  type: 'test'
+  ...
+# Subtest: addDays +33 from 2026-01-01
+ok 34 - addDays +33 from 2026-01-01
+  ---
+  duration_ms: 0.018542
+  type: 'test'
+  ...
+# Subtest: addDays +34 from 2026-01-01
+ok 35 - addDays +34 from 2026-01-01
+  ---
+  duration_ms: 0.009958
+  type: 'test'
+  ...
+# Subtest: addDays +35 from 2026-01-01
+ok 36 - addDays +35 from 2026-01-01
+  ---
+  duration_ms: 0.009375
+  type: 'test'
+  ...
+# Subtest: addDays +36 from 2026-01-01
+ok 37 - addDays +36 from 2026-01-01
+  ---
+  duration_ms: 0.00925
+  type: 'test'
+  ...
+# Subtest: addDays +37 from 2026-01-01
+ok 38 - addDays +37 from 2026-01-01
+  ---
+  duration_ms: 0.012083
+  type: 'test'
+  ...
+# Subtest: addDays +38 from 2026-01-01
+ok 39 - addDays +38 from 2026-01-01
+  ---
+  duration_ms: 0.00925
+  type: 'test'
+  ...
+# Subtest: addDays +39 from 2026-01-01
+ok 40 - addDays +39 from 2026-01-01
+  ---
+  duration_ms: 0.009167
+  type: 'test'
+  ...
+# Subtest: weekStart maps Sunday to the previous Monday
+not ok 41 - weekStart maps Sunday to the previous Monday
+  ---
+  duration_ms: 0.396667
+  type: 'test'
+  location: '/home/dev/calendar/test/cal.test.js:14:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+    
+    + '2026-09-28'
+    - '2026-09-21'
+                ^
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: '2026-09-21'
+  actual: '2026-09-28'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/dev/calendar/test/cal.test.js:15:10)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1402:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+    Test.postRun (node:internal/test_runner/test:1542:19)
+    Test.run (node:internal/test_runner/test:1467:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: monthName(0) is January
+ok 42 - monthName(0) is January
+  ---
+  duration_ms: 0.022667
+  type: 'test'
+  ...
+# Subtest: monthName(1) is February
+ok 43 - monthName(1) is February
+  ---
+  duration_ms: 0.011666
+  type: 'test'
+  ...
+# Subtest: monthName(2) is March
+ok 44 - monthName(2) is March
+  ---
+  duration_ms: 0.015916
+  type: 'test'
+  ...
+# Subtest: monthName(3) is April
+ok 45 - monthName(3) is April
+  ---
+  duration_ms: 0.01075
+  type: 'test'
+  ...
+# Subtest: monthName(4) is May
+ok 46 - monthName(4) is May
+  ---
+  duration_ms: 0.018083
+  type: 'test'
+  ...
+# Subtest: monthName(5) is June
+ok 47 - monthName(5) is June
+  ---
+  duration_ms: 0.01825
+  type: 'test'
+  ...
+# Subtest: monthName(6) is July
+ok 48 - monthName(6) is July
+  ---
+  duration_ms: 0.010041
+  type: 'test'
+  ...
+# Subtest: monthName(7) is August
+ok 49 - monthName(7) is August
+  ---
+  duration_ms: 0.008625
+  type: 'test'
+  ...
+# Subtest: monthName(8) is September
+ok 50 - monthName(8) is September
+  ---
+  duration_ms: 0.009
+  type: 'test'
+  ...
+# Subtest: monthName(9) is October
+ok 51 - monthName(9) is October
+  ---
+  duration_ms: 0.013209
+  type: 'test'
+  ...
+# Subtest: monthName(10) is November
+ok 52 - monthName(10) is November
+  ---
+  duration_ms: 0.008125
+  type: 'test'
+  ...
+# Subtest: monthName(11) is December
+ok 53 - monthName(11) is December
+  ---
+  duration_ms: 0.008458
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-22) is 2026-09-21
+ok 54 - weekStart(2026-09-22) is 2026-09-21
+  ---
+  duration_ms: 0.016417
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-23) is 2026-09-21
+ok 55 - weekStart(2026-09-23) is 2026-09-21
+  ---
+  duration_ms: 0.0115
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-24) is 2026-09-21
+ok 56 - weekStart(2026-09-24) is 2026-09-21
+  ---
+  duration_ms: 0.019
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-25) is 2026-09-21
+ok 57 - weekStart(2026-09-25) is 2026-09-21
+  ---
+  duration_ms: 0.01
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-26) is 2026-09-21
+ok 58 - weekStart(2026-09-26) is 2026-09-21
+  ---
+  duration_ms: 0.009459
+  type: 'test'
+  ...
+1..58
+# tests 58
+# suites 0
+# pass 57
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 91.811875
+
+Command exited with code 1
+>>> edit ok {"path":"src/cal.js","oldText":"  return addDays(date, 1 - day);\n","newText":"  return addDays(date, -((day + 6) % 7));\n"}
+Successfully replaced text in src/cal.js.
+>>> edit ok {"path":"test/cal.test.js","oldText":"// edge cases\n","newText":"// edge cases\ntest(\"monthName rejects index 12\", () => {\n  assert.throws(() => monthName(12), RangeError);\n});\n"}
+Successfully replaced text in test/cal.test.js.
+>>> bash failed {"command":"npm test"}
+
+> calendar@1.0.0 test
+> node --test --test-reporter=tap
+
+TAP version 13
+# Subtest: addDays +0 from 2026-01-01
+ok 1 - addDays +0 from 2026-01-01
+  ---
+  duration_ms: 0.888542
+  type: 'test'
+  ...
+# Subtest: addDays +1 from 2026-01-01
+ok 2 - addDays +1 from 2026-01-01
+  ---
+  duration_ms: 0.0635
+  type: 'test'
+  ...
+# Subtest: addDays +2 from 2026-01-01
+ok 3 - addDays +2 from 2026-01-01
+  ---
+  duration_ms: 0.035333
+  type: 'test'
+  ...
+# Subtest: addDays +3 from 2026-01-01
+ok 4 - addDays +3 from 2026-01-01
+  ---
+  duration_ms: 0.275958
+  type: 'test'
+  ...
+# Subtest: addDays +4 from 2026-01-01
+ok 5 - addDays +4 from 2026-01-01
+  ---
+  duration_ms: 0.044416
+  type: 'test'
+  ...
+# Subtest: addDays +5 from 2026-01-01
+ok 6 - addDays +5 from 2026-01-01
+  ---
+  duration_ms: 0.033625
+  type: 'test'
+  ...
+# Subtest: addDays +6 from 2026-01-01
+ok 7 - addDays +6 from 2026-01-01
+  ---
+  duration_ms: 0.077125
+  type: 'test'
+  ...
+# Subtest: addDays +7 from 2026-01-01
+ok 8 - addDays +7 from 2026-01-01
+  ---
+  duration_ms: 0.034834
+  type: 'test'
+  ...
+# Subtest: addDays +8 from 2026-01-01
+ok 9 - addDays +8 from 2026-01-01
+  ---
+  duration_ms: 0.041333
+  type: 'test'
+  ...
+# Subtest: addDays +9 from 2026-01-01
+ok 10 - addDays +9 from 2026-01-01
+  ---
+  duration_ms: 0.058875
+  type: 'test'
+  ...
+# Subtest: addDays +10 from 2026-01-01
+ok 11 - addDays +10 from 2026-01-01
+  ---
+  duration_ms: 0.030417
+  type: 'test'
+  ...
+# Subtest: addDays +11 from 2026-01-01
+ok 12 - addDays +11 from 2026-01-01
+  ---
+  duration_ms: 0.022208
+  type: 'test'
+  ...
+# Subtest: addDays +12 from 2026-01-01
+ok 13 - addDays +12 from 2026-01-01
+  ---
+  duration_ms: 0.016542
+  type: 'test'
+  ...
+# Subtest: addDays +13 from 2026-01-01
+ok 14 - addDays +13 from 2026-01-01
+  ---
+  duration_ms: 0.01375
+  type: 'test'
+  ...
+# Subtest: addDays +14 from 2026-01-01
+ok 15 - addDays +14 from 2026-01-01
+  ---
+  duration_ms: 0.017375
+  type: 'test'
+  ...
+# Subtest: addDays +15 from 2026-01-01
+ok 16 - addDays +15 from 2026-01-01
+  ---
+  duration_ms: 0.0155
+  type: 'test'
+  ...
+# Subtest: addDays +16 from 2026-01-01
+ok 17 - addDays +16 from 2026-01-01
+  ---
+  duration_ms: 0.012666
+  type: 'test'
+  ...
+# Subtest: addDays +17 from 2026-01-01
+ok 18 - addDays +17 from 2026-01-01
+  ---
+  duration_ms: 0.014
+  type: 'test'
+  ...
+# Subtest: addDays +18 from 2026-01-01
+ok 19 - addDays +18 from 2026-01-01
+  ---
+  duration_ms: 0.011708
+  type: 'test'
+  ...
+# Subtest: addDays +19 from 2026-01-01
+ok 20 - addDays +19 from 2026-01-01
+  ---
+  duration_ms: 0.0115
+  type: 'test'
+  ...
+# Subtest: addDays +20 from 2026-01-01
+ok 21 - addDays +20 from 2026-01-01
+  ---
+  duration_ms: 0.011875
+  type: 'test'
+  ...
+# Subtest: addDays +21 from 2026-01-01
+ok 22 - addDays +21 from 2026-01-01
+  ---
+  duration_ms: 0.012083
+  type: 'test'
+  ...
+# Subtest: addDays +22 from 2026-01-01
+ok 23 - addDays +22 from 2026-01-01
+  ---
+  duration_ms: 0.011792
+  type: 'test'
+  ...
+# Subtest: addDays +23 from 2026-01-01
+ok 24 - addDays +23 from 2026-01-01
+  ---
+  duration_ms: 0.01375
+  type: 'test'
+  ...
+# Subtest: addDays +24 from 2026-01-01
+ok 25 - addDays +24 from 2026-01-01
+  ---
+  duration_ms: 0.021541
+  type: 'test'
+  ...
+# Subtest: addDays +25 from 2026-01-01
+ok 26 - addDays +25 from 2026-01-01
+  ---
+  duration_ms: 0.013625
+  type: 'test'
+  ...
+# Subtest: addDays +26 from 2026-01-01
+ok 27 - addDays +26 from 2026-01-01
+  ---
+  duration_ms: 0.011333
+  type: 'test'
+  ...
+# Subtest: addDays +27 from 2026-01-01
+ok 28 - addDays +27 from 2026-01-01
+  ---
+  duration_ms: 0.015459
+  type: 'test'
+  ...
+# Subtest: addDays +28 from 2026-01-01
+ok 29 - addDays +28 from 2026-01-01
+  ---
+  duration_ms: 0.011083
+  type: 'test'
+  ...
+# Subtest: addDays +29 from 2026-01-01
+ok 30 - addDays +29 from 2026-01-01
+  ---
+  duration_ms: 0.013375
+  type: 'test'
+  ...
+# Subtest: addDays +30 from 2026-01-01
+ok 31 - addDays +30 from 2026-01-01
+  ---
+  duration_ms: 0.009833
+  type: 'test'
+  ...
+# Subtest: addDays +31 from 2026-01-01
+ok 32 - addDays +31 from 2026-01-01
+  ---
+  duration_ms: 0.013208
+  type: 'test'
+  ...
+# Subtest: addDays +32 from 2026-01-01
+ok 33 - addDays +32 from 2026-01-01
+  ---
+  duration_ms: 0.015875
+  type: 'test'
+  ...
+# Subtest: addDays +33 from 2026-01-01
+ok 34 - addDays +33 from 2026-01-01
+  ---
+  duration_ms: 0.012333
+  type: 'test'
+  ...
+# Subtest: addDays +34 from 2026-01-01
+ok 35 - addDays +34 from 2026-01-01
+  ---
+  duration_ms: 0.010167
+  type: 'test'
+  ...
+# Subtest: addDays +35 from 2026-01-01
+ok 36 - addDays +35 from 2026-01-01
+  ---
+  duration_ms: 0.009375
+  type: 'test'
+  ...
+# Subtest: addDays +36 from 2026-01-01
+ok 37 - addDays +36 from 2026-01-01
+  ---
+  duration_ms: 0.009792
+  type: 'test'
+  ...
+# Subtest: addDays +37 from 2026-01-01
+ok 38 - addDays +37 from 2026-01-01
+  ---
+  duration_ms: 0.009125
+  type: 'test'
+  ...
+# Subtest: addDays +38 from 2026-01-01
+ok 39 - addDays +38 from 2026-01-01
+  ---
+  duration_ms: 0.010916
+  type: 'test'
+  ...
+# Subtest: addDays +39 from 2026-01-01
+ok 40 - addDays +39 from 2026-01-01
+  ---
+  duration_ms: 0.009375
+  type: 'test'
+  ...
+# Subtest: monthName rejects index 12
+not ok 41 - monthName rejects index 12
+  ---
+  duration_ms: 0.303083
+  type: 'test'
+  location: '/home/dev/calendar/test/cal.test.js:14:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception (RangeError).'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  stack: |-
+    TestContext.<anonymous> (file:///home/dev/calendar/test/cal.test.js:15:10)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1402:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+    Test.postRun (node:internal/test_runner/test:1542:19)
+    Test.run (node:internal/test_runner/test:1467:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: weekStart maps Sunday to the previous Monday
+ok 42 - weekStart maps Sunday to the previous Monday
+  ---
+  duration_ms: 0.026
+  type: 'test'
+  ...
+# Subtest: monthName(0) is January
+ok 43 - monthName(0) is January
+  ---
+  duration_ms: 0.019917
+  type: 'test'
+  ...
+# Subtest: monthName(1) is February
+ok 44 - monthName(1) is February
+  ---
+  duration_ms: 0.017458
+  type: 'test'
+  ...
+# Subtest: monthName(2) is March
+ok 45 - monthName(2) is March
+  ---
+  duration_ms: 0.009792
+  type: 'test'
+  ...
+# Subtest: monthName(3) is April
+ok 46 - monthName(3) is April
+  ---
+  duration_ms: 0.008667
+  type: 'test'
+  ...
+# Subtest: monthName(4) is May
+ok 47 - monthName(4) is May
+  ---
+  duration_ms: 0.009875
+  type: 'test'
+  ...
+# Subtest: monthName(5) is June
+ok 48 - monthName(5) is June
+  ---
+  duration_ms: 0.013583
+  type: 'test'
+  ...
+# Subtest: monthName(6) is July
+ok 49 - monthName(6) is July
+  ---
+  duration_ms: 0.009541
+  type: 'test'
+  ...
+# Subtest: monthName(7) is August
+ok 50 - monthName(7) is August
+  ---
+  duration_ms: 0.008875
+  type: 'test'
+  ...
+# Subtest: monthName(8) is September
+ok 51 - monthName(8) is September
+  ---
+  duration_ms: 0.009958
+  type: 'test'
+  ...
+# Subtest: monthName(9) is October
+ok 52 - monthName(9) is October
+  ---
+  duration_ms: 0.009291
+  type: 'test'
+  ...
+# Subtest: monthName(10) is November
+ok 53 - monthName(10) is November
+  ---
+  duration_ms: 0.014916
+  type: 'test'
+  ...
+# Subtest: monthName(11) is December
+ok 54 - monthName(11) is December
+  ---
+  duration_ms: 0.011708
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-22) is 2026-09-21
+ok 55 - weekStart(2026-09-22) is 2026-09-21
+  ---
+  duration_ms: 0.018209
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-23) is 2026-09-21
+ok 56 - weekStart(2026-09-23) is 2026-09-21
+  ---
+  duration_ms: 0.018083
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-24) is 2026-09-21
+ok 57 - weekStart(2026-09-24) is 2026-09-21
+  ---
+  duration_ms: 0.015083
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-25) is 2026-09-21
+ok 58 - weekStart(2026-09-25) is 2026-09-21
+  ---
+  duration_ms: 0.011125
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-26) is 2026-09-21
+ok 59 - weekStart(2026-09-26) is 2026-09-21
+  ---
+  duration_ms: 0.009458
+  type: 'test'
+  ...
+1..59
+# tests 59
+# suites 0
+# pass 58
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 88.440166
+
+Command exited with code 1
+>>> edit ok {"path":"src/cal.js","oldText":"export function monthName(index) {\n  return MONTHS[index];\n","newText":"export function monthName(index) {\n  if (!Number.isInteger(index) || index < 0 || index > 11) throw new RangeError(`month index ${index}`);\n  return MONTHS[index];\n"}
+Successfully replaced text in src/cal.js.
+>>> edit ok {"path":"test/cal.test.js","oldText":"// edge cases\n","newText":"// edge cases\ntest(\"parseIso rejects month 13\", () => {\n  assert.throws(() => parseIso(\"2026-13-01\"), RangeError);\n});\n"}
+Successfully replaced text in test/cal.test.js.
+>>> bash failed {"command":"npm test"}
+
+> calendar@1.0.0 test
+> node --test --test-reporter=tap
+
+TAP version 13
+# Subtest: addDays +0 from 2026-01-01
+ok 1 - addDays +0 from 2026-01-01
+  ---
+  duration_ms: 0.930833
+  type: 'test'
+  ...
+# Subtest: addDays +1 from 2026-01-01
+ok 2 - addDays +1 from 2026-01-01
+  ---
+  duration_ms: 0.062542
+  type: 'test'
+  ...
+# Subtest: addDays +2 from 2026-01-01
+ok 3 - addDays +2 from 2026-01-01
+  ---
+  duration_ms: 0.036625
+  type: 'test'
+  ...
+# Subtest: addDays +3 from 2026-01-01
+ok 4 - addDays +3 from 2026-01-01
+  ---
+  duration_ms: 0.290042
+  type: 'test'
+  ...
+# Subtest: addDays +4 from 2026-01-01
+ok 5 - addDays +4 from 2026-01-01
+  ---
+  duration_ms: 0.049959
+  type: 'test'
+  ...
+# Subtest: addDays +5 from 2026-01-01
+ok 6 - addDays +5 from 2026-01-01
+  ---
+  duration_ms: 0.054125
+  type: 'test'
+  ...
+# Subtest: addDays +6 from 2026-01-01
+ok 7 - addDays +6 from 2026-01-01
+  ---
+  duration_ms: 0.059541
+  type: 'test'
+  ...
+# Subtest: addDays +7 from 2026-01-01
+ok 8 - addDays +7 from 2026-01-01
+  ---
+  duration_ms: 0.038625
+  type: 'test'
+  ...
+# Subtest: addDays +8 from 2026-01-01
+ok 9 - addDays +8 from 2026-01-01
+  ---
+  duration_ms: 0.041042
+  type: 'test'
+  ...
+# Subtest: addDays +9 from 2026-01-01
+ok 10 - addDays +9 from 2026-01-01
+  ---
+  duration_ms: 0.059125
+  type: 'test'
+  ...
+# Subtest: addDays +10 from 2026-01-01
+ok 11 - addDays +10 from 2026-01-01
+  ---
+  duration_ms: 0.031917
+  type: 'test'
+  ...
+# Subtest: addDays +11 from 2026-01-01
+ok 12 - addDays +11 from 2026-01-01
+  ---
+  duration_ms: 0.021125
+  type: 'test'
+  ...
+# Subtest: addDays +12 from 2026-01-01
+ok 13 - addDays +12 from 2026-01-01
+  ---
+  duration_ms: 0.01575
+  type: 'test'
+  ...
+# Subtest: addDays +13 from 2026-01-01
+ok 14 - addDays +13 from 2026-01-01
+  ---
+  duration_ms: 0.013583
+  type: 'test'
+  ...
+# Subtest: addDays +14 from 2026-01-01
+ok 15 - addDays +14 from 2026-01-01
+  ---
+  duration_ms: 0.01525
+  type: 'test'
+  ...
+# Subtest: addDays +15 from 2026-01-01
+ok 16 - addDays +15 from 2026-01-01
+  ---
+  duration_ms: 0.014
+  type: 'test'
+  ...
+# Subtest: addDays +16 from 2026-01-01
+ok 17 - addDays +16 from 2026-01-01
+  ---
+  duration_ms: 0.011792
+  type: 'test'
+  ...
+# Subtest: addDays +17 from 2026-01-01
+ok 18 - addDays +17 from 2026-01-01
+  ---
+  duration_ms: 0.0115
+  type: 'test'
+  ...
+# Subtest: addDays +18 from 2026-01-01
+ok 19 - addDays +18 from 2026-01-01
+  ---
+  duration_ms: 0.012
+  type: 'test'
+  ...
+# Subtest: addDays +19 from 2026-01-01
+ok 20 - addDays +19 from 2026-01-01
+  ---
+  duration_ms: 0.011625
+  type: 'test'
+  ...
+# Subtest: addDays +20 from 2026-01-01
+ok 21 - addDays +20 from 2026-01-01
+  ---
+  duration_ms: 0.011875
+  type: 'test'
+  ...
+# Subtest: addDays +21 from 2026-01-01
+ok 22 - addDays +21 from 2026-01-01
+  ---
+  duration_ms: 0.011625
+  type: 'test'
+  ...
+# Subtest: addDays +22 from 2026-01-01
+ok 23 - addDays +22 from 2026-01-01
+  ---
+  duration_ms: 0.012208
+  type: 'test'
+  ...
+# Subtest: addDays +23 from 2026-01-01
+ok 24 - addDays +23 from 2026-01-01
+  ---
+  duration_ms: 0.011583
+  type: 'test'
+  ...
+# Subtest: addDays +24 from 2026-01-01
+ok 25 - addDays +24 from 2026-01-01
+  ---
+  duration_ms: 0.011667
+  type: 'test'
+  ...
+# Subtest: addDays +25 from 2026-01-01
+ok 26 - addDays +25 from 2026-01-01
+  ---
+  duration_ms: 0.021584
+  type: 'test'
+  ...
+# Subtest: addDays +26 from 2026-01-01
+ok 27 - addDays +26 from 2026-01-01
+  ---
+  duration_ms: 0.014125
+  type: 'test'
+  ...
+# Subtest: addDays +27 from 2026-01-01
+ok 28 - addDays +27 from 2026-01-01
+  ---
+  duration_ms: 0.017667
+  type: 'test'
+  ...
+# Subtest: addDays +28 from 2026-01-01
+ok 29 - addDays +28 from 2026-01-01
+  ---
+  duration_ms: 0.011583
+  type: 'test'
+  ...
+# Subtest: addDays +29 from 2026-01-01
+ok 30 - addDays +29 from 2026-01-01
+  ---
+  duration_ms: 0.011
+  type: 'test'
+  ...
+# Subtest: addDays +30 from 2026-01-01
+ok 31 - addDays +30 from 2026-01-01
+  ---
+  duration_ms: 0.009875
+  type: 'test'
+  ...
+# Subtest: addDays +31 from 2026-01-01
+ok 32 - addDays +31 from 2026-01-01
+  ---
+  duration_ms: 0.017959
+  type: 'test'
+  ...
+# Subtest: addDays +32 from 2026-01-01
+ok 33 - addDays +32 from 2026-01-01
+  ---
+  duration_ms: 0.010167
+  type: 'test'
+  ...
+# Subtest: addDays +33 from 2026-01-01
+ok 34 - addDays +33 from 2026-01-01
+  ---
+  duration_ms: 0.009375
+  type: 'test'
+  ...
+# Subtest: addDays +34 from 2026-01-01
+ok 35 - addDays +34 from 2026-01-01
+  ---
+  duration_ms: 0.012834
+  type: 'test'
+  ...
+# Subtest: addDays +35 from 2026-01-01
+ok 36 - addDays +35 from 2026-01-01
+  ---
+  duration_ms: 0.011791
+  type: 'test'
+  ...
+# Subtest: addDays +36 from 2026-01-01
+ok 37 - addDays +36 from 2026-01-01
+  ---
+  duration_ms: 0.00925
+  type: 'test'
+  ...
+# Subtest: addDays +37 from 2026-01-01
+ok 38 - addDays +37 from 2026-01-01
+  ---
+  duration_ms: 0.00925
+  type: 'test'
+  ...
+# Subtest: addDays +38 from 2026-01-01
+ok 39 - addDays +38 from 2026-01-01
+  ---
+  duration_ms: 0.010583
+  type: 'test'
+  ...
+# Subtest: addDays +39 from 2026-01-01
+ok 40 - addDays +39 from 2026-01-01
+  ---
+  duration_ms: 0.009666
+  type: 'test'
+  ...
+# Subtest: parseIso rejects month 13
+not ok 41 - parseIso rejects month 13
+  ---
+  duration_ms: 0.302584
+  type: 'test'
+  location: '/home/dev/calendar/test/cal.test.js:14:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception (RangeError).'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  stack: |-
+    TestContext.<anonymous> (file:///home/dev/calendar/test/cal.test.js:15:10)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1402:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+    Test.postRun (node:internal/test_runner/test:1542:19)
+    Test.run (node:internal/test_runner/test:1467:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: monthName rejects index 12
+ok 42 - monthName rejects index 12
+  ---
+  duration_ms: 0.087042
+  type: 'test'
+  ...
+# Subtest: weekStart maps Sunday to the previous Monday
+ok 43 - weekStart maps Sunday to the previous Monday
+  ---
+  duration_ms: 0.029958
+  type: 'test'
+  ...
+# Subtest: monthName(0) is January
+ok 44 - monthName(0) is January
+  ---
+  duration_ms: 0.0175
+  type: 'test'
+  ...
+# Subtest: monthName(1) is February
+ok 45 - monthName(1) is February
+  ---
+  duration_ms: 0.010125
+  type: 'test'
+  ...
+# Subtest: monthName(2) is March
+ok 46 - monthName(2) is March
+  ---
+  duration_ms: 0.009958
+  type: 'test'
+  ...
+# Subtest: monthName(3) is April
+ok 47 - monthName(3) is April
+  ---
+  duration_ms: 0.017334
+  type: 'test'
+  ...
+# Subtest: monthName(4) is May
+ok 48 - monthName(4) is May
+  ---
+  duration_ms: 0.00775
+  type: 'test'
+  ...
+# Subtest: monthName(5) is June
+ok 49 - monthName(5) is June
+  ---
+  duration_ms: 0.007583
+  type: 'test'
+  ...
+# Subtest: monthName(6) is July
+ok 50 - monthName(6) is July
+  ---
+  duration_ms: 0.009167
+  type: 'test'
+  ...
+# Subtest: monthName(7) is August
+ok 51 - monthName(7) is August
+  ---
+  duration_ms: 0.008333
+  type: 'test'
+  ...
+# Subtest: monthName(8) is September
+ok 52 - monthName(8) is September
+  ---
+  duration_ms: 0.008958
+  type: 'test'
+  ...
+# Subtest: monthName(9) is October
+ok 53 - monthName(9) is October
+  ---
+  duration_ms: 0.009792
+  type: 'test'
+  ...
+# Subtest: monthName(10) is November
+ok 54 - monthName(10) is November
+  ---
+  duration_ms: 0.011458
+  type: 'test'
+  ...
+# Subtest: monthName(11) is December
+ok 55 - monthName(11) is December
+  ---
+  duration_ms: 0.010084
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-22) is 2026-09-21
+ok 56 - weekStart(2026-09-22) is 2026-09-21
+  ---
+  duration_ms: 0.015708
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-23) is 2026-09-21
+ok 57 - weekStart(2026-09-23) is 2026-09-21
+  ---
+  duration_ms: 0.011
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-24) is 2026-09-21
+ok 58 - weekStart(2026-09-24) is 2026-09-21
+  ---
+  duration_ms: 0.013
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-25) is 2026-09-21
+ok 59 - weekStart(2026-09-25) is 2026-09-21
+  ---
+  duration_ms: 0.009584
+  type: 'test'
+  ...
+# Subtest: weekStart(2026-09-26) is 2026-09-21
+ok 60 - weekStart(2026-09-26) is 2026-09-21
+  ---
+  duration_ms: 0.008333
+  type: 'test'
+  ...
+1..60
+# tests 60
+# suites 0
+# pass 59
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 89.605625
+
+Command exited with code 1

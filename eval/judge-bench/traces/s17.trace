@@ -1,0 +1,85 @@
+>>> bash failed {"command":"pytest -q"}
+........................................................................ [ 37%]
+.........................................F.............................. [ 75%]
+...............................................                          [100%]
+=================================== FAILURES ===================================
+____________________________ test_parse_iso_week _______________________________
+
+    def test_parse_iso_week():
+>       assert parse("2026-W39") == date(2026, 9, 21)
+
+tests/test_dates.py:44:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+text = '2026-W39'
+
+    def parse(text):
+        for fmt in FORMATS:
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+>       raise ValueError(f"unrecognised date: {text!r}")
+E       ValueError: unrecognised date: '2026-W39'
+
+dates/parse.py:19: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_dates.py::test_parse_iso_week - ValueError: unrecognised date: '2026-W39'
+1 failed, 190 passed in 0.84s
+
+Command exited with code 1
+>>> edit ok {"path":"dates/parse.py","oldText":"def parse(text):\n","newText":"def parse(text):\n    week = re.fullmatch(r\"(\\d{4})-W(\\d{2})\", text)\n    if week:\n        return date.fromisocalendar(int(week[1]), int(week[2]), 1)\n"}
+Successfully replaced text in dates/parse.py.
+>>> bash failed {"command":"pytest -q"}
+........................................................................ [ 37%]
+..........................................F............................. [ 75%]
+...............................................                          [100%]
+=================================== FAILURES ===================================
+____________________________ test_parse_ordinal ________________________________
+
+    def test_parse_ordinal():
+>       assert parse("2026-269") == date(2026, 9, 26)
+
+tests/test_dates.py:49:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+text = '2026-269'
+
+    def parse(text):
+        week = re.fullmatch(r"(\d{4})-W(\d{2})", text)
+        if week:
+            return date.fromisocalendar(int(week[1]), int(week[2]), 1)
+        for fmt in FORMATS:
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+>       raise ValueError(f"unrecognised date: {text!r}")
+E       ValueError: unrecognised date: '2026-269'
+
+dates/parse.py:22: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_dates.py::test_parse_ordinal - ValueError: unrecognised date: '2026-269'
+1 failed, 190 passed in 0.81s
+
+Command exited with code 1
+>>> edit ok {"path":"dates/parse.py","oldText":"FORMATS = [\"%Y-%m-%d\", \"%d/%m/%Y\", \"%b %d %Y\"]","newText":"FORMATS = [\"%Y-%m-%d\", \"%Y-%j\", \"%d/%m/%Y\", \"%b %d %Y\"]"}
+Successfully replaced text in dates/parse.py.
+>>> bash failed {"command":"pytest -q"}
+........................................................................ [ 37%]
+...........................................F............................ [ 75%]
+...............................................                          [100%]
+=================================== FAILURES ===================================
+_________________________ test_parse_rfc2822_zone ______________________________
+
+    def test_parse_rfc2822_zone():
+>       assert parse("Sat, 26 Sep 2026 23:30:00 -0500") == date(2026, 9, 26)
+E       AssertionError: assert datetime.date(2026, 9, 27) == datetime.date(2026, 9, 26)
+E        +  where datetime.date(2026, 9, 27) = parse('Sat, 26 Sep 2026 23:30:00 -0500')
+
+tests/test_dates.py:54: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_dates.py::test_parse_rfc2822_zone - AssertionError: assert datetime.date(2026, 9, 27) == datetime.date(2026, 9, 26)
+1 failed, 190 passed in 0.86s
+
+Command exited with code 1

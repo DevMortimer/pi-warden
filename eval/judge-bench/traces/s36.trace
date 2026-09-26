@@ -1,0 +1,43 @@
+>>> bash failed {"command":"python3 scripts/import_products.py data/products.json"}
+2026-09-26 02:22:54,634 INFO run=d657d98b loading data/products.json
+2026-09-26 02:22:54,634 INFO run=d657d98b validating 24 records
+Traceback (most recent call last):
+  File "/home/dev/importer/scripts/import_products.py", line 30, in <module>
+    main(sys.argv[1])
+  File "/home/dev/importer/scripts/import_products.py", line 25, in main
+    validate(n, record)
+  File "/home/dev/importer/scripts/import_products.py", line 17, in validate
+    raise ValidationError(f"record {n}: price must be a number, got {record.get('price')!r}")
+__main__.ValidationError: record 17: price must be a number, got 'N/A'
+
+Command exited with code 1
+>>> edit ok {"path":"scripts/import_products.py","oldText":"    for n, record in enumerate(records, 1):\n","newText":"    for n, record in enumerate(records, start=1):\n"}
+Successfully replaced text in scripts/import_products.py.
+>>> bash failed {"command":"python3 scripts/import_products.py data/products.json"}
+2026-09-26 02:22:55,706 INFO run=a02f5fae loading data/products.json
+2026-09-26 02:22:55,707 INFO run=a02f5fae validating 24 records
+Traceback (most recent call last):
+  File "/home/dev/importer/scripts/import_products.py", line 30, in <module>
+    main(sys.argv[1])
+  File "/home/dev/importer/scripts/import_products.py", line 25, in main
+    validate(n, record)
+  File "/home/dev/importer/scripts/import_products.py", line 17, in validate
+    raise ValidationError(f"record {n}: price must be a number, got {record.get('price')!r}")
+__main__.ValidationError: record 17: price must be a number, got 'N/A'
+
+Command exited with code 1
+>>> edit ok {"path":"scripts/import_products.py","oldText":"    log.info(\"validating %d records\", len(records))\n","newText":"    log.info(\"validating %d records from %s\", len(records), path)\n"}
+Successfully replaced text in scripts/import_products.py.
+>>> bash failed {"command":"python3 scripts/import_products.py data/products.json"}
+2026-09-26 02:22:56,778 INFO run=d362de00 loading data/products.json
+2026-09-26 02:22:56,778 INFO run=d362de00 validating 24 records from data/products.json
+Traceback (most recent call last):
+  File "/home/dev/importer/scripts/import_products.py", line 30, in <module>
+    main(sys.argv[1])
+  File "/home/dev/importer/scripts/import_products.py", line 25, in main
+    validate(n, record)
+  File "/home/dev/importer/scripts/import_products.py", line 17, in validate
+    raise ValidationError(f"record {n}: price must be a number, got {record.get('price')!r}")
+__main__.ValidationError: record 17: price must be a number, got 'N/A'
+
+Command exited with code 1

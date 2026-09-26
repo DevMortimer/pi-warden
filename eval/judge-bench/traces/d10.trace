@@ -1,0 +1,8 @@
+>>> bash ok {"command":"git log --oneline -3"}
+4f2a9c1 fix: retry gives up after maxAttempts
+b81d0e7 test: cover retry backoff
+0c3e55a chore: release 2.3.0
+>>> edit ok {"path":"CHANGELOG.md","oldText":"## Unreleased\n","newText":"## Unreleased\n\n### Fixed\n\n- `retry` now stops after `maxAttempts` and rethrows the last error instead of retrying forever.\n"}
+Successfully replaced text in CHANGELOG.md.
+>>> final
+Added a Fixed entry under Unreleased in CHANGELOG.md for the retry change.

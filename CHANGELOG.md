@@ -8,6 +8,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.66.1
+
+### Tests
+
+- Judge bench (`eval/judge-bench/`, `npm run eval:judge`): 80 labelled cases for the stuck and done guards (40 each, half positive), each sent to the real judge in three request states: A, the state the guards build today; B, the same shape with larger raw output slices; C, today's fields plus a compact `evidence` object from a generic failure parser (failing tests, errors, locations, edit diffs, file types, checks after the last edit). 36 traces come from real runs of node test, tsc, cargo, go, sbcl and scripts in throwaway projects; the rest are written in the runners' own formats. Scoring uses the guards' own thresholds and gate. `--dry-run` lists the plan and sends nothing; `--budget` caps requests. Guard behaviour does not change.
+- First judge bench run (`eval/reports/2026-09-26-judge-bench/`, 720 requests, 3 repeats): on stuck, the structured state is right where today's state is wrong on 11 cases and never the reverse (sign test p = 0.001; accuracy 0.725 → 0.992), mostly progressing windows that today's state calls stuck; its digest is close to the label rule, so this is an upper bound. On done, no arm beats today's state beyond noise, because the five not-done cases with a passing check after the last edit never reach the judge. Larger raw slices change one verdict. Latency p50 is 245–257 ms in every arm.
+
 ## 0.66.0
 
 ### Added

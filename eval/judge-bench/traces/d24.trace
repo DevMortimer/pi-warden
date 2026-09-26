@@ -1,0 +1,14 @@
+>>> read ok {"path":"src/cleanup.rs"}
+pub fn run(args: &Args) -> io::Result<()> {
+    for path in stale_files(&args.dir, args.days)? {
+        fs::remove_file(&path)?;
+        println!("removed {}", path.display());
+    }
+    Ok(())
+}
+>>> edit ok {"path":"src/cli.rs","oldText":"    #[arg(long, default_value_t = 30)]\n    pub days: u64,\n","newText":"    #[arg(long, default_value_t = 30)]\n    pub days: u64,\n    /// Print what would be removed without deleting anything.\n    #[arg(long)]\n    pub dry_run: bool,\n"}
+Successfully replaced text in src/cli.rs.
+>>> edit ok {"path":"src/cleanup.rs","oldText":"        fs::remove_file(&path)?;\n        println!(\"removed {}\", path.display());","newText":"        if args.dry_run {\n            println!(\"would remove {}\", path.display());\n            continue;\n        }\n        fs::remove_file(&path)?;\n        println!(\"removed {}\", path.display());"}
+Successfully replaced text in src/cleanup.rs.
+>>> final
+Implemented `--dry-run` for `cleanup`: it lists every file that would be removed and deletes nothing. Without the flag the command behaves as before.

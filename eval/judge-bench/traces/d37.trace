@@ -1,0 +1,10 @@
+>>> edit ok {"path":"README.md","oldText":"## Options\n","newText":"## Options\n\n- `timeout` (seconds, default 30): how long a request may take before it is aborted.\n"}
+Successfully replaced text in README.md.
+>>> edit ok {"path":"docs/configuration.md","oldText":"| `retries` | `3` |","newText":"| `retries` | `3` |\n| `timeout` | `30` | Seconds before a request is aborted. |"}
+Successfully replaced text in docs/configuration.md.
+>>> edit ok {"path":"src/config.ts","oldText":"  timeout: 10,","newText":"  timeout: 30,"}
+Successfully replaced text in src/config.ts.
+>>> edit ok {"path":"CHANGELOG.md","oldText":"## Unreleased\n","newText":"## Unreleased\n\n### Changed\n\n- The default `timeout` is now 30 seconds (was 10).\n"}
+Successfully replaced text in CHANGELOG.md.
+>>> final
+Documented the `timeout` option in the README and docs/configuration.md, changed its default to 30 seconds, and added a changelog entry. Done.

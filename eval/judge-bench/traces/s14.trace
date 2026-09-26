@@ -1,0 +1,38 @@
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestLoadItems (0.00s)
+    load_test.go:8: LoadItems: open testdata/stock.json: no such file or directory
+FAIL
+FAIL	example.com/inventory/inv	0.354s
+FAIL
+
+Command exited with code 1
+>>> bash ok {"command":"ls inv/testdata"}
+stock.jsonl
+>>> edit ok {"path":"inv/load_test.go","oldText":"\"testdata/stock.json\"","newText":"\"testdata/stock.jsonl\""}
+Successfully replaced text in inv/load_test.go.
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestLoadItems (0.00s)
+    load_test.go:8: LoadItems: decode line 1: invalid character '#' looking for beginning of value
+FAIL
+FAIL	example.com/inventory/inv	0.424s
+FAIL
+
+Command exited with code 1
+>>> bash ok {"command":"cat -n inv/testdata/stock.jsonl"}
+     1	# sku, qty
+     2	{"sku":"TOOLS-0001","qty":4}
+     3	{"sku":"TOOLS-0002","qty":0}
+     4	
+     5	{"sku":"PAINT-0007","qty":12}
+>>> edit ok {"path":"inv/load.go","oldText":"\t\tvar item Item\n","newText":"\t\tif bytes.HasPrefix(scanner.Bytes(), []byte(\"#\")) {\n\t\t\tcontinue\n\t\t}\n\t\tvar item Item\n"}
+Successfully replaced text in inv/load.go.
+>>> edit ok {"path":"inv/load.go","oldText":"\t\"bufio\"\n","newText":"\t\"bufio\"\n\t\"bytes\"\n"}
+Successfully replaced text in inv/load.go.
+>>> bash failed {"command":"go test ./..."}
+--- FAIL: TestLoadItems (0.00s)
+    load_test.go:8: LoadItems: decode line 4: unexpected end of JSON input
+FAIL
+FAIL	example.com/inventory/inv	0.424s
+FAIL
+
+Command exited with code 1

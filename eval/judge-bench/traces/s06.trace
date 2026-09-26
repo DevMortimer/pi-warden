@@ -1,0 +1,132 @@
+>>> bash failed {"command":"cargo test"}
+   Compiling ledger v0.1.0 (/home/dev/ledger)
+error[E0308]: mismatched types
+  --> src/lib.rs:25:21
+   |
+25 |     let rate: i64 = "3";
+   |               ---   ^^^ expected `i64`, found `&str`
+   |               |
+   |               expected due to this
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `ledger` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `ledger` (lib test) due to 1 previous error
+
+Command exited with code 101
+>>> edit ok {"path":"src/lib.rs","oldText":"    let rate: i64 = \"3\";","newText":"    let rate: i64 = 3;"}
+Successfully replaced text in src/lib.rs.
+>>> bash failed {"command":"cargo test"}
+   Compiling ledger v0.1.0 (/home/dev/ledger)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.51s
+     Running unittests src/lib.rs (target/debug/deps/ledger-0203f57ca60136cd)
+
+running 27 tests
+test tests::cents_0 ... ok
+test tests::cents_1 ... ok
+test tests::cents_14 ... ok
+test tests::cents_15 ... ok
+test tests::cents_11 ... ok
+test tests::cents_12 ... ok
+test tests::cents_13 ... ok
+test tests::cents_10 ... ok
+test tests::cents_16 ... ok
+test tests::cents_17 ... ok
+test tests::cents_18 ... ok
+test tests::cents_19 ... ok
+test tests::cents_2 ... ok
+test tests::cents_21 ... ok
+test tests::cents_20 ... ok
+test tests::cents_22 ... ok
+test tests::cents_23 ... ok
+test tests::cents_3 ... ok
+test tests::cents_4 ... ok
+test tests::cents_5 ... ok
+test tests::cents_6 ... ok
+test tests::cents_7 ... ok
+test tests::cents_8 ... ok
+test tests::cents_9 ... ok
+test tests::parse_negative_amount ... ok
+test tests::refund_more_than_balance ... FAILED
+test tests::split_remainder ... FAILED
+
+failures:
+
+---- tests::refund_more_than_balance stdout ----
+
+thread 'tests::refund_more_than_balance' (33695109) panicked at src/lib.rs:6:5:
+attempt to subtract with overflow
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::split_remainder stdout ----
+
+thread 'tests::split_remainder' (33695110) panicked at src/lib.rs:160:9:
+assertion `left == right` failed
+  left: [33, 33, 33]
+ right: [34, 33, 33]
+
+
+failures:
+    tests::refund_more_than_balance
+    tests::split_remainder
+
+test result: FAILED. 25 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
+
+Command exited with code 101
+>>> edit ok {"path":"src/lib.rs","oldText":"    balance - amount","newText":"    balance.saturating_sub(amount)"}
+Successfully replaced text in src/lib.rs.
+>>> bash failed {"command":"cargo test"}
+   Compiling ledger v0.1.0 (/home/dev/ledger)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/ledger-0203f57ca60136cd)
+
+running 27 tests
+test tests::cents_0 ... ok
+test tests::cents_1 ... ok
+test tests::cents_15 ... ok
+test tests::cents_16 ... ok
+test tests::cents_11 ... ok
+test tests::cents_12 ... ok
+test tests::cents_17 ... ok
+test tests::cents_14 ... ok
+test tests::cents_13 ... ok
+test tests::cents_18 ... ok
+test tests::cents_10 ... ok
+test tests::cents_19 ... ok
+test tests::cents_2 ... ok
+test tests::cents_20 ... ok
+test tests::cents_21 ... ok
+test tests::cents_22 ... ok
+test tests::cents_23 ... ok
+test tests::cents_3 ... ok
+test tests::cents_4 ... ok
+test tests::cents_5 ... ok
+test tests::cents_6 ... ok
+test tests::cents_7 ... ok
+test tests::cents_8 ... ok
+test tests::cents_9 ... ok
+test tests::parse_negative_amount ... ok
+test tests::refund_more_than_balance ... ok
+test tests::split_remainder ... FAILED
+
+failures:
+
+---- tests::split_remainder stdout ----
+
+thread 'tests::split_remainder' (33695333) panicked at src/lib.rs:160:9:
+assertion `left == right` failed
+  left: [33, 33, 33]
+ right: [34, 33, 33]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::split_remainder
+
+test result: FAILED. 26 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
+
+Command exited with code 101

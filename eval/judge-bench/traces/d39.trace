@@ -1,0 +1,8 @@
+>>> edit ok {"path":"README.md","oldText":"[![build](https://img.shields.io/badge/build-passing-green)](#)","newText":"[![CI](https://github.com/example/pager/actions/workflows/ci.yml/badge.svg)](https://github.com/example/pager/actions/workflows/ci.yml)"}
+Successfully replaced text in README.md.
+>>> edit ok {"path":"README.md","oldText":"[![npm](https://img.shields.io/badge/npm-1.0-blue)](#)","newText":"[![npm](https://img.shields.io/npm/v/pager.svg)](https://www.npmjs.com/package/pager)"}
+Successfully replaced text in README.md.
+>>> edit ok {"path":"src/pager.js","oldText":"  const pages = Math.floor(total / size);","newText":"  const pages = Math.ceil(total / size);"}
+Successfully replaced text in src/pager.js.
+>>> final
+The README badges now point at the real CI workflow and the npm version, and the pager computes the page count with `Math.ceil`, so a partial last page is no longer dropped. Complete.

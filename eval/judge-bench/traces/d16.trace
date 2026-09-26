@@ -1,0 +1,16 @@
+>>> read ok {"path":"Makefile"}
+build:
+	go build ./...
+
+test:
+	go test ./...
+
+lint:
+	golangci-lint run
+
+release: lint test
+	goreleaser release --clean
+>>> edit ok {"path":"Makefile","oldText":"build:\n\tgo build ./...\n\ntest:\n\tgo test ./...\n\nlint:\n\tgolangci-lint run\n\nrelease: lint test","newText":"# Compile every package; fast check that the tree builds.\nbuild:\n\tgo build ./...\n\n# Run all unit tests. Run this before every pull request.\ntest:\n\tgo test ./...\n\n# Static checks; CI runs the same config.\nlint:\n\tgolangci-lint run\n\n# Maintainers only: publishes binaries. Needs a release token.\nrelease: lint test"}
+Successfully replaced text in Makefile.
+>>> final
+Added a one-line comment above each Makefile target (build, test, lint, release) saying what it is for and who should run it. The targets and commands are unchanged.

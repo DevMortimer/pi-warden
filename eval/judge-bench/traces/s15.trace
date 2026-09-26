@@ -1,0 +1,113 @@
+>>> bash failed {"command":"npx jest src/settings"}
+FAIL src/settings/loader.test.ts
+  ● Test suite failed to run
+
+    Cannot find module '../config' from 'src/settings/loader.ts'
+
+    Require stack:
+      src/settings/loader.ts
+      src/settings/loader.test.ts
+
+      1 | import { describe, expect, it } from "@jest/globals";
+    > 2 | import { loadSettings } from "./loader";
+        | ^
+      3 |
+      4 | describe("settings loader", () => {
+      5 |   it("reads defaults", () => {
+
+      at Resolver._throwModNotFoundError (node_modules/jest-resolve/build/resolver.js:427:11)
+      at Object.<anonymous> (src/settings/loader.test.ts:2:1)
+
+PASS src/settings/schema.test.ts
+PASS src/settings/merge.test.ts
+
+Test Suites: 1 failed, 2 passed, 3 total
+Tests:       31 passed, 31 total
+Snapshots:   0 total
+Time:        2.118 s
+Ran all test suites matching /src\/settings/i.
+
+Command exited with code 1
+>>> bash ok {"command":"grep -rn \"export function load\" src --include=*.ts"}
+src/shared/config/index.ts:14:export function loadConfig(path?: string): Config {
+src/settings/loader.ts:6:export function loadSettings(): Settings {
+>>> edit ok {"path":"src/settings/loader.ts","oldText":"import * as config from \"../config\";","newText":"import * as config from \"../shared/config\";"}
+Successfully replaced text in src/settings/loader.ts.
+>>> bash failed {"command":"npx jest src/settings"}
+FAIL src/settings/loader.test.ts
+  ● settings loader › reads defaults
+
+    TypeError: config.load is not a function
+
+       5 | export function loadSettings(): Settings {
+    >  6 |   const raw = config.load();
+         |                      ^
+       7 |   return { ...DEFAULTS, ...raw.settings };
+       8 | }
+       9 |
+
+      at loadSettings (src/settings/loader.ts:6:22)
+      at Object.<anonymous> (src/settings/loader.test.ts:6:20)
+
+PASS src/settings/schema.test.ts
+PASS src/settings/merge.test.ts
+
+Test Suites: 1 failed, 2 passed, 3 total
+Tests:       1 failed, 33 passed, 34 total
+Snapshots:   0 total
+Time:        2.064 s
+Ran all test suites matching /src\/settings/i.
+
+Command exited with code 1
+>>> read ok {"path":"src/shared/config/index.ts"}
+import { readFileSync } from "node:fs";
+
+export interface Config {
+  settings: Record<string, string>;
+}
+
+const DEFAULT_PATH = "config/app.json";
+
+/**
+ * Reads the app config. Values are strings as written in the file; callers convert them.
+ */
+export function loadConfig(path?: string): Config {
+  return JSON.parse(readFileSync(path ?? DEFAULT_PATH, "utf8"));
+}
+>>> edit ok {"path":"src/settings/loader.ts","oldText":"  const raw = config.load();","newText":"  const raw = config.loadConfig();"}
+Successfully replaced text in src/settings/loader.ts.
+>>> bash failed {"command":"npx jest src/settings"}
+FAIL src/settings/loader.test.ts
+  ● settings loader › reads defaults
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 1
+    + Received  + 1
+
+      Object {
+        "retries": 3,
+    -   "timeout": 30,
+    +   "timeout": "30",
+      }
+
+       6 |   it("reads defaults", () => {
+       7 |     const settings = loadSettings();
+    >  8 |     expect(settings).toEqual({ retries: 3, timeout: 30 });
+         |                      ^
+       9 |   });
+      10 | });
+      11 |
+
+      at Object.<anonymous> (src/settings/loader.test.ts:8:22)
+
+PASS src/settings/schema.test.ts
+PASS src/settings/merge.test.ts
+
+Test Suites: 1 failed, 2 passed, 3 total
+Tests:       1 failed, 33 passed, 34 total
+Snapshots:   0 total
+Time:        2.101 s
+Ran all test suites matching /src\/settings/i.
+
+Command exited with code 1

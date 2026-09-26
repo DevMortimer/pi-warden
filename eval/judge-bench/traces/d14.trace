@@ -1,0 +1,18 @@
+>>> read ok {"path":".github/workflows/ci.yml"}
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('package-lock.json') }}
+      - run: npm ci
+      - run: npm test
+>>> edit ok {"path":".github/workflows/ci.yml","oldText":"      - uses: actions/cache@v4\n","newText":"      # The key includes the lockfile hash so a dependency change starts a fresh cache;\n      # restoring a cache built from an older lockfile would install stale packages.\n      - uses: actions/cache@v4\n"}
+Successfully replaced text in .github/workflows/ci.yml.
+>>> final
+Added a two-line comment above the cache step in ci.yml explaining that the key includes the lockfile hash so a dependency change never restores a stale cache. No behaviour change.

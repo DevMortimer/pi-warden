@@ -1,0 +1,110 @@
+>>> bash failed {"command":"pytest"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0
+rootdir: /home/dev/exporter
+collected 88 items
+
+tests/test_export.py ..........F.........                                [ 22%]
+tests/test_formats.py .................................................. [ 79%]
+tests/test_util.py ..................                                    [100%]
+
+=================================== FAILURES ===================================
+____________________________ test_export_quotes_commas _________________________
+
+    def test_export_quotes_commas(tmp_path):
+        out = tmp_path / "out.csv"
+        export([{"name": "Smith, Jo", "qty": 2}], out)
+>       assert out.read_text().splitlines()[1] == '"Smith, Jo",2'
+E       assert 'Smith, Jo,2' == '"Smith, Jo",2'
+E         - "Smith, Jo",2
+E         ? -         -
+E         + Smith, Jo,2
+
+tests/test_export.py:41: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_export.py::test_export_quotes_commas - assert 'Smith, Jo,2' == '"Smith, Jo",2'
+========================= 1 failed, 87 passed in 0.92s =========================
+
+Command exited with code 1
+>>> bash failed {"command":"pytest -x"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0
+rootdir: /home/dev/exporter
+collected 88 items
+
+tests/test_export.py ..........F
+
+=================================== FAILURES ===================================
+____________________________ test_export_quotes_commas _________________________
+
+    def test_export_quotes_commas(tmp_path):
+        out = tmp_path / "out.csv"
+        export([{"name": "Smith, Jo", "qty": 2}], out)
+>       assert out.read_text().splitlines()[1] == '"Smith, Jo",2'
+E       assert 'Smith, Jo,2' == '"Smith, Jo",2'
+E         - "Smith, Jo",2
+E         ? -         -
+E         + Smith, Jo,2
+
+tests/test_export.py:41: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_export.py::test_export_quotes_commas - assert 'Smith, Jo,2' == '"Smith, Jo",2'
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+========================= 1 failed, 10 passed in 0.31s =========================
+
+Command exited with code 1
+>>> bash failed {"command":"pytest -vv tests/test_export.py"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/dev/exporter
+collecting ... collected 20 items
+
+@@repeat 10 tests/test_export.py::test_export_case_{i} PASSED                  [  {i}%]
+tests/test_export.py::test_export_quotes_commas FAILED                   [ 55%]
+@@repeat 9 tests/test_export.py::test_export_tail_{i} PASSED                   [ 9{i}%]
+
+=================================== FAILURES ===================================
+____________________________ test_export_quotes_commas _________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-dev/pytest-7/test_export_quotes_commas0')
+
+    def test_export_quotes_commas(tmp_path):
+        out = tmp_path / "out.csv"
+        export([{"name": "Smith, Jo", "qty": 2}], out)
+>       assert out.read_text().splitlines()[1] == '"Smith, Jo",2'
+E       assert 'Smith, Jo,2' == '"Smith, Jo",2'
+E         
+E         - "Smith, Jo",2
+E         ? -         -
+E         + Smith, Jo,2
+
+tests/test_export.py:41: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_export.py::test_export_quotes_commas - assert 'Smith, Jo,2' == '"Smith, Jo",2'
+========================= 1 failed, 19 passed in 0.28s =========================
+
+Command exited with code 1
+>>> bash failed {"command":"pytest --tb=short"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0
+rootdir: /home/dev/exporter
+collected 88 items
+
+tests/test_export.py ..........F.........                                [ 22%]
+tests/test_formats.py .................................................. [ 79%]
+tests/test_util.py ..................                                    [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_export_quotes_commas ___________________________
+tests/test_export.py:41: in test_export_quotes_commas
+    assert out.read_text().splitlines()[1] == '"Smith, Jo",2'
+E   assert 'Smith, Jo,2' == '"Smith, Jo",2'
+E     - "Smith, Jo",2
+E     ? -         -
+E     + Smith, Jo,2
+=========================== short test summary info ============================
+FAILED tests/test_export.py::test_export_quotes_commas - assert 'Smith, Jo,2' == '"Smith, Jo",2'
+========================= 1 failed, 87 passed in 0.95s =========================
+
+Command exited with code 1

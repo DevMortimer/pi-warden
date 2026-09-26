@@ -1,0 +1,97 @@
+>>> bash failed {"command":"pytest tests/test_export.py"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0
+rootdir: /home/dev/exporter
+collected 20 items
+
+tests/test_export.py ...F................                                [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_export_writes_header ___________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-dev/pytest-41/test_export_writes_header0')
+
+    def test_export_writes_header(tmp_path):
+        out = tmp_path / "out.csv"
+        export([], out, columns=["id", "name", "price"])
+        header = out.read_text().splitlines()[0].split(",")
+>       assert header == ["id", "name", "price"]
+E       AssertionError: assert ['id', 'name'] == ['id', 'name', 'price']
+E         
+E         Right contains one more item: 'price'
+E         Use -v to get more diff
+
+tests/test_export.py:18: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     exporter:export.py:22 writing 0 rows to /tmp/pytest-of-dev/pytest-41/test_export_writes_header0/out.csv
+=========================== short test summary info ============================
+FAILED tests/test_export.py::test_export_writes_header - AssertionError: assert ['id', 'name'] == ['id', 'name', 'price']
+========================= 1 failed, 19 passed in 0.19s =========================
+
+Command exited with code 1
+>>> edit ok {"path":"exporter/export.py","oldText":"    cols = columns[:-1] if columns[-1] == \"\" else columns[:2]","newText":"    cols = (columns[:-1] if columns[-1] == \"\"\n            else columns[:2])"}
+Successfully replaced text in exporter/export.py.
+>>> bash failed {"command":"pytest tests/test_export.py"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0
+rootdir: /home/dev/exporter
+collected 20 items
+
+tests/test_export.py ...F................                                [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_export_writes_header ___________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-dev/pytest-42/test_export_writes_header0')
+
+    def test_export_writes_header(tmp_path):
+        out = tmp_path / "out.csv"
+        export([], out, columns=["id", "name", "price"])
+        header = out.read_text().splitlines()[0].split(",")
+>       assert header == ["id", "name", "price"]
+E       AssertionError: assert ['id', 'name'] == ['id', 'name', 'price']
+E         
+E         Right contains one more item: 'price'
+E         Use -v to get more diff
+
+tests/test_export.py:18: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     exporter:export.py:23 writing 0 rows to /tmp/pytest-of-dev/pytest-42/test_export_writes_header0/out.csv
+=========================== short test summary info ============================
+FAILED tests/test_export.py::test_export_writes_header - AssertionError: assert ['id', 'name'] == ['id', 'name', 'price']
+========================= 1 failed, 19 passed in 0.18s =========================
+
+Command exited with code 1
+>>> edit ok {"path":"exporter/export.py","oldText":"    log.info(\"writing %d rows to %s\", len(rows), path)","newText":"    log.info(\"writing %d rows to %s\", len(rows), str(path))"}
+Successfully replaced text in exporter/export.py.
+>>> bash failed {"command":"pytest tests/test_export.py"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0
+rootdir: /home/dev/exporter
+collected 20 items
+
+tests/test_export.py ...F................                                [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_export_writes_header ___________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-dev/pytest-43/test_export_writes_header0')
+
+    def test_export_writes_header(tmp_path):
+        out = tmp_path / "out.csv"
+        export([], out, columns=["id", "name", "price"])
+        header = out.read_text().splitlines()[0].split(",")
+>       assert header == ["id", "name", "price"]
+E       AssertionError: assert ['id', 'name'] == ['id', 'name', 'price']
+E         
+E         Right contains one more item: 'price'
+E         Use -v to get more diff
+
+tests/test_export.py:18: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     exporter:export.py:23 writing 0 rows to /tmp/pytest-of-dev/pytest-43/test_export_writes_header0/out.csv
+=========================== short test summary info ============================
+FAILED tests/test_export.py::test_export_writes_header - AssertionError: assert ['id', 'name'] == ['id', 'name', 'price']
+========================= 1 failed, 19 passed in 0.20s =========================
+
+Command exited with code 1
