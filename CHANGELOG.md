@@ -6,7 +6,15 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- **Stuck evidence.** The stuck guard now sends the judge a compact structured `evidence` section next to today's fields. Per run: the failing test, error, location, summary and exit code, parsed generically from the run's own output (TAP/node test, jest, vitest, pytest, tsc, eslint, cargo, go, a `make test` script, Playwright), the run number of the earlier run that failed the same way after durations, clock times, temp paths, line:column positions and ordering are normalised, and a 300-character head plus 300-character tail fallback when no parser knows the output. Per `edit`/`write`: the path and a diff of the change capped at 600 characters. A digest gives the failed runs, the distinct failures, the runs that repeat an earlier command, the edits between the first and last failed run, and the information-gathering calls after the first failure. Every string is redacted, the whole object is capped at 4 KB, and the oldest runs are dropped first. The measurement behind it is in `eval/reports/2026-09-26-stuck-evidence/`: on the same 40 stuck bench cases, accuracy 0.725 → 1.000, right where the old state was wrong on 11 cases and wrong where it was right on none (sign test p = 0.001), no latency change at p50. Edit diffs (capped, redacted) now leave the machine for stuck checks; `docs/data-handling.md` lists them.
+- Config `stuck.evidence` (default `true`, valid in the user and the project file). `false` sends the output tails only, as before. The guard's questions, thresholds and when it fires are unchanged.
+
+### Tests
+
+- Judge bench: the stuck arms are now the shipped guard itself. Arm A is `buildStuckRequest` with `stuck.evidence` on (the default), arm C is the same builder with it off, and arm B keeps A and enlarges the raw slices, so a run compares the shipped state against its predecessor on the same cases. The generic parser and the failure signature moved out of `eval/judge-bench/` into `src/evidence.ts`, so the bench exercises the shipped code; the bench's own parser module is gone.
+- New tests: the request without evidence equals the state sent before the change, one sample of each runner format names its failing test, an unknown output falls back to head and tail, noise-only differences (line numbers, times, temp paths, ordering) are one failure while a changed failure is two, a credential in an output or in a diff never reaches the state, the 4 KB cap holds and drops the oldest runs first then the oldest edits, and `stuck.evidence` is read from the user file and the project file.
 
 ## 0.66.1
 

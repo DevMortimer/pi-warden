@@ -38,17 +38,20 @@ with no tool output.
 All arms carry the guard's own `questions` object (`stuckQuestions`, `doneQuestions`).
 
 - **A**: the real builders from the package (`makeAttempt` + `buildStuckRequest`; `classifyToolResult` +
-  `recordOutcome` + `buildDoneRequest`).
+  `recordOutcome` + `buildDoneRequest`), as they ship. For stuck that is the state with its `evidence` section on
+  (`stuck.evidence`, default `true`), built by `src/evidence.ts`.
 - **B**: A with larger raw slices. stuck: head 400 + tail 400 of each output. done: plus the last 1500 chars of each
   check that ran after the last edit.
-- **C**: A plus `evidence`. stuck: per failing run the parsed failing tests, errors, location and summary, and which
-  earlier run failed the same way; per edit the path and a diff capped at 600 chars; a digest. done: changed files with
-  type (code, test, doc, config), +/− lines, symbols and a comment-only flag; checks after the last edit with the
-  parsed failure or pass summary; which changed code files the check output names.
+- **C**: the shipped builders with the stuck evidence switch off (`buildStuckRequest(..., { evidence: false })`), which
+  is exactly the state the guard sent before the evidence section existed. done: unchanged, A plus an `evidence` object
+  built by this file: changed files with type (code, test, doc, config), +/− lines, symbols and a comment-only flag;
+  checks after the last edit with the parsed failure or pass summary; which changed code files the check output names.
 
-`parse.mjs` is generic: it knows common runner shapes and falls back to an error line (`generic`) or to head+tail of
-the output (`unparsed`). Its failure signature ignores durations, clock times, temp paths, thread ids, line:column
-positions and ordering; other digits stay. Every string in every arm passes through `redact()`.
+For stuck, all three arms therefore come from the real guard: A and C differ only in one config switch, so a bench run
+compares the shipped state against the state it replaced on the same cases. `src/evidence.ts` holds the generic parser:
+it knows common runner shapes and falls back to an error line (`generic`) or to head+tail of the output (`unparsed`). Its
+failure signature ignores durations, clock times, temp paths, thread ids, line:column positions and ordering; other
+digits stay. Every string in every arm passes through `redact()`.
 
 ## Scoring
 
