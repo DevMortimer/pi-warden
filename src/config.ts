@@ -525,7 +525,7 @@ export function defaultConfig(): WardenConfig {
       loadThreshold: 1.0,
     },
     prefs: { enabled: true, inject: true },
-    waste: { enabled: true, tip: true, every: 20, sleep: true, paging: true, search: true, recheck: true },
+    waste: { enabled: true, tip: false, every: 20, sleep: true, paging: true, search: true, recheck: true },
   };
 }
 

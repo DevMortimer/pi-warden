@@ -4456,8 +4456,17 @@ test("the compaction appendix carries the open loops, and warden_recall prints i
   }
 });
 
-test("waste: the session tip is appended to the prompt once, and not at all when waste.tip is off", async () => {
+test("waste: the session tip is off by default and is appended to the prompt once when waste.tip is on", async () => {
   await grantConsent();
+  // Default config: the tip is opt-in, so the prompt is left alone and nothing is traced.
+  const quiet: { cwd: string; skills: unknown[]; appendSystemPrompt?: string } = { cwd: temporary, skills: [] };
+  await fire("before_agent_start", { prompt: "read the file", systemPromptOptions: quiet });
+  assert.equal(quiet.appendSystemPrompt, undefined, "the default config appends nothing to the prompt");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 0, "a tip that was never offered is not traced");
+
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, waste: { tip: true }, ...STACK_BAR }));
+  await sessionStart();
   const options: { cwd: string; skills: unknown[]; appendSystemPrompt?: string } = { cwd: temporary, skills: [] };
   await fire("before_agent_start", { prompt: "read the file", systemPromptOptions: options });
   assert.match(options.appendSystemPrompt ?? "", /^Tool calls are expensive: each one re-reads the whole conversation\./);
@@ -4466,12 +4475,6 @@ test("waste: the session tip is appended to the prompt once, and not at all when
   assert.equal((options.appendSystemPrompt ?? "").split("Tool calls are expensive").length - 1, 1, "the tip appears once");
   await runCommand("trace", context({ hasUI: false }));
   assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 1, "the trace records the tip delivery once per session");
-
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, waste: { tip: false }, ...STACK_BAR }));
-  await sessionStart();
-  const quiet: { cwd: string; skills: unknown[]; appendSystemPrompt?: string } = { cwd: temporary, skills: [] };
-  await fire("before_agent_start", { prompt: "read the file", systemPromptOptions: quiet });
-  assert.equal(quiet.appendSystemPrompt, undefined);
 });
 
 test("waste: a nudge rides the tool result and never blocks a call or changes a hold", async () => {

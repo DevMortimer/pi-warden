@@ -350,9 +350,11 @@ One note per detector per `waste.every` calls (20 by default), and at most one n
 
 The thresholds are fixed by an offline measurement over the tool calls of 1175 existing sessions. At these settings that corpus holds 30 sleep polls in 11 sessions, 75 adjacent-paging episodes in 61 sessions, 93 repeated-search episodes in 56 sessions, and 299 filtered check re-runs in 108 sessions. Adjacency matters: of the 408 three-read episodes whose reads were all ranged reads, only 75 were adjacent, and the other 333 spread over files whose needed span was often more than 800 lines, where one read would be worse advice.
 
-**The session tip.** On the first run of a session, when `waste.tip` is on, one paragraph is appended to the system prompt: each call re-reads the conversation, so read files in large ranges or whole, run a check once without a pipe and search its output, and wait for slow work with one blocking command. Nothing else in the prompt moves; the host records the append as a prompt-section change. It is added once per session and appears in the trace.
+**The session tip.** `waste.tip` is off by default; the tip is opt-in. When it is on, one paragraph is appended to the system prompt on the first run of a session: each call re-reads the conversation, so read files in large ranges or whole, run a check once without a pipe and search its output, and wait for slow work with one blocking command. Nothing else in the prompt moves; the host records the append as a prompt-section change. It is added once per session and appears in the trace.
 
-The notes are advisory in the strict sense: they ride a tool result, they are never a hold, a block, or a warning level, they do not spend `steerBudget`, they are not adapted by `steers`, and no note changes a judgment or an action. `waste.enabled: false` silences the notes and the tip; the four detectors can be switched off one at a time.
+It ships off because it did not earn its place: five repeats per cell on the weak suite (`eval/reports/2026-09-26-waste-tip-5x/`, 80 runs) put the tip's arm and the control arm 0.5% apart on tokens and 0.6% apart on turns, with a paired sign test over the task medians at p = 1.0 for both, with and without the long task. Set `waste.tip: true` to opt in; the four notes are on by default and cost no request, so they are unaffected.
+
+The notes are advisory in the strict sense: they ride a tool result, they are never a hold, a block, or a warning level, they do not spend `steerBudget`, they are not adapted by `steers`, and no note changes a judgment or an action. `waste.enabled: false` silences the notes and the tip; the four detectors can be switched off one at a time, and the tip is off until `waste.tip` turns it on.
 
 ## Open loops and recall
 
