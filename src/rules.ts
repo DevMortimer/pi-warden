@@ -22,6 +22,8 @@ export interface Rule {
   body: string;
   /** Globs the rule applies to; empty means every file. */
   paths: string[];
+  /** Project-relative source file when the rule came from a resolved RuleSet. */
+  source?: string;
 }
 
 export interface RuleSet {
@@ -259,7 +261,8 @@ export class RuleStore {
 
 function ruleSet(sources: string[], texts: string[], maxChars: number): RuleSet | undefined {
   const used = new Set<string>();
-  const rules = texts.flatMap(text => parseRules(text)).map(rule => ({ ...rule, id: slug(rule.id, used), body: redact(rule.body) }));
+  const rules = texts.flatMap((text, index) => parseRules(text).map(rule => ({ ...rule, source: sources[index]! })))
+    .map(rule => ({ ...rule, id: slug(rule.id, used), body: redact(rule.body) }));
   if (!rules.length) {
     const text = texts.join("\n\n").trim();
     return text ? { sources, rules: [], aggregate: condense(redact(text), maxChars), alwaysDropped: 0 } : undefined;
@@ -279,6 +282,25 @@ export function describeRuleSet(set: RuleSet | undefined): string {
   if (set.proseOnly) return `no rules found in ${where} (prose only)`;
   if (set.aggregate !== undefined && !set.rules.length) return `${where} (no rule headings: judged as one document)`;
   return `${where} (${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}${set.alwaysDropped ? `, ${set.alwaysDropped} unscoped past the ${MAX_RULES}-question cap for every file` : ""})`;
+}
+
+/** Detailed local-only view for `/warden rules`; nothing here is sent to Jev. */
+export function formatRuleSetDetails(set: RuleSet | undefined, tier: RulesTier, exclude: readonly string[] = []): string {
+  if (!set) return "No rules file detected. Run /warden init to create project-specific rules.";
+  const source = tier === "configured" ? `rules.files: ${set.sources.join(", ")}` : set.sources.join(", ");
+  const excluded = exclude.length ? `\nExcluded from Jev by rules.exclude: ${exclude.join(", ")}` : "";
+  if (set.aggregate !== undefined && !set.rules.length) {
+    return `Rules in force: ${source} judged as one aggregate rule (${set.aggregate.length} condensed chars)${excluded}`;
+  }
+  if (set.proseOnly) return `Rules in force: ${source} (prose only; no rule-shaped sections)${excluded}`;
+  const lines = [`Rules in force: ${source} (${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}, ${set.alwaysDropped} dropped)`];
+  const showSource = tier === "configured" && set.sources.length > 1;
+  set.rules.forEach((rule, index) => {
+    const from = showSource && rule.source ? ` [${rule.source}]` : "";
+    lines.push(`${index + 1}. ${rule.id}${from} paths: ${rule.paths.length ? rule.paths.join(", ") : "(all)"}`);
+  });
+  if (exclude.length) lines.push(`Excluded from Jev by rules.exclude: ${exclude.join(", ")}`);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +682,12 @@ export class RulesGuard {
 
   describe(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">): string {
     return describeRuleSet(this.store.load(cwd, config));
+  }
+
+  details(cwd: string, config: Pick<RulesConfig, "enabled" | "files" | "fallback" | "maxChars" | "exclude">): string {
+    const { set, tier } = this.store.loadTiered(cwd, config);
+    const text = formatRuleSetDetails(set, tier, config.exclude);
+    return config.enabled ? text : `Rules guard is off (rules.enabled: false). These would apply:\n${text}`;
   }
 
   turnEnd(): void {

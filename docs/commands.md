@@ -5,6 +5,7 @@
 | Command | Effect |
 | --- | --- |
 | `/warden status` | Guard state, consent and key source, session counts, steers sent per guard, the steer kinds that are trace-only per model with their rates, thresholds, context saver totals, hold precision, rules source, config paths, last verdicts |
+| `/warden rules` | List the active parsed rules, their path scopes and source files, plus the dropped count and `rules.exclude` patterns. This is local-only and sends nothing to Jev. With `rules.enabled: false` the output leads with `Rules guard is off (rules.enabled: false). These would apply:` and the same details follow |
 | `/warden enable` | Data notice, key prompt if none is stored, consent saved |
 | `/warden disable` | Stop Jev judgments; pattern checks continue |
 | `/warden mode steer\|confirm\|advise` | How holds are handled; without an argument, show the current mode |

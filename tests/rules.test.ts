@@ -7,7 +7,7 @@ import { defaultConfig } from "../src/config.js";
 import type { RulesConfig } from "../src/config.js";
 import type { Judge } from "pi-typesafe";
 import { execFileSync } from "node:child_process";
-import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeRuleSet, describeTarget, evaluateRules, gitIgnored, isRuleShaped, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
+import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeRuleSet, formatRuleSetDetails, describeTarget, evaluateRules, gitIgnored, isRuleShaped, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
 import type { RulesVerdict, RuleSet } from "../src/rules.js";
 
 let cwd: string;
@@ -441,6 +441,7 @@ test("no rule set means gitIgnored is not called, even for a gitignored path", a
     await rm(noRulesDir, { recursive: true, force: true });
   }
 });
+
 // The weak-model bench's rules steers: each rule check below reads the state the way the rule question asks, so a
 // request that lacks the edited result, or blames an edit for code it kept, fails these tests.
 const BENCH_RULES = [
@@ -554,4 +555,71 @@ test("bench true positive: an edit that removes a required @returns is still cau
     assert.match(told, /^pi-warden: the content just written to src\/slug\.js .*violates project rule: "Every exported function documents its return value" \(0\.90\)/);
     assert.doesNotMatch(told, /pi-warden\.md|config|trace|hold|\.pi\//);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("formatRuleSetDetails: root rules show ids and scopes", () => {
+  const set: RuleSet = {
+    sources: ["pi-warden.md"],
+    rules: [
+      { id: "no-secrets", name: "No secrets", body: "", paths: ["src/**"] },
+      { id: "tests-before-done", name: "Tests before done", body: "", paths: [] },
+    ],
+    alwaysDropped: 0,
+  };
+  assert.equal(formatRuleSetDetails(set, "root"), [
+    "Rules in force: pi-warden.md (2 rules, 0 dropped)",
+    "1. no-secrets paths: src/**",
+    "2. tests-before-done paths: (all)",
+  ].join("\n"));
+});
+
+test("formatRuleSetDetails: configured rules name each source", () => {
+  const set: RuleSet = {
+    sources: ["rules/code.md", "rules/docs.md"],
+    rules: [
+      { id: "typed-code", name: "Typed code", body: "", paths: ["src/**"], source: "rules/code.md" },
+      { id: "links-work", name: "Links work", body: "", paths: ["docs/**"], source: "rules/docs.md" },
+    ],
+    alwaysDropped: 0,
+  };
+  const text = formatRuleSetDetails(set, "configured", ["dist/**", "*.lock"]);
+  assert.match(text, /^Rules in force: rules\.files: rules\/code\.md, rules\/docs\.md \(2 rules, 0 dropped\)/);
+  assert.match(text, /1\. typed-code \[rules\/code\.md\] paths: src\/\*\*/);
+  assert.match(text, /2\. links-work \[rules\/docs\.md\] paths: docs\/\*\*/);
+  assert.match(text, /Excluded from Jev by rules\.exclude: dist\/\*\*, \*\.lock$/);
+});
+
+test("formatRuleSetDetails: fallback aggregate names its condensed size", () => {
+  const set: RuleSet = { sources: ["README.md"], rules: [], aggregate: "Always write tests.", alwaysDropped: 0 };
+  assert.equal(formatRuleSetDetails(set, "fallback"),
+    "Rules in force: README.md judged as one aggregate rule (19 condensed chars)");
+});
+
+test("rules details: a disabled guard leads with the off notice and the same details follow", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rules-off-"));
+  try {
+    await writeFile(join(dir, "pi-warden.md"), "# No console statements\nCode must not contain `console.log`. Use the logger.\n");
+    const guard = new RulesGuard();
+    const off = guard.details(dir, rulesConfig({ enabled: false }));
+    const on = guard.details(dir, rulesConfig());
+    assert.equal(off, `Rules guard is off (rules.enabled: false). These would apply:\n${on}`);
+    assert.equal(on, [
+      "Rules in force: pi-warden.md (1 rule, 0 dropped)",
+      "1. no-console-statements paths: (all)",
+    ].join("\n"));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("formatRuleSetDetails: empty set uses the first-run remedy", () => {
+  assert.equal(formatRuleSetDetails(undefined, "none"),
+    "No rules file detected. Run /warden init to create project-specific rules.");
+});
+
+test("formatRuleSetDetails: dropped count is always visible", () => {
+  const set: RuleSet = {
+    sources: ["pi-warden.md"],
+    rules: [{ id: "first", name: "First", body: "", paths: [] }],
+    alwaysDropped: 7,
+  };
+  assert.match(formatRuleSetDetails(set, "root"), /\(1 rule, 7 dropped\)/);
 });
