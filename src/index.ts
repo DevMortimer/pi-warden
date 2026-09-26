@@ -40,6 +40,8 @@ export { Trace, actionDetails, stuckDetails, doneDetails, proseDetails, runawayD
 export type { TraceEntry, GuardName } from "./trace.js";
 export { parseRules, condense, isRuleShaped, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, describeRuleSet, formatRuleSetDetails, describeTarget, buildRulesRequest, ruleQuestion, evaluateRules, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, AGGREGATE_QUESTION, LOCATOR_QUESTION } from "./rules.js";
 export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef, RulesTier, RulesSourceConfig } from "./rules.js";
+export { checkRules, formatRulesCheck, formatRuleCheck, buildRulesCheckRequest, ruleCheckView, judgeableQuestion, mechanicalQuestion, MECHANICAL_CUTOFF, CHECK_ABOUT, JUDGEABILITY_REASONS, JUDGEABLE_PREFIX, MECHANICAL_PREFIX } from "./rules-lint.js";
+export type { RuleCheck, RuleCheckView, RuleJudgeability, RulesCheckOptions, RulesCheckRequest, RulesCheckResult, RulesCheckSource } from "./rules-lint.js";
 export { resolveRulesFile, extractRules, checkPiWardenMissing } from "./rules-file.js";
 export type { ResolvedRulesFile } from "./rules-file.js";
 export { writeStarterRules, generateStarterRules, detectProjectType, buildProjectContext, buildInitPrompt } from "./init.js";

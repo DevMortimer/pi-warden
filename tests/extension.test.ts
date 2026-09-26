@@ -2523,6 +2523,55 @@ test("bare /warden reports status", async () => {
   assert.equal(notices.filter(notice => /Unknown action/.test(notice.text)).length, 0);
 });
 
+test("/warden rules check names the rules that need attention, and sends nothing without a key", async () => {
+  const project = join(temporary, "rules-check");
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "pi-warden.md"), ["# No console statements", "Code must not contain `console.log`. Use the logger.", "", "# No duplicate logic", "Do not duplicate logic that exists elsewhere in the codebase."].join("\n"));
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  const ctx = context({ cwd: project });
+
+  // Answers default to the first criterion and a low noul, so both rules come back fine.
+  await runCommand("rules check", ctx);
+  assert.match(notices.at(-1)!.text, /^Rules check: pi-warden\.md — 2 rules checked in 1 request\.\n2 fine, 0 need attention\.$/);
+  assert.equal(requests.length, 1, "one request carries both questions for both rules");
+  assert.deepEqual(Object.keys(requests[0]!.questions).sort(), ["judgeable_no-console-statements", "judgeable_no-duplicate-logic", "mechanical_no-console-statements", "mechanical_no-duplicate-logic"]);
+
+  nextAnswers = { "judgeable_no-duplicate-logic": "needs_other_files", "mechanical_no-console-statements": 0.92 };
+  await runCommand("rules check", ctx);
+  assert.match(notices.at(-1)!.text, /\n- No console statements \(no-console-statements\): a linter could enforce it exactly \(0\.92\)\. Fix: move it to your linter\.\n- No duplicate logic \(no-duplicate-logic\): needs another file to judge \(0\.80\)\. Fix: split it so the changed file alone shows the violation, or leave it to review\.\n0 fine, 2 need attention\.$/);
+
+  // The two-word action completes after `rules`, and `rules` on its own still completes as the local list.
+  const completions = await command.getArgumentCompletions!("rules ");
+  assert.deepEqual(completions?.map(item => item.value), ["rules check"]);
+  const both = await command.getArgumentCompletions!("rules");
+  assert.deepEqual(both?.map(item => item.value), ["rules", "rules check"]);
+
+  // Plain /warden rules is unchanged: the local list, and nothing sent.
+  const sentBeforeList = requests.length;
+  await runCommand("rules", ctx);
+  assert.match(notices.at(-1)!.text, /^Rules in force: pi-warden\.md \(2 rules, 0 dropped\)\n1\. no-console-statements paths: \(all\)\n2\. no-duplicate-logic paths: \(all\)$/);
+  assert.equal(requests.length, sentBeforeList);
+
+  // No key and no stored login: say so and send nothing.
+  const sentBefore = requests.length;
+  delete process.env.TYPESAFE_API_KEY;
+  try {
+    await runCommand("rules check", ctx);
+  } finally {
+    process.env.TYPESAFE_API_KEY = "offline-test-key";
+  }
+  assert.match(notices.at(-1)!.text, /^Rules check sent nothing: Jev judgments are off/);
+  assert.match(notices.at(-1)!.text, /no key/);
+  assert.equal(requests.length, sentBefore, "no key means no request");
+
+  // A fallback document with rule headings is one aggregate rule, not a set of rules to check.
+  await rm(join(project, "pi-warden.md"));
+  await writeFile(join(project, "AGENTS.md"), "# House style\n\nNever use `any`.\n");
+  await runCommand("rules check", ctx);
+  assert.match(notices.at(-1)!.text, /^No separate rules to check: AGENTS\.md has no rule headings, so the guard judges it as one document\.$/);
+  assert.equal(requests.length, sentBefore, "the aggregate path sends nothing");
+});
+
 test("/warden config set and get keep the whole value", async () => {
   await grantConsent();
   await runCommand("config set widget.barMode live");

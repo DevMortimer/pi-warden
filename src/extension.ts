@@ -38,6 +38,7 @@ import type { SearchTool } from "./recall.js";
 import { maskSecrets, redact } from "./redact.js";
 import { formatRules, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
 import type { RulesVerdict } from "./rules.js";
+import { checkRules, formatRulesCheck } from "./rules-lint.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
 import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from "./audit.js";
@@ -2256,7 +2257,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.registerCommand("warden", {
     description: "pi-warden status, active rules, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, open loops, and a synthetic guard test",
     getArgumentCompletions(prefix) {
-      const matches = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
+      const matches: Array<{ value: string; label: string; description?: string }> = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
+      // `rules check` is the one two-word action: `rules` on its own stays the local list.
+      if ("rules check".startsWith(prefix)) matches.push({ value: "rules check", label: "rules check", description: "which of the active rules the guard cannot judge well" });
       return matches.length ? matches : null;
     },
     async handler(args, ctx) {
@@ -2301,6 +2304,17 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "rules") {
+          if (argument === "check") {
+            const off = judgmentsOffReason(config);
+            const result = await checkRules({ set: rulesGuard.store.load(ctx.cwd, config.rules), judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
+            if (result.source === "skipped") {
+              // No key, no consent, or a spent budget: say why and send nothing.
+              report(`Rules check sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config.typesafeBackend, !ctx.hasUI)}` : ""} /warden rules shows the rule set locally.`);
+              return;
+            }
+            report(formatRulesCheck(result));
+            return;
+          }
           report(rulesGuard.details(ctx.cwd, config.rules));
           return;
         }
