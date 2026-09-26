@@ -2252,9 +2252,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     },
   });
 
-  const actions = ["status", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "unmute"];
+  const actions = ["status", "rules", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "unmute"];
   pi.registerCommand("warden", {
-    description: "pi-warden status, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, open loops, and a synthetic guard test",
+    description: "pi-warden status, active rules, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, open loops, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
       return matches.length ? matches : null;
@@ -2298,6 +2298,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
             `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode; each toggles the sidebar). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,
           ].join(" "));
+          return;
+        }
+        if (action === "rules") {
+          report(rulesGuard.details(ctx.cwd, config.rules));
           return;
         }
         if (action === "trace") {
