@@ -14,6 +14,7 @@ guard.
 Not batches: counts from real Pi sessions, produced by `scripts/field-usage.mjs`.
 
 - [2026-09-24-field-usage](2026-09-24-field-usage/README.md): four days, 397 sessions, 19,695 judged actions, what worked and what was noise.
+- [2026-09-26-judge-bench](2026-09-26-judge-bench/README.md) (judge bench, `npm run eval:judge`, not a batch): 80 labelled stuck and done cases in three request states, 3 repeats. Structured evidence beats today's stuck state on 11 cases to 0 (p = 0.001); done shows no gain beyond noise because a passing check skips the judge; more raw bytes change nothing.
 
 ## Weak-model bench
 
