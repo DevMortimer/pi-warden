@@ -4,7 +4,6 @@ import { prepareEvaluationRequest } from "pi-typesafe";
 import * as lib from "../src/index.js";
 import { buildArms, fileType } from "../eval/judge-bench/arms.mjs";
 import { loadCases, type BenchCase } from "../eval/judge-bench/cases.mjs";
-import { parseFailure, signature } from "../eval/judge-bench/parse.mjs";
 import { main } from "../eval/judge-bench/run.mjs";
 import { predict, signTest } from "../eval/judge-bench/score.mjs";
 
@@ -58,10 +57,14 @@ test("judge bench: every arm builds a valid request with the guard's own questio
       assert.equal(request.questions, questions, `${c.id} ${arm} questions`);
       assert.doesNotThrow(() => prepareEvaluationRequest(JSON.parse(JSON.stringify(request))), `${c.id} ${arm} valid`);
     }
-    assert.ok("evidence" in arms.C.state, `${c.id} C has evidence`);
     if (c.guard === "stuck") {
+      assert.ok("evidence" in arms.A.state, `${c.id} A has evidence`);
+      assert.ok("evidence" in arms.B.state, `${c.id} B has evidence`);
+      assert.equal("evidence" in arms.C.state, false, `${c.id} C is the baseline state`);
       const attempts = c.calls.slice(-12).map(call => lib.makeAttempt(call.tool, call.input, [{ type: "text", text: call.output }], call.failed));
       assert.deepEqual(arms.A.state, lib.buildStuckRequest(attempts, lib.redact(c.task)).state, `${c.id} A is the real builder's state`);
+    } else {
+      assert.ok("evidence" in arms.C.state, `${c.id} C has evidence`);
     }
   }
 });
@@ -97,35 +100,35 @@ test("judge bench: the parser finds the failing test in one sample of each runne
     ["test-script", "s04", 1, "split-spaces"],
   ];
   for (const [format, id, n, name] of samples) {
-    const parsed = parseFailure(failedOutput(id, n));
+    const parsed = lib.parseFailure(failedOutput(id, n));
     assert.equal(parsed.format, format, id);
     assert.ok(parsed.failing.includes(name), `${id}: ${JSON.stringify(parsed.failing)}`);
   }
 });
 
 test("judge bench: the parser names the error for compilers, linters and scripts", () => {
-  const tsc = parseFailure(failedOutput("s05", 1));
+  const tsc = lib.parseFailure(failedOutput("s05", 1));
   assert.equal(tsc.format, "tsc");
   assert.match(tsc.errors[0] ?? "", /^TS2345 src\/order\.ts:/);
-  const eslint = parseFailure(failedOutput("s11", 2));
+  const eslint = lib.parseFailure(failedOutput("s11", 2));
   assert.equal(eslint.format, "eslint");
   assert.ok(eslint.errors.some(e => e.includes("no-unused-vars")));
-  const python = parseFailure(failedOutput("s13", 0));
+  const python = lib.parseFailure(failedOutput("s13", 0));
   assert.equal(python.format, "python-traceback");
   assert.equal(python.errors[0], "KeyError: 'user_id'");
-  const node = parseFailure(failedOutput("s31", 0));
+  const node = lib.parseFailure(failedOutput("s31", 0));
   assert.equal(node.format, "node-error");
   assert.match(node.errors[0] ?? "", /ENOENT/);
-  const lisp = parseFailure(failedOutput("s16", 0));
+  const lisp = lib.parseFailure(failedOutput("s16", 0));
   assert.equal(lisp.format, "lisp-condition");
   assert.match(lisp.errors[0] ?? "", /Couldn't load "src\/util\.lisp"/);
 });
 
-test("judge bench: an unknown format falls back to head and tail in arm C", () => {
+test("judge bench: an unknown format falls back to head and tail in the evidence", () => {
   const output = `${"step ".repeat(200)}\nthe widget exploded in an unexpected way\n${"more ".repeat(200)}`;
-  assert.equal(parseFailure("just some words\nand more words").format, "unparsed");
+  assert.equal(lib.parseFailure("just some words\nand more words").format, "unparsed");
   const c: BenchCase = { id: "x3", guard: "stuck", label: "stuck", category: "test", format: "unknown", source: "authored", why: "fallback check", task: "t", calls: Array.from({ length: 3 }, () => ({ tool: "bash", failed: true, input: { command: "./run-thing" }, output })) };
-  const runs = (buildArms(lib, c).C.state.evidence as { runs: Array<Record<string, unknown>> }).runs;
+  const runs = (buildArms(lib, c).A.state.evidence as { runs: Array<Record<string, unknown>> }).runs;
   assert.equal(runs.length, 3);
   for (const run of runs) {
     assert.equal(typeof run.output_head_tail, "string");
@@ -133,13 +136,20 @@ test("judge bench: an unknown format falls back to head and tail in arm C", () =
   }
 });
 
+test("judge bench: arm C is the shipped builder with the evidence switch off", () => {
+  const c = byId("s01");
+  const attempts = c.calls.slice(-12).map(call => lib.makeAttempt(call.tool, call.input, [{ type: "text", text: call.output }], call.failed));
+  assert.deepEqual(buildArms(lib, c).C.state, lib.buildStuckRequest(attempts, lib.redact(c.task), { evidence: false }).state);
+  assert.equal("evidence" in buildArms(lib, c).C.state, false);
+});
+
 test("judge bench: failure signatures ignore line numbers, times, temp paths and order", () => {
   for (const id of ["s33", "s34", "s35", "s36", "s37", "s38", "s39", "s40"]) {
     const outputs = byId(id).calls.filter(call => call.failed).map(call => call.output);
-    const sigs = new Set(outputs.map(o => signature(parseFailure(o), o)));
+    const sigs = new Set(outputs.map(o => lib.failureSignature(lib.parseFailure(o), o)));
     assert.equal(sigs.size, 1, id);
   }
-  const progress = byId("s09").calls.filter(call => call.failed).map(call => signature(parseFailure(call.output), call.output));
+  const progress = byId("s09").calls.filter(call => call.failed).map(call => lib.failureSignature(lib.parseFailure(call.output), call.output));
   assert.equal(new Set(progress).size, 3);
 });
 
