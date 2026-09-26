@@ -40,6 +40,10 @@ export { Trace, actionDetails, stuckDetails, doneDetails, proseDetails, runawayD
 export type { TraceEntry, GuardName } from "./trace.js";
 export { parseRules, condense, isRuleShaped, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, describeRuleSet, formatRuleSetDetails, describeTarget, buildRulesRequest, ruleQuestion, evaluateRules, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, AGGREGATE_QUESTION, LOCATOR_QUESTION } from "./rules.js";
 export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef, RulesTier, RulesSourceConfig } from "./rules.js";
+export { rulesLogPath, readRulesLog, trimRecords, RuleClearTracker, RulesLog, RULES_LOG_MAX_RECORDS } from "./rules-log.js";
+export type { RuleRecord, RuleObservation, RulesLogOptions } from "./rules-log.js";
+export { buildRulesReport, formatRulesReport, compareRows, REPORT_DEFAULT_DAYS, NEVER_FIRES_MIN, FIRES_RATE_MAX, UNDECIDED_LOW, UNDECIDED_HIGH } from "./rules-report.js";
+export type { RuleFlag, RuleReportRow, RulesReport } from "./rules-report.js";
 export { resolveRulesFile, extractRules, checkPiWardenMissing } from "./rules-file.js";
 export type { ResolvedRulesFile } from "./rules-file.js";
 export { writeStarterRules, generateStarterRules, detectProjectType, buildProjectContext, buildInitPrompt } from "./init.js";

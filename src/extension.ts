@@ -38,6 +38,8 @@ import type { SearchTool } from "./recall.js";
 import { maskSecrets, redact } from "./redact.js";
 import { formatRules, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
 import type { RulesVerdict } from "./rules.js";
+import { readRulesLog, RulesLog, rulesLogPath } from "./rules-log.js";
+import { buildRulesReport, formatRulesReport, REPORT_DEFAULT_DAYS } from "./rules-report.js";
 import { checkPiWardenMissing } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
 import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from "./audit.js";
@@ -360,6 +362,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   }
   const traceOf = new WeakMap<CallRecord, TraceEntry>();
   let holdLog: HoldLog | undefined;
+  // Local rules verdict log for this session; a write failure is silent to the agent and shown once in the trace.
+  let rulesLog: RulesLog | undefined;
   // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
   let regretCandidates: PreviousAction[] = [];
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
@@ -872,6 +876,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     regretCandidates = [];
     const sessionId = typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid);
     holdLog = new HoldLog(holdLogPath(sessionId));
+    rulesLog = new RulesLog(ctx.cwd, sessionId, { onFailure: message => record(ctx, loadConfig(), "rules", "rules log write failed", [message]) });
     unsubscribeTraceFile?.();
     unsubscribeTraceFile = undefined;
     traceFile = undefined;
@@ -1524,6 +1529,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         const capNotice = ctx.hasUI && config.notices ? rulesGuard.capNotice(rules) : undefined;
         if (capNotice) ctx.ui.notify(capNotice, "warning");
         holds.recordRules({ source: rules.source, path: rules.path, findings: rules.findings.map(f => ({ name: f.name, violation: f.violation })), ...(rules.error ? { error: rules.error } : {}) });
+        // A later judgment below the threshold clears an earlier finding of the same rule on this path: one trace line, no steer.
+        if (rules.source === "typesafe") {
+          for (const observation of rulesLog?.record(rules, config.rules.threshold) ?? []) {
+            if (observation.cleared) record(ctx, config, "rules", `rules: ${observation.name} now clear on ${rules.path}`, [`clear: a later ${rules.tool} on this path scored ${observation.violation.toFixed(2)}, below the ${config.rules.threshold} threshold`]);
+          }
+        }
         if (rules.findings.length) {
           stats.ruleViolations++;
           if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
@@ -2252,7 +2263,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     },
   });
 
-  const actions = ["status", "rules", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "unmute"];
+  const actions = ["status", "rules", "report", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "unmute"];
   pi.registerCommand("warden", {
     description: "pi-warden status, active rules, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, open loops, and a synthetic guard test",
     getArgumentCompletions(prefix) {
@@ -2302,6 +2313,15 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         }
         if (action === "rules") {
           report(rulesGuard.details(ctx.cwd, config.rules));
+          return;
+        }
+        if (action === "report") {
+          const match = /--days\s+(\d+)/.exec(tail);
+          const days = match ? Number(match[1]) : REPORT_DEFAULT_DAYS;
+          if (match && days < 1) { report("Usage: /warden report [--days N], where N is at least 1. Default: 30 days.", "warning"); return; }
+          const records = await readRulesLog(rulesLogPath(ctx.cwd));
+          const set = rulesGuard.store.load(ctx.cwd, config.rules);
+          report(formatRulesReport(buildRulesReport(records, { days, currentRules: set?.rules.map(rule => ({ id: rule.id, name: rule.name })) ?? [] })));
           return;
         }
         if (action === "trace") {
