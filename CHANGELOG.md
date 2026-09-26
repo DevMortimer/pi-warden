@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.68.0
+
 ### Added
 
 - `/warden rules` prints the active parsed rule ids, path scopes and source files, plus the dropped count and `rules.exclude` patterns, so the local rule set can be inspected without sending anything to Jev. With `rules.enabled: false` the output leads with `Rules guard is off (rules.enabled: false). These would apply:` and the same details follow. A fallback document judged as one aggregate rule reports its condensed size only.
