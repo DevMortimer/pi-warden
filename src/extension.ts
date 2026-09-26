@@ -1930,8 +1930,12 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         if (part.type !== "text" || index !== lastText) return part;
         return { ...part, text: `${part.text}\n\n${wasteNudge.text}` };
       });
+      // Redaction runs before the cut: a 200-character slice can leave half a credential the redactor no longer knows.
+      const triggerCommand = event.toolName === "bash" && typeof (event.input as { command?: unknown }).command === "string"
+        ? ` ${redact((event.input as { command: string }).command).replace(/\s+/g, " ").slice(0, 200)}`
+        : "";
       record(ctx, config, "waste", `warden · waste · ${wasteNudge.detector} · ${wasteNudge.subject} · agent told`, [
-        `trigger: ${event.toolName}${event.toolName === "bash" && typeof (event.input as { command?: unknown }).command === "string" ? ` ${(event.input as { command: string }).command.replace(/\s+/g, " ").slice(0, 200)}` : ""}`,
+        `trigger: ${event.toolName}${triggerCommand}`,
         `detector: ${wasteNudge.detector}`,
         `subject: ${redact(wasteNudge.subject)}`,
         `nudge: ${wasteNudge.text}`,

@@ -4491,3 +4491,21 @@ test("waste: a nudge rides the tool result and never blocks a call or changes a 
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   assert.equal(await toolCall("bash", { command: "npm test" }), undefined, "an ordinary call still runs");
 });
+
+test("waste: the trigger line in the trace carries a redacted command, never a credential", async () => {
+  await grantConsent();
+  const token = "sk-abc123def456ghi789";
+  const command = `sleep 5; curl -s -H "Authorization: Bearer ${token}" http://127.0.0.1:4000/api/state | jq .status`;
+  for (const index of [0, 1]) {
+    await fire("tool_result", {
+      toolName: "bash", toolCallId: `waste-poll-${index}`, input: { command },
+      content: [{ type: "text", text: "{\n  \"status\": \"running\"\n}" }], isError: false, details: { exitCode: 0 },
+    });
+  }
+  await runCommand("trace", context({ hasUI: false }));
+  const rendered = sentMessages.at(-1)!.message.content;
+  assert.match(rendered, /waste · sleep/, "the note is in the trace, so the assertion below is about a line that exists");
+  assert.ok(!rendered.includes(token), "the command's credential must not reach the trace");
+  assert.ok(!rendered.includes("Bearer sk-"), "no part of the credential reaches the trace");
+  assert.match(rendered, /Authorization: \[redacted\]/, "the command preview is the redacted one");
+});
