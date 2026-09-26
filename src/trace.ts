@@ -5,7 +5,7 @@ import type { RulesVerdict } from "./rules.js";
 import type { RunawayVerdict } from "./runaway.js";
 import type { Attempt, StuckVerdict } from "./stuck.js";
 
-export type GuardName = "action" | "stuck" | "done" | "prose" | "security" | "context" | "runaway" | "rules" | "subagent" | "conscience";
+export type GuardName = "action" | "stuck" | "done" | "prose" | "security" | "context" | "runaway" | "rules" | "subagent" | "conscience" | "waste";
 
 export interface TraceEntry {
   at: number;

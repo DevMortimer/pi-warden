@@ -46,6 +46,7 @@ import type { NotifierName } from "./notify.js";
 import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, quickRepeatNudge, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
 import type { QuickRepeat } from "./stuck.js";
+import { WasteTracker, WASTE_TIP, withWasteTip } from "./waste.js";
 import { assess } from "./conscience.js";
 import { loadSkillBody, buildLoadMessage, policyMatches, CONSCIENCE_BETA_POLICY, recordFileIdentity, clearFileIdentityCache } from "./load.js";
 import type { ConsciencePolicy } from "./load.js";
@@ -362,6 +363,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
   let regretCandidates: PreviousAction[] = [];
   let attempts = new AttemptWindow(defaultConfig().stuck.window);
+  // Call-waste notes for this session; the tip is offered once, the notes are rate limited per detector.
+  const waste = new WasteTracker();
+  let wasteTipOffered = false;
   /** Full output text and saved path keyed by attempt call key, for stuck-loop diffs. */
   let fullOutputs = new Map<string, { text: string; path?: string }>();
   let evidence: RunEvidence = emptyEvidence();
@@ -884,6 +888,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     }
     arming.reset();
     attempts.reset();
+    waste.reset();
+    wasteTipOffered = false;
     evidence = emptyEvidence();
     doneNudged = false;
     wardenContinuation = false;
@@ -952,6 +958,22 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     noticeUi = ctx.hasUI ? ctx.ui : undefined;
     const config = configFor(ctx);
     attempts = new AttemptWindow(config.stuck.window);
+    // ── Call waste: the session tip ──
+    // The tip is appended to the prompt, so every other part of the prompt stays where it was and the host records the
+    // change as a prompt-section delta. It is offered once per session; the trace line says so, and the next runs
+    // re-append the same text, which is what keeps it in the prompt instead of being diffed away.
+    const wasteOptions = (event as { systemPromptOptions?: { appendSystemPrompt?: string } }).systemPromptOptions;
+    if (config.enabled && config.waste.enabled && config.waste.tip && wasteOptions) {
+      wasteOptions.appendSystemPrompt = withWasteTip(wasteOptions.appendSystemPrompt);
+      if (!wasteTipOffered) {
+        wasteTipOffered = true;
+        record(ctx, config, "waste", "warden · waste · session tip · instructions_supplied", [
+          "trigger: before_agent_start",
+          "delivery: appended to the system prompt (appendSystemPrompt)",
+          `tip: ${WASTE_TIP}`,
+        ]);
+      }
+    }
     fullOutputs = new Map();
     doneNudged = false;
     wardenContinuation = false;
@@ -1645,6 +1667,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     pruneScratch(sessionScratch);
     // Repeat detection uses the original result, so its request goes out together with the output check.
     const failed = resultFailed(event.isError, event.details, event.content);
+    // ── Call waste ──
+    // Every finished call enters the window; a note, when one fires, is attached to this result below. Nothing here
+    // reads the call's fate, and the note never reaches a hold, the judge, or the steer budget.
+    const wasteNudge = waste.record({ tool: event.toolName, input: event.input as Record<string, unknown>, cwd: ctx.cwd, failed, result: text }, config.waste);
     // ── Conscience: track tool_result for the pending capability ──
     if (config.conscience.enabled && pendingCapability && !triggerConsumed) {
       if (pendingCapability.kind === "tool" && event.toolName === pendingCapability.id) {
@@ -1894,6 +1920,25 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (currentKey) fullOutputs.set(currentKey, { text });
     }
     const patch = content === event.content ? undefined : { content };
+    /** The note rides the result the model is about to read; the call already ran, so this only adds text to it. */
+    const withWaste = (current: { content: typeof content } | undefined): { content: typeof content } | undefined => {
+      if (!wasteNudge) return current;
+      const base = current?.content ?? event.content;
+      const lastText = base.reduce((last, part, index) => part.type === "text" ? index : last, -1);
+      if (lastText < 0) return current;
+      const next = base.map((part, index) => {
+        if (part.type !== "text" || index !== lastText) return part;
+        return { ...part, text: `${part.text}\n\n${wasteNudge.text}` };
+      });
+      record(ctx, config, "waste", `warden · waste · ${wasteNudge.detector} · ${wasteNudge.subject} · agent told`, [
+        `trigger: ${event.toolName}${event.toolName === "bash" && typeof (event.input as { command?: unknown }).command === "string" ? ` ${(event.input as { command: string }).command.replace(/\s+/g, " ").slice(0, 200)}` : ""}`,
+        `detector: ${wasteNudge.detector}`,
+        `subject: ${redact(wasteNudge.subject)}`,
+        `nudge: ${wasteNudge.text}`,
+        `rate limit: at most one ${wasteNudge.detector} note per ${config.waste.every} calls; no steer, no request`,
+      ]);
+      return { content: next };
+    };
     // Checks use the original result, not the excerpts or security banner.
     if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
     if (config.done.enabled && config.done.uiProof && !failed) {
@@ -1912,16 +1957,16 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       ]);
       if (sent && ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 repeat: ${quickRepeat.attempt.failed ? "same call failed the same way" : "same output re-read"} (agent nudged)`, "warning");
     }
-    if (!verdict) return patch;
+    if (!verdict) return withWaste(patch);
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
-    if (verdict.source === "repeat" && !verdict.stuck) return patch;
+    if (verdict.source === "repeat" && !verdict.stuck) return withWaste(patch);
     const nudge = verdict.stuck && config.stuck.nudge ? stuckNudge(verdict) : undefined;
     record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
-    if (!verdict.stuck) return patch;
+    if (!verdict.stuck) return withWaste(patch);
     stats.stuck++;
     if (ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
     if (nudge && adaptiveSend(ctx, config, "stuck") && steer(config, "stuck", nudge)) watchSteer(ctx, config, ["stuck"], { call: { name: event.toolName, input: event.input as Record<string, unknown> } });
-    return patch;
+    return withWaste(patch);
   });
 
   // Opt-in: a relayed report that pastes earlier turns again keeps only its new part. Pi persists the replaced message.

@@ -4455,3 +4455,39 @@ test("the compaction appendix carries the open loops, and warden_recall prints i
     await rm(loopsDir(), { recursive: true, force: true });
   }
 });
+
+test("waste: the session tip is appended to the prompt once, and not at all when waste.tip is off", async () => {
+  await grantConsent();
+  const options: { cwd: string; skills: unknown[]; appendSystemPrompt?: string } = { cwd: temporary, skills: [] };
+  await fire("before_agent_start", { prompt: "read the file", systemPromptOptions: options });
+  assert.match(options.appendSystemPrompt ?? "", /^Tool calls are expensive: each one re-reads the whole conversation\./);
+  // A later run re-appends the same text; that is what keeps it in the prompt instead of being diffed away.
+  await fire("before_agent_start", { prompt: "read it again", systemPromptOptions: options });
+  assert.equal((options.appendSystemPrompt ?? "").split("Tool calls are expensive").length - 1, 1, "the tip appears once");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 1, "the trace records the tip delivery once per session");
+
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, waste: { tip: false }, ...STACK_BAR }));
+  await sessionStart();
+  const quiet: { cwd: string; skills: unknown[]; appendSystemPrompt?: string } = { cwd: temporary, skills: [] };
+  await fire("before_agent_start", { prompt: "read the file", systemPromptOptions: quiet });
+  assert.equal(quiet.appendSystemPrompt, undefined);
+});
+
+test("waste: a nudge rides the tool result and never blocks a call or changes a hold", async () => {
+  await grantConsent();
+  const ranges = [{ offset: 1, limit: 40 }, { offset: 20, limit: 30 }, { offset: 30, limit: 25 }];
+  let patch: { content?: Array<{ type: string; text?: string }>; block?: boolean } | undefined;
+  for (const [index, range] of ranges.entries()) {
+    patch = await fire("tool_result", {
+      toolName: "read", toolCallId: `waste-${index}`, input: { path: "src/waste.ts", ...range },
+      content: [{ type: "text", text: `${"x\n".repeat((range.limit ?? 1) - 1)}x` }], isError: false, details: {},
+    }) as typeof patch;
+  }
+  assert.match((patch?.content ?? []).map(part => part.text).join("\n"), /You read src\/waste\.ts in 3 calls/);
+  assert.equal(patch?.block, undefined, "a note adds text to the result; it cannot block the call it explains");
+  nextAnswers = { irreversible: 0.95, off_task: 0.1, scope: "expected_step" };
+  assert.equal((await toolCall("bash", { command: "git push --force origin main" }))?.block, true, "the same destructive call is still held with the waste guard on");
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
+  assert.equal(await toolCall("bash", { command: "npm test" }), undefined, "an ordinary call still runs");
+});
