@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.67.0
+
 ### Added
 
 - **Stuck evidence.** The stuck guard now sends the judge a compact structured `evidence` section next to today's fields. Per run: the failing test, error, location, summary and exit code, parsed generically from the run's own output (TAP/node test, jest, vitest, pytest, tsc, eslint, cargo, go, a `make test` script, Playwright), the run number of the earlier run that failed the same way after durations, clock times, temp paths, line:column positions and ordering are normalised, and a 300-character head plus 300-character tail fallback when no parser knows the output. Per `edit`/`write`: the path and a diff of the change capped at 600 characters. A digest gives the failed runs, the distinct failures, the runs that repeat an earlier command, the edits between the first and last failed run, and the information-gathering calls after the first failure. Every string is redacted, the whole object is capped at 4 KB, and the oldest runs are dropped first. The measurement behind it is in `eval/reports/2026-09-26-stuck-evidence/`: on the same 40 stuck bench cases, accuracy 0.725 → 1.000, right where the old state was wrong on 11 cases and wrong where it was right on none (sign test p = 0.001), no latency change at p50. Edit diffs (capped, redacted) now leave the machine for stuck checks; `docs/data-handling.md` lists them.
