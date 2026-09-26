@@ -337,6 +337,23 @@ Only the newest tool result or message is ever changed, before it enters the ses
 
 Set `context.enabled: false` to turn it off. Full-output files can contain secrets and stay in the OS temporary directory until removed.
 
+## Call waste
+
+Every tool call re-reads the whole conversation, so the number of calls drives what a run costs. Four patterns spend calls without gaining anything a single call would not. Each earns one advisory sentence, attached to the tool result that triggers it: the result already goes to the model, so the note costs no extra call and never makes a request of its own.
+
+- **Polling.** `sleep N`, optionally after a `cd DIR &&`, optionally followed by one short status command (`sleep 30 && gh pr checks 12`). Two polls inside the last 10 calls earn the note; one wait long enough, or a blocking command, would do. A loop that sleeps blocks the shell by itself and is not a poll.
+- **Paging.** Three ranged reads of one file inside the last 10 calls whose line ranges are adjacent or overlapping, with no write to that file between them. The note names the one `read` with `offset` and `limit` that returns the same lines. Ranges far apart are a survey of a large file, not paging, and the note stays quiet.
+- **Searching.** Three `grep`/`rg` searches of one named file inside the last 10 calls, two of them with the same or an overlapping pattern. The earlier hits are still in the result the agent already has.
+- **Re-running a filtered check.** The same check (runner and target, ignoring redirects and everything after the first pipe) runs again with a different output filter, in the last 10 calls, after an earlier run whose output was thrown away by a pipe and whose result showed no failure, with no write in between. The advice is to run it once without a pipe and search the output instead. A run whose result already showed a failure is a failure to chase, so it is never nudged, and a re-run without a pipe has already taken the advice.
+
+One note per detector per `waste.every` calls (20 by default), and at most one note per tool result. Every note is recorded in the trace as the `waste` guard, with the detector named.
+
+The thresholds are fixed by an offline measurement over the tool calls of 1175 existing sessions. At these settings that corpus holds 30 sleep polls in 11 sessions, 75 adjacent-paging episodes in 61 sessions, 93 repeated-search episodes in 56 sessions, and 299 filtered check re-runs in 108 sessions. Adjacency matters: of the 408 three-read episodes whose reads were all ranged reads, only 75 were adjacent, and the other 333 spread over files whose needed span was often more than 800 lines, where one read would be worse advice.
+
+**The session tip.** On the first run of a session, when `waste.tip` is on, one paragraph is appended to the system prompt: each call re-reads the conversation, so read files in large ranges or whole, run a check once without a pipe and search its output, and wait for slow work with one blocking command. Nothing else in the prompt moves; the host records the append as a prompt-section change. It is added once per session and appears in the trace.
+
+The notes are advisory in the strict sense: they ride a tool result, they are never a hold, a block, or a warning level, they do not spend `steerBudget`, they are not adapted by `steers`, and no note changes a judgment or an action. `waste.enabled: false` silences the notes and the tip; the four detectors can be switched off one at a time.
+
 ## Open loops and recall
 
 Two agent tools let the agent hand warden what it must not lose in a long session. Both run in code, with no Jev request.

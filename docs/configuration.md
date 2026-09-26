@@ -156,6 +156,13 @@ After building, `/warden index` reports which skill and tool descriptions would 
 | `steers.maxDisputed` | Trace-only when the share disputed is over this. Default `0.4`. |
 | `steers.recheckEvery` | A trace-only pair is re-checked after this many further steers. Default `30`. |
 | `steers.probeEvery` | While trace-only, 1 in this many steers is still sent, so the re-check has fresh data. Default `5`. |
+| `waste.enabled` | Default `true`. Master switch for the call-waste notes and the session tip. A note is text added to the tool result that triggers it, so it costs no request and never holds or blocks a call, spends the steer budget, or makes a model or TypeSafe call. See [guards.md → Call waste](guards.md#call-waste). |
+| `waste.tip` | Default `true`. On the first run of a session the tip below is appended to the system prompt; later runs re-append the same text, so it stays in the prompt and the host records one change. `false` adds nothing to the prompt. |
+| `waste.every` | Tool calls between two notes from the same detector in one session. Default `20`. |
+| `waste.sleep` | Default `true`. A `sleep` poll is `sleep N`, optionally after `cd DIR &&`, optionally followed by one short status command (`sleep 30 && gh pr checks 12`, `sleep 5; curl -s URL \| jq .x`). The note fires on the 2nd poll in the last 10 calls. A loop that sleeps is not a poll. |
+| `waste.paging` | Default `true`. A ranged read is `read` with `offset` or `limit` and at most 100 lines, `sed -n 'a,bp' F`, `head`/`tail -n N` with N at most 100, or `awk 'NR>=a && NR<=b'`. The note fires on the 3rd ranged read of one file in the last 10 calls when the reads are adjacent or overlapping and nothing wrote that file between them, and it names the one read that covers the same lines. |
+| `waste.search` | Default `true`. A search is `grep` or `rg` on one named file, not a glob and not `-r`. The note fires on the 3rd search of one file in the last 10 calls when two of them use the same or an overlapping pattern and nothing wrote that file between them. |
+| `waste.recheck` | Default `true`. A check is a test, lint, typecheck, or build command (`npm test`, `npm run check`, `npx tsc`, `eslint`, `vitest`, `jest`, `pytest`, `ruff`, `mypy`, `cargo test`, `go test`, `make test`, `flutter test`, `dart analyze`, and their `bun`/`pnpm`/`uv` forms). The note fires when the same runner and target runs again in the last 10 calls with a different output filter, the earlier output was cut by a pipe, the earlier result showed no failure, and nothing wrote a file in between. |
 
 ## Project config
 

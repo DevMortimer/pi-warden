@@ -8,6 +8,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+### Added
+
+- Call-waste notes. Each tool call re-reads the whole conversation, so four patterns that spend calls for nothing now earn one advisory sentence each, attached to the tool result that triggers them: a second `sleep` poll inside 10 calls, a third ranged read of one file whose ranges are adjacent or overlapping, a third search of one file with the same or an overlapping pattern, and a check re-run with a different output filter after an earlier run was cut by a pipe and showed no failure. The note is text added to a result the model is about to read, so it costs no request; it never holds, blocks, or warns, never spends `steerBudget`, and is not adapted by `steers`. One note per detector per 20 calls. On the first run of a session one tip is appended to the system prompt: read files in large ranges or whole, run a check once without a pipe and search its output, and wait with one blocking command instead of repeated sleeps. New config section `waste`: `enabled` (default `true`), `tip` (default `true`), `every` (20), and one switch per detector (`sleep`, `paging`, `search`, `recheck`, all default `true`). Every note is recorded in the trace as the `waste` guard with its detector. Thresholds come from an offline measurement over the tool calls of 1175 existing sessions; the weak-model bench that ran the guard on and off is under `eval/reports/2026-09-26-waste-nudges/`.
+
 ## 0.65.1
 
 ### Fixed
