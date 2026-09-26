@@ -43,7 +43,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     notices: source.notices ?? false,
     steerBudget: typeof source.steerBudget === "number" && source.steerBudget >= 0 ? source.steerBudget : 3,
     action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "invisible", shouldProceed: { hold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
-    stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, diffLimit: 3000, tailLimit: 1000 }),
+    stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false }),
@@ -86,6 +86,9 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     missing.push("context.saver");
     config.context = { ...config.context, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1 };
   }
+  // The stuck evidence section was added inside the stuck section later than the section itself; an older config
+  // module leaves it undefined, and the shipped default (on) applies.
+  if (typeof config.stuck.evidence !== "boolean") config.stuck = { ...config.stuck, evidence: true };
   // The large-output question was added inside the context section later than the section itself; an older config module leaves it undefined and the question is not asked.
   if (typeof config.context.largeOutput !== "object" || config.context.largeOutput === null) config.context = { ...config.context, largeOutput: { ...off, threshold: 1 } };
   // Run deduplication was added inside the context section later than the section itself; an older config module leaves it undefined and nothing is cut.

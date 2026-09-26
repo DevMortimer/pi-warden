@@ -1,14 +1,13 @@
 // The three request states per case. All arms share the guard's own `questions` object.
-//   A: the real builder (buildStuckRequest / buildDoneRequest), fed the way the extension feeds it.
+//   A: the real builder (buildStuckRequest / buildDoneRequest) as it ships, fed the way the extension feeds it.
+//      For stuck that includes the structured `evidence` section (`stuck.evidence`, default on) built by src/evidence.ts.
 //   B: A's shape with larger raw slices. stuck: head 400 + tail 400 of each output. done: plus the last 1500 chars of
 //      each check that ran after the last edit.
-//   C: A's fields plus a compact `evidence` object built by the generic parser in parse.mjs.
+//   C: the shipped builders with the new switch off: stuck carries `evidence: false`, which is exactly the state the
+//      guard sent before the evidence section existed. (The done arm's evidence is built by doneArms below.)
 // `lib` is pi-warden's public API: the runner passes dist/, the offline tests pass src/. Every string that enters a
 // state goes through lib.redact().
-import { parseFailure, signature } from "./parse.mjs";
-
 const EDIT_TOOLS = new Set(["edit", "write"]);
-const DIFF_CAP = 600;
 const FALLBACK_HEAD = 300;
 const FALLBACK_TAIL = 300;
 
@@ -18,51 +17,9 @@ export function headTail(text, head, tail) {
 const tailOf = (text, n) => (text.length <= n ? text : `[${text.length - n} earlier chars] …${text.slice(-n)}`);
 const content = call => [{ type: "text", text: call.output }];
 
-/** Test, build, lint and type-check runners, and the ad-hoc scripts the bench uses as checks. */
-const RUNNER = /\b(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lint|typecheck|build|e2e)|(?:npx|pnpm|bunx)\s+(?:tsc|jest|vitest|eslint|playwright)|node\s+--test|pytest|jest|vitest|tsc|eslint|cargo\s+(?:test|check|build|clippy)|go\s+(?:test|vet|build)|make\s+\w+|sbcl\s+--script)\b/;
-
-function editPairs(input) {
-  if (Array.isArray(input.edits)) return input.edits.map(e => [String(e.oldText ?? ""), String(e.newText ?? "")]);
-  if (input.oldText !== undefined || input.newText !== undefined) return [[String(input.oldText ?? ""), String(input.newText ?? "")]];
-  return [];
-}
-
-/** Removed and added lines of one edit, as a multiset difference, so unchanged context lines drop out. */
-function lineDelta(oldText, newText) {
-  const count = new Map();
-  for (const l of oldText.split("\n")) count.set(l, (count.get(l) ?? 0) + 1);
-  const added = [];
-  for (const l of newText.split("\n")) {
-    const n = count.get(l) ?? 0;
-    if (n > 0) count.set(l, n - 1);
-    else added.push(l);
-  }
-  const removed = [];
-  for (const [l, n] of count) for (let i = 0; i < n; i++) removed.push(l);
-  return { removed, added };
-}
-
-function editDiff(call, redact) {
-  const path = String(call.input.path ?? "?");
-  if (call.tool === "write") {
-    const lines = String(call.input.content ?? "").split("\n");
-    const text = lines.map(l => `+${l}`).join("\n");
-    return { path: redact(path), added: lines.length, removed: 0, removedLines: [], addedLines: lines, diff: redact(text.length > DIFF_CAP ? `${text.slice(0, DIFF_CAP)}… [diff capped]` : text) };
-  }
-  const removedLines = [];
-  const addedLines = [];
-  for (const [o, n] of editPairs(call.input)) {
-    const d = lineDelta(o, n);
-    removedLines.push(...d.removed);
-    addedLines.push(...d.added);
-  }
-  const text = [...removedLines.map(l => `-${l}`), ...addedLines.map(l => `+${l}`)].join("\n");
-  return { path: redact(path), added: addedLines.length, removed: removedLines.length, removedLines, addedLines, diff: redact(text.length > DIFF_CAP ? `${text.slice(0, DIFF_CAP)}… [diff capped]` : text) };
-}
-
 /** The parsed failure in state form, or head+tail of the raw output when nothing could be parsed. */
-function failureView(output, redact) {
-  const p = parseFailure(output);
+function failureView(lib, output, redact) {
+  const p = lib.parseFailure(output);
   if (p.format === "unparsed") return { view: { output_head_tail: redact(headTail(output.trim(), FALLBACK_HEAD, FALLBACK_TAIL)) }, parsed: p };
   const view = { parser: p.format };
   if (p.failing.length) view.failing_tests = p.failing.map(redact);
@@ -89,62 +46,21 @@ export function stuckCodeDecision(lib, attempts, config) {
   return undefined;
 }
 
+/**
+ * Arm A is the shipped builder with its evidence section on; arm C is the same builder with the switch off (the state
+ * the guard sent before the evidence section existed); arm B is A with larger raw slices, to test whether more raw
+ * text adds anything on top. Every stuck state comes from the real guard (src/stuck.ts -> src/evidence.ts).
+ */
 export function stuckArms(lib, c, config = lib.defaultConfig().stuck) {
   const redact = lib.redact;
   const calls = c.calls.slice(-config.window);
   const attempts = calls.map(call => lib.makeAttempt(call.tool, call.input, content(call), call.failed));
-  const A = lib.buildStuckRequest(attempts, redact(c.task));
+  const A = lib.buildStuckRequest(attempts, redact(c.task), { evidence: true });
   const B = {
     state: { ...A.state, attempts: A.state.attempts.map((a, i) => ({ ...a, output: redact(headTail(calls[i].output.trim(), 400, 400)) })) },
     questions: A.questions,
   };
-
-  const runs = [];
-  const edits = [];
-  const failedSigs = [];
-  let reads = 0;
-  calls.forEach((call, i) => {
-    const n = i + 1;
-    if (EDIT_TOOLS.has(call.tool)) {
-      const d = editDiff(call, redact);
-      edits.push({ n, path: d.path, added_lines: d.added, removed_lines: d.removed, diff: d.diff });
-      return;
-    }
-    const command = lib.commandOf(call.tool, call.input)?.command ?? "";
-    if (!call.failed && !RUNNER.test(command)) {
-      if (failedSigs.length) reads++;
-      return;
-    }
-    const run = { n, outcome: call.failed ? "failed" : "ok" };
-    if (call.failed) {
-      const { view, parsed } = failureView(call.output, redact);
-      const sig = signature(parsed, call.output);
-      const earlier = failedSigs.findIndex(s => s.sig === sig);
-      Object.assign(run, view, { same_failure_as_run: earlier >= 0 ? failedSigs[earlier].n : null });
-      if (parsed.exit !== undefined) run.exit_code = parsed.exit;
-      failedSigs.push({ n, sig });
-    }
-    runs.push(run);
-  });
-  const firstFail = failedSigs[0]?.n ?? 0;
-  const lastFail = failedSigs.at(-1)?.n ?? 0;
-  const C = {
-    state: {
-      ...A.state,
-      evidence: {
-        runs,
-        edits,
-        digest: {
-          failed_runs: failedSigs.length,
-          distinct_failures: new Set(failedSigs.map(s => s.sig)).size,
-          latest_failure_seen_before: failedSigs.length > 1 && failedSigs.slice(0, -1).some(s => s.sig === failedSigs.at(-1).sig),
-          edits_between_failed_runs: edits.filter(e => e.n > firstFail && e.n < lastFail).length,
-          information_calls_between_failed_runs: reads,
-        },
-      },
-    },
-    questions: A.questions,
-  };
+  const C = lib.buildStuckRequest(attempts, redact(c.task), { evidence: false });
   return { A, B, C, codeDecided: stuckCodeDecision(lib, attempts, config) };
 }
 
@@ -199,8 +115,13 @@ export function doneArms(lib, c) {
   };
 
   const files = new Map();
+  /** The shipped diff helper, with the strings redacted the way every arm state redacts them. */
+  const changeOf = call => {
+    const d = lib.editDiff(call.tool, call.input);
+    return { path: redact(d.path), added: d.added, removed: d.removed, removedLines: d.removedLines, addedLines: d.addedLines, diff: redact(d.diff) };
+  };
   for (const call of c.calls.filter(x => EDIT_TOOLS.has(x.tool))) {
-    const d = editDiff(call, redact);
+    const d = changeOf(call);
     const raw = String(call.input.path ?? "?");
     const f = files.get(d.path) ?? { path: d.path, raw, type: fileType(raw), edits: 0, added: 0, removed: 0, lines: [], names: new Set() };
     f.edits++;
@@ -213,7 +134,7 @@ export function doneArms(lib, c) {
   const list = [...files.values()];
   const checks = fresh.map(({ call }) => {
     const o = { call: redact(lib.commandOf(call.tool, call.input)?.command ?? "check"), passed: !call.failed };
-    if (call.failed) Object.assign(o, failureView(call.output, redact).view);
+    if (call.failed) Object.assign(o, failureView(lib, call.output, redact).view);
     else {
       const summary = passSummary(call.output);
       if (summary) o.summary = redact(summary);

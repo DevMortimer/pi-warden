@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { ask, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { StuckGuardConfig } from "./config.js";
+import { buildStuckEvidence, editDiff } from "./evidence.js";
+import type { StuckEvidence } from "./evidence.js";
 import { redact } from "./redact.js";
 import { isReadOnlyCommand } from "./guard.js";
 import { commandOf, outputReportsFailure } from "./tools.js";
@@ -23,6 +25,21 @@ export interface Attempt {
   readOnly: boolean;
   /** Polling or waiting: the call is expected to run again with the same output. */
   poll: boolean;
+  /**
+   * The whole result text, so the evidence builder can parse the failing test out of it. It never leaves the machine
+   * as it is: every string in `evidence` passes through redact(), and `output` stays the field that is sent verbatim.
+   */
+  text: string;
+  /** For an `edit` or `write`: the path and the capped diff of the change, both redacted. */
+  change?: AttemptChange;
+}
+
+/** The change an `edit` or `write` made, as the stuck evidence reports it. */
+export interface AttemptChange {
+  path: string;
+  added: number;
+  removed: number;
+  diff: string;
 }
 
 /** The 2nd identical call with nothing changed since the 1st, decided without Jev. */
@@ -93,6 +110,15 @@ const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 
 const POLL_COMMAND = /\b(?:sleep|watch|wait)\b|\bgh\s+(?:run|pr)\s+(?:watch|checks|view|list)\b|\bgit\s+status\b|\btail\s+-[fF]\b|\b(?:ps|pgrep)\b/;
 
+/** The stuck tools that change a file, and the tools whose change the evidence reports. */
+const EDIT_TOOLS = new Set(["edit", "write"]);
+
+/** The redacted path and capped diff of an `edit`/`write`, ready to be kept on the attempt. */
+function redactedChange(tool: string, input: Record<string, unknown>): AttemptChange {
+  const diff = editDiff(tool, input);
+  return { path: redact(diff.path), added: diff.added, removed: diff.removed, diff: redact(diff.diff) };
+}
+
 export function makeAttempt(tool: string, input: Record<string, unknown>, content: ReadonlyArray<{ type: string; text?: string }>, failed: boolean): Attempt {
   const view = commandOf(tool, input);
   const command = view?.command;
@@ -101,12 +127,15 @@ export function makeAttempt(tool: string, input: Record<string, unknown>, conten
     : typeof input.path === "string" ? `${tool} ${input.path}`
     : JSON.stringify(input);
   const text = resultText(content).trim();
+  const change = EDIT_TOOLS.has(tool) ? redactedChange(tool, input) : undefined;
   return {
     tool,
     key: createHash("sha1").update(tool).update("\0").update(JSON.stringify(input)).digest("hex"),
     outputKey: createHash("sha1").update(normaliseOutput(text)).digest("hex"),
     call: redact(head(call, CALL_LIMIT)),
     failed,
+    text,
+    ...(change ? { change } : {}),
     output: redact(tail(text, OUTPUT_LIMIT)),
     // MCP tools, scripts, and unknown tools can change state that the next call reads.
     changes: !READ_TOOLS.has(tool) && !readOnlyCommand,
@@ -215,14 +244,26 @@ export const stuckQuestions = {
   progress: noul("Do the later entries in `attempts` show progress toward resolving the failure seen in the earlier ones, such as a different error, a partial success, or new information?"),
 };
 
-export function buildStuckRequest(attempts: readonly Attempt[], task: string | undefined) {
-  return {
-    state: {
-      task: task?.trim() ? head(task.trim(), 1500) : "(no user request recorded in this session)",
-      attempts: attempts.map((attempt, index) => ({ n: index + 1, tool: attempt.tool, call: attempt.call, outcome: attempt.failed ? "failed" : "ok", output: attempt.output })),
-    },
-    questions: stuckQuestions,
+export type StuckRequestState = {
+  task: string;
+  attempts: Array<{ n: number; tool: string; call: string; outcome: string; output: string }>;
+  /** The parsed failures, edit diffs and digest; absent when `stuck.evidence` is off. */
+  evidence?: StuckEvidence;
+};
+
+export type StuckRequestOptions = {
+  /** Send the structured `evidence` section (config `stuck.evidence`, default on). */
+  evidence?: boolean;
+};
+
+/** One Jev request state for the stuck guard: today's fields, plus the evidence section when it is on. */
+export function buildStuckRequest(attempts: readonly Attempt[], task: string | undefined, options: StuckRequestOptions = {}) {
+  const state: StuckRequestState = {
+    task: task?.trim() ? head(task.trim(), 1500) : "(no user request recorded in this session)",
+    attempts: attempts.map((attempt, index) => ({ n: index + 1, tool: attempt.tool, call: attempt.call, outcome: attempt.failed ? "failed" : "ok", output: attempt.output })),
   };
+  if (options.evidence !== false) state.evidence = buildStuckEvidence(attempts);
+  return { state, questions: stuckQuestions };
 }
 
 export interface StuckOptions {
@@ -249,7 +290,7 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   }
   if (!options.judge) return { stuck: false, source: "repeat", failures, reasons: [] };
   window.markJudged();
-  const result = await ask(options.judge, buildStuckRequest(window.attempts, task), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
+  const result = await ask(options.judge, buildStuckRequest(window.attempts, task, { evidence: options.config.evidence }), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { stuck: false, source: "error", failures, reasons: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   const judgment: StuckJudgment = {
     sameStrategy: result.answers.same_strategy.noul,

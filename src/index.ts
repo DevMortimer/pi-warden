@@ -6,7 +6,9 @@ export type { Conversation, InspectOptions, ToolCallRef } from "./action-guard.j
 export { evaluateProse, buildProseRequest, proseQuestions, proseNudge, describeAudience, ProseTrend, PROSE_SYMPTOMS, PROSE_LABELS } from "./prose.js";
 export type { ProseSymptom, ProseVerdict, ProseOptions } from "./prose.js";
 export { AttemptWindow, makeAttempt, resultFailed, resultText, evaluateStuck, buildStuckRequest, stuckQuestions, stuckNudge, formatStuck } from "./stuck.js";
-export type { Attempt, StuckJudgment, StuckVerdict, StuckOptions } from "./stuck.js";
+export type { Attempt, AttemptChange, StuckJudgment, StuckVerdict, StuckOptions, StuckRequestOptions, StuckRequestState } from "./stuck.js";
+export { parseFailure, failureSignature, normaliseFailureText, editPairs, lineDelta, editDiff, buildStuckEvidence, EVIDENCE_LIMIT } from "./evidence.js";
+export type { ParsedFailure, EditDiff, EvidenceRun, EvidenceEdit, EvidenceDigest, StuckEvidence } from "./evidence.js";
 export { classifyToolResult, recordOutcome, recordUi, isUiFile, isVisualCheck, emptyEvidence, freshChecks, needsDoneCheck, finalAssistantText, evaluateDone, buildDoneRequest, doneQuestions, doneNudge, formatDone } from "./done.js";
 export type { ToolOutcome, RunEvidence, DoneJudgment, DoneVerdict, DoneOptions } from "./done.js";
 export { evaluateOutput, buildOutputRequest, outputQuestions, compressOutput, saveOutput, securityNotice, outputKey, duplicateNote } from "./output.js";
