@@ -290,8 +290,7 @@ export function formatRuleSetDetails(set: RuleSet | undefined, tier: RulesTier, 
   const source = tier === "configured" ? `rules.files: ${set.sources.join(", ")}` : set.sources.join(", ");
   const excluded = exclude.length ? `\nExcluded from Jev by rules.exclude: ${exclude.join(", ")}` : "";
   if (set.aggregate !== undefined && !set.rules.length) {
-    const detail = tier === "fallback" ? `prose only; ${set.aggregate.length} condensed chars` : `${set.aggregate.length} condensed chars`;
-    return `Rules in force: ${source} judged as one aggregate rule (${detail})${excluded}`;
+    return `Rules in force: ${source} judged as one aggregate rule (${set.aggregate.length} condensed chars)${excluded}`;
   }
   if (set.proseOnly) return `Rules in force: ${source} (prose only; no rule-shaped sections)${excluded}`;
   const lines = [`Rules in force: ${source} (${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}, ${set.alwaysDropped} dropped)`];
@@ -685,9 +684,10 @@ export class RulesGuard {
     return describeRuleSet(this.store.load(cwd, config));
   }
 
-  details(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars" | "exclude">): string {
+  details(cwd: string, config: Pick<RulesConfig, "enabled" | "files" | "fallback" | "maxChars" | "exclude">): string {
     const { set, tier } = this.store.loadTiered(cwd, config);
-    return formatRuleSetDetails(set, tier, config.exclude);
+    const text = formatRuleSetDetails(set, tier, config.exclude);
+    return config.enabled ? text : `Rules guard is off (rules.enabled: false). These would apply:\n${text}`;
   }
 
   turnEnd(): void {

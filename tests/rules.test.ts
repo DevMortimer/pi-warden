@@ -592,7 +592,22 @@ test("formatRuleSetDetails: configured rules name each source", () => {
 test("formatRuleSetDetails: fallback aggregate names its condensed size", () => {
   const set: RuleSet = { sources: ["README.md"], rules: [], aggregate: "Always write tests.", alwaysDropped: 0 };
   assert.equal(formatRuleSetDetails(set, "fallback"),
-    "Rules in force: README.md judged as one aggregate rule (prose only; 19 condensed chars)");
+    "Rules in force: README.md judged as one aggregate rule (19 condensed chars)");
+});
+
+test("rules details: a disabled guard leads with the off notice and the same details follow", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rules-off-"));
+  try {
+    await writeFile(join(dir, "pi-warden.md"), "# No console statements\nCode must not contain `console.log`. Use the logger.\n");
+    const guard = new RulesGuard();
+    const off = guard.details(dir, rulesConfig({ enabled: false }));
+    const on = guard.details(dir, rulesConfig());
+    assert.equal(off, `Rules guard is off (rules.enabled: false). These would apply:\n${on}`);
+    assert.equal(on, [
+      "Rules in force: pi-warden.md (1 rule, 0 dropped)",
+      "1. no-console-statements paths: (all)",
+    ].join("\n"));
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("formatRuleSetDetails: empty set uses the first-run remedy", () => {
