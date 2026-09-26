@@ -1,11 +1,11 @@
 {
  "date": "2026-09-26",
- "command": "node scripts/rules-bench.mjs --split all --budget 200 --concurrency 4",
+ "command": "node scripts/rules-bench.mjs --split all --budget 160 --concurrency 4",
  "split": "all",
  "concurrency": 4,
- "budget": 200,
+ "budget": 160,
  "timeout_ms": 20000,
- "wall_ms": 11376,
+ "wall_ms": 11860,
  "requests_sent": 153,
  "requests_failed": 0,
  "retried": 0,
@@ -104,9 +104,9 @@
   "requestsStarted": 153,
   "requestsSucceeded": 153,
   "requestsFailed": 0,
-  "inputTokens": 706163,
-  "outputTokens": 112716,
-  "estimatedUsd": 0.029659
+  "inputTokens": 708917,
+  "outputTokens": 112710,
+  "estimatedUsd": 0.029775
  },
  "cases": [
   {
@@ -195,14 +195,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.14
+     "violation": 0.18
     }
    ],
    "findings": [
     "no-console-statements"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 535
+   "elapsedMs": 626
   },
   {
    "id": "r01-02",
@@ -260,7 +260,7 @@
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "violation",
-     "violation": 0.95
+     "violation": 0.96
     },
     {
      "id": "never-clip-user-visible-text",
@@ -298,7 +298,7 @@
     "every-exported-function-documents-its-return-value"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 432
+   "elapsedMs": 543
   },
   {
    "id": "r01-03",
@@ -393,7 +393,7 @@
     "no-console-statements"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 454
+   "elapsedMs": 531
   },
   {
    "id": "r01-04",
@@ -482,14 +482,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.03
     }
    ],
    "findings": [
     "no-console-statements"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 458
+   "elapsedMs": 510
   },
   {
    "id": "r01-05",
@@ -504,14 +504,14 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.03
+    "violation": 0.04
    },
    "scores": [
     {
      "id": "no-console-statements",
      "name": "No console statements",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.04
     },
     {
      "id": "no-explicit-any-type",
@@ -582,7 +582,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 430
+   "elapsedMs": 299
   },
   {
    "id": "r01-06",
@@ -610,19 +610,19 @@
      "id": "no-explicit-any-type",
      "name": "No explicit any type",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     },
     {
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     },
     {
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.01
     },
     {
      "id": "switch-statements-must-have-a-default-case",
@@ -646,19 +646,19 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.11
+     "violation": 0.09
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.03
     },
     {
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.01
     },
     {
      "id": "no-new-dependency-without-need",
@@ -670,12 +670,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 454
+   "elapsedMs": 362
   },
   {
    "id": "r01-07",
@@ -690,14 +690,14 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.12
+    "violation": 0.09
    },
    "scores": [
     {
      "id": "no-console-statements",
      "name": "No console statements",
      "outcome": "compliant",
-     "violation": 0.12
+     "violation": 0.09
     },
     {
      "id": "todo-comments-need-a-reference",
@@ -757,14 +757,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.82
+     "violation": 0.86
     }
    ],
    "findings": [
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 438
+   "elapsedMs": 299
   },
   {
    "id": "r01-08",
@@ -797,7 +797,7 @@
     {
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -833,7 +833,7 @@
     {
      "id": "no-new-dependency-without-need",
      "name": "No new dependency without need",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -857,7 +857,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 443
+   "elapsedMs": 311
   },
   {
    "id": "r01-09",
@@ -944,7 +944,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 251
+   "elapsedMs": 284
   },
   {
    "id": "r02-01",
@@ -1032,14 +1032,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.16
+     "violation": 0.21
     }
    ],
    "findings": [
     "no-explicit-any-type"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 380
+   "elapsedMs": 274
   },
   {
    "id": "r02-02",
@@ -1134,7 +1134,7 @@
     "no-explicit-any-type"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 266
+   "elapsedMs": 264
   },
   {
    "id": "r02-03",
@@ -1198,12 +1198,12 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.42
+     "violation": 0.33
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -1229,7 +1229,7 @@
     "no-explicit-any-type"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 328
+   "elapsedMs": 303
   },
   {
    "id": "r02-04",
@@ -1294,7 +1294,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0
     },
     {
      "id": "never-clip-user-visible-text",
@@ -1325,7 +1325,7 @@
     "no-explicit-any-type"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 274
+   "elapsedMs": 287
   },
   {
    "id": "r02-05",
@@ -1413,12 +1413,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.03
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 269
+   "elapsedMs": 274
   },
   {
    "id": "r02-06",
@@ -1511,7 +1511,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 404
+   "elapsedMs": 333
   },
   {
    "id": "r02-07",
@@ -1526,7 +1526,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0
+    "violation": 0.01
    },
    "scores": [
     {
@@ -1539,7 +1539,7 @@
      "id": "no-explicit-any-type",
      "name": "No explicit any type",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "todo-comments-need-a-reference",
@@ -1587,7 +1587,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.05
     },
     {
      "id": "no-new-dependency-without-need",
@@ -1599,12 +1599,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.05
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 280
+   "elapsedMs": 266
   },
   {
    "id": "r02-08",
@@ -1652,7 +1652,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "violation",
-     "violation": 0.9
+     "violation": 0.88
     },
     {
      "id": "never-clip-user-visible-text",
@@ -1695,7 +1695,7 @@
     "boolean-names-start-with-is-has-should-can"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 255
+   "elapsedMs": 287
   },
   {
    "id": "r02-09",
@@ -1718,7 +1718,7 @@
     {
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
@@ -1778,7 +1778,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 268
+   "elapsedMs": 288
   },
   {
    "id": "r03-01",
@@ -1842,7 +1842,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     },
     {
      "id": "never-clip-user-visible-text",
@@ -1866,15 +1866,15 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.93
+     "violation": 0.9
     }
    ],
    "findings": [
-    "no-partial-implementations",
-    "todo-comments-need-a-reference"
+    "todo-comments-need-a-reference",
+    "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 291
+   "elapsedMs": 266
   },
   {
    "id": "r03-02",
@@ -1932,7 +1932,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -1969,7 +1969,7 @@
     "todo-comments-need-a-reference"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 266
+   "elapsedMs": 263
   },
   {
    "id": "r03-03",
@@ -1984,7 +1984,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.77
+    "violation": 0.81
    },
    "scores": [
     {
@@ -1997,7 +1997,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "violation",
-     "violation": 0.77
+     "violation": 0.81
     },
     {
      "id": "no-empty-catch-blocks",
@@ -2057,14 +2057,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.64
+     "violation": 0.6
     }
    ],
    "findings": [
     "todo-comments-need-a-reference"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 278
+   "elapsedMs": 289
   },
   {
    "id": "r03-04",
@@ -2129,7 +2129,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.14
+     "violation": 0.12
     },
     {
      "id": "never-clip-user-visible-text",
@@ -2141,7 +2141,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.01
     },
     {
      "id": "no-new-dependency-without-need",
@@ -2153,7 +2153,7 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.87
+     "violation": 0.91
     }
    ],
    "findings": [
@@ -2161,7 +2161,7 @@
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 297
+   "elapsedMs": 287
   },
   {
    "id": "r03-05",
@@ -2225,7 +2225,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.08
     },
     {
      "id": "never-clip-user-visible-text",
@@ -2249,14 +2249,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.81
+     "violation": 0.8
     }
    ],
    "findings": [
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 278
+   "elapsedMs": 277
   },
   {
    "id": "r03-06",
@@ -2271,7 +2271,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.02
+    "violation": 0.04
    },
    "scores": [
     {
@@ -2290,7 +2290,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.04
     },
     {
      "id": "no-empty-catch-blocks",
@@ -2314,7 +2314,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.03
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -2332,7 +2332,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.11
+     "violation": 0.12
     },
     {
      "id": "no-new-dependency-without-need",
@@ -2344,12 +2344,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.34
+     "violation": 0.35
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 304
+   "elapsedMs": 283
   },
   {
    "id": "r03-07",
@@ -2406,7 +2406,7 @@
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
@@ -2437,12 +2437,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.43
+     "violation": 0.39
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 275
+   "elapsedMs": 264
   },
   {
    "id": "r03-08",
@@ -2457,7 +2457,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "not_applicable",
-    "violation": 0.15
+    "violation": 0.18
    },
    "scores": [
     {
@@ -2470,7 +2470,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "not_applicable",
-     "violation": 0.15
+     "violation": 0.18
     },
     {
      "id": "no-empty-catch-blocks",
@@ -2518,12 +2518,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "not_applicable",
-     "violation": 0.1
+     "violation": 0.06
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 263
+   "elapsedMs": 276
   },
   {
    "id": "r03-09",
@@ -2599,18 +2599,18 @@
      "id": "markdown-carries-no-placeholder-text",
      "name": "Markdown carries no placeholder text",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.02
     },
     {
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "not_applicable",
-     "violation": 0.01
+     "violation": 0
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 273
+   "elapsedMs": 306
   },
   {
    "id": "r04-01",
@@ -2639,6 +2639,101 @@
      "name": "No explicit any type",
      "outcome": "compliant",
      "violation": 0
+    },
+    {
+     "id": "todo-comments-need-a-reference",
+     "name": "TODO comments need a reference",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "no-empty-catch-blocks",
+     "name": "No empty catch blocks",
+     "outcome": "violation",
+     "violation": 0.97
+    },
+    {
+     "id": "switch-statements-must-have-a-default-case",
+     "name": "Switch statements must have a default case",
+     "outcome": "not_applicable",
+     "violation": 0
+    },
+    {
+     "id": "no-hardcoded-credentials",
+     "name": "No hardcoded credentials",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "exported-functions-must-have-explicit-return-types",
+     "name": "Exported functions must have explicit return types",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "boolean-names-start-with-is-has-should-can",
+     "name": "Boolean names start with is/has/should/can",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "never-clip-user-visible-text",
+     "name": "Never clip user-visible text",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "errors-never-reach-the-user-raw",
+     "name": "Errors never reach the user raw",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "no-new-dependency-without-need",
+     "name": "No new dependency without need",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "no-partial-implementations",
+     "name": "No partial implementations",
+     "outcome": "compliant",
+     "violation": 0.4
+    }
+   ],
+   "findings": [
+    "no-empty-catch-blocks"
+   ],
+   "model": "jev-1.13.0",
+   "elapsedMs": 261
+  },
+  {
+   "id": "r04-02",
+   "rule": "no-empty-catch-blocks",
+   "label": "violation",
+   "kind": "violation",
+   "split": "tune",
+   "tool": "write",
+   "path": "src/read.ts",
+   "source": "typesafe",
+   "asked": 12,
+   "targetAsked": true,
+   "target": {
+    "outcome": "violation",
+    "violation": 0.97
+   },
+   "scores": [
+    {
+     "id": "no-console-statements",
+     "name": "No console statements",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "no-explicit-any-type",
+     "name": "No explicit any type",
+     "outcome": "compliant",
+     "violation": 0.02
     },
     {
      "id": "todo-comments-need-a-reference",
@@ -2698,107 +2793,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.38
+     "violation": 0.33
     }
    ],
    "findings": [
     "no-empty-catch-blocks"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 274
-  },
-  {
-   "id": "r04-02",
-   "rule": "no-empty-catch-blocks",
-   "label": "violation",
-   "kind": "violation",
-   "split": "tune",
-   "tool": "write",
-   "path": "src/read.ts",
-   "source": "typesafe",
-   "asked": 12,
-   "targetAsked": true,
-   "target": {
-    "outcome": "compliant",
-    "violation": 0.46
-   },
-   "scores": [
-    {
-     "id": "no-console-statements",
-     "name": "No console statements",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "no-explicit-any-type",
-     "name": "No explicit any type",
-     "outcome": "compliant",
-     "violation": 0.04
-    },
-    {
-     "id": "todo-comments-need-a-reference",
-     "name": "TODO comments need a reference",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "no-empty-catch-blocks",
-     "name": "No empty catch blocks",
-     "outcome": "compliant",
-     "violation": 0.46
-    },
-    {
-     "id": "switch-statements-must-have-a-default-case",
-     "name": "Switch statements must have a default case",
-     "outcome": "not_applicable",
-     "violation": 0
-    },
-    {
-     "id": "no-hardcoded-credentials",
-     "name": "No hardcoded credentials",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "exported-functions-must-have-explicit-return-types",
-     "name": "Exported functions must have explicit return types",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "boolean-names-start-with-is-has-should-can",
-     "name": "Boolean names start with is/has/should/can",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "never-clip-user-visible-text",
-     "name": "Never clip user-visible text",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "errors-never-reach-the-user-raw",
-     "name": "Errors never reach the user raw",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "no-new-dependency-without-need",
-     "name": "No new dependency without need",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "no-partial-implementations",
-     "name": "No partial implementations",
-     "outcome": "compliant",
-     "violation": 0.34
-    }
-   ],
-   "findings": [],
-   "model": "jev-1.13.0",
-   "elapsedMs": 319
+   "elapsedMs": 311
   },
   {
    "id": "r04-03",
@@ -2856,7 +2858,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.03
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -2874,7 +2876,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.03
     },
     {
      "id": "no-new-dependency-without-need",
@@ -2886,14 +2888,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.65
+     "violation": 0.6900000000000001
     }
    ],
    "findings": [
     "no-empty-catch-blocks"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 267
+   "elapsedMs": 284
   },
   {
    "id": "r04-04",
@@ -2922,7 +2924,7 @@
      "id": "no-explicit-any-type",
      "name": "No explicit any type",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0
     },
     {
      "id": "todo-comments-need-a-reference",
@@ -2952,13 +2954,13 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.13
+     "violation": 0.19
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.06
+     "violation": 0.05
     },
     {
      "id": "never-clip-user-visible-text",
@@ -2982,14 +2984,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.51
+     "violation": 0.58
     }
    ],
    "findings": [
     "no-empty-catch-blocks"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 255
+   "elapsedMs": 292
   },
   {
    "id": "r04-05",
@@ -3034,7 +3036,7 @@
     {
      "id": "switch-statements-must-have-a-default-case",
      "name": "Switch statements must have a default case",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -3065,7 +3067,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.03
     },
     {
      "id": "no-new-dependency-without-need",
@@ -3082,7 +3084,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 271
+   "elapsedMs": 370
   },
   {
    "id": "r04-06",
@@ -3158,7 +3160,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.15
+     "violation": 0.16
     },
     {
      "id": "no-new-dependency-without-need",
@@ -3175,7 +3177,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 318
+   "elapsedMs": 373
   },
   {
    "id": "r04-07",
@@ -3190,7 +3192,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.01
+    "violation": 0.02
    },
    "scores": [
     {
@@ -3215,7 +3217,7 @@
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     },
     {
      "id": "switch-statements-must-have-a-default-case",
@@ -3239,19 +3241,19 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.06
+     "violation": 0.04
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.07
+     "violation": 0.04
     },
     {
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.01
     },
     {
      "id": "no-new-dependency-without-need",
@@ -3268,7 +3270,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 271
+   "elapsedMs": 266
   },
   {
    "id": "r04-08",
@@ -3283,7 +3285,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.03
+    "violation": 0.02
    },
    "scores": [
     {
@@ -3302,7 +3304,7 @@
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.02
     },
     {
      "id": "switch-statements-must-have-a-default-case",
@@ -3361,7 +3363,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 265
+   "elapsedMs": 301
   },
   {
    "id": "r04-09",
@@ -3382,7 +3384,7 @@
     {
      "id": "no-console-statements",
      "name": "No console statements",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -3425,7 +3427,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "no-new-dependency-without-need",
@@ -3448,7 +3450,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 286
+   "elapsedMs": 293
   },
   {
    "id": "r05-01",
@@ -3463,7 +3465,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.97
+    "violation": 0.95
    },
    "scores": [
     {
@@ -3494,7 +3496,7 @@
      "id": "switch-statements-must-have-a-default-case",
      "name": "Switch statements must have a default case",
      "outcome": "violation",
-     "violation": 0.97
+     "violation": 0.95
     },
     {
      "id": "no-hardcoded-credentials",
@@ -3536,14 +3538,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.28
+     "violation": 0.26
     }
    ],
    "findings": [
     "switch-statements-must-have-a-default-case"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 290
+   "elapsedMs": 292
   },
   {
    "id": "r05-02",
@@ -3558,7 +3560,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.6
+    "violation": 0.56
    },
    "scores": [
     {
@@ -3583,7 +3585,7 @@
      "id": "switch-statements-must-have-a-default-case",
      "name": "Switch statements must have a default case",
      "outcome": "violation",
-     "violation": 0.6
+     "violation": 0.56
     },
     {
      "id": "no-hardcoded-credentials",
@@ -3631,12 +3633,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.11
+     "violation": 0.17
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 308
+   "elapsedMs": 300
   },
   {
    "id": "r05-03",
@@ -3700,7 +3702,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.14
+     "violation": 0.21
     },
     {
      "id": "never-clip-user-visible-text",
@@ -3731,7 +3733,7 @@
     "switch-statements-must-have-a-default-case"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 261
+   "elapsedMs": 284
   },
   {
    "id": "r05-04",
@@ -3746,7 +3748,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.98
+    "violation": 0.97
    },
    "editId": "edit_2",
    "scores": [
@@ -3778,7 +3780,7 @@
      "id": "switch-statements-must-have-a-default-case",
      "name": "Switch statements must have a default case",
      "outcome": "violation",
-     "violation": 0.98
+     "violation": 0.97
     },
     {
      "id": "no-hardcoded-credentials",
@@ -3790,7 +3792,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.02
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -3820,14 +3822,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.27
+     "violation": 0.28
     }
    ],
    "findings": [
     "switch-statements-must-have-a-default-case"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 265
+   "elapsedMs": 300
   },
   {
    "id": "r05-05",
@@ -3885,7 +3887,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.23
+     "violation": 0.08
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -3915,12 +3917,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.06
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 278
+   "elapsedMs": 264
   },
   {
    "id": "r05-06",
@@ -3959,7 +3961,7 @@
     {
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -4013,7 +4015,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 262
+   "elapsedMs": 274
   },
   {
    "id": "r05-07",
@@ -4028,7 +4030,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.54
+    "violation": 0.6
    },
    "scores": [
     {
@@ -4059,7 +4061,7 @@
      "id": "switch-statements-must-have-a-default-case",
      "name": "Switch statements must have a default case",
      "outcome": "violation",
-     "violation": 0.54
+     "violation": 0.6
     },
     {
      "id": "no-hardcoded-credentials",
@@ -4101,14 +4103,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.78
+     "violation": 0.77
     }
    ],
    "findings": [
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 280
+   "elapsedMs": 281
   },
   {
    "id": "r05-08",
@@ -4160,7 +4162,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "violation",
-     "violation": 0.83
+     "violation": 0.87
     },
     {
      "id": "never-clip-user-visible-text",
@@ -4191,7 +4193,7 @@
     "boolean-names-start-with-is-has-should-can"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 268
+   "elapsedMs": 254
   },
   {
    "id": "r05-09",
@@ -4278,7 +4280,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 288
+   "elapsedMs": 292
   },
   {
    "id": "r06-01",
@@ -4347,7 +4349,7 @@
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
@@ -4366,7 +4368,7 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.24
+     "violation": 0.27
     }
    ],
    "findings": [
@@ -4388,7 +4390,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.8
+    "violation": 0.81
    },
    "scores": [
     {
@@ -4425,7 +4427,7 @@
      "id": "no-hardcoded-credentials",
      "name": "No hardcoded credentials",
      "outcome": "violation",
-     "violation": 0.8
+     "violation": 0.81
     },
     {
      "id": "exported-functions-must-have-explicit-return-types",
@@ -4437,7 +4439,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "never-clip-user-visible-text",
@@ -4468,7 +4470,7 @@
     "no-hardcoded-credentials"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 302
+   "elapsedMs": 303
   },
   {
    "id": "r06-03",
@@ -4483,7 +4485,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.7
+    "violation": 0.75
    },
    "scores": [
     {
@@ -4496,7 +4498,7 @@
      "id": "no-explicit-any-type",
      "name": "No explicit any type",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.02
     },
     {
      "id": "todo-comments-need-a-reference",
@@ -4520,7 +4522,7 @@
      "id": "no-hardcoded-credentials",
      "name": "No hardcoded credentials",
      "outcome": "violation",
-     "violation": 0.7
+     "violation": 0.75
     },
     {
      "id": "exported-functions-must-have-explicit-return-types",
@@ -4538,7 +4540,7 @@
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -4556,14 +4558,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.18
+     "violation": 0.22
     }
    ],
    "findings": [
     "no-hardcoded-credentials"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 301
+   "elapsedMs": 277
   },
   {
    "id": "r06-04",
@@ -4628,13 +4630,13 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.22
+     "violation": 0.14
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -4652,14 +4654,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.19
+     "violation": 0.22
     }
    ],
    "findings": [
     "no-hardcoded-credentials"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 283
+   "elapsedMs": 281
   },
   {
    "id": "r06-05",
@@ -4729,7 +4731,7 @@
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.03
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -4754,7 +4756,7 @@
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 269
+   "elapsedMs": 267
   },
   {
    "id": "r06-06",
@@ -4769,7 +4771,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.02
+    "violation": 0.03
    },
    "scores": [
     {
@@ -4806,7 +4808,7 @@
      "id": "no-hardcoded-credentials",
      "name": "No hardcoded credentials",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.03
     },
     {
      "id": "exported-functions-must-have-explicit-return-types",
@@ -4847,7 +4849,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 280
+   "elapsedMs": 281
   },
   {
    "id": "r06-07",
@@ -4940,7 +4942,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 322
+   "elapsedMs": 272
   },
   {
    "id": "r06-08",
@@ -5021,7 +5023,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 271
+   "elapsedMs": 257
   },
   {
    "id": "r06-09",
@@ -5103,12 +5105,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "not_applicable",
-     "violation": 0.04
+     "violation": 0.03
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 290
+   "elapsedMs": 280
   },
   {
    "id": "r07-01",
@@ -5123,7 +5125,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.97
+    "violation": 0.98
    },
    "scores": [
     {
@@ -5166,7 +5168,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "violation",
-     "violation": 0.97
+     "violation": 0.98
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -5203,7 +5205,7 @@
     "exported-functions-must-have-explicit-return-types"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 286
+   "elapsedMs": 305
   },
   {
    "id": "r07-02",
@@ -5242,13 +5244,13 @@
     {
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
      "id": "switch-statements-must-have-a-default-case",
      "name": "Switch statements must have a default case",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -5291,14 +5293,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.13
+     "violation": 0.2
     }
    ],
    "findings": [
     "exported-functions-must-have-explicit-return-types"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 281
+   "elapsedMs": 265
   },
   {
    "id": "r07-03",
@@ -5313,7 +5315,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.95
+    "violation": 0.96
    },
    "scores": [
     {
@@ -5326,7 +5328,7 @@
      "id": "no-explicit-any-type",
      "name": "No explicit any type",
      "outcome": "compliant",
-     "violation": 0.15
+     "violation": 0.12
     },
     {
      "id": "todo-comments-need-a-reference",
@@ -5343,7 +5345,7 @@
     {
      "id": "switch-statements-must-have-a-default-case",
      "name": "Switch statements must have a default case",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -5356,13 +5358,13 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "violation",
-     "violation": 0.95
+     "violation": 0.96
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.2
+     "violation": 0.31
     },
     {
      "id": "never-clip-user-visible-text",
@@ -5386,14 +5388,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0
     }
    ],
    "findings": [
     "exported-functions-must-have-explicit-return-types"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 292
+   "elapsedMs": 450
   },
   {
    "id": "r07-04",
@@ -5489,7 +5491,7 @@
     "exported-functions-must-have-explicit-return-types"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 284
+   "elapsedMs": 375
   },
   {
    "id": "r07-05",
@@ -5582,7 +5584,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 272
+   "elapsedMs": 332
   },
   {
    "id": "r07-06",
@@ -5597,7 +5599,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.05
+    "violation": 0.04
    },
    "scores": [
     {
@@ -5640,7 +5642,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.05
+     "violation": 0.04
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -5675,7 +5677,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 298
+   "elapsedMs": 329
   },
   {
    "id": "r07-07",
@@ -5690,7 +5692,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.05
+    "violation": 0.03
    },
    "scores": [
     {
@@ -5709,7 +5711,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "compliant",
-     "violation": 0.05
+     "violation": 0.03
     },
     {
      "id": "no-empty-catch-blocks",
@@ -5733,25 +5735,25 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.05
+     "violation": 0.03
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.04
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.19
+     "violation": 0.22
     },
     {
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.08
+     "violation": 0.07
     },
     {
      "id": "no-new-dependency-without-need",
@@ -5763,12 +5765,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.22
+     "violation": 0.18
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 267
+   "elapsedMs": 264
   },
   {
    "id": "r07-08",
@@ -5851,13 +5853,13 @@
     {
      "id": "no-partial-implementations",
      "name": "No partial implementations",
-     "outcome": "compliant",
-     "violation": 0.47
+     "outcome": "violation",
+     "violation": 0.52
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 265
+   "elapsedMs": 303
   },
   {
    "id": "r07-09",
@@ -5940,7 +5942,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 289
+   "elapsedMs": 325
   },
   {
    "id": "r08-01",
@@ -5955,7 +5957,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.77
+    "violation": 0.79
    },
    "scores": [
     {
@@ -6004,7 +6006,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "violation",
-     "violation": 0.77
+     "violation": 0.79
     },
     {
      "id": "never-clip-user-visible-text",
@@ -6028,14 +6030,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.05
     }
    ],
    "findings": [
     "boolean-names-start-with-is-has-should-can"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 283
+   "elapsedMs": 269
   },
   {
    "id": "r08-02",
@@ -6123,14 +6125,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.07
+     "violation": 0.08
     }
    ],
    "findings": [
     "boolean-names-start-with-is-has-should-can"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 264
+   "elapsedMs": 295
   },
   {
    "id": "r08-03",
@@ -6145,7 +6147,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.98
+    "violation": 0.99
    },
    "scores": [
     {
@@ -6194,7 +6196,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "violation",
-     "violation": 0.98
+     "violation": 0.99
     },
     {
      "id": "never-clip-user-visible-text",
@@ -6218,14 +6220,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.03
     }
    ],
    "findings": [
     "boolean-names-start-with-is-has-should-can"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 324
+   "elapsedMs": 271
   },
   {
    "id": "r08-04",
@@ -6240,7 +6242,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.96
+    "violation": 0.95
    },
    "editId": "edit_2",
    "scores": [
@@ -6290,7 +6292,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "violation",
-     "violation": 0.96
+     "violation": 0.95
     },
     {
      "id": "never-clip-user-visible-text",
@@ -6321,7 +6323,7 @@
     "boolean-names-start-with-is-has-should-can"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 305
+   "elapsedMs": 275
   },
   {
    "id": "r08-05",
@@ -6336,7 +6338,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.29
+    "violation": 0.35
    },
    "scores": [
     {
@@ -6385,7 +6387,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.29
+     "violation": 0.35
     },
     {
      "id": "never-clip-user-visible-text",
@@ -6409,12 +6411,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.07
+     "violation": 0.03
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 270
+   "elapsedMs": 290
   },
   {
    "id": "r08-06",
@@ -6429,7 +6431,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.83
+    "violation": 0.8099999999999999
    },
    "scores": [
     {
@@ -6459,7 +6461,7 @@
     {
      "id": "switch-statements-must-have-a-default-case",
      "name": "Switch statements must have a default case",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
@@ -6478,7 +6480,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "violation",
-     "violation": 0.83
+     "violation": 0.8099999999999999
     },
     {
      "id": "never-clip-user-visible-text",
@@ -6509,7 +6511,7 @@
     "boolean-names-start-with-is-has-should-can"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 348
+   "elapsedMs": 262
   },
   {
    "id": "r08-07",
@@ -6524,7 +6526,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.07
+    "violation": 0.06
    },
    "scores": [
     {
@@ -6537,7 +6539,7 @@
      "id": "no-explicit-any-type",
      "name": "No explicit any type",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.03
     },
     {
      "id": "todo-comments-need-a-reference",
@@ -6549,7 +6551,7 @@
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     },
     {
      "id": "switch-statements-must-have-a-default-case",
@@ -6573,19 +6575,19 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.07
+     "violation": 0.06
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.04
     },
     {
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.02
     },
     {
      "id": "no-new-dependency-without-need",
@@ -6597,12 +6599,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.17
+     "violation": 0.18
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 305
+   "elapsedMs": 266
   },
   {
    "id": "r08-08",
@@ -6617,7 +6619,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.89
+    "violation": 0.84
    },
    "scores": [
     {
@@ -6654,7 +6656,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "violation",
-     "violation": 0.89
+     "violation": 0.84
     },
     {
      "id": "never-clip-user-visible-text",
@@ -6685,7 +6687,7 @@
     "boolean-names-start-with-is-has-should-can"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 289
+   "elapsedMs": 279
   },
   {
    "id": "r08-09",
@@ -6772,7 +6774,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 288
+   "elapsedMs": 258
   },
   {
    "id": "r09-01",
@@ -6860,14 +6862,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0
     }
    ],
    "findings": [
     "every-exported-function-documents-its-return-value"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 266
+   "elapsedMs": 298
   },
   {
    "id": "r09-02",
@@ -6882,7 +6884,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.92
+    "violation": 0.87
    },
    "scores": [
     {
@@ -6925,7 +6927,7 @@
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "violation",
-     "violation": 0.92
+     "violation": 0.87
     },
     {
      "id": "never-clip-user-visible-text",
@@ -6962,7 +6964,7 @@
     "every-exported-function-documents-its-return-value"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 271
+   "elapsedMs": 260
   },
   {
    "id": "r09-03",
@@ -6977,7 +6979,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.58
+    "violation": 0.69
    },
    "scores": [
     {
@@ -7014,13 +7016,13 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.12
+     "violation": 0.13
     },
     {
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "violation",
-     "violation": 0.58
+     "violation": 0.69
     },
     {
      "id": "never-clip-user-visible-text",
@@ -7032,7 +7034,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.03
     },
     {
      "id": "no-new-dependency-without-need",
@@ -7044,7 +7046,7 @@
      "id": "javascript-uses-const-or-let",
      "name": "JavaScript uses const or let",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.04
     },
     {
      "id": "no-partial-implementations",
@@ -7055,7 +7057,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 271
+   "elapsedMs": 355
   },
   {
    "id": "r09-04",
@@ -7120,7 +7122,7 @@
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -7151,7 +7153,7 @@
     "every-exported-function-documents-its-return-value"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 321
+   "elapsedMs": 288
   },
   {
    "id": "r09-05",
@@ -7244,7 +7246,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 294
+   "elapsedMs": 278
   },
   {
    "id": "r09-06",
@@ -7308,7 +7310,7 @@
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.02
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -7337,7 +7339,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 261
+   "elapsedMs": 275
   },
   {
    "id": "r09-07",
@@ -7407,7 +7409,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.03
     },
     {
      "id": "no-new-dependency-without-need",
@@ -7430,7 +7432,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 336
+   "elapsedMs": 254
   },
   {
    "id": "r09-08",
@@ -7521,7 +7523,7 @@
     "exported-functions-must-have-explicit-return-types"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 281
+   "elapsedMs": 255
   },
   {
    "id": "r09-09",
@@ -7610,7 +7612,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 267
+   "elapsedMs": 252
   },
   {
    "id": "r10-01",
@@ -7668,7 +7670,7 @@
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "violation",
-     "violation": 0.98
+     "violation": 0.99
     },
     {
      "id": "never-clip-user-visible-text",
@@ -7706,7 +7708,7 @@
     "every-exported-function-documents-its-return-value"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 295
+   "elapsedMs": 265
   },
   {
    "id": "r10-02",
@@ -7794,14 +7796,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.07
+     "violation": 0.09
     }
    ],
    "findings": [
     "never-clip-user-visible-text"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 257
+   "elapsedMs": 252
   },
   {
    "id": "r10-03",
@@ -7871,7 +7873,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.05
     },
     {
      "id": "no-new-dependency-without-need",
@@ -7889,14 +7891,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.02
     }
    ],
    "findings": [
     "never-clip-user-visible-text"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 266
+   "elapsedMs": 281
   },
   {
    "id": "r10-04",
@@ -7973,7 +7975,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.19
+     "violation": 0.16
     },
     {
      "id": "no-new-dependency-without-need",
@@ -7992,7 +7994,7 @@
     "never-clip-user-visible-text"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 274
+   "elapsedMs": 255
   },
   {
    "id": "r10-05",
@@ -8007,7 +8009,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.5599999999999999
+    "violation": 0.52
    },
    "scores": [
     {
@@ -8062,7 +8064,7 @@
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "violation",
-     "violation": 0.5599999999999999
+     "violation": 0.52
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -8080,12 +8082,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.01
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 278
+   "elapsedMs": 260
   },
   {
    "id": "r10-06",
@@ -8143,7 +8145,7 @@
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "violation",
-     "violation": 0.51
+     "violation": 0.59
     },
     {
      "id": "never-clip-user-visible-text",
@@ -8173,12 +8175,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.35
+     "violation": 0.44
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 298
+   "elapsedMs": 289
   },
   {
    "id": "r10-07",
@@ -8193,7 +8195,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0
+    "violation": 0.01
    },
    "scores": [
     {
@@ -8230,19 +8232,19 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "violation",
-     "violation": 0.97
+     "violation": 0.99
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -8273,7 +8275,7 @@
     "every-exported-function-documents-its-return-value"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 273
+   "elapsedMs": 257
   },
   {
    "id": "r10-08",
@@ -8288,7 +8290,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "not_applicable",
-    "violation": 0.34
+    "violation": 0.33
    },
    "scores": [
     {
@@ -8325,13 +8327,13 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "not_applicable",
-     "violation": 0.02
+     "violation": 0.01
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "not_applicable",
-     "violation": 0.34
+     "violation": 0.33
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -8354,7 +8356,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 279
+   "elapsedMs": 259
   },
   {
    "id": "r10-09",
@@ -8441,7 +8443,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 265
+   "elapsedMs": 269
   },
   {
    "id": "r11-01",
@@ -8529,7 +8531,7 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.12
+     "violation": 0.1
     }
    ],
    "findings": [
@@ -8537,7 +8539,7 @@
     "errors-never-reach-the-user-raw"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 264
+   "elapsedMs": 280
   },
   {
    "id": "r11-02",
@@ -8595,7 +8597,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.05
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -8632,7 +8634,7 @@
     "errors-never-reach-the-user-raw"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 286
+   "elapsedMs": 257
   },
   {
    "id": "r11-03",
@@ -8647,7 +8649,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.91
+    "violation": 0.89
    },
    "scores": [
     {
@@ -8690,13 +8692,13 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.13
+     "violation": 0.14
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.09
+     "violation": 0.1
     },
     {
      "id": "never-clip-user-visible-text",
@@ -8708,7 +8710,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "violation",
-     "violation": 0.91
+     "violation": 0.89
     },
     {
      "id": "no-new-dependency-without-need",
@@ -8727,7 +8729,7 @@
     "errors-never-reach-the-user-raw"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 269
+   "elapsedMs": 265
   },
   {
    "id": "r11-04",
@@ -8742,7 +8744,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.9
+    "violation": 0.79
    },
    "editId": "edit_1",
    "scores": [
@@ -8786,7 +8788,7 @@
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "compliant",
-     "violation": 0.48
+     "violation": 0.47
     },
     {
      "id": "never-clip-user-visible-text",
@@ -8798,13 +8800,13 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "violation",
-     "violation": 0.9
+     "violation": 0.79
     },
     {
      "id": "no-new-dependency-without-need",
      "name": "No new dependency without need",
      "outcome": "compliant",
-     "violation": 0.06
+     "violation": 0.07
     },
     {
      "id": "javascript-uses-const-or-let",
@@ -8823,7 +8825,7 @@
     "errors-never-reach-the-user-raw"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 297
+   "elapsedMs": 280
   },
   {
    "id": "r11-05",
@@ -8838,7 +8840,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0
+    "violation": 0.01
    },
    "scores": [
     {
@@ -8881,7 +8883,7 @@
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "violation",
-     "violation": 1
+     "violation": 0.99
     },
     {
      "id": "never-clip-user-visible-text",
@@ -8893,13 +8895,13 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "no-new-dependency-without-need",
      "name": "No new dependency without need",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "javascript-uses-const-or-let",
@@ -8911,14 +8913,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.08
+     "violation": 0.11
     }
    ],
    "findings": [
     "every-exported-function-documents-its-return-value"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 298
+   "elapsedMs": 280
   },
   {
    "id": "r11-06",
@@ -9011,7 +9013,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 293
+   "elapsedMs": 257
   },
   {
    "id": "r11-07",
@@ -9104,7 +9106,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 328
+   "elapsedMs": 253
   },
   {
    "id": "r11-08",
@@ -9192,12 +9194,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 286
+   "elapsedMs": 265
   },
   {
    "id": "r11-09",
@@ -9224,7 +9226,7 @@
     {
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
@@ -9284,7 +9286,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 293
+   "elapsedMs": 247
   },
   {
    "id": "r12-01",
@@ -9299,7 +9301,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "insufficient_context",
-    "violation": 0.12
+    "violation": 0.15
    },
    "scores": [
     {
@@ -9336,7 +9338,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "not_applicable",
-     "violation": 0.2
+     "violation": 0.17
     },
     {
      "id": "never-clip-user-visible-text",
@@ -9354,7 +9356,7 @@
      "id": "no-new-dependency-without-need",
      "name": "No new dependency without need",
      "outcome": "insufficient_context",
-     "violation": 0.12
+     "violation": 0.15
     },
     {
      "id": "no-partial-implementations",
@@ -9365,7 +9367,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 271
+   "elapsedMs": 290
   },
   {
    "id": "r12-02",
@@ -9380,7 +9382,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.64
+    "violation": 0.65
    },
    "scores": [
     {
@@ -9435,7 +9437,7 @@
      "id": "no-new-dependency-without-need",
      "name": "No new dependency without need",
      "outcome": "violation",
-     "violation": 0.64
+     "violation": 0.65
     },
     {
      "id": "no-partial-implementations",
@@ -9446,7 +9448,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 283
+   "elapsedMs": 330
   },
   {
    "id": "r12-03",
@@ -9461,7 +9463,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "insufficient_context",
-    "violation": 0.21
+    "violation": 0.22
    },
    "scores": [
     {
@@ -9516,7 +9518,7 @@
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.03
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -9528,7 +9530,7 @@
      "id": "no-new-dependency-without-need",
      "name": "No new dependency without need",
      "outcome": "insufficient_context",
-     "violation": 0.21
+     "violation": 0.22
     },
     {
      "id": "no-partial-implementations",
@@ -9539,7 +9541,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 255
+   "elapsedMs": 360
   },
   {
    "id": "r12-04",
@@ -9554,7 +9556,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.87
+    "violation": 0.86
    },
    "editId": "edit_1",
    "scores": [
@@ -9597,8 +9599,8 @@
     {
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
-     "outcome": "compliant",
-     "violation": 0.46
+     "outcome": "violation",
+     "violation": 0.55
     },
     {
      "id": "never-clip-user-visible-text",
@@ -9616,7 +9618,7 @@
      "id": "no-new-dependency-without-need",
      "name": "No new dependency without need",
      "outcome": "violation",
-     "violation": 0.87
+     "violation": 0.86
     },
     {
      "id": "javascript-uses-const-or-let",
@@ -9635,7 +9637,7 @@
     "no-new-dependency-without-need"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 269
+   "elapsedMs": 273
   },
   {
    "id": "r12-05",
@@ -9716,7 +9718,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 283
+   "elapsedMs": 291
   },
   {
    "id": "r12-06",
@@ -9809,7 +9811,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 270
+   "elapsedMs": 345
   },
   {
    "id": "r12-07",
@@ -9884,7 +9886,7 @@
     {
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -9897,14 +9899,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.21
+     "violation": 0.22
     }
    ],
    "findings": [
     "exported-functions-must-have-explicit-return-types"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 256
+   "elapsedMs": 294
   },
   {
    "id": "r12-08",
@@ -9919,7 +9921,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "not_applicable",
-    "violation": 0.09
+    "violation": 0.07
    },
    "scores": [
     {
@@ -9974,7 +9976,7 @@
      "id": "no-new-dependency-without-need",
      "name": "No new dependency without need",
      "outcome": "not_applicable",
-     "violation": 0.09
+     "violation": 0.07
     },
     {
      "id": "no-partial-implementations",
@@ -9985,7 +9987,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 268
+   "elapsedMs": 301
   },
   {
    "id": "r12-09",
@@ -10012,7 +10014,7 @@
     {
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -10072,7 +10074,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 264
+   "elapsedMs": 297
   },
   {
    "id": "r13-01",
@@ -10087,7 +10089,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.91
+    "violation": 0.93
    },
    "scores": [
     {
@@ -10105,8 +10107,8 @@
     {
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
-     "outcome": "violation",
-     "violation": 0.6
+     "outcome": "compliant",
+     "violation": 0.35
     },
     {
      "id": "switch-statements-must-have-a-default-case",
@@ -10148,7 +10150,7 @@
      "id": "python-except-clauses-name-their-exception",
      "name": "Python except clauses name their exception",
      "outcome": "violation",
-     "violation": 0.91
+     "violation": 0.93
     },
     {
      "id": "python-functions-do-not-use-mutable-default-arguments",
@@ -10160,14 +10162,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.15
+     "violation": 0.16
     }
    ],
    "findings": [
     "python-except-clauses-name-their-exception"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 282
+   "elapsedMs": 277
   },
   {
    "id": "r13-02",
@@ -10182,7 +10184,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.91
+    "violation": 0.95
    },
    "scores": [
     {
@@ -10201,7 +10203,7 @@
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
      "outcome": "compliant",
-     "violation": 0.36
+     "violation": 0.23
     },
     {
      "id": "switch-statements-must-have-a-default-case",
@@ -10243,7 +10245,7 @@
      "id": "python-except-clauses-name-their-exception",
      "name": "Python except clauses name their exception",
      "outcome": "violation",
-     "violation": 0.91
+     "violation": 0.95
     },
     {
      "id": "python-functions-do-not-use-mutable-default-arguments",
@@ -10255,14 +10257,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.1
+     "violation": 0.08
     }
    ],
    "findings": [
     "python-except-clauses-name-their-exception"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 284
+   "elapsedMs": 279
   },
   {
    "id": "r13-03",
@@ -10295,8 +10297,8 @@
     {
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
-     "outcome": "violation",
-     "violation": 0.55
+     "outcome": "compliant",
+     "violation": 0.42
     },
     {
      "id": "switch-statements-must-have-a-default-case",
@@ -10320,7 +10322,7 @@
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.17
+     "violation": 0.22
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -10350,14 +10352,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.38
+     "violation": 0.42
     }
    ],
    "findings": [
     "python-except-clauses-name-their-exception"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 264
+   "elapsedMs": 290
   },
   {
    "id": "r13-04",
@@ -10392,7 +10394,7 @@
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
      "outcome": "compliant",
-     "violation": 0.45
+     "violation": 0.13
     },
     {
      "id": "switch-statements-must-have-a-default-case",
@@ -10446,14 +10448,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.64
+     "violation": 0.57
     }
    ],
    "findings": [
     "python-except-clauses-name-their-exception"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 298
+   "elapsedMs": 278
   },
   {
    "id": "r13-05",
@@ -10517,7 +10519,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.21
+     "violation": 0.22
     },
     {
      "id": "no-new-dependency-without-need",
@@ -10546,7 +10548,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 278
+   "elapsedMs": 322
   },
   {
    "id": "r13-06",
@@ -10610,7 +10612,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "violation",
-     "violation": 0.49
+     "violation": 0.52
     },
     {
      "id": "no-new-dependency-without-need",
@@ -10639,7 +10641,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 269
+   "elapsedMs": 318
   },
   {
    "id": "r13-07",
@@ -10654,7 +10656,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.03
+    "violation": 0.02
    },
    "scores": [
     {
@@ -10673,7 +10675,7 @@
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
      "outcome": "compliant",
-     "violation": 0.06
+     "violation": 0.05
     },
     {
      "id": "switch-statements-must-have-a-default-case",
@@ -10697,7 +10699,7 @@
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.15
+     "violation": 0.17
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -10715,7 +10717,7 @@
      "id": "python-except-clauses-name-their-exception",
      "name": "Python except clauses name their exception",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.02
     },
     {
      "id": "python-functions-do-not-use-mutable-default-arguments",
@@ -10732,7 +10734,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 281
+   "elapsedMs": 279
   },
   {
    "id": "r13-08",
@@ -10756,7 +10758,7 @@
      "id": "no-explicit-any-type",
      "name": "No explicit any type",
      "outcome": "compliant",
-     "violation": 0.04
+     "violation": 0.03
     },
     {
      "id": "todo-comments-need-a-reference",
@@ -10804,7 +10806,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.25
+     "violation": 0.2
     },
     {
      "id": "no-new-dependency-without-need",
@@ -10816,12 +10818,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.33
+     "violation": 0.34
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 283
+   "elapsedMs": 284
   },
   {
    "id": "r13-09",
@@ -10904,7 +10906,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 265
+   "elapsedMs": 242
   },
   {
    "id": "r14-01",
@@ -10919,7 +10921,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.97
+    "violation": 0.96
    },
    "scores": [
     {
@@ -10986,7 +10988,7 @@
      "id": "python-functions-do-not-use-mutable-default-arguments",
      "name": "Python functions do not use mutable default arguments",
      "outcome": "violation",
-     "violation": 0.97
+     "violation": 0.96
     },
     {
      "id": "no-partial-implementations",
@@ -10999,7 +11001,7 @@
     "python-functions-do-not-use-mutable-default-arguments"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 311
+   "elapsedMs": 281
   },
   {
    "id": "r14-02",
@@ -11014,7 +11016,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 1
+    "violation": 0.99
    },
    "scores": [
     {
@@ -11074,14 +11076,14 @@
     {
      "id": "python-except-clauses-name-their-exception",
      "name": "Python except clauses name their exception",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
      "id": "python-functions-do-not-use-mutable-default-arguments",
      "name": "Python functions do not use mutable default arguments",
      "outcome": "violation",
-     "violation": 1
+     "violation": 0.99
     },
     {
      "id": "no-partial-implementations",
@@ -11094,7 +11096,7 @@
     "python-functions-do-not-use-mutable-default-arguments"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 301
+   "elapsedMs": 282
   },
   {
    "id": "r14-03",
@@ -11109,7 +11111,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.88
+    "violation": 0.82
    },
    "scores": [
     {
@@ -11146,7 +11148,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.06
+     "violation": 0.05
     },
     {
      "id": "never-clip-user-visible-text",
@@ -11176,20 +11178,20 @@
      "id": "python-functions-do-not-use-mutable-default-arguments",
      "name": "Python functions do not use mutable default arguments",
      "outcome": "violation",
-     "violation": 0.88
+     "violation": 0.82
     },
     {
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.08
+     "violation": 0.06
     }
    ],
    "findings": [
     "python-functions-do-not-use-mutable-default-arguments"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 275
+   "elapsedMs": 277
   },
   {
    "id": "r14-04",
@@ -11242,13 +11244,13 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.23
+     "violation": 0.24
     },
     {
      "id": "errors-never-reach-the-user-raw",
@@ -11259,7 +11261,7 @@
     {
      "id": "no-new-dependency-without-need",
      "name": "No new dependency without need",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
@@ -11278,14 +11280,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.25
+     "violation": 0.26
     }
    ],
    "findings": [
     "python-functions-do-not-use-mutable-default-arguments"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 269
+   "elapsedMs": 273
   },
   {
    "id": "r14-05",
@@ -11300,7 +11302,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.01
+    "violation": 0.02
    },
    "scores": [
     {
@@ -11318,7 +11320,7 @@
     {
      "id": "no-empty-catch-blocks",
      "name": "No empty catch blocks",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -11348,8 +11350,8 @@
     {
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
-     "outcome": "compliant",
-     "violation": 0
+     "outcome": "not_applicable",
+     "violation": 0.01
     },
     {
      "id": "no-new-dependency-without-need",
@@ -11367,7 +11369,7 @@
      "id": "python-functions-do-not-use-mutable-default-arguments",
      "name": "Python functions do not use mutable default arguments",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     },
     {
      "id": "no-partial-implementations",
@@ -11378,7 +11380,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 249
+   "elapsedMs": 262
   },
   {
    "id": "r14-06",
@@ -11453,7 +11455,7 @@
     {
      "id": "python-except-clauses-name-their-exception",
      "name": "Python except clauses name their exception",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -11466,12 +11468,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.21
+     "violation": 0.14
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 286
+   "elapsedMs": 272
   },
   {
    "id": "r14-07",
@@ -11486,7 +11488,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.05
+    "violation": 0.03
    },
    "scores": [
     {
@@ -11523,7 +11525,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "never-clip-user-visible-text",
@@ -11553,7 +11555,7 @@
      "id": "python-functions-do-not-use-mutable-default-arguments",
      "name": "Python functions do not use mutable default arguments",
      "outcome": "compliant",
-     "violation": 0.05
+     "violation": 0.03
     },
     {
      "id": "no-partial-implementations",
@@ -11564,7 +11566,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 262
+   "elapsedMs": 257
   },
   {
    "id": "r14-08",
@@ -11618,7 +11620,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "violation",
-     "violation": 0.99
+     "violation": 0.98
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -11648,7 +11650,7 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.79
+     "violation": 0.88
     }
    ],
    "findings": [
@@ -11656,7 +11658,7 @@
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 253
+   "elapsedMs": 276
   },
   {
    "id": "r14-09",
@@ -11733,13 +11735,13 @@
     {
      "id": "no-partial-implementations",
      "name": "No partial implementations",
-     "outcome": "not_applicable",
-     "violation": 0.02
+     "outcome": "compliant",
+     "violation": 0.03
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 255
+   "elapsedMs": 298
   },
   {
    "id": "r15-01",
@@ -11821,14 +11823,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.02
     }
    ],
    "findings": [
     "javascript-uses-const-or-let"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 261
+   "elapsedMs": 290
   },
   {
    "id": "r15-02",
@@ -11891,7 +11893,7 @@
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -11924,7 +11926,7 @@
     "every-exported-function-documents-its-return-value"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 259
+   "elapsedMs": 275
   },
   {
    "id": "r15-03",
@@ -11939,7 +11941,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.99
+    "violation": 1
    },
    "scores": [
     {
@@ -11982,18 +11984,18 @@
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "compliant",
-     "violation": 0.12
+     "violation": 0.11
     },
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.01
     },
     {
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
@@ -12006,7 +12008,7 @@
      "id": "javascript-uses-const-or-let",
      "name": "JavaScript uses const or let",
      "outcome": "violation",
-     "violation": 0.99
+     "violation": 1
     },
     {
      "id": "no-partial-implementations",
@@ -12019,7 +12021,7 @@
     "javascript-uses-const-or-let"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 300
+   "elapsedMs": 281
   },
   {
    "id": "r15-04",
@@ -12034,7 +12036,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.26
+    "violation": 0.35
    },
    "scores": [
     {
@@ -12071,7 +12073,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.17
+     "violation": 0.16
     },
     {
      "id": "every-exported-function-documents-its-return-value",
@@ -12089,7 +12091,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.11
+     "violation": 0.08
     },
     {
      "id": "no-new-dependency-without-need",
@@ -12101,18 +12103,18 @@
      "id": "javascript-uses-const-or-let",
      "name": "JavaScript uses const or let",
      "outcome": "compliant",
-     "violation": 0.26
+     "violation": 0.35
     },
     {
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 309
+   "elapsedMs": 262
   },
   {
    "id": "r15-05",
@@ -12194,12 +12196,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.01
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 257
+   "elapsedMs": 318
   },
   {
    "id": "r15-06",
@@ -12257,7 +12259,7 @@
      "id": "every-exported-function-documents-its-return-value",
      "name": "Every exported function documents its return value",
      "outcome": "compliant",
-     "violation": 0.11
+     "violation": 0.15
     },
     {
      "id": "never-clip-user-visible-text",
@@ -12292,7 +12294,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 272
+   "elapsedMs": 274
   },
   {
    "id": "r15-07",
@@ -12307,7 +12309,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.01
+    "violation": 0.02
    },
    "scores": [
     {
@@ -12344,7 +12346,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.05
+     "violation": 0.07
     },
     {
      "id": "every-exported-function-documents-its-return-value",
@@ -12374,7 +12376,7 @@
      "id": "javascript-uses-const-or-let",
      "name": "JavaScript uses const or let",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0.02
     },
     {
      "id": "no-partial-implementations",
@@ -12385,7 +12387,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 260
+   "elapsedMs": 292
   },
   {
    "id": "r15-08",
@@ -12439,7 +12441,7 @@
      "id": "exported-functions-must-have-explicit-return-types",
      "name": "Exported functions must have explicit return types",
      "outcome": "compliant",
-     "violation": 0.03
+     "violation": 0.02
     },
     {
      "id": "boolean-names-start-with-is-has-should-can",
@@ -12474,7 +12476,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 276
+   "elapsedMs": 265
   },
   {
    "id": "r15-09",
@@ -12557,7 +12559,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 260
+   "elapsedMs": 257
   },
   {
    "id": "r16-01",
@@ -12585,7 +12587,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "violation",
-     "violation": 0.72
+     "violation": 0.84
     },
     {
      "id": "no-empty-catch-blocks",
@@ -12648,7 +12650,7 @@
     "todo-comments-need-a-reference"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 292
+   "elapsedMs": 273
   },
   {
    "id": "r16-02",
@@ -12737,7 +12739,7 @@
     "markdown-carries-no-placeholder-text"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 282
+   "elapsedMs": 291
   },
   {
    "id": "r16-03",
@@ -12765,7 +12767,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.03
     },
     {
      "id": "no-empty-catch-blocks",
@@ -12794,7 +12796,7 @@
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
@@ -12819,14 +12821,15 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.63
+     "violation": 0.7
     }
    ],
    "findings": [
-    "markdown-carries-no-placeholder-text"
+    "markdown-carries-no-placeholder-text",
+    "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 299
+   "elapsedMs": 322
   },
   {
    "id": "r16-04",
@@ -12841,7 +12844,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "violation",
-    "violation": 0.99
+    "violation": 1
    },
    "editId": "edit_2",
    "scores": [
@@ -12903,7 +12906,7 @@
      "id": "markdown-carries-no-placeholder-text",
      "name": "Markdown carries no placeholder text",
      "outcome": "violation",
-     "violation": 0.99
+     "violation": 1
     },
     {
      "id": "no-partial-implementations",
@@ -12917,7 +12920,7 @@
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 253
+   "elapsedMs": 254
   },
   {
    "id": "r16-05",
@@ -13004,7 +13007,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 269
+   "elapsedMs": 267
   },
   {
    "id": "r16-06",
@@ -13019,7 +13022,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.45
+    "violation": 0.36
    },
    "scores": [
     {
@@ -13061,7 +13064,7 @@
     {
      "id": "never-clip-user-visible-text",
      "name": "Never clip user-visible text",
-     "outcome": "not_applicable",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -13080,7 +13083,7 @@
      "id": "markdown-carries-no-placeholder-text",
      "name": "Markdown carries no placeholder text",
      "outcome": "compliant",
-     "violation": 0.45
+     "violation": 0.36
     },
     {
      "id": "no-partial-implementations",
@@ -13091,7 +13094,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 252
+   "elapsedMs": 492
   },
   {
    "id": "r16-07",
@@ -13106,7 +13109,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.06
+    "violation": 0.05
    },
    "scores": [
     {
@@ -13119,7 +13122,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "compliant",
-     "violation": 0.19
+     "violation": 0.2
     },
     {
      "id": "no-empty-catch-blocks",
@@ -13167,18 +13170,18 @@
      "id": "markdown-carries-no-placeholder-text",
      "name": "Markdown carries no placeholder text",
      "outcome": "compliant",
-     "violation": 0.06
+     "violation": 0.05
     },
     {
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.05
+     "violation": 0.04
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 334
+   "elapsedMs": 471
   },
   {
    "id": "r16-08",
@@ -13208,7 +13211,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "compliant",
-     "violation": 0.15
+     "violation": 0.2
     },
     {
      "id": "no-empty-catch-blocks",
@@ -13262,14 +13265,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.89
+     "violation": 0.88
     }
    ],
    "findings": [
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 261
+   "elapsedMs": 479
   },
   {
    "id": "r16-09",
@@ -13293,7 +13296,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "not_applicable",
-     "violation": 0.1
+     "violation": 0.04
     },
     {
      "id": "no-empty-catch-blocks",
@@ -13341,12 +13344,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.62
+     "violation": 0.61
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 322
+   "elapsedMs": 447
   },
   {
    "id": "r17-01",
@@ -13441,7 +13444,7 @@
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 255
+   "elapsedMs": 273
   },
   {
    "id": "r17-02",
@@ -13457,101 +13460,6 @@
    "target": {
     "outcome": "violation",
     "violation": 1
-   },
-   "scores": [
-    {
-     "id": "no-console-statements",
-     "name": "No console statements",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "no-explicit-any-type",
-     "name": "No explicit any type",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "todo-comments-need-a-reference",
-     "name": "TODO comments need a reference",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "no-empty-catch-blocks",
-     "name": "No empty catch blocks",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "switch-statements-must-have-a-default-case",
-     "name": "Switch statements must have a default case",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "no-hardcoded-credentials",
-     "name": "No hardcoded credentials",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "exported-functions-must-have-explicit-return-types",
-     "name": "Exported functions must have explicit return types",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "boolean-names-start-with-is-has-should-can",
-     "name": "Boolean names start with is/has/should/can",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "never-clip-user-visible-text",
-     "name": "Never clip user-visible text",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "errors-never-reach-the-user-raw",
-     "name": "Errors never reach the user raw",
-     "outcome": "compliant",
-     "violation": 0.08
-    },
-    {
-     "id": "no-new-dependency-without-need",
-     "name": "No new dependency without need",
-     "outcome": "compliant",
-     "violation": 0
-    },
-    {
-     "id": "no-partial-implementations",
-     "name": "No partial implementations",
-     "outcome": "violation",
-     "violation": 1
-    }
-   ],
-   "findings": [
-    "no-partial-implementations"
-   ],
-   "model": "jev-1.13.0",
-   "elapsedMs": 258
-  },
-  {
-   "id": "r17-03",
-   "rule": "no-partial-implementations",
-   "label": "violation",
-   "kind": "violation",
-   "split": "tune",
-   "tool": "edit",
-   "path": "src/user.ts",
-   "source": "typesafe",
-   "asked": 12,
-   "targetAsked": true,
-   "target": {
-    "outcome": "violation",
-    "violation": 0.94
    },
    "scores": [
     {
@@ -13612,6 +13520,101 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
+     "violation": 0.11
+    },
+    {
+     "id": "no-new-dependency-without-need",
+     "name": "No new dependency without need",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "no-partial-implementations",
+     "name": "No partial implementations",
+     "outcome": "violation",
+     "violation": 1
+    }
+   ],
+   "findings": [
+    "no-partial-implementations"
+   ],
+   "model": "jev-1.13.0",
+   "elapsedMs": 287
+  },
+  {
+   "id": "r17-03",
+   "rule": "no-partial-implementations",
+   "label": "violation",
+   "kind": "violation",
+   "split": "tune",
+   "tool": "edit",
+   "path": "src/user.ts",
+   "source": "typesafe",
+   "asked": 12,
+   "targetAsked": true,
+   "target": {
+    "outcome": "violation",
+    "violation": 0.95
+   },
+   "scores": [
+    {
+     "id": "no-console-statements",
+     "name": "No console statements",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "no-explicit-any-type",
+     "name": "No explicit any type",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "todo-comments-need-a-reference",
+     "name": "TODO comments need a reference",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "no-empty-catch-blocks",
+     "name": "No empty catch blocks",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "switch-statements-must-have-a-default-case",
+     "name": "Switch statements must have a default case",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "no-hardcoded-credentials",
+     "name": "No hardcoded credentials",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "exported-functions-must-have-explicit-return-types",
+     "name": "Exported functions must have explicit return types",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "boolean-names-start-with-is-has-should-can",
+     "name": "Boolean names start with is/has/should/can",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "never-clip-user-visible-text",
+     "name": "Never clip user-visible text",
+     "outcome": "compliant",
+     "violation": 0
+    },
+    {
+     "id": "errors-never-reach-the-user-raw",
+     "name": "Errors never reach the user raw",
+     "outcome": "compliant",
      "violation": 0
     },
     {
@@ -13624,14 +13627,14 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "violation",
-     "violation": 0.94
+     "violation": 0.95
     }
    ],
    "findings": [
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 282
+   "elapsedMs": 274
   },
   {
    "id": "r17-04",
@@ -13707,7 +13710,7 @@
     {
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
-     "outcome": "compliant",
+     "outcome": "not_applicable",
      "violation": 0
     },
     {
@@ -13727,7 +13730,7 @@
     "no-partial-implementations"
    ],
    "model": "jev-1.13.0",
-   "elapsedMs": 266
+   "elapsedMs": 276
   },
   {
    "id": "r17-05",
@@ -13820,7 +13823,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 295
+   "elapsedMs": 268
   },
   {
    "id": "r17-06",
@@ -13835,7 +13838,7 @@
    "targetAsked": true,
    "target": {
     "outcome": "compliant",
-    "violation": 0.19
+    "violation": 0.18
    },
    "scores": [
     {
@@ -13908,12 +13911,12 @@
      "id": "no-partial-implementations",
      "name": "No partial implementations",
      "outcome": "compliant",
-     "violation": 0.19
+     "violation": 0.18
     }
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 251
+   "elapsedMs": 256
   },
   {
    "id": "r17-07",
@@ -13935,7 +13938,7 @@
      "id": "no-console-statements",
      "name": "No console statements",
      "outcome": "compliant",
-     "violation": 0
+     "violation": 0.01
     },
     {
      "id": "no-explicit-any-type",
@@ -13947,7 +13950,7 @@
      "id": "todo-comments-need-a-reference",
      "name": "TODO comments need a reference",
      "outcome": "compliant",
-     "violation": 0.02
+     "violation": 0.01
     },
     {
      "id": "no-empty-catch-blocks",
@@ -13977,7 +13980,7 @@
      "id": "boolean-names-start-with-is-has-should-can",
      "name": "Boolean names start with is/has/should/can",
      "outcome": "compliant",
-     "violation": 0.01
+     "violation": 0
     },
     {
      "id": "never-clip-user-visible-text",
@@ -13989,7 +13992,7 @@
      "id": "errors-never-reach-the-user-raw",
      "name": "Errors never reach the user raw",
      "outcome": "compliant",
-     "violation": 0.32
+     "violation": 0.26
     },
     {
      "id": "no-new-dependency-without-need",
@@ -14006,7 +14009,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 273
+   "elapsedMs": 286
   },
   {
    "id": "r17-08",
@@ -14093,7 +14096,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 279
+   "elapsedMs": 255
   },
   {
    "id": "r17-09",
@@ -14174,7 +14177,7 @@
    ],
    "findings": [],
    "model": "jev-1.13.0",
-   "elapsedMs": 268
+   "elapsedMs": 341
   }
  ],
  "scores": {
@@ -14208,85 +14211,85 @@
     "overall": [
      {
       "cutoff": 0.3,
-      "tp": 65,
-      "fp": 6,
-      "tn": 65,
-      "fn": 3,
+      "tp": 66,
+      "fp": 7,
+      "tn": 64,
+      "fn": 2,
       "positives": 68,
       "negatives": 71,
-      "recall": 0.9558823529411765,
-      "falseAlarmRate": 0.08450704225352113,
-      "precision": 0.9154929577464789
+      "recall": 0.9705882352941176,
+      "falseAlarmRate": 0.09859154929577464,
+      "precision": 0.9041095890410958
      },
      {
       "cutoff": 0.4,
       "tp": 65,
-      "fp": 5,
-      "tn": 66,
+      "fp": 4,
+      "tn": 67,
       "fn": 3,
       "positives": 68,
       "negatives": 71,
       "recall": 0.9558823529411765,
-      "falseAlarmRate": 0.07042253521126761,
-      "precision": 0.9285714285714286
+      "falseAlarmRate": 0.056338028169014086,
+      "precision": 0.9420289855072463
      },
      {
       "cutoff": 0.5,
-      "tp": 64,
+      "tp": 65,
       "fp": 4,
       "tn": 67,
+      "fn": 3,
+      "positives": 68,
+      "negatives": 71,
+      "recall": 0.9558823529411765,
+      "falseAlarmRate": 0.056338028169014086,
+      "precision": 0.9420289855072463
+     },
+     {
+      "cutoff": 0.6,
+      "tp": 64,
+      "fp": 3,
+      "tn": 68,
       "fn": 4,
       "positives": 68,
       "negatives": 71,
       "recall": 0.9411764705882353,
-      "falseAlarmRate": 0.056338028169014086,
-      "precision": 0.9411764705882353
-     },
-     {
-      "cutoff": 0.6,
-      "tp": 63,
-      "fp": 2,
-      "tn": 69,
-      "fn": 5,
-      "positives": 68,
-      "negatives": 71,
-      "recall": 0.9264705882352942,
-      "falseAlarmRate": 0.028169014084507043,
-      "precision": 0.9692307692307692
+      "falseAlarmRate": 0.04225352112676056,
+      "precision": 0.9552238805970149
      },
      {
       "cutoff": 0.7,
-      "tp": 61,
+      "tp": 62,
       "fp": 2,
       "tn": 69,
-      "fn": 7,
+      "fn": 6,
       "positives": 68,
       "negatives": 71,
-      "recall": 0.8970588235294118,
+      "recall": 0.9117647058823529,
       "falseAlarmRate": 0.028169014084507043,
-      "precision": 0.9682539682539683
+      "precision": 0.96875
      },
      {
       "cutoff": 0.8,
-      "tp": 58,
+      "tp": 59,
       "fp": 2,
       "tn": 69,
-      "fn": 10,
+      "fn": 9,
       "positives": 68,
       "negatives": 71,
-      "recall": 0.8529411764705882,
+      "recall": 0.8676470588235294,
       "falseAlarmRate": 0.028169014084507043,
-      "precision": 0.9666666666666667
+      "precision": 0.9672131147540983
      },
      {
       "cutoff": 0.9,
-      "tp": 52,
+      "tp": 50,
       "fp": 0,
       "tn": 71,
-      "fn": 16,
+      "fn": 18,
       "positives": 68,
       "negatives": 71,
-      "recall": 0.7647058823529411,
+      "recall": 0.7352941176470589,
       "falseAlarmRate": 0,
       "precision": 1
      }
@@ -14294,13 +14297,13 @@
     "twoTier": {
      "raise": 0.7,
      "lower": 0.5,
-     "raiseTrue": 61,
+     "raiseTrue": 62,
      "lowerOnlyTrue": 3,
-     "missedAtLower": 4,
+     "missedAtLower": 3,
      "raiseFalse": 2,
      "lowerOnlyFalse": 2,
-     "recallAtRaise": 0.8970588235294118,
-     "recallAtLower": 0.9411764705882353,
+     "recallAtRaise": 0.9117647058823529,
+     "recallAtLower": 0.9558823529411765,
      "addedRecall": 0.04411764705882353,
      "falseAlarmRateAtRaise": 0.028169014084507043,
      "falseAlarmRateAtLower": 0.056338028169014086,
@@ -14315,8 +14318,8 @@
       "violations": 4,
       "cleans": 5,
       "auc": 0.9,
-      "lowBandClean": 0,
-      "lowBandShare": 0,
+      "lowBandClean": 1,
+      "lowBandShare": 0.2,
       "weak": false,
       "lowerOnly": {
        "true": 0,
@@ -14653,25 +14656,25 @@
       "smallSample": true,
       "at05": {
        "cutoff": 0.5,
-       "tp": 3,
+       "tp": 4,
        "fp": 0,
        "tn": 5,
-       "fn": 1,
+       "fn": 0,
        "positives": 4,
        "negatives": 5,
-       "recall": 0.75,
+       "recall": 1,
        "falseAlarmRate": 0,
        "precision": 1
       },
       "at07": {
        "cutoff": 0.7,
-       "tp": 3,
+       "tp": 4,
        "fp": 0,
        "tn": 5,
-       "fn": 1,
+       "fn": 0,
        "positives": 4,
        "negatives": 5,
-       "recall": 0.75,
+       "recall": 1,
        "falseAlarmRate": 0,
        "precision": 1
       }
@@ -14765,7 +14768,7 @@
       "notAsked": 0,
       "violations": 4,
       "cleans": 5,
-      "auc": 0.9,
+      "auc": 0.925,
       "lowBandClean": 0,
       "lowBandShare": 0,
       "weak": false,
@@ -14929,7 +14932,7 @@
       "notAsked": 0,
       "violations": 4,
       "cleans": 5,
-      "auc": 1,
+      "auc": 0.95,
       "lowBandClean": 0,
       "lowBandShare": 0,
       "weak": false,
@@ -15026,84 +15029,84 @@
      {
       "cutoff": 0.3,
       "tp": 49,
-      "fp": 3,
-      "tn": 41,
+      "fp": 4,
+      "tn": 40,
       "fn": 2,
       "positives": 51,
       "negatives": 44,
       "recall": 0.9607843137254902,
-      "falseAlarmRate": 0.06818181818181818,
-      "precision": 0.9423076923076923
+      "falseAlarmRate": 0.09090909090909091,
+      "precision": 0.9245283018867925
      },
      {
       "cutoff": 0.4,
       "tp": 49,
-      "fp": 3,
-      "tn": 41,
+      "fp": 2,
+      "tn": 42,
       "fn": 2,
       "positives": 51,
       "negatives": 44,
       "recall": 0.9607843137254902,
-      "falseAlarmRate": 0.06818181818181818,
-      "precision": 0.9423076923076923
+      "falseAlarmRate": 0.045454545454545456,
+      "precision": 0.9607843137254902
      },
      {
       "cutoff": 0.5,
-      "tp": 48,
+      "tp": 49,
       "fp": 2,
       "tn": 42,
+      "fn": 2,
+      "positives": 51,
+      "negatives": 44,
+      "recall": 0.9607843137254902,
+      "falseAlarmRate": 0.045454545454545456,
+      "precision": 0.9607843137254902
+     },
+     {
+      "cutoff": 0.6,
+      "tp": 48,
+      "fp": 1,
+      "tn": 43,
       "fn": 3,
       "positives": 51,
       "negatives": 44,
       "recall": 0.9411764705882353,
-      "falseAlarmRate": 0.045454545454545456,
-      "precision": 0.96
-     },
-     {
-      "cutoff": 0.6,
-      "tp": 47,
-      "fp": 1,
-      "tn": 43,
-      "fn": 4,
-      "positives": 51,
-      "negatives": 44,
-      "recall": 0.9215686274509803,
       "falseAlarmRate": 0.022727272727272728,
-      "precision": 0.9791666666666666
+      "precision": 0.9795918367346939
      },
      {
       "cutoff": 0.7,
-      "tp": 45,
+      "tp": 46,
       "fp": 1,
       "tn": 43,
-      "fn": 6,
+      "fn": 5,
       "positives": 51,
       "negatives": 44,
-      "recall": 0.8823529411764706,
+      "recall": 0.9019607843137255,
       "falseAlarmRate": 0.022727272727272728,
-      "precision": 0.9782608695652174
+      "precision": 0.9787234042553191
      },
      {
       "cutoff": 0.8,
-      "tp": 42,
+      "tp": 44,
       "fp": 1,
       "tn": 43,
-      "fn": 9,
+      "fn": 7,
       "positives": 51,
       "negatives": 44,
-      "recall": 0.8235294117647058,
+      "recall": 0.8627450980392157,
       "falseAlarmRate": 0.022727272727272728,
-      "precision": 0.9767441860465116
+      "precision": 0.9777777777777777
      },
      {
       "cutoff": 0.9,
-      "tp": 39,
+      "tp": 38,
       "fp": 0,
       "tn": 44,
-      "fn": 12,
+      "fn": 13,
       "positives": 51,
       "negatives": 44,
-      "recall": 0.7647058823529411,
+      "recall": 0.7450980392156863,
       "falseAlarmRate": 0,
       "precision": 1
      }
@@ -15111,13 +15114,13 @@
     "twoTier": {
      "raise": 0.7,
      "lower": 0.5,
-     "raiseTrue": 45,
+     "raiseTrue": 46,
      "lowerOnlyTrue": 3,
-     "missedAtLower": 3,
+     "missedAtLower": 2,
      "raiseFalse": 1,
      "lowerOnlyFalse": 1,
-     "recallAtRaise": 0.8823529411764706,
-     "recallAtLower": 0.9411764705882353,
+     "recallAtRaise": 0.9019607843137255,
+     "recallAtLower": 0.9607843137254902,
      "addedRecall": 0.058823529411764705,
      "falseAlarmRateAtRaise": 0.022727272727272728,
      "falseAlarmRateAtLower": 0.045454545454545456,
@@ -15132,8 +15135,8 @@
       "violations": 3,
       "cleans": 3,
       "auc": 0.8888888888888888,
-      "lowBandClean": 0,
-      "lowBandShare": 0,
+      "lowBandClean": 1,
+      "lowBandShare": 0.3333333333333333,
       "weak": false,
       "lowerOnly": {
        "true": 0,
@@ -15470,25 +15473,25 @@
       "smallSample": true,
       "at05": {
        "cutoff": 0.5,
-       "tp": 2,
+       "tp": 3,
        "fp": 0,
        "tn": 3,
-       "fn": 1,
+       "fn": 0,
        "positives": 3,
        "negatives": 3,
-       "recall": 0.6666666666666666,
+       "recall": 1,
        "falseAlarmRate": 0,
        "precision": 1
       },
       "at07": {
        "cutoff": 0.7,
-       "tp": 2,
+       "tp": 3,
        "fp": 0,
        "tn": 3,
-       "fn": 1,
+       "fn": 0,
        "positives": 3,
        "negatives": 3,
-       "recall": 0.6666666666666666,
+       "recall": 1,
        "falseAlarmRate": 0,
        "precision": 1
       }
@@ -15842,15 +15845,15 @@
     "overall": [
      {
       "cutoff": 0.3,
-      "tp": 16,
+      "tp": 17,
       "fp": 3,
       "tn": 24,
-      "fn": 1,
+      "fn": 0,
       "positives": 17,
       "negatives": 27,
-      "recall": 0.9411764705882353,
+      "recall": 1,
       "falseAlarmRate": 0.1111111111111111,
-      "precision": 0.8421052631578947
+      "precision": 0.85
      },
      {
       "cutoff": 0.4,
@@ -15879,14 +15882,14 @@
      {
       "cutoff": 0.6,
       "tp": 16,
-      "fp": 1,
-      "tn": 26,
+      "fp": 2,
+      "tn": 25,
       "fn": 1,
       "positives": 17,
       "negatives": 27,
       "recall": 0.9411764705882353,
-      "falseAlarmRate": 0.037037037037037035,
-      "precision": 0.9411764705882353
+      "falseAlarmRate": 0.07407407407407407,
+      "precision": 0.8888888888888888
      },
      {
       "cutoff": 0.7,
@@ -15902,25 +15905,25 @@
      },
      {
       "cutoff": 0.8,
-      "tp": 16,
+      "tp": 15,
       "fp": 1,
       "tn": 26,
-      "fn": 1,
+      "fn": 2,
       "positives": 17,
       "negatives": 27,
-      "recall": 0.9411764705882353,
+      "recall": 0.8823529411764706,
       "falseAlarmRate": 0.037037037037037035,
-      "precision": 0.9411764705882353
+      "precision": 0.9375
      },
      {
       "cutoff": 0.9,
-      "tp": 13,
+      "tp": 12,
       "fp": 0,
       "tn": 27,
-      "fn": 4,
+      "fn": 5,
       "positives": 17,
       "negatives": 27,
-      "recall": 0.7647058823529411,
+      "recall": 0.7058823529411765,
       "falseAlarmRate": 0,
       "precision": 1
      }

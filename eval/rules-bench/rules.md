@@ -9,7 +9,7 @@ TypeScript code must not use the `any` type. Use a specific type, `unknown`, or 
 Any `TODO` or `FIXME` comment must include a ticket reference, for example `TODO(JIRA-123): ...`. A bare TODO is a violation.
 
 # No empty catch blocks
-A `catch` block must not be empty. It must handle the error, log it, or rethrow it.
+A `catch` block must not be empty. It must handle the error, log it, or rethrow it. An empty catch block, or one whose body is only a comment, is a violation.
 
 # Switch statements must have a default case
 Every `switch` statement must include a `default` case, even if it only throws on an unexpected value.
