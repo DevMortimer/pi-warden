@@ -39,6 +39,7 @@ Works without any key (offline guards: pattern list, runaway stop, sensitive-pat
 | **Security** | code and output | Hardcoded secrets, injection risks |
 | **Runaway** | reply stream | Stops replies that begin repeating themselves |
 | **Subagent triage** | async child reports | Keeps noisy background work from waking the parent |
+| **Call waste** | tool results, and the prompt once per session | Names repeated page reads, repeated searches of one file, filtered check re-runs, and `sleep` polling; one session tip |
 | **Conscience** (beta, off) | each operator prompt | Recommends a skill or tool from the capability index before the agent acts; enable with `conscience.enabled: true` |
 
 ## How intervention works

@@ -312,6 +312,23 @@ export function isRecallTool(value: unknown): value is RecallTool {
 
 export type WardenMode = "steer" | "confirm" | "advise";
 
+export interface WasteConfig {
+  /** Master switch for the call-waste notes and the session tip. */
+  enabled: boolean;
+  /** Append the session tip to the prompt once per session. */
+  tip: boolean;
+  /** Tool calls between two notes from the same detector. */
+  every: number;
+  /** Note on repeated poll calls (`sleep`). */
+  sleep: boolean;
+  /** Note on adjacent range reads of one file. */
+  paging: boolean;
+  /** Note on repeated searches of one file with an overlapping pattern. */
+  search: boolean;
+  /** Note on a filtered check re-run. */
+  recheck: boolean;
+}
+
 export interface PrefsConfig {
   /** Read this project's earlier session files for preferences the user repeated (`/warden prefs`). Local, code only. */
   enabled: boolean;
@@ -439,11 +456,13 @@ export interface WardenConfig {
   conscience: ConscienceConfig;
   /** Standing preferences: corrections the user repeated in earlier sessions of this project. */
   prefs: PrefsConfig;
+  /** Call-waste notes: advisory sentences attached to the tool result that triggers them. */
+  waste: WasteConfig;
 }
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 9;
+export const CONFIG_SCHEMA = 10;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -506,6 +525,7 @@ export function defaultConfig(): WardenConfig {
       loadThreshold: 1.0,
     },
     prefs: { enabled: true, inject: true },
+    waste: { enabled: true, tip: false, every: 20, sleep: true, paging: true, search: true, recheck: true },
   };
 }
 
@@ -865,8 +885,9 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste"> {
   return {
+    waste: applyWaste(base.waste, raw.waste),
     rules: applyRules(base.rules, raw.rules),
     runaway: applyRunaway(base.runaway, raw.runaway),
     subagent: applySubagent(base.subagent, raw.subagent),
@@ -920,6 +941,19 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     learning: applyLearning(base.learning, raw.learning),
     conscience: applyConscience(base.conscience, raw.conscience),
     prefs: applyPrefs(base.prefs, raw.prefs),
+  };
+}
+
+function applyWaste(base: WasteConfig, raw: unknown): WasteConfig {
+  if (!isObject(raw)) return base;
+  return {
+    enabled: boolean(raw.enabled, base.enabled),
+    tip: boolean(raw.tip, base.tip),
+    every: Math.max(2, positiveInteger(raw.every, base.every)),
+    sleep: boolean(raw.sleep, base.sleep),
+    paging: boolean(raw.paging, base.paging),
+    search: boolean(raw.search, base.search),
+    recheck: boolean(raw.recheck, base.recheck),
   };
 }
 

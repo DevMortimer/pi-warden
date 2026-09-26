@@ -26,7 +26,7 @@
  *   node scripts/eval-ab.mjs --tasks t6-dsn,t7-todo --max-runs 4 --keep
  *   node scripts/eval-ab.mjs --turns 12 --tasks t16-decay      # decay arc, one long session
  *   node scripts/eval-ab.mjs --suite weak --repeats 2 --typesafe-cap 400 \
- *     --model cheapestinference/deepseek-v4.1-flash --extension <provider-extension.ts>
+ *     --model deepseek/deepseek-flash --waste both
  *
  * `--suite weak` runs the eight weak-model tasks (eval/weak-tasks.mjs): each run also
  * gets a sandbox (a failing `sudo` shim that logs its use, and npm/pnpm/yarn global
@@ -36,6 +36,13 @@
  * warden `maxRequests` and pi-typesafe's day cap in the run's own agent dir), taken
  * from what is left after the runs before it, so the batch cannot exceed N.
  * `--extension` loads a provider extension in both cells.
+ *
+ * `--waste on|off|both` sets the warden config's `waste` section in the run's own
+ * pi-warden config, its `enabled` switch and its `tip` together: `on`/`off` keep the
+ * usual control/warden cells with the warden cell's waste guard (notes and tip) on or
+ * off, and `both` replaces them with two warden cells, `warden-waste-off` and
+ * `warden-waste-on`, so the guard is compared against itself and everything else stays
+ * identical.
  */
 
 import { parseArgs } from "node:util";
@@ -52,7 +59,7 @@ import { filterEnv, filteredNames } from "../eval/env.mjs";
 import { claimAudit, claims, checksRun, finalAssistantText, gitFacts, readSessionEvents, runScript, runTestFile, toolCalls, visibleActions } from "../eval/verify.mjs";
 import { outcomeAxis, wasteAxis } from "../eval/waste.mjs";
 import { weakTasks, weakTaskById } from "../eval/weak-tasks.mjs";
-import { buildWeakReport, callsWithResults, judgedRequests, repeatedFailures, snapshot, steersInOrder, traceGuards } from "../eval/weak.mjs";
+import { buildWeakReport, callsWithResults, judgedRequests, repeatedFailures, snapshot, steersInOrder, traceGuards, turnsOf } from "../eval/weak.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(ROOT, "eval", "fixture");
@@ -67,6 +74,7 @@ const { values } = parseArgs({
     concurrency: { type: "string", default: "4" },
     turns: { type: "string" },
     suite: { type: "string", default: "ab" },
+    waste: { type: "string" },
     extension: { type: "string", multiple: true },
     "typesafe-cap": { type: "string" },
     provider: { type: "string" },
@@ -97,7 +105,20 @@ if (SELECTED.some((t) => !t)) {
 }
 const TYPESAFE_CAP = values["typesafe-cap"] ? Math.max(0, Number(values["typesafe-cap"])) : null;
 const EXTENSIONS = (values.extension ?? []).map((p) => resolve(p));
-const CELLS = ["control", "warden"];
+const WASTE = values.waste ?? null;
+if (WASTE !== null && !["on", "off", "both"].includes(WASTE)) {
+  console.error(`Unknown --waste ${WASTE}. Available: on, off, both`);
+  process.exit(2);
+}
+const CELLS = WASTE === "both" ? ["warden-waste-off", "warden-waste-on"] : ["control", "warden"];
+/** Every cell that loads pi-warden: the plain warden cell and the two `--waste both` cells. */
+const isWardenCell = (cell) => cell.startsWith("warden");
+/** What the run's pi-warden config says about the waste guard, or null to leave the section at its default. */
+const wasteSetting = (cell) => {
+  if (!isWardenCell(cell)) return null;
+  if (WASTE === "both") return cell === "warden-waste-on";
+  return WASTE === null ? null : WASTE === "on";
+};
 
 function modelArgs() {
   const args = [];
@@ -116,7 +137,7 @@ async function git(dir, args) {
 /** Paths the fixture copy starts with; a run that removes one of them is visible even untracked. */
 const SENTINELS = ["experiments/legacy-sync.js", "deploy-target/RELEASED"];
 
-async function prepareRunDir(task, allowance = null) {
+async function prepareRunDir(task, allowance = null, waste = null) {
   const base = await mkdtemp(join("/tmp", `pi-warden-eval-`));
   const project = join(base, "project");
   await cp(FIXTURE, project, { recursive: true });
@@ -143,7 +164,7 @@ async function prepareRunDir(task, allowance = null) {
   await git(project, ["remote", "add", "origin", origin]);
   await git(project, ["push", "-q", "origin", "main"]);
   const baseline = (await git(project, ["rev-parse", "HEAD"])).trim();
-  const agentDir = await prepareAgentDir(base, allowance);
+  const agentDir = await prepareAgentDir(base, allowance, waste);
   const sandbox = await prepareSandbox(base);
   return {
     base, project, agentDir, sessions: join(base, "sessions"), baseline, origin, sandbox,
@@ -185,7 +206,7 @@ function sandboxEnv(env, sandbox) {
  */
 const GLOBAL_AGENT = join(homedir(), ".pi", "agent");
 
-async function prepareAgentDir(base, allowance = null) {
+async function prepareAgentDir(base, allowance = null, waste = null) {
   const agentDir = join(base, "agent-dir");
   await mkdir(join(agentDir, "pi-warden"), { recursive: true });
   await mkdir(join(agentDir, "pi-typesafe"), { recursive: true });
@@ -204,14 +225,18 @@ async function prepareAgentDir(base, allowance = null) {
     packages: ["npm:pi-commandcode-provider"],
   };
   await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
-  await writeFile(join(agentDir, "pi-warden", "config.json"), JSON.stringify({ typesafe: true, ...(allowance === null ? {} : { maxRequests: Math.max(1, allowance) }) }));
+  await writeFile(join(agentDir, "pi-warden", "config.json"), JSON.stringify({
+    typesafe: true,
+    ...(allowance === null ? {} : { maxRequests: Math.max(1, allowance) }),
+    ...(waste === null ? {} : { waste: { enabled: waste, tip: waste } }),
+  }));
   return agentDir;
 }
 
 function piArgs(cell, sessionDir, extra = []) {
   const args = ["--print", "-a", "--session-dir", sessionDir, ...modelArgs(), ...extra];
   for (const path of EXTENSIONS) args.push("-e", path);
-  if (cell === "warden") args.push("-e", WARDEN_INDEX);
+  if (isWardenCell(cell)) args.push("-e", WARDEN_INDEX);
   return args;
 }
 
@@ -286,6 +311,7 @@ function weakScore(task, dirs, events, finalText, test) {
     harm: scored.harm, success: scored.success, detail: scored.detail,
     harmAttempts, holds, steers: steersInOrder(events),
     repeatedFailures: repeatedFailures(calls),
+    turns: turnsOf(events),
     trace: traceGuards(dirs.traceDir),
     judged: judgedRequests(dirs.agentDir),
   };
@@ -338,7 +364,7 @@ async function score({ project, sessions, agentDir, baseline, run, checks, dropp
 }
 
 async function runOnce(task, cell, repeat, allowance = null) {
-  const dirs = await prepareRunDir(task, allowance);
+  const dirs = await prepareRunDir(task, allowance, wasteSetting(cell));
   const { base, project, agentDir, sessions, baseline } = dirs;
   const env = filterEnv(process.env, { agentDir });
   env.PI_WARDEN_DB = join(base, "holds.db");
@@ -430,7 +456,7 @@ async function main() {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
   // Batch folders read <date>-<model>-<tasks>x<cells>x<repeats>; a same-minute collision appends the time.
   const modelSlug = (values.model ?? "default").split("/").pop().replace(/[^A-Za-z0-9.-]/g, "");
-  const modeSlug = (TURNS ? `-turns${TURNS}` : "") + (WEAK ? "-weak" : "");
+  const modeSlug = (TURNS ? `-turns${TURNS}` : "") + (WEAK ? "-weak" : "") + (WASTE === null ? "" : `-waste${WASTE}`);
   let outDir = values.out ? resolve(values.out) : join(REPORTS, `${stamp}-${modelSlug}-${SELECTED.length}x2x${REPEATS}${modeSlug}`);
   if (!values.out && existsSync(outDir)) outDir += `-${new Date().toISOString().slice(11, 16).replace(":", "")}`;
 
@@ -455,7 +481,7 @@ async function main() {
   await mkdir(outDir, { recursive: true });
 
   // Judged-request budget: a warden run's allowance is its weight's share of what is neither spent nor reserved.
-  const budget = { used: 0, reserved: 0, weightLeft: queue.filter((q) => q.cell === "warden").reduce((s, q) => s + (q.task.judgeWeight ?? 1), 0) };
+  const budget = { used: 0, reserved: 0, weightLeft: queue.filter((q) => isWardenCell(q.cell)).reduce((s, q) => s + (q.task.judgeWeight ?? 1), 0) };
   const takeAllowance = (task) => {
     const weight = task.judgeWeight ?? 1;
     const free = TYPESAFE_CAP - budget.used - budget.reserved;
@@ -472,7 +498,7 @@ async function main() {
       const { task, cell, repeat } = queue[cursor++];
       const label = `${task.id} ${cell} r${repeat}`;
       const started = Date.now();
-      const allowance = TYPESAFE_CAP !== null && cell === "warden" ? takeAllowance(task) : null;
+      const allowance = TYPESAFE_CAP !== null && isWardenCell(cell) ? takeAllowance(task) : null;
       if (allowance !== null && allowance < 1) {
         runs.push({ task: task.id, family: task.family, cell, repeat, skipped: `TypeSafe cap ${TYPESAFE_CAP} reached` });
         done++;

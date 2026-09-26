@@ -4455,3 +4455,60 @@ test("the compaction appendix carries the open loops, and warden_recall prints i
     await rm(loopsDir(), { recursive: true, force: true });
   }
 });
+
+test("waste: the session tip is off by default and is appended to the prompt once when waste.tip is on", async () => {
+  await grantConsent();
+  // Default config: the tip is opt-in, so the prompt is left alone and nothing is traced.
+  const quiet: { cwd: string; skills: unknown[]; appendSystemPrompt?: string } = { cwd: temporary, skills: [] };
+  await fire("before_agent_start", { prompt: "read the file", systemPromptOptions: quiet });
+  assert.equal(quiet.appendSystemPrompt, undefined, "the default config appends nothing to the prompt");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 0, "a tip that was never offered is not traced");
+
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, waste: { tip: true }, ...STACK_BAR }));
+  await sessionStart();
+  const options: { cwd: string; skills: unknown[]; appendSystemPrompt?: string } = { cwd: temporary, skills: [] };
+  await fire("before_agent_start", { prompt: "read the file", systemPromptOptions: options });
+  assert.match(options.appendSystemPrompt ?? "", /^Tool calls are expensive: each one re-reads the whole conversation\./);
+  // A later run re-appends the same text; that is what keeps it in the prompt instead of being diffed away.
+  await fire("before_agent_start", { prompt: "read it again", systemPromptOptions: options });
+  assert.equal((options.appendSystemPrompt ?? "").split("Tool calls are expensive").length - 1, 1, "the tip appears once");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 1, "the trace records the tip delivery once per session");
+});
+
+test("waste: a nudge rides the tool result and never blocks a call or changes a hold", async () => {
+  await grantConsent();
+  const ranges = [{ offset: 1, limit: 40 }, { offset: 20, limit: 30 }, { offset: 30, limit: 25 }];
+  let patch: { content?: Array<{ type: string; text?: string }>; block?: boolean } | undefined;
+  for (const [index, range] of ranges.entries()) {
+    patch = await fire("tool_result", {
+      toolName: "read", toolCallId: `waste-${index}`, input: { path: "src/waste.ts", ...range },
+      content: [{ type: "text", text: `${"x\n".repeat((range.limit ?? 1) - 1)}x` }], isError: false, details: {},
+    }) as typeof patch;
+  }
+  assert.match((patch?.content ?? []).map(part => part.text).join("\n"), /You read src\/waste\.ts in 3 calls/);
+  assert.equal(patch?.block, undefined, "a note adds text to the result; it cannot block the call it explains");
+  nextAnswers = { irreversible: 0.95, off_task: 0.1, scope: "expected_step" };
+  assert.equal((await toolCall("bash", { command: "git push --force origin main" }))?.block, true, "the same destructive call is still held with the waste guard on");
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
+  assert.equal(await toolCall("bash", { command: "npm test" }), undefined, "an ordinary call still runs");
+});
+
+test("waste: the trigger line in the trace carries a redacted command, never a credential", async () => {
+  await grantConsent();
+  const token = "sk-abc123def456ghi789";
+  const command = `sleep 5; curl -s -H "Authorization: Bearer ${token}" http://127.0.0.1:4000/api/state | jq .status`;
+  for (const index of [0, 1]) {
+    await fire("tool_result", {
+      toolName: "bash", toolCallId: `waste-poll-${index}`, input: { command },
+      content: [{ type: "text", text: "{\n  \"status\": \"running\"\n}" }], isError: false, details: { exitCode: 0 },
+    });
+  }
+  await runCommand("trace", context({ hasUI: false }));
+  const rendered = sentMessages.at(-1)!.message.content;
+  assert.match(rendered, /waste · sleep/, "the note is in the trace, so the assertion below is about a line that exists");
+  assert.ok(!rendered.includes(token), "the command's credential must not reach the trace");
+  assert.ok(!rendered.includes("Bearer sk-"), "no part of the credential reaches the trace");
+  assert.match(rendered, /Authorization: \[redacted\]/, "the command preview is the redacted one");
+});

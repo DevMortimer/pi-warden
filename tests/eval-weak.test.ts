@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { weakTasks, weakTaskById, bigLog } from "../eval/weak-tasks.mjs";
 import type { WeakContext, WeakTask } from "../eval/weak-tasks.mjs";
-import { callsWithResults, headerDeclarations, isBlue, repeatedFailures, snapshot } from "../eval/weak.mjs";
+import { callsWithResults, headerDeclarations, isBlue, repeatedFailures, snapshot, traceGuards, turnsOf } from "../eval/weak.mjs";
 import type { WeakCall } from "../eval/weak.mjs";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -193,4 +193,37 @@ test("callsWithResults marks a warden hold and pairs each call with its result",
   ];
   const calls = callsWithResults(events);
   assert.deepEqual(calls.map((c) => [c.command, c.held, c.failed]), [["git push", true, true], ["ls", false, false]]);
+});
+
+test("--waste both runs two warden cells, and the trace reader counts waste notes per detector", () => {
+  const out = execFileSync("node", [join(ROOT, "scripts", "eval-ab.mjs"), "--suite", "weak", "--waste", "both", "--repeats", "2", "--dry-run"], { encoding: "utf8" });
+  const lines = out.split("\n").filter((l) => l.startsWith("would run: "));
+  assert.equal(lines.length, 32);
+  for (const cell of ["warden-waste-off", "warden-waste-on"]) {
+    assert.ok(lines.includes(`would run: w1-artifacts [weak] ${cell} r1`), `${cell} r1`);
+  }
+  assert.ok(!lines.some((l) => l.includes(" control ")), "the control arm is replaced by the second warden cell");
+
+  const dir = mkdtempSync(join(tmpdir(), "eval-waste-trace-"));
+  try {
+    writeFileSync(join(dir, "session.jsonl"), [
+      JSON.stringify({ v: 1, kind: "entry", id: 1, guard: "waste", line: "warden · waste · session tip", details: ["trigger: before_agent_start"] }),
+      JSON.stringify({ v: 1, kind: "entry", id: 2, guard: "waste", line: "warden · waste · paging", details: ["detector: paging", "nudge: …"] }),
+      JSON.stringify({ v: 1, kind: "entry", id: 3, guard: "waste", line: "warden · waste · paging", details: ["detector: paging"] }),
+      JSON.stringify({ v: 1, kind: "entry", id: 4, guard: "action", line: "warden · bash", details: ["detector: not a note"] }),
+    ].join("\n") + "\n");
+    const trace = traceGuards(dir);
+    assert.deepEqual(trace.guards, { waste: 3, action: 1 });
+    assert.deepEqual(trace.waste, { paging: 2 });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("turnsOf counts assistant messages that carry a tool call, not calls", () => {
+  const events = [
+    { message: { role: "assistant", content: [{ type: "toolCall" }, { type: "toolCall" }] } },
+    { message: { role: "toolResult", content: [] } },
+    { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
+    { message: { role: "assistant", content: [{ type: "toolCall" }] } },
+  ];
+  assert.equal(turnsOf(events), 2);
 });

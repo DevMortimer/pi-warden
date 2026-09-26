@@ -122,9 +122,10 @@ export function repeatedFailures(calls) {
 /** Trace file entries per guard, from the run's PI_WARDEN_TRACE_DIR, and whether judgments went off mid-run. */
 export function traceGuards(traceDir) {
   const guards = {};
+  const waste = {};
   let entries = 0;
   const judgmentsOff = [];
-  if (!existsSync(traceDir)) return { entries, guards, judgmentsOff };
+  if (!existsSync(traceDir)) return { entries, guards, waste, judgmentsOff };
   for (const name of readdirSync(traceDir)) {
     if (!name.endsWith(".jsonl")) continue;
     for (const line of readFileSync(join(traceDir, name), "utf8").split("\n")) {
@@ -135,9 +136,21 @@ export function traceGuards(traceDir) {
       if (rec.kind !== "entry") continue;
       entries++;
       guards[rec.guard] = (guards[rec.guard] ?? 0) + 1;
+      for (const detail of rec.details ?? []) {
+        const detector = /^detector: (\w+)$/.exec(String(detail));
+        if (detector) waste[detector[1]] = (waste[detector[1]] ?? 0) + 1;
+      }
     }
   }
-  return { entries, guards, judgmentsOff };
+  return { entries, guards, waste, judgmentsOff };
+}
+
+/** Assistant messages that carry at least one tool call: one turn of the run. */
+export function turnsOf(events) {
+  return events.filter((event) => {
+    const message = event.message;
+    return message?.role === "assistant" && Array.isArray(message.content) && message.content.some((part) => part?.type === "toolCall");
+  }).length;
 }
 
 /** TypeSafe requests the run started, from pi-typesafe's usage ledger in the run's agent dir. */
@@ -193,6 +206,8 @@ export function headerDeclarations(css) {
 // ---- report --------------------------------------------------------------------
 
 const yn = (v) => (v === null || v === undefined ? "n/a" : v ? "yes" : "no");
+/** One label per cell: control and warden keep their names, a named warden variant reads as its variant. */
+const armLabel = (cell) => (cell === "control" ? "off" : cell === "warden" ? "on" : cell.replace(/^warden-/, "").replace(/-/g, " "));
 const sum = (xs) => xs.reduce((s, x) => s + (Number(x) || 0), 0);
 const mean = (xs) => (xs.length ? Math.round(sum(xs) / xs.length) : 0);
 
@@ -212,32 +227,44 @@ export function buildWeakReport({ runs, stamp, args = {}, cap = null }) {
     const rows = scored.filter((r) => r.task === task);
     if (!rows.length) continue;
     md.push(`## ${task}`, "", rows[0].trap ? `Trap: ${rows[0].trap}.` : "", "",
-      "| arm | run | harm | success | tokens | tool calls | repeated failures | holds (stopped harm) | steers | judged | exit |",
-      "| --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | --- |");
+      "| arm | run | harm | success | tokens | turns | tool calls | repeated failures | holds (stopped harm) | steers | judged | exit |",
+      "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |");
     for (const r of rows) {
       const w = r.weak;
-      md.push(`| ${r.cell === "warden" ? "on" : "off"} | r${r.repeat} | ${yn(w.harm)} | ${yn(w.success)} | ${r.waste?.totalTokens ?? "-"} | ${r.waste?.toolCalls ?? "-"} | ` +
+      md.push(`| ${armLabel(r.cell)} | r${r.repeat} | ${yn(w.harm)} | ${yn(w.success)} | ${r.waste?.totalTokens ?? "-"} | ${w.turns ?? "-"} | ${r.waste?.toolCalls ?? "-"} | ` +
         `${w.repeatedFailures} | ${w.holds.length} (${w.holds.filter((h) => h.preventedHarm).length}) | ${w.steers.length} | ${w.judged} | ${r.timedOut ? "timeout" : r.piExit} |`);
     }
     md.push("");
   }
-  md.push("## Totals per arm", "", "| arm | runs | harm events | successes | mean tokens | mean tool calls | repeated failures | holds (stopped harm) | steers | judged |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |");
-  for (const cell of ["control", "warden"]) {
+  md.push("## Totals per arm", "", "| arm | runs | harm events | successes | mean tokens | mean turns | mean tool calls | mean tool calls per turn | repeated failures | holds (stopped harm) | steers | judged |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |");
+  for (const cell of [...new Set(runs.map((r) => r.cell))].sort()) {
     const rows = scored.filter((r) => r.cell === cell);
     const holds = rows.flatMap((r) => r.weak.holds);
-    md.push(`| ${cell === "warden" ? "on" : "off"} | ${rows.length} | ${rows.filter((r) => r.weak.harm === true).length} | ${rows.filter((r) => r.weak.success).length} | ` +
-      `${mean(rows.map((r) => r.waste?.totalTokens))} | ${mean(rows.map((r) => r.waste?.toolCalls))} | ${sum(rows.map((r) => r.weak.repeatedFailures))} | ` +
+    const turns = rows.map((r) => r.weak.turns ?? 0);
+    const callsPerTurn = sum(turns) ? (sum(rows.map((r) => r.waste?.toolCalls ?? 0)) / sum(turns)).toFixed(2) : "-";
+    md.push(`| ${armLabel(cell)} | ${rows.length} | ${rows.filter((r) => r.weak.harm === true).length} | ${rows.filter((r) => r.weak.success).length} | ` +
+      `${mean(rows.map((r) => r.waste?.totalTokens))} | ${mean(turns)} | ${mean(rows.map((r) => r.waste?.toolCalls))} | ${callsPerTurn} | ${sum(rows.map((r) => r.weak.repeatedFailures))} | ` +
       `${holds.length} (${holds.filter((h) => h.preventedHarm).length}) | ${sum(rows.map((r) => r.weak.steers.length))} | ${sum(rows.map((r) => r.weak.judged))} |`);
   }
+  const wardenCells = [...new Set(runs.map((r) => r.cell))].filter((cell) => cell.startsWith("warden")).sort();
+  if (wardenCells.length) {
+    const detectors = ["sleep", "paging", "search", "recheck"];
+    md.push("", "## Waste notes in the trace", "", `| arm | runs | ${detectors.join(" | ")} | total |`, `| --- | ---: | ${detectors.map(() => "---:").join(" | ")} | ---: |`);
+    for (const cell of wardenCells) {
+      const rows = scored.filter((r) => r.cell === cell);
+      const counts = detectors.map((detector) => sum(rows.map((r) => r.weak.trace.waste?.[detector] ?? 0)));
+      md.push(`| ${armLabel(cell)} | ${rows.length} | ${counts.join(" | ")} | ${sum(counts)} |`);
+    }
+  }
   md.push("", "## Guards in the trace (warden arm)", "", "| task | run | trace entries by guard | judgments off |", "| --- | --- | --- | --- |");
-  for (const r of scored.filter((x) => x.cell === "warden")) {
+  for (const r of scored.filter((x) => x.cell.startsWith("warden"))) {
     const g = Object.entries(r.weak.trace.guards).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(", ");
     md.push(`| ${r.task} | r${r.repeat} | ${g || "-"} | ${r.weak.trace.judgmentsOff.join(", ") || "-"} |`);
   }
   md.push("", "## Holds and steers", "");
   for (const r of scored.filter((x) => x.weak.holds.length || x.weak.steers.length)) {
-    md.push(`### ${r.task} ${r.cell === "warden" ? "on" : "off"} r${r.repeat}`, "");
+    md.push(`### ${r.task} ${armLabel(r.cell)} r${r.repeat}`, "");
     for (const h of r.weak.holds) md.push(`- hold (${h.preventedHarm ? "stopped a harm call" : "not a harm call"}): ${h.tool} \`${h.call.replace(/`/g, "'").replace(/\n/g, " ")}\``);
     for (const s of r.weak.steers) md.push(`- ${s.kind} after call ${s.afterCall}: ${s.text.replace(/\n/g, " ").slice(0, 240)}`);
     md.push("");

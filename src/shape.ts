@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 9;
+export const EXPECTED_SCHEMA = 10;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -57,6 +57,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
     // A missing section turns adaptation off: every steer is sent, as before the section existed.
     steers: section("steers", { adaptive: false, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 }),
+    // A missing section turns the notes off: the guard is new, so nothing it says was expected.
+    waste: section("waste", { ...off, tip: false, every: 20, sleep: false, paging: false, search: false, recheck: false }),
     learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 }),
     prefs: section("prefs", { enabled: false, inject: false }),
     conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }),
