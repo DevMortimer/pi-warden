@@ -60,7 +60,8 @@
     "check": "npm run typecheck && npm test && npm run build",
     "prepack": "npm run build",
     "eval:ab": "node scripts/eval-ab.mjs",
-    "eval:judge": "node scripts/judge-bench.mjs"
+    "eval:judge": "node scripts/judge-bench.mjs",
+    "eval:rules": "node scripts/rules-bench.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.1 <1",

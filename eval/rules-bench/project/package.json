@@ -1,0 +1,9 @@
+{
+  "name": "rules-bench-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "pi-typesafe": "^0.7.0",
+    "unused-fixture-dep": "^1.0.0"
+  }
+}
