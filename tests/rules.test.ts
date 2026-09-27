@@ -580,9 +580,9 @@ test("rule questions ask whether the change introduces a violation, judged on th
   const question = buildRulesRequest({ tool: "write", path: "src/a.js", content: "x" }, benchSet()).questions["rule_every-exported-function-documents-its-return-value"] as { instructions: string; criteria: Record<string, string> };
   assert.match(question.instructions, /^Does this change to `path` introduce a violation of this one project rule\?/);
   assert.match(question.instructions, /Judge the edit by `after`/);
-  assert.match(question.instructions, /leaves unchanged is not introduced by this edit, but new text `after` adds that breaks the same rule again is a violation/);
+  assert.match(question.instructions, /a violation already in `before` is not introduced by this edit/);
   assert.doesNotMatch(question.instructions, /Judge only the newly written content/);
-  assert.equal(question.criteria.violation, "The change introduces a violation of this rule, including new text that breaks the rule again where it was already broken.");
+  assert.equal(question.criteria.violation, "The change introduces a violation of this rule.");
 });
 
 test("bench false positive: an edit to a function body under its @returns JSDoc is not a missing @returns", async () => {
