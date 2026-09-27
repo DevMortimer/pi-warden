@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- `/warden rules audit [paths...] [--max N] [--yes]` judges existing files against the project rules as if each had just been written: one Jev request per file, at most four at a time, over the source files under the given paths (default: the project) that git does not ignore and at least one rule applies to, capped at `--max` (default 50) with the number left out reported. A confirm dialog names the file count and what leaves the machine before anything is sent; a headless run needs `--yes`. The output is a table by rule (files judged, files flagged, mean score) and the flagged files with their rule scores, worst first, plus a Markdown copy at `.pi-warden/rules-audit.md`. Nothing is recorded in the rules log. With no key or no consent it says so and sends nothing.
+- `/warden bench [--runs N]` (default 10) measures what a rules check costs on this machine: the fixed built-in sample file judged N times against the active rules, reporting p50 and p95 latency, requests, mean input tokens per check, and estimated cost per check and per 100 edits. No confirmation is needed — the sample is built in and no project content is sent — and with no key or no consent it says so and sends nothing.
 
 ## 0.71.0
 
