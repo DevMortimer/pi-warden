@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.70.0
+
 ### Added
 
 - `/warden rules check` asks Jev which of the active rules the rules guard cannot judge well, and prints one line per rule that needs attention with the reason, its score, and one suggestion (`move it to your linter`, `split it so the changed file alone shows the violation`), then `N fine, M need attention`. Two questions per rule: whether it can be judged from one changed file's content alone (`from_change_alone`, `needs_other_files`, `needs_task_or_history`, `too_vague`) and whether a standard linter, formatter, or type checker could enforce it exactly (cutoff 0.70, measured in `docs/guards.md` → Calibration). Rule names, text, and `paths:` scopes are sent redacted, with no file content and no task text; with no key or no consent it says so and sends nothing, and plain `/warden rules` stays local. Advice only: no rule is changed, disabled, or skipped, and the guard's questions, thresholds, and defaults are untouched.
