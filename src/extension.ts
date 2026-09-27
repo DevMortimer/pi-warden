@@ -39,6 +39,7 @@ import { maskSecrets, redact } from "./redact.js";
 import { formatRules, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
 import type { RulesVerdict } from "./rules.js";
 import { checkRules, formatRulesCheck } from "./rules-lint.js";
+import { parseRulesAuditArgs, parseBenchArgs, runRulesAudit, runBench, formatRulesAudit, formatBench } from "./rules-audit.js";
 import { readRulesLog, RulesLog, rulesLogPath } from "./rules-log.js";
 import { buildRulesReport, formatRulesReport, REPORT_DEFAULT_DAYS } from "./rules-report.js";
 import { checkPiWardenMissing } from "./rules-file.js";
@@ -2266,13 +2267,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     },
   });
 
-  const actions = ["status", "rules", "report", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "unmute"];
+  const actions = ["status", "rules", "report", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "unmute", "bench"];
   pi.registerCommand("warden", {
     description: "pi-warden status, active rules, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, open loops, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches: Array<{ value: string; label: string; description?: string }> = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
-      // `rules check` is the one two-word action: `rules` on its own stays the local list.
+      // `rules check` and `rules audit` are the two-word actions: `rules` on its own stays the local list.
       if ("rules check".startsWith(prefix)) matches.push({ value: "rules check", label: "rules check", description: "which of the active rules the guard cannot judge well" });
+      if ("rules audit".startsWith(prefix)) matches.push({ value: "rules audit", label: "rules audit", description: "judge existing files against the project rules as if they had just been written" });
       return matches.length ? matches : null;
     },
     async handler(args, ctx) {
@@ -2314,6 +2316,45 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
             `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode; each toggles the sidebar). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,
           ].join(" "));
+          return;
+        }
+        if (action === "rules" && argument === "audit") {
+          const parsed = parseRulesAuditArgs(tokens.slice(2));
+          if (parsed.error) { report(parsed.error, "warning"); return; }
+          const off = judgmentsOffReason(config);
+          const judge = judgeFor(config);
+          const result = await runRulesAudit({
+            cwd: ctx.cwd, paths: parsed.paths, max: parsed.max, yes: parsed.yes, config: config.rules,
+            set: rulesGuard.store.load(ctx.cwd, config.rules), judge, timeoutMs: config.timeoutMs, signal: ctx.signal,
+            destination: backendHost(config.typesafeBackend),
+            confirm: ctx.hasUI ? (title, body) => ctx.ui.confirm(title, body, ctx.signal ? { signal: ctx.signal } : {}) : undefined,
+          });
+          switch (result.status) {
+            // No key, no consent, or a spent budget: say why and send nothing.
+            case "no-judge":
+              report(`Rules audit sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config.typesafeBackend, !ctx.hasUI)}` : ""}`);
+              return;
+            case "no-files": report(`Rules audit sent nothing: ${result.reason}.`); return;
+            case "needs-yes": report(`Rules audit sent nothing: a headless run needs --yes before ${result.files} file samples go to ${backendHost(config.typesafeBackend)} (${result.leftOut} more files left out at the --max ${parsed.max} cap).`, "warning"); return;
+            case "cancelled": report("Rules audit cancelled. Nothing was sent."); return;
+            case "done": report(formatRulesAudit(result.outcome)); return;
+          }
+          return;
+        }
+        if (action === "bench") {
+          const parsed = parseBenchArgs(tokens.slice(1));
+          if (parsed.error) { report(parsed.error, "warning"); return; }
+          const off = judgmentsOffReason(config);
+          const judge = judgeFor(config);
+          const result = await runBench({ runs: parsed.runs, cwd: ctx.cwd, config: config.rules, set: rulesGuard.store.load(ctx.cwd, config.rules), judge, getUsage: judge ? () => judge.getUsage() : undefined, timeoutMs: config.timeoutMs, signal: ctx.signal });
+          switch (result.status) {
+            // No key, no consent, or a spent budget: say why and send nothing.
+            case "no-judge":
+              report(`Bench sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config.typesafeBackend, !ctx.hasUI)}` : ""}`);
+              return;
+            case "skipped": report(`Bench sent nothing: ${result.reason}.`); return;
+            case "done": report(formatBench(result)); return;
+          }
           return;
         }
         if (action === "rules") {

@@ -54,3 +54,5 @@ export { initSchema, recordHold, recordOutcome as recordHoldOutcome, querySmartH
 export type { HoldRecord, HoldScores, HoldLevel, HoldOutcome, HoldContext, SmartHistory, ConfidenceResult, SkipResult, ThresholdAdjustment, PatternInsight, ContextRecommendation, SteerEffectivenessReport } from "./learning.js";
 export { buildAuditPrompt, snapshotReport, reportOutcome } from "./audit.js";
 export type { ReportSnapshot } from "./audit.js";
+export { parseRulesAuditArgs, parseBenchArgs, collectAuditFiles, runRulesAudit, ruleAuditRows, flaggedAuditFiles, formatRulesAuditRows, formatRulesAuditFiles, formatRulesAudit, rulesAuditMarkdown, writeRulesAuditReport, runBench, formatBench, percentile, BENCH_SAMPLE, AUDIT_DEFAULT_MAX, AUDIT_CONCURRENCY, AUDIT_REPORT_FILE, RULES_AUDIT_USAGE, BENCH_USAGE } from "./rules-audit.js";
+export type { RulesAuditArgs, BenchArgs, AuditFilePlan, RulesAuditFileResult, RulesAuditRow, RulesAuditOutcome, RulesAuditResult, RulesAuditOptions, RulesAuditFlag, RulesAuditFileFlags, BenchUsage, BenchOptions, BenchResult } from "./rules-audit.js";

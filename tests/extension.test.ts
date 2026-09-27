@@ -2540,11 +2540,11 @@ test("/warden rules check names the rules that need attention, and sends nothing
   await runCommand("rules check", ctx);
   assert.match(notices.at(-1)!.text, /\n- No console statements \(no-console-statements\): a linter could enforce it exactly \(0\.92\)\. Fix: move it to your linter\.\n- No duplicate logic \(no-duplicate-logic\): needs another file to judge \(0\.80\)\. Fix: split it so the changed file alone shows the violation, or leave it to review\.\n0 fine, 2 need attention\.$/);
 
-  // The two-word action completes after `rules`, and `rules` on its own still completes as the local list.
+  // The two-word actions complete after `rules`, and `rules` on its own still completes as the local list.
   const completions = await command.getArgumentCompletions!("rules ");
-  assert.deepEqual(completions?.map(item => item.value), ["rules check"]);
+  assert.deepEqual(completions?.map(item => item.value), ["rules check", "rules audit"]);
   const both = await command.getArgumentCompletions!("rules");
-  assert.deepEqual(both?.map(item => item.value), ["rules", "rules check"]);
+  assert.deepEqual(both?.map(item => item.value), ["rules", "rules check", "rules audit"]);
 
   // Plain /warden rules is unchanged: the local list, and nothing sent.
   const sentBeforeList = requests.length;
@@ -2570,6 +2570,72 @@ test("/warden rules check names the rules that need attention, and sends nothing
   await runCommand("rules check", ctx);
   assert.match(notices.at(-1)!.text, /^No separate rules to check: AGENTS\.md has no rule headings, so the guard judges it as one document\.$/);
   assert.equal(requests.length, sentBefore, "the aggregate path sends nothing");
+});
+
+test("/warden rules audit confirms before sending, writes the markdown copy, and needs --yes headless", async () => {
+  const project = join(temporary, "rules-audit");
+  await mkdir(join(project, "src"), { recursive: true });
+  await writeFile(join(project, "pi-warden.md"), "# No console statements\nCode must not contain `console.log`.\n");
+  await writeFile(join(project, "src", "a.ts"), "export const a = 1;\n");
+  await writeFile(join(project, "src", "b.ts"), "export const b = 2;\n");
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  const ctx = context({ cwd: project });
+
+  confirmResult = false;
+  await runCommand("rules audit src", ctx);
+  assert.match(notices.at(-1)!.text, /^Rules audit cancelled\. Nothing was sent\.$/);
+  assert.equal(confirms.length, 1);
+  assert.match(confirms[0]!.title, /^Send 2 files to api\.typesafe\.ai for a rules audit\?$/);
+  assert.match(confirms[0]!.message, /redacted sample of each file \(up to 6000 characters per file\)/);
+  assert.match(confirms[0]!.message, /Nothing is written to the rules log\./);
+  assert.equal(requests.length, 0, "a decline sends nothing");
+
+  confirmResult = true;
+  await runCommand("rules audit src", ctx);
+  assert.equal(confirms.length, 2);
+  assert.equal(requests.length, 2, "one write request per file");
+  assert.deepEqual(requests.map(request => request.state.path).sort(), ["src/a.ts", "src/b.ts"]);
+  assert.match(notices.at(-1)!.text, /^Rules audit: 2 files judged as new writes against pi-warden\.md \(1 rule in play\); 0 left out at the --max 50 cap; 0 of 2 flagged\./);
+  assert.match(notices.at(-1)!.text, /Markdown copy: \.pi-warden\/rules-audit\.md\. Nothing was recorded in the rules log\.$/);
+  assert.match(await readFile(join(project, ".pi-warden", "rules-audit.md"), "utf8"), /^# Rules audit/);
+
+  // Headless: --yes is the authorization; without it nothing is sent and no dialog opens.
+  const before = confirms.length;
+  await runCommand("rules audit src", context({ cwd: project, hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /a headless run needs --yes/);
+  assert.equal(confirms.length, before);
+  assert.equal(requests.length, 2);
+  await runCommand("rules audit src --yes", context({ cwd: project, hasUI: false }));
+  assert.equal(requests.length, 4);
+  assert.equal(confirms.length, before, "--yes skips the dialog");
+});
+
+test("/warden bench measures with a built-in sample and sends nothing without a key", async () => {
+  const project = join(temporary, "rules-bench");
+  await mkdir(join(project, "src"), { recursive: true });
+  await writeFile(join(project, "pi-warden.md"), "# No console statements\nCode must not contain `console.log`.\n");
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  const ctx = context({ cwd: project });
+
+  await runCommand("bench --runs 3", ctx);
+  assert.equal(requests.length, 3, "one request per run");
+  assert.match(String(requests[0]!.state.path), /^src\//, "only the built-in sample travels");
+  const text = notices.at(-1)!.text;
+  assert.match(text, /^Bench: 3 checks of one built-in sample file against the active rules \(1 rule per check\)\./);
+  assert.match(text, /The sample is built in and no project content is sent, so no confirmation was needed\./);
+  assert.match(text, /Latency: p50 \d+ ms, p95 \d+ ms; requests 3\./);
+  assert.match(text, /Input tokens per check: 50 \(mean\)\./);
+  assert.match(text, /Estimated cost per check: \$\d+\.\d+; per 100 edits: \$\d+\.\d+\./);
+
+  const sent = requests.length;
+  delete process.env.TYPESAFE_API_KEY;
+  try {
+    await runCommand("bench", ctx);
+  } finally {
+    process.env.TYPESAFE_API_KEY = "offline-test-key";
+  }
+  assert.match(notices.at(-1)!.text, /^Bench sent nothing: Jev judgments are off/);
+  assert.equal(requests.length, sent, "no key means no request");
 });
 
 test("/warden config set and get keep the whole value", async () => {
