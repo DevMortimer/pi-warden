@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import {
-  candidatesInSession, classifyClause, emptyPrefsStore, evaluatePrefs, extractPreferences, forgetPref, groupPreferences, isCorrection, LESSON_MARK,
+  candidatesInSession, changePrefsStore, classifyClause, emptyPrefsStore, evaluatePrefs, extractPreferences, forgetPref, groupPreferences, isCorrection, LESSON_MARK,
   MAX_INJECTED, MESSAGE_CHARS, NO_LESSON_SIGNAL, NOT_CONFIRMED, PREFS_CLOSING, PREFS_LEAD, prefsMessage, prefsStorePath, readPrefsStore, recordLesson,
   WAS_INJECTED, WEAKENS_CHECK, writePrefsStore,
 } from "../src/prefs.js";
@@ -228,5 +228,22 @@ test("the lesson file lives under pi-warden's data folder, round-trips, and a co
   } finally {
     if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = saved;
     await rm(agent, { recursive: true, force: true });
+  }
+});
+
+test("two concurrent lesson changes on one store neither throw nor lose an update", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-prefs-race-"));
+  try {
+    const path = join(dir, "prefs.json");
+    const record = (text: string, session: string) => changePrefsStore(path, store => {
+      const result = recordLesson({ lesson: text, session, now: NOW, signal: true, scan: scanOf([]), store });
+      return { value: result.reply, ...(result.store ? { store: result.store } : {}) };
+    });
+    const replies = await Promise.all([record("Never edit the generated client by hand", "s1"), record("Always sign the release tags", "s2")]);
+    assert.match(replies[0]!, /^recorded: "Never edit the generated client by hand"/);
+    assert.match(replies[1]!, /^recorded: "Always sign the release tags"/);
+    assert.deepEqual((await readPrefsStore(path)).lessons.map(entry => entry.text), ["Never edit the generated client by hand", "Always sign the release tags"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

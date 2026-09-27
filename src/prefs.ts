@@ -10,8 +10,9 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { serialize, writeFileAtomic } from "./atomic.js";
 import { userConfigPath } from "./config.js";
 import { redact } from "./redact.js";
 
@@ -622,10 +623,19 @@ export async function readPrefsStore(path: string): Promise<PrefsStore> {
 
 /** Written whole to a temporary file and renamed, so a crash never leaves half a file. */
 export async function writePrefsStore(path: string, store: PrefsStore): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, path);
+  await writeFileAtomic(path, `${JSON.stringify(store, null, 2)}\n`);
+}
+
+/**
+ * Reads, applies one change, and writes it back under the file's queue, so two lessons or forgets in one process run in
+ * turn and cannot lose each other's update. `change` returns the new store, if any, and a value to hand back.
+ */
+export async function changePrefsStore<T>(path: string, change: (store: PrefsStore) => { value: T; store?: PrefsStore }): Promise<T> {
+  return serialize(path, async () => {
+    const result = change(await readPrefsStore(path));
+    if (result.store) await writePrefsStore(path, result.store);
+    return result.value;
+  });
 }
 
 const DAY_MS = 86_400_000;

@@ -66,8 +66,8 @@ import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatLedger } from "./saver.js";
 import { SeenText, collapseRuns, seenItem } from "./dedupe.js";
 import { buildCompactSnapshot, compactAppendix, recallText } from "./compact.js";
-import { applyLoopAction, formatLoopsForUser, formatOpenLoops, LOOP_ACTIONS, LOOP_CHARS, loopsFingerprint, loopsPath, openLoops, readLoops, writeLoops } from "./loops.js";
-import { emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, isCorrection, LESSON_CHARS, LESSON_TURNS, NO_LESSON_SIGNAL, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences, writePrefsStore } from "./prefs.js";
+import { applyLoopAction, formatLoopsForUser, formatOpenLoops, LOOP_ACTIONS, LOOP_CHARS, loopsFingerprint, loopsPath, openLoops, readLoops, updateLoops } from "./loops.js";
+import { changePrefsStore, emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, isCorrection, LESSON_CHARS, LESSON_TURNS, NO_LESSON_SIGNAL, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences } from "./prefs.js";
 import type { PrefItem, PrefsScan } from "./prefs.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
@@ -2226,9 +2226,11 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       const session = typeof manager.getSessionId === "function" ? manager.getSessionId() : "unknown";
       const scan = await standingPrefs(ctx);
       const path = prefsStorePath(scan.project);
-      const result = recordLesson({ lesson, session, now: Date.now(), signal, scan, store: await readPrefsStore(path) });
-      if (result.store) await writePrefsStore(path, result.store);
-      return toolReply(result.reply);
+      const reply = await changePrefsStore(path, store => {
+        const result = recordLesson({ lesson, session, now: Date.now(), signal, scan, store });
+        return { value: result.reply, ...(result.store ? { store: result.store } : {}) };
+      });
+      return toolReply(reply);
     },
   });
 
@@ -2247,9 +2249,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
       if (!configFor(ctx).enabled) return toolReply("not available: pi-warden is off (enabled is false)");
       const file = loopsFile(ctx);
       if (!file) return toolReply("not available: this session has no id to keep loops under");
-      const result = applyLoopAction(await readLoops(file), params as Record<string, unknown>, Date.now());
-      if (result.store) await writeLoops(file, result.store);
-      return toolReply(result.reply);
+      const reply = await updateLoops(file, store => applyLoopAction(store, params as Record<string, unknown>, Date.now()));
+      return toolReply(reply);
     },
   });
 
@@ -2369,7 +2370,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
             const index = Number(tokens[2]);
             const item = Number.isInteger(index) ? items[index - 1] : undefined;
             if (!item) { report(`Usage: /warden prefs forget <n>, where n is an item number from /warden prefs (1 to ${items.length}).`, "warning"); return; }
-            await writePrefsStore(path, forgetPref(await readPrefsStore(path), item));
+            await changePrefsStore(path, store => ({ value: undefined, store: forgetPref(store, item) }));
             report(`Forgotten for this project: "${item.text}". It is not listed or injected again.`);
             return;
           }

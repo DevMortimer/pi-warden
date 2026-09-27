@@ -163,3 +163,17 @@ test("row order is stable for equal flags", () => {
 test("a missing log file reads as no records", async () => {
   assert.deepEqual(await readRulesLog(join(dir, "does-not-exist.jsonl")), []);
 });
+
+test("two log handles on one file in one process trim it without a failed write", async () => {
+  const path = join(dir, "shared.jsonl");
+  const first = new RulesLog(dir, "s1", { path, maxRecords: 4 });
+  const second = new RulesLog(dir, "s2", { path, maxRecords: 4 });
+  for (let index = 0; index < 6; index++) {
+    first.record(verdict("src/a.ts", score(`a${index}`, `Rule a${index}`, 0.1)), 0.7, NOW + index);
+    second.record(verdict("src/a.ts", score(`b${index}`, `Rule b${index}`, 0.1)), 0.7, NOW + index);
+  }
+  await Promise.all([first.flush(), second.flush()]);
+  assert.equal(first.lastFailure, undefined);
+  assert.equal(second.lastFailure, undefined);
+  assert.ok((await readRulesLog(path)).length > 0);
+});

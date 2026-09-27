@@ -6,8 +6,9 @@
  * another project: the file is keyed by both.
  */
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { serialize, writeFileAtomic } from "./atomic.js";
 import { userConfigPath } from "./config.js";
 import { redact } from "./redact.js";
 
@@ -76,10 +77,22 @@ export async function readLoops(path: string): Promise<LoopStore> {
 
 /** Written whole to a temporary file and renamed, so a crash never leaves half a file. */
 export async function writeLoops(path: string, store: LoopStore): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, path);
+  await writeFileAtomic(path, `${JSON.stringify(store, null, 2)}\n`);
+}
+
+/** One change to the store: the reply for the agent, and the new store when it changed. */
+export type LoopChange = (store: LoopStore) => { reply: string; store?: LoopStore };
+
+/**
+ * Reads, applies, and writes one change under the file's queue, so two `warden_loops` calls in one process run in turn
+ * and cannot lose each other's update.
+ */
+export async function updateLoops(path: string, change: LoopChange): Promise<string> {
+  return serialize(path, async () => {
+    const result = change(await readLoops(path));
+    if (result.store) await writeLoops(path, result.store);
+    return result.reply;
+  });
 }
 
 export const openLoops = (store: LoopStore): Loop[] => store.loops.filter(loop => loop.status === "open");

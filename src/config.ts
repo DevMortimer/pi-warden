@@ -1,6 +1,7 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { writeFileAtomicSync } from "./atomic.js";
 import type { JudgmentBackend } from "./backend.js";
 import { resolveBackend } from "./backend.js";
 import { COMMAND_TOOLS } from "./tools.js";
@@ -1040,11 +1041,7 @@ export function readUserConfig(): Json {
 
 export function writeUserConfig(raw: Json): string {
   const path = userConfigPath();
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600, flag: "w" });
-  chmodSync(temporary, 0o600);
-  renameSync(temporary, path);
+  writeFileAtomicSync(path, `${JSON.stringify(raw, null, 2)}\n`);
   return path;
 }
 

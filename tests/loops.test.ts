@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { buildCompactSnapshot, compactAppendix, recallText } from "../src/compact.js";
 import {
   applyLoopAction, emptyLoopStore, formatLoopsForUser, formatOpenLoops, LOOP_CHARS, LOOPS_CHARS, LOOPS_SHOWN, loopsFingerprint, loopsPath, openLoops,
-  readLoops, writeLoops,
+  readLoops, updateLoops, writeLoops,
 } from "../src/loops.js";
 import type { LoopStore } from "../src/loops.js";
 
@@ -82,6 +82,27 @@ test("isolation: one file per session and project under pi-warden's data folder;
   } finally {
     if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = saved;
     await rm(agent, { recursive: true, force: true });
+  }
+});
+
+test("concurrent operations on one loop store neither throw nor lose an update", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-loops-race-"));
+  try {
+    const path = join(dir, "loops.json");
+    await updateLoops(path, store => applyLoopAction(store, { action: "add", text: "Bump the version" }, NOW));
+    const replies = await Promise.all([
+      updateLoops(path, store => applyLoopAction(store, { action: "add", text: "Rerun the flaky test" }, NOW)),
+      updateLoops(path, store => applyLoopAction(store, { action: "drop", id: 1, reason: "the reviewer withdrew it" }, NOW)),
+    ]);
+    assert.deepEqual(replies, ["added #2: Rerun the flaky test", "dropped #1: Bump the version"]);
+    await Promise.all(Array.from({ length: 20 }, (_, index) =>
+      updateLoops(path, store => applyLoopAction(store, { action: "add", text: `Follow up on item ${index + 1}` }, NOW))));
+    const store = await readLoops(path);
+    assert.deepEqual(store.loops.map(loop => loop.id), Array.from({ length: 22 }, (_, index) => index + 1), "every change got its own loop");
+    assert.deepEqual(store.loops.filter(loop => loop.status === "dropped").map(loop => loop.id), [1]);
+    assert.equal(store.next, 23);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

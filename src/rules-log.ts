@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { writeFileAtomic } from "./atomic.js";
 import { userConfigPath } from "./config.js";
 import type { RuleOutcome, RuleScore, RulesVerdict } from "./rules.js";
 
@@ -192,9 +193,7 @@ export class RulesLog {
   private async trim(): Promise<void> {
     const text = await readFile(this.path, "utf8");
     const kept = trimRecords(text.split("\n"), this.maxRecords);
-    const temporary = `${this.path}.${process.pid}.tmp`;
-    await writeFile(temporary, `${kept.join("\n")}\n`, { mode: 0o600 });
-    await rename(temporary, this.path);
+    await writeFileAtomic(this.path, `${kept.join("\n")}\n`);
     this.lines = kept.length;
   }
 

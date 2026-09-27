@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { writeFileAtomicSync } from "./atomic.js";
 import { userConfigPath } from "./config.js";
 import type { SteersConfig } from "./config.js";
 
@@ -87,10 +88,7 @@ export class SteerStats {
 
   private save(): void {
     try {
-      mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-      const temporary = `${this.path}.${process.pid}.tmp`;
-      writeFileSync(temporary, `${JSON.stringify(this.data)}\n`, { mode: 0o600 });
-      renameSync(temporary, this.path);
+      writeFileAtomicSync(this.path, `${JSON.stringify(this.data)}\n`);
     } catch (error) {
       console.warn("pi-warden: steer stats write failed:", error instanceof Error ? error.message : String(error));
     }
