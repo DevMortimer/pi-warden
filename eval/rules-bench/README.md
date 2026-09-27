@@ -23,7 +23,9 @@ Every request is billable unless `--dry-run`.
   line where a rule is language scoped. The rest are small rules of the same kind, three of them taken from the
   project's own documentation style and harder to judge: *errors never reach the user raw*, *no new dependency without
   need*, and *no partial implementations*. Seven rules are scoped (TypeScript, JavaScript, Python, Markdown), the rest
-  apply to every file.
+  apply to every file. Three rules carry header lines beside `paths:`: `severity: high` on *no hardcoded credentials*,
+  `severity: low` on *markdown carries no placeholder text*, and `threshold: 0.9` on *boolean names start with
+  is/has/should/can*. The scorer reads those headers and reports each rule at its own cutoff and the soft tier under it.
 - `project/`: the seed project the bench copies to a temp dir, with `rules.md` installed as `pi-warden.md`. Edit cases
   use these files as the file on disk, so the guard builds `before` and `after` around the replaced text. The seed
   files hold several pre-existing violations (`src/legacy.ts`, `src/auth.ts`, `src/logger.js`, `src/report.js`,
@@ -38,12 +40,13 @@ Every request is billable unless `--dry-run`.
 
 ## Cases
 
-153 cases, nine per rule: four clear violations, three compliant near-misses, and two cases where the rule does not
-apply (another language or file type). Spread over the shapes the guard sees: 94 `write` cases, 59 `edit` cases, 17 of
-them a multi-edit. Near-misses include a `console.log` inside a string, a `TODO` with a ticket, and an edit that leaves
-an older violation in the same file unchanged.
+161 cases: mostly nine per rule (four clear violations, three compliant near-misses, and two cases where the rule does
+not apply), plus eight later cases that add a new violation to a file which already breaks the same rule, or touch only
+a line next to an old violation. Spread over the shapes the guard sees: 94 `write` cases, 67 `edit` cases, 17 of them a
+multi-edit. Near-misses include a `console.log` inside a string, a `TODO` with a ticket, and an edit that leaves an
+older violation in the same file unchanged.
 
-The case set is split **tune** (102 cases) and **holdout** (51), stratified by rule and by label, fixed in
+The case set is split **tune** (107 cases) and **holdout** (54), stratified by rule and by label, fixed in
 `cases.json`. **No threshold change and no rule wording change may be tuned against the holdout set**: tune against
 `tune`, and use `holdout` only to confirm a decision already made. Choosing a split at run time is not allowed, and
 neither is moving a case between splits to improve a number.
@@ -52,7 +55,7 @@ neither is moving a case between splits to improve a number.
 
 `evaluateRules(tool, input, { cwd, config: config.rules, set, judge, timeoutMs })`, exactly as the extension calls it,
 one request per case, with the fixture rules resolved from the temp project's `pi-warden.md`. Path scoping runs first,
-so a scoped rule is not asked about a file its `paths` do not match (14 of the 153 cases, counted apart from the
+so a scoped rule is not asked about a file its `paths` do not match (14 of the 161 cases, counted apart from the
 metrics). The request carries one `choice` question per applicable rule (10 to 12 here), plus the edit locator when a
 case has several edits. The answer for the target rule is scored; the other answers in the same request are saved but
 not scored.
@@ -64,7 +67,9 @@ violations (fn), false alarms (fp), clean cases left alone (tn), recall, false-a
 rule, and the rules where more than half of their clean cases score in the 0.3 to 0.5 band, which points at a rule
 whose wording is unclear rather than at a weak judge. The two-tier view reports the shipped tier (flag at `violation >=
 0.7`) next to the planned one (a double-check between 0.5 and 0.7): what the lower tier adds to recall, and how many
-false alarms it adds.
+false alarms it adds. A per-rule view reads each rule's `threshold:` header (else 0.7) and reports recall and false
+alarms at that cutoff plus the soft band from 0.5 up to it, and a second table gives the soft tier overall at those
+cutoffs.
 
 `results.json` holds every raw `RuleScore` (outcome and probability per rule), the model, the elapsed time, the case
 metadata and the scored tables. `requests.jsonl` holds one line per request with the case id, the split, the tool, the

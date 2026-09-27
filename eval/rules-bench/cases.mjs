@@ -11,6 +11,32 @@ export const SEED_DIR = join(DIR, "project");
 export const SPLITS = ["all", "tune", "holdout"];
 export const KINDS = ["violation", "near-miss", "not-applicable"];
 
+/**
+ * Per-rule header values from the rules fixture, keyed by rule id: `{ threshold?, severity? }`. The scorer uses
+ * these to report each rule at its own cutoff, and the soft tier under it. The slug matches `parseRules` in src/rules.ts.
+ */
+export function loadRuleHeaders() {
+  const headers = {};
+  let id;
+  for (const line of readFileSync(RULES_FIXTURE, "utf8").split(/\r?\n/)) {
+    const heading = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
+    if (heading) {
+      id = heading[1].trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      headers[id] = {};
+      continue;
+    }
+    if (!id) continue;
+    const cutoff = /^\s*threshold\s*:\s*(.+?)\s*$/i.exec(line);
+    if (cutoff && headers[id].threshold === undefined) {
+      const value = Number(cutoff[1]);
+      if (Number.isFinite(value) && value >= 0 && value <= 1) headers[id].threshold = value;
+    }
+    const rank = /^\s*severity\s*:\s*(.+?)\s*$/i.exec(line);
+    if (rank && headers[id].severity === undefined && ["high", "normal", "low"].includes(rank[1].trim().toLowerCase())) headers[id].severity = rank[1].trim().toLowerCase();
+  }
+  return headers;
+}
+
 export function loadCases() {
   const cases = JSON.parse(readFileSync(join(DIR, "cases.json"), "utf8"));
   const seen = new Set();

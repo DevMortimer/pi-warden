@@ -15,6 +15,7 @@ A `catch` block must not be empty. It must handle the error, log it, or rethrow 
 Every `switch` statement must include a `default` case, even if it only throws on an unexpected value.
 
 # No hardcoded credentials
+severity: high
 Source code must not contain hardcoded passwords, API keys, or tokens; these come from configuration.
 
 # Exported functions must have explicit return types
@@ -22,6 +23,7 @@ paths: **/*.ts, **/*.tsx
 Every exported function must declare its return type explicitly rather than relying on inference.
 
 # Boolean names start with is/has/should/can
+threshold: 0.9
 A boolean variable or property must be named with a predicate prefix such as `is`, `has`, `should`, or `can`.
 
 # Every exported function documents its return value
@@ -50,6 +52,7 @@ paths: **/*.js, **/*.mjs, **/*.cjs
 JavaScript code declares variables with `const` or `let`. A `var` declaration is a violation.
 
 # Markdown carries no placeholder text
+severity: low
 paths: **/*.md
 Documentation must not ship placeholder text: the word `TBD`, `Lorem ipsum`, an angle-bracket placeholder such as `<insert ...>`, or a section that says the content is coming soon.
 

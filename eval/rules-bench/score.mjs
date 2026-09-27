@@ -1,11 +1,15 @@
 // Scoring for the rules bench: recall, false-alarm rate and precision at several cutoffs, AUC per rule,
-// the low-band check and the two-tier view. Pure functions over the saved answers; no judge, no network.
+// the low-band check, the two-tier view, and the per-rule-cutoff and soft-tier views. Soft tier values are
+// read from the rules fixture's header lines; no judge and no network.
+import { loadRuleHeaders } from "./cases.mjs";
 const SPLITS = ["all", "tune", "holdout"];
 export const CUTOFFS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
-/** The tier that steers today: a finding is raised when `violation` reaches this. */
+/** The cutoff that steers when a rule carries no `threshold:` header. */
 export const RAISE = 0.7;
 /** The planned "please double-check" tier sits between these two values. */
 export const LOWER = 0.5;
+/** The opt-in soft tier: from here up to a rule's cutoff, a score is a double-check, not a finding. */
+export const SOFT = 0.5;
 /** Clean cases scoring in this band are close to the raise line without crossing it. */
 export const LOW_BAND = [0.3, 0.5];
 const RULE_SAMPLE = 8;
@@ -101,6 +105,60 @@ function tier(rows) {
   };
 }
 
+/** The rule's own cutoff: its `threshold:` header, else the shipped raise line. */
+function effectiveCutoff(rule, headers) {
+  const own = headers[rule]?.threshold;
+  return typeof own === "number" ? own : RAISE;
+}
+
+/** Per rule: the effective cutoff, the score there, and the soft band under it. */
+function perRuleEffective(rows, headers) {
+  const ids = [...new Set(rows.map(row => row.rule))].sort();
+  return ids.map(rule => {
+    const own = rows.filter(row => row.rule === rule);
+    const positives = own.filter(row => row.label === "violation");
+    const negatives = own.filter(row => row.label === "clean");
+    const cutoff = effectiveCutoff(rule, headers);
+    const tp = positives.filter(row => row.violation >= cutoff).length;
+    const fp = negatives.filter(row => row.violation >= cutoff).length;
+    return {
+      rule,
+      severity: headers[rule]?.severity ?? null,
+      cutoff,
+      recall: share(tp, positives.length),
+      falseAlarmRate: share(fp, negatives.length),
+      softViolations: positives.filter(row => row.violation >= SOFT && row.violation < cutoff).length,
+      softCleans: negatives.filter(row => row.violation >= SOFT && row.violation < cutoff).length,
+    };
+  });
+}
+
+/** The soft tier with each rule's own cutoff: what fires at the cutoff, and what the tier adds below it. */
+function softTier(rows, headers) {
+  const positives = rows.filter(row => row.label === "violation");
+  const negatives = rows.filter(row => row.label === "clean");
+  const raised = row => row.violation >= effectiveCutoff(row.rule, headers);
+  const soft = row => row.violation >= SOFT && row.violation < effectiveCutoff(row.rule, headers);
+  const raiseTrue = positives.filter(raised).length;
+  const softTrue = positives.filter(soft).length;
+  const raiseFalse = negatives.filter(raised).length;
+  const softFalse = negatives.filter(soft).length;
+  return {
+    soft: SOFT,
+    raiseTrue,
+    softTrue,
+    raiseFalse,
+    softFalse,
+    missedBelowSoft: positives.filter(row => row.violation < SOFT).length,
+    recallAtCutoff: share(raiseTrue, positives.length),
+    recallAtSoft: share(raiseTrue + softTrue, positives.length),
+    addedRecall: share(softTrue, positives.length),
+    falseAlarmAtCutoff: share(raiseFalse, negatives.length),
+    falseAlarmAtSoft: share(raiseFalse + softFalse, negatives.length),
+    addedFalseAlarm: share(softFalse, negatives.length),
+  };
+}
+
 function perRule(rows, cuts) {
   const ids = [...new Set(rows.map(row => row.rule))].sort();
   return ids.map(rule => {
@@ -130,8 +188,8 @@ function perRule(rows, cuts) {
   });
 }
 
-/** Scores the saved answers: overall per cutoff, per rule, the low band, and the two-tier view, per split. */
-export function score(cases, saved) {
+/** Scores the saved answers: overall per cutoff, per rule, the low band, the two-tier view, the soft tier, and each rule's own cutoff, per split. */
+export function score(cases, saved, headers = loadRuleHeaders()) {
   const rows = rowsFor(cases, saved);
   const splits = {};
   for (const split of SPLITS) {
@@ -150,11 +208,13 @@ export function score(cases, saved) {
       },
       overall: CUTOFFS.map(cutoff => metrics(asked, cutoff)),
       twoTier: tier(asked),
+      softTier: softTier(asked, headers),
+      effective: perRuleEffective(asked, headers),
       perRule: perRule(own, [LOWER, RAISE]),
       lowBandRules: perRule(own, []).filter(row => row.weak).map(row => row.rule),
     };
   }
-  return { cutoffs: CUTOFFS, raise: RAISE, lower: LOWER, splits };
+  return { cutoffs: CUTOFFS, raise: RAISE, lower: LOWER, soft: SOFT, headers, splits };
 }
 
 function overallTable(label, split) {
@@ -185,6 +245,34 @@ function twoTierTable(label, split) {
   ].join("\n");
 }
 
+function softTierTable(label, split) {
+  const t = split.softTier;
+  return [
+    `${label} soft tier (each rule's own cutoff, soft from ${SOFT})`,
+    "",
+    "| tier | violations flagged | clean flagged | recall | false alarm |",
+    "|---|---|---|---|---|",
+    `| at each rule's cutoff | ${t.raiseTrue} | ${t.raiseFalse} | ${pct(t.recallAtCutoff)} | ${pct(t.falseAlarmAtCutoff)} |`,
+    `| ${SOFT} to the cutoff (soft) | ${t.softTrue} | ${t.softFalse} | ${pct(t.addedRecall)} added | ${pct(t.addedFalseAlarm)} added |`,
+    `| ${SOFT} and above (either) | ${t.raiseTrue + t.softTrue} | ${t.raiseFalse + t.softFalse} | ${pct(t.recallAtSoft)} | ${pct(t.falseAlarmAtSoft)} |`,
+    "",
+    `The soft tier adds ${t.softTrue} violations (${pct(t.addedRecall)}) and ${t.softFalse} false alarms (${pct(t.addedFalseAlarm)}). ${t.missedBelowSoft} violations stay below ${SOFT}.`,
+  ].join("\n");
+}
+
+function effectiveTable(label, split) {
+  const lines = [
+    `${label} per-rule cutoff (a rule's own \`threshold:\` header, else ${RAISE}) and its soft band`,
+    "",
+    "| rule | severity | cutoff | recall@cutoff | FA@cutoff | soft violations | soft cleans |",
+    "|---|---|---|---|---|---|---|",
+  ];
+  for (const row of split.effective) {
+    lines.push(`| ${row.rule} | ${row.severity ?? "normal"} | ${row.cutoff.toFixed(1)} | ${pct(row.recall)} | ${pct(row.falseAlarmRate)} | ${row.softViolations} | ${row.softCleans} |`);
+  }
+  return lines.join("\n");
+}
+
 function perRuleTable(label, split) {
   const lines = [
     `${label} per rule (case counts, AUC over the asked cases, recall and false alarm at both cutoffs, clean cases in the ${LOW_BAND[0]}–${LOW_BAND[1]} band)`,
@@ -206,6 +294,10 @@ export function tables(scores) {
     out.push(overallTable(split, own));
     out.push("");
     out.push(twoTierTable(split, own));
+    out.push("");
+    out.push(softTierTable(split, own));
+    out.push("");
+    out.push(effectiveTable(split, own));
     out.push("");
     out.push(perRuleTable(split, own));
     out.push("");

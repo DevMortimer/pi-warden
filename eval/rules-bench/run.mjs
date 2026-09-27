@@ -181,7 +181,7 @@ export async function main(argv, deps) {
       requests_failed: requests.filter(entry => !entry.ok).length,
       retried: retries.length,
       models: [...new Set(requests.filter(entry => entry.model).map(entry => entry.model))],
-      rules_fixture: set.rules.map(rule => ({ id: rule.id, paths: rule.paths })),
+      rules_fixture: set.rules.map(rule => ({ id: rule.id, paths: rule.paths, ...(rule.threshold === undefined ? {} : { threshold: rule.threshold }), ...(rule.severity === undefined ? {} : { severity: rule.severity }) })),
       usage: judge.getUsage(),
       cases: rows,
       scores: score(cases, rows),
