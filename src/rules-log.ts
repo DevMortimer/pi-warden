@@ -35,10 +35,12 @@ export interface RuleRecord {
   outcome: RuleOutcome;
   /** P(violation) from Jev. */
   violation: number;
-  /** `rules.threshold` in force at the time. */
+  /** `rules.threshold` in force at the time (the rule's own cutoff when it set one). */
   threshold: number;
-  /** `violation` at or above the threshold. */
+  /** `violation` at or above the cutoff. */
   finding: boolean;
+  /** True when the score reached `rules.softThreshold` without reaching the cutoff. */
+  soft?: true;
   /** True when this judgment clears an earlier finding of the same rule on the same path in the same session. */
   cleared?: true;
 }
@@ -50,6 +52,7 @@ export interface RuleObservation {
   outcome: RuleOutcome;
   violation: number;
   finding: boolean;
+  soft: boolean;
   cleared: boolean;
 }
 
@@ -65,7 +68,8 @@ const isRuleRecord = (value: unknown): value is RuleRecord => {
     && typeof record.outcome === "string"
     && typeof record.violation === "number"
     && typeof record.threshold === "number"
-    && typeof record.finding === "boolean";
+    && typeof record.finding === "boolean"
+    && (record.soft === undefined || record.soft === true);
 };
 
 /** The log file for a project: the working directory's hash keeps two projects apart without naming either. */
@@ -87,14 +91,16 @@ export function trimRecords(lines: readonly string[], max: number = RULES_LOG_MA
 export class RuleClearTracker {
   private readonly lastFinding = new Map<string, boolean>();
 
-  observe(path: string, scores: readonly RuleScore[], threshold: number): RuleObservation[] {
+  observe(path: string, scores: readonly RuleScore[], threshold: number, softThreshold = 0): RuleObservation[] {
     return scores.map(score => {
       const key = `${path}\u0000${score.id}`;
       const wasFinding = this.lastFinding.get(key) === true;
-      const finding = score.violation >= threshold;
+      const cutoff = score.threshold ?? threshold;
+      const finding = score.violation >= cutoff;
+      const soft = !finding && softThreshold > 0 && score.violation >= softThreshold;
       const cleared = wasFinding && !finding;
       this.lastFinding.set(key, finding);
-      return { id: score.id, name: score.name, outcome: score.outcome, violation: score.violation, finding, cleared };
+      return { id: score.id, name: score.name, outcome: score.outcome, violation: score.violation, finding, soft, cleared };
     });
   }
 
@@ -147,9 +153,9 @@ export class RulesLog {
    * Records one Jev verdict and returns its judgments, so the caller can trace the ones that cleared an earlier
    * finding. Batches the whole verdict into one write; never throws.
    */
-  record(verdict: RulesVerdict, threshold: number, at: number = Date.now()): RuleObservation[] {
+  record(verdict: RulesVerdict, threshold: number, at: number = Date.now(), softThreshold = 0): RuleObservation[] {
     if (!verdict.scores?.length) return [];
-    const observations = this.tracker.observe(verdict.path, verdict.scores, threshold);
+    const observations = this.tracker.observe(verdict.path, verdict.scores, threshold, softThreshold);
     const records: RuleRecord[] = observations.map(observation => ({
       at: new Date(at).toISOString(),
       session: this.session,
@@ -159,8 +165,9 @@ export class RulesLog {
       name: observation.name,
       outcome: observation.outcome,
       violation: observation.violation,
-      threshold,
+      threshold: verdict.scores!.find(score => score.id === observation.id)?.threshold ?? threshold,
       finding: observation.finding,
+      ...(observation.soft ? { soft: true as const } : {}),
       ...(observation.cleared ? { cleared: true as const } : {}),
     }));
     this.append(records.map(record => JSON.stringify(record)));

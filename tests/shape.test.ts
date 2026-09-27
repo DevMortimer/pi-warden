@@ -45,6 +45,18 @@ test("a 0.7 config module without the runaway and notify sections disables both 
   assert.equal(result.config.widget.runaway, defaultConfig().widget.runaway);
 });
 
+test("a config module whose rules section predates the soft tier leaves it off, and a set value is kept", () => {
+  const older = defaultConfig() as unknown as Record<string, unknown>;
+  const rules = { ...(older.rules as Record<string, unknown>) };
+  delete rules.softThreshold;
+  older.rules = rules;
+  const result = completeConfig(older as never);
+  assert.deepEqual(result.missing, [], "the section is present, only the new key is missing");
+  assert.equal(result.config.rules.softThreshold, 0);
+  const kept = completeConfig({ ...defaultConfig(), rules: { ...defaultConfig().rules, softThreshold: 0.5 } } as never);
+  assert.equal(kept.config.rules.softThreshold, 0.5);
+});
+
 test("a 0.8 config module without the rules section disables the rules guard and renders its default widget line", () => {
   const older = defaultConfig() as unknown as Record<string, unknown>;
   delete older.rules;

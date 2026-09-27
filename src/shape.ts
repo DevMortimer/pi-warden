@@ -47,7 +47,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false }),
-    rules: section("rules", { ...off, threshold: 1, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
+    rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
@@ -104,6 +104,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.action.shouldProceed.steer !== "boolean") config.action = { ...config.action, shouldProceed: { ...config.action.shouldProceed, steer: false } };
   if (typeof config.action.escalationThreshold !== "number") config.action = { ...config.action, escalationThreshold: 0.85 };
   if (config.action.floor !== "level" && config.action.floor !== "evidence") config.action = { ...config.action, floor: "evidence" };
+  // The soft rules tier was added inside the rules section later than the section itself; an older config module leaves it undefined and the tier stays off.
+  if (typeof config.rules.softThreshold !== "number") config.rules = { ...config.rules, softThreshold: 0 };
   // The command rules were added inside the action section later than the section itself; an older config module leaves them undefined.
   if (!Array.isArray(config.action.commandRules)) config.action = { ...config.action, commandRules: [] };
   if (!Array.isArray(config.action.commandDenyRules)) config.action = { ...config.action, commandDenyRules: [] };

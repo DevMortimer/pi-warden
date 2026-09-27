@@ -222,6 +222,8 @@ export interface RulesConfig {
   enabled: boolean;
   /** P(violation) at or above this names the rule to the agent. */
   threshold: number;
+  /** A score from here up to the rule's cutoff becomes a soft "please double-check" steer; `0` turns the tier off. */
+  softThreshold: number;
   /** Project-relative Markdown rule files, used when the root pi-warden.md is absent. All are sent in one request. */
   files: string[];
   /** With no rules file, README.md, CLAUDE.md, or AGENTS.md (first found) is judged as one document. */
@@ -500,7 +502,7 @@ export function defaultConfig(): WardenConfig {
     done: { enabled: true, claimsDone: 0.7, nudge: true, uiProof: true, uiFiles: [...DEFAULT_UI_FILES], visualTools: defaultVisualTools() },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true },
-    rules: { enabled: true, threshold: 0.7, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
+    rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
@@ -849,6 +851,7 @@ function applyRules(base: RulesConfig, raw: unknown): RulesConfig {
   return {
     enabled: boolean(raw.enabled, base.enabled),
     threshold: probability(raw.threshold, base.threshold),
+    softThreshold: probability(raw.softThreshold, base.softThreshold),
     files: globList(raw.files, base.files),
     fallback: boolean(raw.fallback, base.fallback),
     maxChars: Math.max(500, positiveInteger(raw.maxChars, base.maxChars)),

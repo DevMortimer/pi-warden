@@ -160,6 +160,18 @@ test("row order is stable for equal flags", () => {
   assert.deepEqual(rows.map(item => item.id), ["a", "b", "z"]);
 });
 
+test("a soft finding below the rule's own cutoff is recorded with soft: true", async () => {
+  const path = join(dir, "soft.jsonl");
+  const log = new RulesLog(dir, "s1", { path });
+  const scored: RuleScore[] = [{ id: "bools", name: "Boolean names", outcome: "compliant", violation: 0.62, threshold: 0.9 }];
+  log.record(verdict("src/a.ts", scored), 0.7, NOW, 0.5);
+  await log.flush();
+  const [record] = await readRulesLog(path);
+  assert.equal(record!.finding, false);
+  assert.equal(record!.soft, true);
+  assert.equal(record!.threshold, 0.9, "the rule's own cutoff, not the global one");
+});
+
 test("a missing log file reads as no records", async () => {
   assert.deepEqual(await readRulesLog(join(dir, "does-not-exist.jsonl")), []);
 });

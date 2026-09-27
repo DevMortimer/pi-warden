@@ -211,6 +211,87 @@ test("buildRulesRequest: one Choice per applicable rule, the rule text in the qu
   assert.equal(aggregate.state.rules, "Always write tests.");
 });
 
+test("parseRules: threshold and severity headers parse in any order with paths:, a bad value is ignored and warned about", () => {
+  const md = [
+    "# High cutoff",
+    "threshold: 0.9",
+    "paths: src/**/*.ts",
+    "severity: high",
+    "Body text.",
+    "",
+    "# Bad values",
+    "threshold: 1.5",
+    "severity: urgent",
+    "Body.",
+    "",
+    "# Duplicated",
+    "threshold: 0.4",
+    "threshold: 0.8",
+    "Body.",
+    "",
+    "# Defaults",
+    "Body with no headers.",
+  ].join("\n");
+  const rules = parseRules(md);
+  assert.equal(rules[0]!.threshold, 0.9);
+  assert.equal(rules[0]!.severity, "high");
+  assert.deepEqual(rules[0]!.paths, ["src/**/*.ts"]);
+  assert.equal(rules[0]!.body, "Body text.");
+  assert.equal(rules[0]!.headerWarnings, undefined);
+  assert.equal(rules[1]!.threshold, undefined);
+  assert.equal(rules[1]!.severity, undefined);
+  assert.deepEqual(rules[1]!.headerWarnings, ["threshold: 1.5 is not a number from 0 to 1; ignored", "severity: urgent is not high, normal, or low; ignored"]);
+  assert.equal(rules[1]!.body, "Body.");
+  assert.equal(rules[2]!.threshold, 0.4, "the first value wins");
+  assert.deepEqual(rules[2]!.headerWarnings, ["threshold: appears more than once; the first is kept"]);
+  assert.equal(rules[3]!.threshold, undefined);
+  assert.equal(rules[3]!.severity, undefined);
+  assert.equal(rules[3]!.body, "Body with no headers.");
+});
+
+test("formatRuleSetDetails shows a rule's threshold, severity, and a bad-header warning", () => {
+  const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules("# Cut\nthreshold: 0.9\nseverity: high\nBody.\n\n# Bad\nthreshold: nope\nBody."), alwaysDropped: 0 };
+  const text = formatRuleSetDetails(set, "root");
+  assert.match(text, /1\. cut paths: \(all\), threshold: 0\.9, severity: high/);
+  assert.match(text, /2\. bad paths: \(all\)/);
+  assert.match(text, /threshold: nope is not a number from 0 to 1; ignored/);
+});
+
+test("evaluateRules: a rule's own cutoff beats the global one and its scores fill the soft tier under that cutoff", async () => {
+  const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules("# Cut\nthreshold: 0.9\nBody A.\n\n# Plain\nBody B."), alwaysDropped: 0 };
+  const judge = stubJudge({ cut: 0.85, plain: 0.75 });
+  const verdict = await evaluateRules("write", { path: "src/a.ts", content: "x" }, { cwd, config: rulesConfig({ softThreshold: 0.5 }), set, judge, timeoutMs: 1000 });
+  assert.deepEqual(verdict.findings.map(finding => finding.id), ["plain"], "0.85 is below the rule's own 0.9 even though it clears the global 0.7");
+  assert.deepEqual(verdict.softFindings?.map(finding => finding.id), ["cut"]);
+  assert.equal(verdict.scores?.find(score => score.id === "cut")?.threshold, 0.9);
+
+  const off = await evaluateRules("write", { path: "src/a.ts", content: "x" }, { cwd, config: rulesConfig(), set, judge: stubJudge({ cut: 0.85, plain: 0.62 }), timeoutMs: 1000 });
+  assert.deepEqual(off.findings, []);
+  assert.equal(off.softFindings, undefined, "the soft tier is off by default");
+});
+
+test("severity orders findings in the verdict and the steer, and the soft sentence follows", async () => {
+  const set: RuleSet = {
+    sources: ["pi-warden.md"],
+    rules: parseRules(["# Normal rule", "Body.", "", "# High rule", "severity: high", "Body.", "", "# Low rule", "severity: low", "Body.", "", "# Maybe rule", "Body."].join("\n")),
+    alwaysDropped: 0,
+  };
+  const judge = stubJudge({ "normal-rule": 0.95, "high-rule": 0.71, "low-rule": 0.99, "maybe-rule": 0.62 });
+  const verdict = await evaluateRules("write", { path: "src/a.ts", content: "x" }, { cwd, config: rulesConfig({ softThreshold: 0.5 }), set, judge, timeoutMs: 1000 });
+  assert.deepEqual(verdict.findings.map(finding => finding.id), ["high-rule", "normal-rule", "low-rule"], "severity first, then the score");
+  assert.deepEqual(verdict.softFindings?.map(finding => finding.id), ["maybe-rule"]);
+  const text = rulesSteer(verdict, new Map());
+  assert.match(text, /"High rule" \(0\.71\): Body; "Normal rule" \(0\.95\): Body; "Low rule" \(0\.99\): Body\. Fix it in your next edit\. Also check whether "Maybe rule" applies here \(0\.62\)\.$/);
+});
+
+test("a soft-only verdict steers with just the double-check sentence", () => {
+  const verdict: RulesVerdict = {
+    source: "typesafe", tool: "write", path: "src/a.ts", sources: ["pi-warden.md"], asked: 1, aggregate: false, findings: [],
+    softFindings: [{ id: "maybe", name: "Maybe rule", outcome: "compliant", violation: 0.62, body: "Body." }],
+  };
+  assert.equal(rulesSteer(verdict, new Map()), "pi-warden: Also check whether \"Maybe rule\" applies here (0.62).");
+});
+
 test("skipReason names exclude, skip, path scoping, and missing rules", () => {
   const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules("# Only TS\npaths: **/*.ts\nBody."), alwaysDropped: 0 };
   const target = describeTarget("write", { path: "src/a.ts", content: "x" }, cwd)!;
@@ -499,9 +580,9 @@ test("rule questions ask whether the change introduces a violation, judged on th
   const question = buildRulesRequest({ tool: "write", path: "src/a.js", content: "x" }, benchSet()).questions["rule_every-exported-function-documents-its-return-value"] as { instructions: string; criteria: Record<string, string> };
   assert.match(question.instructions, /^Does this change to `path` introduce a violation of this one project rule\?/);
   assert.match(question.instructions, /Judge the edit by `after`/);
-  assert.match(question.instructions, /a violation already in `before` is not introduced by this edit/);
+  assert.match(question.instructions, /leaves unchanged is not introduced by this edit, but new text `after` adds that breaks the same rule again is a violation/);
   assert.doesNotMatch(question.instructions, /Judge only the newly written content/);
-  assert.equal(question.criteria.violation, "The change introduces a violation of this rule.");
+  assert.equal(question.criteria.violation, "The change introduces a violation of this rule, including new text that breaks the rule again where it was already broken.");
 });
 
 test("bench false positive: an edit to a function body under its @returns JSDoc is not a missing @returns", async () => {

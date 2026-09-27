@@ -292,7 +292,7 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
   const missing = [...result.missing];
   if (typeof config.rules !== "object" || config.rules === null || !Array.isArray(config.rules.exclude)) {
     if (!missing.includes("rules")) missing.push("rules");
-    config.rules = { enabled: false, threshold: 1, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} };
+    config.rules = { enabled: false, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} };
   }
   if (typeof config.widget !== "object" || config.widget === null) {
     if (!missing.includes("widget")) missing.push("widget");
@@ -1532,7 +1532,7 @@ export default function wardenExtension(pi: ExtensionAPI): void {
         holds.recordRules({ source: rules.source, path: rules.path, findings: rules.findings.map(f => ({ name: f.name, violation: f.violation })), ...(rules.error ? { error: rules.error } : {}) });
         // A later judgment below the threshold clears an earlier finding of the same rule on this path: one trace line, no steer.
         if (rules.source === "typesafe") {
-          for (const observation of rulesLog?.record(rules, config.rules.threshold) ?? []) {
+          for (const observation of rulesLog?.record(rules, config.rules.threshold, Date.now(), config.rules.softThreshold) ?? []) {
             if (observation.cleared) record(ctx, config, "rules", `rules: ${observation.name} now clear on ${rules.path}`, [`clear: a later ${rules.tool} on this path scored ${observation.violation.toFixed(2)}, below the ${config.rules.threshold} threshold`]);
           }
         }
@@ -1541,7 +1541,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
         }
         contentNotes.push(proceeds => {
-          const told = proceeds && rules.findings.length && adaptiveSend(ctx, config, "rules") ? rulesSteer(rules, rulesGuard.count(rules)) : undefined;
+          const hasRules = rules.findings.length > 0 || (rules.softFindings?.length ?? 0) > 0;
+          const told = proceeds && hasRules && adaptiveSend(ctx, config, "rules") ? rulesSteer(rules, rulesGuard.count(rules)) : undefined;
           const details = [...shellNote, ...rulesDetails(rules, told)];
           if (!proceeds && rules.findings.length) details.push("agent not told: the write was held");
           record(ctx, config, "rules", rulesLine, details);
