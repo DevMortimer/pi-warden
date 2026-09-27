@@ -16,9 +16,10 @@ and manual runs from the Actions page. It does not publish to npm.
   JavaScript, type declarations, and Pi entry point are present.
 
 The package smoke test covers the Pi-host environment. Standalone use without
-Pi peers is not covered: the existing library entry point imports `pi-tui` through
-its widget module even though that peer is marked optional. This workflow does
-not change that runtime dependency.
+the optional Pi peers is checked by `tests/no-pi-import.test.ts`: the library
+entry has no runtime import of `@earendil-works/pi-coding-agent` or
+`@earendil-works/pi-tui`, and the smoke test still installs both peers for the
+Pi-host path.
 
 Successful runs retain an `npm-package` artifact for 14 days. It contains the
 npm tarball and `SHA256SUMS`. Tag runs also include the version's changelog notes.

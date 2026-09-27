@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { writeFileAtomicSync } from "./atomic.js";
 import type { JudgmentBackend } from "./backend.js";
 import { resolveBackend } from "./backend.js";
+import { defaultHostDirs } from "./host-dirs.js";
+import type { HostDirs } from "./host-dirs.js";
 import { COMMAND_TOOLS } from "./tools.js";
 import { defaultWidgetConfig } from "./widget.js";
 import type { WidgetConfig } from "./widget.js";
@@ -534,17 +535,13 @@ export function defaultConfig(): WardenConfig {
   };
 }
 
-/** Mirrors Pi's agent directory rule so the file sits next to pi-typesafe's auth.json. */
-export function userConfigPath(): string {
-  const configured = process.env.PI_CODING_AGENT_DIR?.trim();
-  const agentDir = configured
-    ? (configured === "~" || configured.startsWith("~/") ? join(homedir(), configured.slice(1)) : configured)
-    : join(homedir(), ".pi", "agent");
-  return join(agentDir, PACKAGE_NAME, "config.json");
+/** The user file is in the host's agent directory: `~/.pi/agent` on Pi, `~/.omp/agent` on oh-my-pi. `PI_CODING_AGENT_DIR` overrides it. */
+export function userConfigPath(dirs: HostDirs = defaultHostDirs()): string {
+  return join(dirs.agentDir, PACKAGE_NAME, "config.json");
 }
 
-export function projectConfigPath(cwd: string): string {
-  return join(cwd, ".pi", PROJECT_CONFIG_FILE);
+export function projectConfigPath(cwd: string, dirs: HostDirs = defaultHostDirs()): string {
+  return join(cwd, dirs.configDirName, PROJECT_CONFIG_FILE);
 }
 
 type Json = Record<string, unknown>;
@@ -1029,28 +1026,31 @@ export interface LoadOptions {
   cwd?: string;
   /** Project overrides are applied only when the caller vouches for the project (Pi's trust decision). */
   projectTrusted?: boolean;
+  /** Host directories; defaults to `defaultHostDirs()`. */
+  dirs?: HostDirs;
 }
 
 export function loadConfig(options: LoadOptions = {}): WardenConfig {
-  let config = applyUserOverrides(defaultConfig(), readJson(userConfigPath()));
-  if (options.cwd && options.projectTrusted) config = applyProjectOverrides(config, readJson(projectConfigPath(options.cwd)));
+  const dirs = options.dirs ?? defaultHostDirs();
+  let config = applyUserOverrides(defaultConfig(), readJson(userConfigPath(dirs)));
+  if (options.cwd && options.projectTrusted) config = applyProjectOverrides(config, readJson(projectConfigPath(options.cwd, dirs)));
   return config;
 }
 
 /** Reads only the user file, for editing and persisting consent. */
-export function readUserConfig(): Json {
-  return readJson(userConfigPath()) ?? {};
+export function readUserConfig(dirs: HostDirs = defaultHostDirs()): Json {
+  return readJson(userConfigPath(dirs)) ?? {};
 }
 
-export function writeUserConfig(raw: Json): string {
-  const path = userConfigPath();
+export function writeUserConfig(raw: Json, dirs: HostDirs = defaultHostDirs()): string {
+  const path = userConfigPath(dirs);
   writeFileAtomicSync(path, `${JSON.stringify(raw, null, 2)}\n`);
   return path;
 }
 
 /** Persists one top-level user setting without disturbing the rest of the file. */
-export function setUserSetting(key: "typesafe" | "enabled" | "mode", value: boolean | WardenMode): string {
-  return writeUserConfig({ ...readUserConfig(), [key]: value });
+export function setUserSetting(key: "typesafe" | "enabled" | "mode", value: boolean | WardenMode, dirs: HostDirs = defaultHostDirs()): string {
+  return writeUserConfig({ ...readUserConfig(dirs), [key]: value }, dirs);
 }
 
 export function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {

@@ -3,12 +3,15 @@
 
 import { createHash } from "crypto";
 import { mkdirSync } from "fs";
-import { homedir } from "os";
 import { dirname, join } from "path";
+import type { DatabaseSync } from "node:sqlite";
+import type { HostDirs } from "./host-dirs.js";
+import { defaultHostDirs } from "./host-dirs.js";
+import { userConfigPath } from "./config.js";
 import { redact } from "./redact.js";
 import type { CallScores } from "./holds.js";
 
-let db: import("node:sqlite").DatabaseSync | undefined;
+const dbs = new Map<string, Promise<DatabaseSync>>();
 let sqliteAvailable: boolean | undefined;
 
 // --- Schema (shared constant) ---
@@ -43,31 +46,50 @@ const NOOP_DB = {
   exec() {},
   prepare() { return { run() { return { changes: 0, lastInsertRowid: 0 }; }, get() { return undefined; }, all() { return []; } }; },
   pragma() {},
-} as unknown as import("node:sqlite").DatabaseSync;
+} as unknown as DatabaseSync;
 
-async function getDb(): Promise<import("node:sqlite").DatabaseSync> {
-  if (db) return db;
-  if (sqliteAvailable === false) return NOOP_DB;
+/** Open one connection; a failure is remembered per path so later calls neither warn again nor retry forever. */
+async function openDb(dbPath: string): Promise<DatabaseSync> {
+  let opened: DatabaseSync | undefined;
   try {
-    const { DatabaseSync } = await import("node:sqlite");
+    // Static import cannot work: node:sqlite is flagged experimental and loads lazily so a missing
+    // or broken build of it disables learning features instead of failing the whole process.
+    const sqlite = await import("node:sqlite").catch(err => ({ importFailed: err as unknown }));
+    if ("importFailed" in sqlite) {
+      sqliteAvailable = false;
+      console.warn("pi-warden: node:sqlite unavailable, learning features disabled:", sqlite.importFailed);
+      return NOOP_DB;
+    }
+    const { DatabaseSync } = sqlite;
     sqliteAvailable = true;
-    const dbPath = process.env.PI_WARDEN_DB ?? join(homedir(), ".pi", "agent", "pi-warden", "holds.db");
     // DatabaseSync does not create parent directories; on a fresh machine the folder may not exist yet.
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
-    db = new DatabaseSync(dbPath);
-    db.exec("PRAGMA journal_mode = WAL");
-    db.exec("PRAGMA busy_timeout = 10000");
-    return db;
+    opened = new DatabaseSync(dbPath);
+    opened.exec("PRAGMA journal_mode = WAL");
+    opened.exec("PRAGMA busy_timeout = 10000");
+    return opened;
   } catch (err) {
-    sqliteAvailable = false;
-    console.warn("pi-warden: node:sqlite unavailable, learning features disabled:", err);
+    // Import failures are handled above; this is a path open or PRAGMA failure for this path only.
+    // Close the half-opened handle and leave the resolved NOOP promise cached: one warning,
+    // and later calls neither reopen nor retry an unusable file.
+    try { opened?.close(); } catch { /* already closed */ }
+    console.warn(`pi-warden: could not open ${dbPath}:`, err);
     return NOOP_DB;
   }
 }
 
-export async function initSchema(retentionDays = 365): Promise<void> {
+/** One connection per resolved path; concurrent first calls share one open. */
+async function getDb(dirs: HostDirs = defaultHostDirs()): Promise<DatabaseSync> {
+  const dbPath = process.env.PI_WARDEN_DB ?? join(dirname(userConfigPath(dirs)), "holds.db");
+  if (sqliteAvailable === false) return NOOP_DB;
+  let opening = dbs.get(dbPath);
+  if (!opening) dbs.set(dbPath, opening = openDb(dbPath));
+  return opening;
+}
+
+export async function initSchema(retentionDays = 365, dirs: HostDirs = defaultHostDirs()): Promise<void> {
   try {
-    const d = await getDb();
+    const d = await getDb(dirs);
     d.exec(HOLDS_SCHEMA);
     // Migrate: add columns that may be missing from older databases.
     try { d.exec("ALTER TABLE holds ADD COLUMN preceding_actions TEXT"); } catch { /* column exists */ }
@@ -200,8 +222,8 @@ export function toHoldRecord(
 
 // --- Recording ---
 
-export async function recordHold(hold: HoldRecord): Promise<number> {
-  const d = await getDb();
+export async function recordHold(hold: HoldRecord, dirs: HostDirs = defaultHostDirs()): Promise<number> {
+  const d = await getDb(dirs);
   const hash = signatureHash(hold.tool, hold.scores);
   const stmt = d.prepare(`
     INSERT INTO holds
@@ -222,15 +244,15 @@ export async function recordHold(hold: HoldRecord): Promise<number> {
   return Number(result.lastInsertRowid);
 }
 
-export async function recordOutcome(id: number, outcome: string): Promise<void> {
-  try { (await getDb()).prepare("UPDATE holds SET outcome = ?, outcome_at = ? WHERE id = ?").run(outcome, Date.now(), id); } catch (err) { console.warn("pi-warden: could not record hold outcome:", err); }
+export async function recordOutcome(id: number, outcome: string, dirs: HostDirs = defaultHostDirs()): Promise<void> {
+  try { (await getDb(dirs)).prepare("UPDATE holds SET outcome = ?, outcome_at = ? WHERE id = ?").run(outcome, Date.now(), id); } catch (err) { console.warn("pi-warden: could not record hold outcome:", err); }
 }
 
 // --- Querying ---
 
 /** Query holds by project and held value. Used by tests and future analytics. */
-export async function queryHoldsForProject(projectRoot: string, options?: { held?: boolean }): Promise<Record<string, unknown>[]> {
-  const d = await getDb();
+export async function queryHoldsForProject(projectRoot: string, options?: { held?: boolean }, dirs: HostDirs = defaultHostDirs()): Promise<Record<string, unknown>[]> {
+  const d = await getDb(dirs);
   if (options?.held !== undefined) {
     return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? AND held = ? ORDER BY timestamp").all(projectRoot, options.held ? 1 : 0) as Record<string, unknown>[];
   }
@@ -260,8 +282,8 @@ export interface HoldStats {
   newest: number;
 }
 
-export async function holdStats(projectRoot: string): Promise<HoldStats> {
-  const d = await getDb();
+export async function holdStats(projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<HoldStats> {
+  const d = await getDb(dirs);
   const held = d.prepare(
     `SELECT
       COUNT(*) AS total,
@@ -294,8 +316,8 @@ export async function holdStats(projectRoot: string): Promise<HoldStats> {
   };
 }
 
-export async function querySmartHistory(tool: string, scores: HoldScores, projectRoot: string): Promise<SmartHistory> {
-  const d = await getDb();
+export async function querySmartHistory(tool: string, scores: HoldScores, projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<SmartHistory> {
+  const d = await getDb(dirs);
   const hash = signatureHash(tool, scores);
 
   const exact = d.prepare(`
@@ -344,8 +366,8 @@ export function calculateSmartConfidence(history: SmartHistory): ConfidenceResul
 
 // --- Integration ---
 
-export async function shouldSkipHold(tool: string, scores: HoldScores, projectRoot: string): Promise<SkipResult> {
-  const history = await querySmartHistory(tool, scores, projectRoot);
+export async function shouldSkipHold(tool: string, scores: HoldScores, projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<SkipResult> {
+  const history = await querySmartHistory(tool, scores, projectRoot, dirs);
   const { confidence, reason } = calculateSmartConfidence(history);
 
   const isDestructive = scores.reasons.some(r => r.startsWith("destructive:"));
@@ -370,8 +392,8 @@ export interface ThresholdAdjustment {
 }
 
 /** Analyze hold outcomes to suggest threshold adjustments. */
-export async function analyzeThresholds(projectRoot: string): Promise<ThresholdAdjustment[]> {
-  const d = await getDb();
+export async function analyzeThresholds(projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<ThresholdAdjustment[]> {
+  const d = await getDb(dirs);
   const adjustments: ThresholdAdjustment[] = [];
 
   // Analyze action guard: look at holds vs approvals
@@ -434,8 +456,8 @@ export interface PatternInsight {
   suggestion: string;
 }
 
-export async function analyzePatterns(projectRoot: string): Promise<PatternInsight[]> {
-  const d = await getDb();
+export async function analyzePatterns(projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<PatternInsight[]> {
+  const d = await getDb(dirs);
   const insights: PatternInsight[] = [];
 
   // Get pattern outcomes
@@ -492,10 +514,10 @@ export interface ContextRecommendation {
 }
 
 /** Generate recommendations based on learning data. */
-export async function generateRecommendations(projectRoot: string): Promise<ContextRecommendation[]> {
+export async function generateRecommendations(projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<ContextRecommendation[]> {
   const recommendations: ContextRecommendation[] = [];
 
-  const thresholdAdjustments = await analyzeThresholds(projectRoot);
+  const thresholdAdjustments = await analyzeThresholds(projectRoot, dirs);
   for (const adj of thresholdAdjustments) {
     if (adj.confidence > 0.5) {
       recommendations.push({
@@ -506,7 +528,7 @@ export async function generateRecommendations(projectRoot: string): Promise<Cont
     }
   }
 
-  const patternInsights = await analyzePatterns(projectRoot);
+  const patternInsights = await analyzePatterns(projectRoot, dirs);
   for (const insight of patternInsights.slice(0, 3)) {
     if (insight.falsePositiveRate > 0.6) {
       recommendations.push({
@@ -538,8 +560,8 @@ export interface SteerEffectivenessReport {
 }
 
 /** Analyze steer effectiveness from hold outcomes. */
-export async function analyzeSteerEffectivenessReport(projectRoot: string): Promise<SteerEffectivenessReport> {
-  const d = await getDb();
+export async function analyzeSteerEffectivenessReport(projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<SteerEffectivenessReport> {
+  const d = await getDb(dirs);
   const suggestions: string[] = [];
 
   // Get steer outcomes (inferred from hold outcomes)

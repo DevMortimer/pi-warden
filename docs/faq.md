@@ -50,7 +50,7 @@ Nothing until you run `/warden enable`. After that, per guard, redacted and trun
 
 ## Can a project config weaken it?
 
-A project's `.pi/pi-warden.json` may tighten thresholds, add guarded tools, name rule files, skip paths, or turn a guard off for that repo. It cannot grant consent, change the mode, raise timeouts or budgets, or set a notification command. It is read only when Pi trusts the project.
+A project's `.pi/pi-warden.json` on Pi (`.omp/pi-warden.json` on oh-my-pi) may tighten thresholds, add guarded tools, name rule files, skip paths, or turn a guard off for that repo. It cannot grant consent, change the mode, raise timeouts or budgets, or set a notification command. It is read only when the host trusts the project.
 
 ## I updated and now see a warning about config sections.
 

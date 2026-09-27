@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeFileAtomicSync } from "./atomic.js";
 import { userConfigPath } from "./config.js";
+import type { HostDirs } from "./host-dirs.js";
+import { defaultHostDirs } from "./host-dirs.js";
 import type { SteersConfig } from "./config.js";
 
 /**
@@ -46,9 +48,9 @@ interface StoreFile { version: 1; models: Record<string, Partial<Record<SteerKin
 
 export interface MutedPair { model: string; kind: SteerKind; sent: number; followed: number; disputed: number }
 
-/** Where the counts live: next to the user config, in pi-warden's data folder. */
-export function steerStatsPath(): string {
-  return process.env.PI_WARDEN_STEER_STATS ?? join(dirname(userConfigPath()), "steer-stats.json");
+/** Where the counts live: next to the user config, in pi-warden's data folder. `PI_WARDEN_STEER_STATS` overrides it. */
+export function steerStatsPath(dirs: HostDirs = defaultHostDirs()): string {
+  return process.env.PI_WARDEN_STEER_STATS ?? join(dirname(userConfigPath(dirs)), "steer-stats.json");
 }
 
 export const DEFAULT_STEERS: SteersConfig = { adaptive: true, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 };

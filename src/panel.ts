@@ -2,6 +2,8 @@ import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-wo
 import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { WardenConfig } from "./config.js";
 import { applyUserOverrides, defaultConfig, readUserConfig, writeUserConfig } from "./config.js";
+import type { HostDirs } from "./host-dirs.js";
+import { defaultHostDirs } from "./host-dirs.js";
 import type { Trace } from "./trace.js";
 import { LEVEL_COLOR, parseVerdictLine, renderSegment } from "./widget.js";
 import type { ThemeLike } from "./widget.js";
@@ -164,7 +166,8 @@ export function openTracePanel(ui: PanelUi, trace: Trace, options: { width?: str
   }, {
     overlay: true,
     overlayOptions: { anchor: "right-center", width: options.width ?? "40%", minWidth: 44, maxHeight: "100%", nonCapturing: true },
-    onHandle: (handle: { unfocus(): void }) => { unfocus = () => handle.unfocus(); },
+    // A handle without `unfocus` belongs to a host whose overlays always capture input; close instead.
+    onHandle: (handle: { unfocus?(): void }) => { unfocus = typeof handle.unfocus === "function" ? () => handle.unfocus!() : () => close(); },
   });
   return { closed, close: () => close(), built: () => built };
 }
@@ -204,7 +207,7 @@ export class ConfigPanel implements Component {
   private readonly edits = new Map<string, unknown>();
   private readonly entries: ConfigEntry[];
 
-  constructor(private readonly config: WardenConfig, private readonly theme: ThemeLike, private readonly actions: PanelActions, private readonly requestRender: () => void) {
+  constructor(private readonly config: WardenConfig, private readonly theme: ThemeLike, private readonly actions: PanelActions, private readonly requestRender: () => void, private readonly dirs: HostDirs = defaultHostDirs()) {
     this.entries = flattenConfig(config as unknown as Record<string, unknown>);
   }
 
@@ -340,7 +343,7 @@ export class ConfigPanel implements Component {
 
   save(): void {
     if (this.edits.size === 0) return;
-    const raw = readUserConfig();
+    const raw = readUserConfig(this.dirs);
     const obj = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw as Record<string, unknown> : {};
     for (const [path, value] of this.edits) {
       const keys = path.split(".");
@@ -352,24 +355,25 @@ export class ConfigPanel implements Component {
       }
       current[keys.at(-1)!] = value;
     }
-    writeUserConfig(obj);
+    writeUserConfig(obj, this.dirs);
     this.edits.clear();
   }
 }
 
-export function openConfigPanel(ui: PanelUi, config: WardenConfig, options: { width?: string | number } = {}): PanelController {
+export function openConfigPanel(ui: PanelUi, config: WardenConfig, options: { width?: string | number; dirs?: HostDirs } = {}): PanelController {
   let close: () => void = () => {};
   let unfocus: () => void = () => {};
   const closed = ui.custom<void>((tui, theme, _keybindings, done) => {
     close = () => done();
-    const panel = new ConfigPanel(config, theme, { close, unfocus: () => unfocus() }, () => tui.requestRender());
+    const panel = new ConfigPanel(config, theme, { close, unfocus: () => unfocus() }, () => tui.requestRender(), options.dirs);
     const rows = tui.terminal?.rows;
     if (typeof rows === "number") panel.setViewport(rows - 2);
     return panel;
   }, {
     overlay: true,
     overlayOptions: { anchor: "right-center", width: options.width ?? "40%", minWidth: 44, maxHeight: "100%", nonCapturing: true },
-    onHandle: (handle: { unfocus(): void }) => { unfocus = () => handle.unfocus(); },
+    // A handle without `unfocus` belongs to a host whose overlays always capture input; close instead.
+    onHandle: (handle: { unfocus?(): void }) => { unfocus = typeof handle.unfocus === "function" ? () => handle.unfocus!() : () => close(); },
   });
   return { closed, close: () => close() };
 }

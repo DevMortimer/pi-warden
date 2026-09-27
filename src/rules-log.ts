@@ -3,6 +3,9 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { writeFileAtomic } from "./atomic.js";
 import { userConfigPath } from "./config.js";
+import type { HostDirs } from "./host-dirs.js";
+import { defaultHostDirs } from "./host-dirs.js";
+
 import type { RuleOutcome, RuleScore, RulesVerdict } from "./rules.js";
 
 /**
@@ -76,9 +79,9 @@ const isRuleRecord = (value: unknown): value is RuleRecord => {
 };
 
 /** The log file for a project: the working directory's hash keeps two projects apart without naming either. */
-export function rulesLogPath(cwd: string): string {
+export function rulesLogPath(cwd: string, dirs: HostDirs = defaultHostDirs()): string {
   const project = createHash("sha256").update(cwd).digest("hex").slice(0, 12);
-  return join(dirname(userConfigPath()), "rules", `${project}.jsonl`);
+  return join(dirname(userConfigPath(dirs)), "rules", `${project}.jsonl`);
 }
 
 /** Keep the newest `max` lines, dropping the oldest. */

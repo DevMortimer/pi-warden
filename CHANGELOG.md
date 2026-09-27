@@ -8,6 +8,20 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.73.0
+
+### Fixed
+
+- pi-warden runs on oh-my-pi and other hosts that load Pi extensions through a compatibility layer. `src/host-compat.ts` maps the host API onto the Pi contract: `before_agent_start` gets `systemPromptOptions` with the active skills, and an `appendSystemPrompt` becomes the host's `systemPrompt` array. An input the extension handles is also marked `handled`. `agent_settled` runs after pi-warden's `agent_end` handlers have been dispatched and the host becomes idle. If background work is cancelled without another `agent_end`, the adapter waits for that work to drain. Command contexts get `getSystemPromptOptions()`. On upstream Pi the API is not changed.
+- Data paths follow the host: the user config, the `/warden index` directory, and `holds.db` use the host's agent directory (`~/.pi/agent` on Pi, `~/.omp/agent` on oh-my-pi), and the project file uses the host's config directory (`.pi/pi-warden.json` or `.omp/pi-warden.json`).
+- On a host whose overlay handle cannot release focus, Escape closes the trace and config panels.
+- `import { defaultConfig } from "pi-warden"` works again without the optional `@earendil-works/pi-coding-agent` peer and now also without the optional `@earendil-works/pi-tui` peer: the library entry has no runtime import of either. Host directories come from the new injectable `HostDirs` parameter on every path function (`defaultHostDirs()` reads `PI_CODING_AGENT_DIR` and falls back to `~/.pi/agent`; existing callers keep working unchanged), and `src/extension.ts` builds them once from the host and passes them to every call. The entry's only pi-tui code — the rendered status stack — moved to `src/widget-render.ts`, which the entry does not re-export.
+- On a host whose agent directory is not the Pi default (oh-my-pi), an interactive session shows a one-time notice when `~/.pi/agent/pi-warden` exists and the notice has not been shown on this host: it names the target and legacy folders and a command that moves the fresh data aside and copies the legacy data in its place, and records a marker beside the data folder so it shows once. Headless sessions show nothing.
+
+### Docs
+
+- `docs/configuration.md`, `docs/data-handling.md`, `docs/commands.md`, and `docs/faq.md` say that paths follow the host. `docs/configuration.md` and `docs/data-handling.md` add a one-time migration note for existing oh-my-pi users: close all Pi and oh-my-pi sessions, then run `{ [ ! -e "$HOME/.omp/agent/pi-warden" ] || mv "$HOME/.omp/agent/pi-warden" "$HOME/.omp/agent/pi-warden.before-migration"; } && cp -R "$HOME/.pi/agent/pi-warden" "$HOME/.omp/agent/pi-warden"` and copy each project's `.pi/pi-warden.json` to `.omp/pi-warden.json` (keep the original). oh-my-pi shows this notice once per machine.
+
 ## 0.72.0
 
 ### Added

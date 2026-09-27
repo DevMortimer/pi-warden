@@ -12,6 +12,7 @@ import type { TaskSpine } from "./shape.js";
 import { globToRegExp } from "./rules.js";
 import type { RulesSourceConfig } from "./rules.js";
 import { indexDir } from "./index-cmd.js";
+import type { HostDirs } from "./host-dirs.js";
 import { resolveRulesFile } from "./rules-file.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
@@ -656,8 +657,8 @@ export function hostPaths(env: NodeJS.ProcessEnv = process.env): string[] {
  * write. The rest of Pi's agent directory stays held: `auth.json`, `settings.json`, pi-warden's own `config.json`, and
  * other extensions' data.
  */
-export function wardenHostPaths(env: NodeJS.ProcessEnv = process.env): string[] {
-  const index = safeIndexDir(env);
+export function wardenHostPaths(env: NodeJS.ProcessEnv = process.env, dirs?: HostDirs): string[] {
+  const index = safeIndexDir(env, dirs);
   return [...new Set([...hostPaths(env), ...(index ? [index] : [])])];
 }
 
@@ -665,8 +666,8 @@ export function wardenHostPaths(env: NodeJS.ProcessEnv = process.env): string[] 
  * The real index directory, or undefined when a symlink could move it: the index directory or a directory between it
  * and the agent directory is a symlink, or its real path is not inside the real agent directory.
  */
-function safeIndexDir(env: NodeJS.ProcessEnv): string | undefined {
-  const index = resolve(indexDir(env));
+function safeIndexDir(env: NodeJS.ProcessEnv, dirs?: HostDirs): string | undefined {
+  const index = resolve(indexDir(env, dirs));
   // indexDir is `<agent dir>/pi-warden/index`.
   const agent = dirname(dirname(index));
   for (let dir = index; dir !== agent && dirname(dir) !== dir; dir = dirname(dir)) {

@@ -10,6 +10,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { serialize, writeFileAtomic } from "./atomic.js";
 import { userConfigPath } from "./config.js";
+import type { HostDirs } from "./host-dirs.js";
+import { defaultHostDirs } from "./host-dirs.js";
 import { redact } from "./redact.js";
 
 export const LOOP_CHARS = 160;
@@ -48,9 +50,9 @@ export function emptyLoopStore(): LoopStore {
  * One file per session, in a folder per project: the working directory's hash keeps another project's session with the
  * same id apart, and the id keeps another session of this project apart.
  */
-export function loopsPath(cwd: string, session: string): string {
+export function loopsPath(cwd: string, session: string, dirs: HostDirs = defaultHostDirs()): string {
   const project = createHash("sha256").update(cwd).digest("hex").slice(0, 12);
-  return join(dirname(userConfigPath()), "loops", project, `${session.replace(/[^\w.-]/g, "_")}.json`);
+  return join(dirname(userConfigPath(dirs)), "loops", project, `${session.replace(/[^\w.-]/g, "_")}.json`);
 }
 
 const isLoop = (value: unknown): value is Loop => {

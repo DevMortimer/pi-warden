@@ -14,6 +14,7 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { serialize, writeFileAtomic } from "./atomic.js";
 import { userConfigPath } from "./config.js";
+import { defaultHostDirs } from "./host-dirs.js";
 import { redact } from "./redact.js";
 
 /**
@@ -590,9 +591,9 @@ export function emptyPrefsStore(): PrefsStore {
   return { lessons: [], confirmations: [], forgotten: [] };
 }
 
-export function prefsStorePath(project: string): string {
+export function prefsStorePath(project: string, dirs = defaultHostDirs()): string {
   const hash = createHash("sha256").update(project).digest("hex").slice(0, 12);
-  return join(dirname(userConfigPath()), "prefs", `${hash}.json`);
+  return join(dirname(userConfigPath(dirs)), "prefs", `${hash}.json`);
 }
 
 const isRecord = (value: unknown): value is LessonRecord =>

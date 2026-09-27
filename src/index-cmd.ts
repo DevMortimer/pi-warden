@@ -4,13 +4,15 @@
  * entries in a fixed format; the extension validates and sanitizes them.
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { sanitizeDescription } from "./conscience.js";
 import type { CapabilityRole } from "./conscience.js";
 import { fileContentHash, toolSourceHash } from "./hashing.js";
+import { PACKAGE_NAME } from "./config.js";
+import type { HostDirs } from "./host-dirs.js";
+import { defaultHostDirs, expandHome } from "./host-dirs.js";
 
 export { fileContentHash, toolSourceHash } from "./hashing.js";
 
@@ -48,34 +50,23 @@ export interface IndexFile {
 
 /* ─── Path resolution ───────────────────────────────────────────────── */
 
-/** Resolve Pi's agent directory (mirrors config.ts userConfigPath logic). */
-function resolveAgentDir(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.PI_WARDEN_INDEX_DIR?.trim()
-    ?? env.PI_CODING_AGENT_DIR?.trim();
-  if (configured) {
-    const expanded = configured === "~" || configured.startsWith("~/")
-      ? join(homedir(), configured.slice(1))
-      : configured;
-    return expanded;
-  }
-  return join(homedir(), ".pi", "agent");
+/** The index directory: `PI_WARDEN_INDEX_DIR` wins, then `PI_CODING_AGENT_DIR`, then the host directories. A `~` or `~/` prefix expands to the home directory. */
+export function indexDir(env: NodeJS.ProcessEnv = process.env, dirs: HostDirs = defaultHostDirs(env)): string {
+  const configured = env.PI_WARDEN_INDEX_DIR?.trim() || env.PI_CODING_AGENT_DIR?.trim();
+  const base = configured ? expandHome(configured) : dirs.agentDir;
+  return join(base, PACKAGE_NAME, "index");
 }
 
-/** The directory `/warden index` asks the agent to write its index files into. */
-export function indexDir(env: NodeJS.ProcessEnv = process.env): string {
-  return join(resolveAgentDir(env), "pi-warden", "index");
-}
-
-export function indexPath(kind: "global" | "project", projectRoot?: string): string {
-  const base = indexDir();
+export function indexPath(kind: "global" | "project", projectRoot?: string, env: NodeJS.ProcessEnv = process.env, dirs?: HostDirs): string {
+  const base = indexDir(env, dirs);
   if (kind === "global") return join(base, "global.json");
   // Project index keyed by first 12 hex chars of SHA-256(projectRoot)
   const hash = createHash("sha256").update(projectRoot ?? "").digest("hex").slice(0, 12);
   return join(base, "projects", `${hash}.json`);
 }
 
-export function ensureIndexDir(kind: "global" | "project"): void {
-  const dir = kind === "global" ? indexDir() : join(indexDir(), "projects");
+export function ensureIndexDir(kind: "global" | "project", env: NodeJS.ProcessEnv = process.env, dirs?: HostDirs): void {
+  const dir = kind === "global" ? indexDir(env, dirs) : join(indexDir(env, dirs), "projects");
   mkdirSync(dir, { recursive: true });
 }
 
@@ -100,7 +91,8 @@ export function readIndex(filePath: string): IndexFile | undefined {
 }
 
 export function writeIndex(filePath: string, index: IndexFile): void {
-  ensureIndexDir(filePath.includes("/projects/") ? "project" : "global");
+  // The target's parent: `<index dir>/projects` for a project file, the index dir for the global one.
+  mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, JSON.stringify(index, null, 2), "utf8");
 }
 
@@ -282,6 +274,7 @@ export function buildIndexPrompt(
   skills: Array<{ name: string; description: string; filePath: string }>,
   tools: Array<{ name: string; description: string }>,
   outputPaths: { global: string; project: string },
+  dirs: HostDirs = defaultHostDirs(),
 ): string {
   const skillLines = skills.map(s => `- ${s.name}: ${s.description} (file: ${s.filePath})`).join("\n");
   const toolLines = tools.map(t => `- ${t.name}: ${t.description}`).join("\n");
@@ -326,7 +319,7 @@ export function buildIndexPrompt(
     "```",
     "",
     "## Scope",
-    "- Skills from ~/.pi/agent/skills/ and user-level directories: scope `global`",
+    `- Skills from ${dirs.agentDir}/skills/ and user-level directories: scope \`global\``,
     "- Skills from the project directory: scope `project`",
     "- All tools: scope `global`",
     "",

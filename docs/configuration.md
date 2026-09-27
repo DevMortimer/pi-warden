@@ -6,6 +6,8 @@ Contents: [User config](#user-config) · [Project config](#project-config) · [R
 
 ## User config
 
+Paths in this document are for Pi. On oh-my-pi, `~/.pi/agent` is `~/.omp/agent` and the project file is `.omp/pi-warden.json`. `PI_CODING_AGENT_DIR` sets the agent directory on both hosts. One-time migration for existing oh-my-pi users: an interactive oh-my-pi session shows a notice once per machine, with the two paths filled in. It says to close all Pi and oh-my-pi sessions first (the SQLite database keeps write-ahead logs while a session is open), then run `{ [ ! -e "$HOME/.omp/agent/pi-warden" ] || mv "$HOME/.omp/agent/pi-warden" "$HOME/.omp/agent/pi-warden.before-migration"; } && cp -R "$HOME/.pi/agent/pi-warden" "$HOME/.omp/agent/pi-warden"` — the `mv` keeps the fresh data the new host created aside instead of deleting it — and copy the project file `.pi/pi-warden.json` to `.omp/pi-warden.json` (keep the original so Pi sessions in that project still read it).
+
 User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` opens the panel that edits it (`s` saves, `/warden config` again or `q` closes); `/warden config get <key>` prints one value without the panel. Missing keys use these defaults:
 
 ```json

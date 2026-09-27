@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { userConfigPath } from "./config.js";
 import type { WardenMode } from "./config.js";
+import { defaultHostDirs } from "./host-dirs.js";
 import type { ActionSummary, Level, PreviousAction, ScopeLabel, Verdict } from "./guard.js";
 
 /**
@@ -294,9 +295,9 @@ export function sessionFileId(sessionId: string): string {
 }
 
 /** Per-session file beside the user config: `<agent dir>/pi-warden/holds/<date>-<session>.jsonl`. */
-export function holdLogPath(sessionId: string, at = new Date()): string {
+export function holdLogPath(sessionId: string, at = new Date(), dirs = defaultHostDirs()): string {
   const day = at.toISOString().slice(0, 10);
-  return join(dirname(userConfigPath()), "holds", `${day}-${sessionFileId(sessionId)}.jsonl`);
+  return join(dirname(userConfigPath(dirs)), "holds", `${day}-${sessionFileId(sessionId)}.jsonl`);
 }
 
 /** Rewrites the session's records as JSON lines, owner-only, one write at a time so outcomes never interleave. */

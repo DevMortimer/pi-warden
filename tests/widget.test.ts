@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { LEVEL_COLOR, parseVerdictLine, pickSentenceTemplate, renderTemplate, SENTENCE_TEMPLATES, widgetLines } from "../src/widget.js";
+import { LEVEL_COLOR, parseVerdictLine, pickSentenceTemplate, renderTemplate, SENTENCE_TEMPLATES } from "../src/widget.js";
+import { widgetLines } from "../src/widget-render.js";
 import type { ThemeLike } from "../src/widget.js";
 
 /** A theme that marks every tone in the text, so an assertion can check the hierarchy and not only the words. */

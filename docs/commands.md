@@ -23,7 +23,7 @@
 | `/warden unmute <kind> [model]` | Resets the follow and dispute counts of one steer kind (for example `intent-mismatch` or `rules`) for the current model, or for the named model: its steers are sent again and counted from zero. See [adaptive steers](guards.md#adaptive-steers-per-model). |
 | `/warden loops` | The open loops of this session that the agent added with `warden_loops`, and the closed ones with how each closed (done, or dropped with its reason). Read-only; loops of other sessions and projects are never shown. |
 | `/warden prefs forget <n>` | Drops item `n` of `/warden prefs` for this project: it is not listed or injected again, and an agent lesson is deleted. Stored in pi-warden's data folder. |
-| `/warden index` | Build the capability index with the session model: reads every installed skill file and tool description, writes sanitized entries to `~/.pi/agent/pi-warden/index/`. Re-running overwrites both files. |
+| `/warden index` | Build the capability index with the session model: reads every installed skill file and tool description, writes sanitized entries to the host's agent directory under `pi-warden/index/` (`~/.pi/agent/pi-warden/index/` on Pi, `~/.omp/agent/pi-warden/index/` on oh-my-pi). Re-running overwrites both files. |
 | `/warden audit` | Agent-driven workspace audit. Sends a prompt to the session model which reads source code, finds concrete Jev (TypeSafe) opportunities with file:line citations, produces measurable evidence, and writes an HTML report to `.pi-warden/audit-report.html`. Uses the session model; may take several minutes and use real tokens. |
 
 ## Status line and trace

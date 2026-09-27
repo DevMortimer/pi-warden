@@ -32,6 +32,8 @@ export type { ContextLedgerSnapshot, RecallKind } from "./saver.js";
 export type { ShapeResult } from "./shape.js";
 export { CONFIG_SCHEMA, defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, isRecallTool, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, setNestedValue, getNestedValue, parseConfigValue, PACKAGE_NAME } from "./config.js";
 export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardConfig, VisualToolsConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, LargeOutputConfig, RunawayConfig, NotifyConfig, SubagentConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions } from "./config.js";
+export { defaultHostDirs } from "./host-dirs.js";
+export type { HostDirs } from "./host-dirs.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
 export type { CommandView } from "./tools.js";
 export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, runawayTokens, rulesTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, SENTENCE_TEMPLATES, pickSentenceTemplate, TOKEN_NAMES } from "./widget.js";
