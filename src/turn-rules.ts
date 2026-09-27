@@ -1,5 +1,6 @@
 import { copyFileSync, rmSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ask, choice } from "pi-typesafe";
@@ -7,50 +8,65 @@ import type { Judge } from "pi-typesafe";
 import type { RulesConfig } from "./config.js";
 import {
   MAX_RULES, OUTCOMES, RULE_BODY_LIMIT, STEER_BODY_LIMIT,
-  evaluateRulesTarget, gitIgnored, scoreAnswers, turnRulesFor,
+  evaluateRulesTarget, scoreAnswers, turnRulesFor,
 } from "./rules.js";
 import type { Rule, RuleScoreEntry, RulesVerdict, RuleSet } from "./rules.js";
 import { redact } from "./redact.js";
+import type { ShellSkip } from "./shell-writes.js";
 
 /**
  * End-of-run rules. `when: turn` rules are judged once against the whole run's diff and the user's task, and files a
  * shell command changed in ways the per-edit guard cannot see (`sed -i`, generated output) are judged with the edit
  * rules against their diff. The baseline is a read-only snapshot of the working tree: a temporary index file, so the
- * working tree, the real index, and the stash list are never touched. Everything is steered, never held.
+ * working tree, the real index, and the stash list are never touched. Everything is steered, never held. Every git
+ * call is asynchronous so the hooks that start the snapshot and take the end-of-run diff never block the UI while
+ * git hashes the changed and untracked files.
  */
 
 const GIT_TIMEOUT_MS = 30_000;
 /** The verdict path for a judgment about the whole run; the rules log keys clears by path, so it must not look like a file. */
 export const TURN_PATH = "(whole turn)";
 export const TURN_QUESTION_PREFIX = "turn_";
+/** The files judged per shell command and per run; beyond the cap the files are named in the trace and left out. */
+export const SHELL_RULES_CHECKS = 5;
+
+const exec = promisify(execFile);
 
 function clip(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit)}… [${text.length - limit} more chars]`;
 }
 
-function git(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): string {
-  return execFileSync("git", args, {
-    cwd, timeout: timeoutMs, stdio: ["ignore", "pipe", "ignore"],
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  }).toString();
+async function git(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS, env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" }): Promise<string> {
+  const { stdout } = await exec("git", args, { cwd, timeout: timeoutMs, windowsHide: true, encoding: "utf8", env });
+  return stdout;
+}
+
+/** `git check-ignore` without blocking the hook; a failed check reads as "not ignored", like the per-edit path. */
+async function gitIgnored(projectRel: string, cwd: string): Promise<boolean> {
+  try {
+    await git(["check-ignore", "-q", projectRel], cwd, 2000);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * A tree of the working directory as it stands, untracked non-ignored files included. The index is copied to a
  * temporary file first so files that are tracked but ignored stay in the snapshot; only that copy is ever written.
  */
-function workTree(cwd: string): string | undefined {
+async function workTree(cwd: string): Promise<string | undefined> {
   const temporary = join(tmpdir(), `pi-warden-tree-${process.pid}-${Math.random().toString(36).slice(2)}`);
   try {
     try {
-      const index = git(["rev-parse", "--git-path", "index"], cwd, 5000).trim();
+      const index = (await git(["rev-parse", "--git-path", "index"], cwd, 5000)).trim();
       copyFileSync(isAbsolute(index) ? index : resolve(cwd, index), temporary);
     } catch {
       // A repository with no index yet starts from an empty one; the files on disk are added below.
     }
     const env = { ...process.env, GIT_INDEX_FILE: temporary, GIT_OPTIONAL_LOCKS: "0" };
-    execFileSync("git", ["add", "-A"], { cwd, env, timeout: GIT_TIMEOUT_MS, stdio: "pipe" });
-    const tree = execFileSync("git", ["write-tree"], { cwd, env, timeout: 10_000, stdio: "pipe" }).toString().trim();
+    await git(["add", "-A"], cwd, GIT_TIMEOUT_MS, env);
+    const tree = (await git(["write-tree"], cwd, 10_000, env)).trim();
     return /^[0-9a-f]{40,64}$/.test(tree) ? tree : undefined;
   } catch {
     return undefined;
@@ -62,13 +78,13 @@ function workTree(cwd: string): string | undefined {
 export type SnapshotResult = { tree: string; reason?: undefined } | { tree?: undefined; reason: string };
 
 /** The run's baseline; `reason` says why turn rules are skipped this run and earns one trace line in the caller. */
-export function snapshotTree(cwd: string): SnapshotResult {
+export async function snapshotTree(cwd: string): Promise<SnapshotResult> {
   try {
-    if (git(["rev-parse", "--is-inside-work-tree"], cwd, 5000).trim() !== "true") return { reason: "not a git repository" };
+    if ((await git(["rev-parse", "--is-inside-work-tree"], cwd, 5000)).trim() !== "true") return { reason: "not a git repository" };
   } catch {
     return { reason: "not a git repository" };
   }
-  const tree = workTree(cwd);
+  const tree = await workTree(cwd);
   return tree ? { tree } : { reason: "the git snapshot failed" };
 }
 
@@ -94,11 +110,11 @@ export interface TurnDiff {
  * in total at `maxChars` (the `rules.maxChars` cap), each cut named. Untracked non-ignored files are in both trees, so
  * they appear here like any other change. Undefined when the end-of-run snapshot fails.
  */
-export function diffSince(cwd: string, startTree: string, maxChars: number): TurnDiff | undefined {
-  const endTree = workTree(cwd);
+export async function diffSince(cwd: string, startTree: string, maxChars: number): Promise<TurnDiff | undefined> {
+  const endTree = await workTree(cwd);
   if (!endTree) return undefined;
   let names: string[];
-  try { names = git(["diff", "--name-status", "--no-renames", "-z", startTree, endTree, "--"], cwd).split("\0"); } catch { return undefined; }
+  try { names = (await git(["diff", "--name-status", "--no-renames", "-z", startTree, endTree, "--"], cwd)).split("\0"); } catch { return undefined; }
   const files: TurnFileDiff[] = [];
   const cuts: string[] = [];
   for (let index = 0; index + 1 < names.length; index += 2) {
@@ -106,7 +122,7 @@ export function diffSince(cwd: string, startTree: string, maxChars: number): Tur
     const path = names[index + 1]!;
     if (!path) continue;
     let diff: string;
-    try { diff = git(["diff", "--no-ext-diff", "--no-renames", startTree, endTree, "--", path], cwd); } catch { continue; }
+    try { diff = await git(["diff", "--no-ext-diff", "--no-renames", startTree, endTree, "--", path], cwd); } catch { continue; }
     if (!diff.trim()) continue;
     if (diff.length > maxChars) {
       cuts.push(`${path}: file diff cut from ${diff.length} to ${maxChars} chars`);
@@ -177,7 +193,8 @@ export async function evaluateTurnRules(task: string, diff: string, rules: reado
 }
 
 // ---------------------------------------------------------------------------
-// The end-of-run pass: one turn request, then one request per file no per-edit judgment saw.
+// The end-of-run pass: one turn request, then one request per file no per-edit judgment saw, at most
+// SHELL_RULES_CHECKS of the files per run.
 
 export interface TurnRunOptions {
   cwd: string;
@@ -199,6 +216,8 @@ export interface TurnRunResult {
   verdicts: RulesVerdict[];
   /** What the caps cut from the diff, named per file. */
   cuts: string[];
+  /** Files the per-run request cap left unjudged, named for the trace like the shell path's skips. */
+  skips: ShellSkip[];
   /** Why nothing was judged, when the pass was skipped; absent when there was nothing to judge or it ran. */
   skipped?: string;
 }
@@ -210,21 +229,24 @@ export function unjudgedFiles(diff: TurnDiff, alreadyJudged: ReadonlySet<string>
 
 export async function evaluateTurnRun(options: TurnRunOptions): Promise<TurnRunResult> {
   const { cwd, config, set, judge, timeoutMs, signal, task, startTree, alreadyJudged } = options;
-  const diff = diffSince(cwd, startTree, config.maxChars);
-  if (!diff) return { verdicts: [], cuts: [], skipped: "the end-of-run git snapshot failed" };
-  if (!diff.files.length) return { verdicts: [], cuts: diff.cuts };
+  const diff = await diffSince(cwd, startTree, config.maxChars);
+  if (!diff) return { verdicts: [], cuts: [], skips: [], skipped: "the end-of-run git snapshot failed" };
+  if (!diff.files.length) return { verdicts: [], cuts: diff.cuts, skips: [] };
   const turnRules = set ? turnRulesFor(set).slice(0, MAX_RULES) : [];
   const files = unjudgedFiles(diff, alreadyJudged);
   // With no turn rules and no change the per-edit guard missed, the run is judged exactly as it was before.
-  if (!turnRules.length && !files.length) return { verdicts: [], cuts: diff.cuts };
-  if (!set) return { verdicts: [], cuts: diff.cuts, skipped: "no rules file" };
-  if (!judge) return { verdicts: [], cuts: diff.cuts, skipped: "TypeSafe judgments are off" };
+  if (!turnRules.length && !files.length) return { verdicts: [], cuts: diff.cuts, skips: [] };
+  if (!set) return { verdicts: [], cuts: diff.cuts, skips: [], skipped: "no rules file" };
+  if (!judge) return { verdicts: [], cuts: diff.cuts, skips: [], skipped: "TypeSafe judgments are off" };
   const verdicts: RulesVerdict[] = [];
   if (turnRules.length) {
     verdicts.push(await evaluateTurnRules(task ?? "", diff.text, turnRules, { judge, config, timeoutMs, ...(signal ? { signal } : {}), sources: set.sources }));
   }
-  for (const file of files) {
-    if (gitIgnored(file.path, cwd)) {
+  // The same cap the per-edit path puts on the files one command writes: the first files in diff order are judged,
+  // the rest are named in the trace and left out, so one run can never start an unbounded number of requests.
+  const skips: ShellSkip[] = files.slice(SHELL_RULES_CHECKS).map(file => ({ path: file.path, reason: `only the first ${SHELL_RULES_CHECKS} files a run changes are judged` }));
+  for (const file of files.slice(0, SHELL_RULES_CHECKS)) {
+    if (await gitIgnored(file.path, cwd)) {
       verdicts.push({ source: "skipped", tool: "edit", path: file.path, sources: set.sources, asked: 0, aggregate: false, findings: [], skippedReason: "gitignored by the project" });
       continue;
     }
@@ -232,7 +254,7 @@ export async function evaluateTurnRun(options: TurnRunOptions): Promise<TurnRunR
     const target = { tool: "edit" as const, path: file.path, edits: [{ id: "diff", newText: redact(clip(file.diff, config.maxChars)) }] };
     verdicts.push(await evaluateRulesTarget(target, "edit", file.path, { cwd, config, set, judge, timeoutMs, ...(signal ? { signal } : {}) }));
   }
-  return { verdicts, cuts: diff.cuts };
+  return { verdicts, cuts: diff.cuts, skips };
 }
 
 // ---------------------------------------------------------------------------

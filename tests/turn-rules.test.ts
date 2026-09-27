@@ -116,7 +116,7 @@ test("evaluateRules: when: turn rules are never asked on a write or an edit, and
 
 test("snapshotTree and diffSince: a read-only baseline that sees untracked non-ignored files and cuts the diff per file and in total", async () => {
   const before = await readOnlyState();
-  const snapshot = snapshotTree(repo);
+  const snapshot = await snapshotTree(repo);
   assert.ok(snapshot.tree, `snapshot must succeed: ${snapshot.reason}`);
   assert.equal(await readOnlyState(), before, "snapshotTree must not touch the stash list, the index, or the worktree");
 
@@ -124,7 +124,7 @@ test("snapshotTree and diffSince: a read-only baseline that sees untracked non-i
   await writeFile(join(repo, "new.txt"), "fresh\n");
   await writeFile(join(repo, "ignored.txt"), "never judged\n");
   const dirty = await readOnlyState();
-  const diff = diffSince(repo, snapshot.tree!, 8000);
+  const diff = await diffSince(repo, snapshot.tree!, 8000);
   assert.ok(diff);
   assert.deepEqual(diff.files.map(file => file.path), ["a.txt", "new.txt"], "the changed tracked file and the new untracked file, not the ignored one");
   assert.deepEqual(diff.files.map(file => file.status), ["M", "A"]);
@@ -133,7 +133,7 @@ test("snapshotTree and diffSince: a read-only baseline that sees untracked non-i
   assert.equal(git("stash", "list").trim().split("\n").length, 1, "the stash list is untouched");
 
   await writeFile(join(repo, "a.txt"), `one\n${"filler line to cut\n".repeat(60)}`);
-  const capped = diffSince(repo, snapshot.tree!, 200)!;
+  const capped = (await diffSince(repo, snapshot.tree!, 200))!;
   assert.ok(capped.cuts.some(cut => cut.startsWith("a.txt: file diff cut")), `a per-file cut is named: ${JSON.stringify(capped.cuts)}`);
   assert.ok(capped.text.length <= 200 + 100, "the total is capped");
   assert.match(capped.text, /cut/, "the cut is said inline");
@@ -141,8 +141,8 @@ test("snapshotTree and diffSince: a read-only baseline that sees untracked non-i
   assert.ok(fileDiff.diff.includes("more chars of this file's diff cut"), "the per-file cap says what it cut");
 });
 
-test("snapshotTree: a directory that is not a git repository gets a reason and no tree", () => {
-  const result = snapshotTree(notRepo);
+test("snapshotTree: a directory that is not a git repository gets a reason and no tree", async () => {
+  const result = await snapshotTree(notRepo);
   assert.equal(result.tree, undefined);
   assert.equal(result.reason, "not a git repository");
 });
@@ -151,7 +151,7 @@ test("evaluateTurnRun: a file a per-edit judgment saw is judged once, and one al
   const store = new RuleStore();
   const config = rulesConfig();
   const set = store.load(repo, config)!;
-  const snapshot = snapshotTree(repo);
+  const snapshot = await snapshotTree(repo);
   assert.ok(snapshot.tree);
   await writeFile(join(repo, "a.txt"), "one\ntwo\n");
   await writeFile(join(repo, "b.txt"), "changed by sed\n");
@@ -176,7 +176,7 @@ test("evaluateTurnRun: a file a per-edit judgment saw is judged once, and one al
 test("evaluateTurnRun: a sed -i change no per-edit guard saw is judged with the edit rules, and no turn request is sent without turn rules", async () => {
   const editOnly = { sources: ["pi-warden.md"], rules: parseRules("# No console statements\nCode must not contain `console.log` calls."), alwaysDropped: 0 };
   const config = rulesConfig();
-  const snapshot = snapshotTree(repo);
+  const snapshot = await snapshotTree(repo);
   assert.ok(snapshot.tree);
   const platformArgs = process.platform === "darwin" ? ["-i", "", "-e", "s/changed by sed/one/", "b.txt"] : ["-i", "-e", "s/changed by sed/one/", "b.txt"];
   execFileSync("sed", platformArgs, { cwd: repo, stdio: "pipe" });
@@ -190,7 +190,7 @@ test("evaluateTurnRun: a sed -i change no per-edit guard saw is judged with the 
 test("evaluateTurnRun: with no turn rules and no unseen change the pass is silent and sends nothing", async () => {
   const editOnly = { sources: ["pi-warden.md"], rules: parseRules("# No console statements\nCode must not contain `console.log` calls."), alwaysDropped: 0 };
   const config = rulesConfig();
-  const snapshot = snapshotTree(repo);
+  const snapshot = await snapshotTree(repo);
   assert.ok(snapshot.tree);
   await writeFile(join(repo, "a.txt"), "written by the agent\n");
   const judge = stubJudge();
@@ -205,7 +205,7 @@ test("evaluateTurnRun: no judge or no rules file is one skip each, and a turn fi
   const config = rulesConfig();
   const set = store.load(repo, config)!;
   await writeFile(join(repo, "a.txt"), "unseen change\n");
-  const snapshot = snapshotTree(repo);
+  const snapshot = await snapshotTree(repo);
   assert.ok(snapshot.tree);
   await writeFile(join(repo, "a.txt"), "unseen change again\n");
   const offline = await evaluateTurnRun({ cwd: repo, config, set, timeoutMs: 1000, startTree: snapshot.tree!, alreadyJudged: new Set() });

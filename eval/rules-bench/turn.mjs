@@ -157,7 +157,7 @@ export async function main(argv, deps) {
     } else {
       const cwd = prepareShellProject(item);
       try {
-        const snapshot = deps.lib.snapshotTree(cwd);
+        const snapshot = await deps.lib.snapshotTree(cwd);
         if (!snapshot.tree) throw new Error(`snapshot failed: ${snapshot.reason}`);
         execFileSync("bash", ["-c", item.command], { cwd, stdio: "pipe" });
         const set = new deps.lib.RuleStore().load(cwd, config);

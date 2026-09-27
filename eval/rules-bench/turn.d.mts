@@ -31,7 +31,7 @@ export interface BenchLib {
   defaultConfig: () => WardenConfig;
   parseRules: (markdown: string) => Rule[];
   RuleStore: new () => { load: (cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">) => RuleSet | undefined };
-  snapshotTree: (cwd: string) => SnapshotResult;
+  snapshotTree: (cwd: string) => Promise<SnapshotResult>;
   evaluateTurnRules: (task: string, diff: string, rules: readonly Rule[], options: { judge: Judge; config: RulesConfig; timeoutMs: number; sources: readonly string[] }) => Promise<RulesVerdict>;
   evaluateTurnRun: (options: TurnRunOptions) => Promise<TurnRunResult>;
 }

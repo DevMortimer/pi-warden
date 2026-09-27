@@ -38,7 +38,8 @@ import type { SearchTool } from "./recall.js";
 import { maskSecrets, redact } from "./redact.js";
 import { formatRules, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES, turnRulesFor } from "./rules.js";
 import type { RulesVerdict } from "./rules.js";
-import { evaluateTurnRun, snapshotTree, turnSteer } from "./turn-rules.js";
+import { evaluateTurnRun, SHELL_RULES_CHECKS, snapshotTree, turnSteer } from "./turn-rules.js";
+import type { SnapshotResult } from "./turn-rules.js";
 import { checkRules, formatRulesCheck } from "./rules-lint.js";
 import { readRulesLog, RulesLog, rulesLogPath } from "./rules-log.js";
 import { buildRulesReport, formatRulesReport, REPORT_DEFAULT_DAYS } from "./rules-report.js";
@@ -81,9 +82,6 @@ export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to a
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
-
-/** Rules requests one bash command may start; the other files it writes are recorded as skipped. */
-const SHELL_RULES_CHECKS = 5;
 
 /** Which guard spent the user's attention. The status line reports one count per guard. */
 export type SteerGuard = "action" | "rules" | "security" | "stuck" | "repeat" | "done" | "prose" | "runaway" | "subagent" | "conscience" | "loops";
@@ -376,8 +374,9 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let fullOutputs = new Map<string, { text: string; path?: string }>();
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
-  // Turn rules: the read-only working-tree snapshot at run start, and the files a per-edit judgment saw.
-  let turnSnapshot: string | undefined;
+  // Turn rules: the read-only working-tree snapshot started at run start and awaited at run end, and the files a
+  // per-edit judgment saw.
+  let turnSnapshot: Promise<SnapshotResult> | undefined;
   let turnJudged = new Set<string>();
   /** True from a delivered warden follow-up that starts a turn until the next run starts: that run keeps the evidence. */
   let wardenContinuation = false;
@@ -1256,19 +1255,14 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   pi.on("agent_start", async (_event, ctx) => {
     if (!wardenContinuation) evidence = emptyEvidence();
     wardenContinuation = false;
-    // Turn rules need a baseline of the working tree; one trace line when a run with turn rules gets none. With no
-    // turn rules a failed snapshot is silent: a project without them sees no change.
+    // Turn rules need a baseline of the working tree. The snapshot starts here as a promise and is awaited at
+    // agent_end, so this hook never waits for git to hash the changed and untracked files. One trace line when a run
+    // with turn rules gets no baseline. With no turn rules a failed snapshot is silent: a project without them sees
+    // no change.
     turnJudged = new Set();
     turnSnapshot = undefined;
     const turnConfig = configFor(ctx);
-    if (turnConfig.enabled && turnConfig.rules.enabled) {
-      const snapshot = snapshotTree(ctx.cwd);
-      if (snapshot.tree) turnSnapshot = snapshot.tree;
-      else {
-        const set = rulesGuard.store.load(ctx.cwd, turnConfig.rules);
-        if (set && turnRulesFor(set).length) record(ctx, turnConfig, "rules", `warden · rules · turn rules skipped this run: ${snapshot.reason}`, ["trigger: agent_start", "no working-tree snapshot: the end-of-run pass will not run this turn rules check"]);
-      }
-    }
+    if (turnConfig.enabled && turnConfig.rules.enabled) turnSnapshot = snapshotTree(ctx.cwd);
   });
 
   // Every turn that runs after a compression is a turn that did not carry the removed text.
@@ -2185,36 +2179,48 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     // ── Turn rules: one end-of-run judgment against the whole diff, and the files no per-edit check saw ──
     // One steer for the findings, through the done-check's delivery; the verdicts land in the rules log like the rest.
     if (config.rules.enabled && turnSnapshot) {
-      const turnRun = await evaluateTurnRun({ cwd: ctx.cwd, config: config.rules, set: rulesGuard.store.load(ctx.cwd, config.rules), judge, timeoutMs: config.timeoutMs, signal: ctx.signal, task: latestUserPrompt(ctx), startTree: turnSnapshot, alreadyJudged: turnJudged });
+      // The run end waits for the snapshot the run start began; a run that ended first has been waiting since.
+      const snapshot = await turnSnapshot;
       turnSnapshot = undefined;
-      if (turnRun.skipped) {
-        record(ctx, config, "rules", `warden · rules · end-of-run pass skipped: ${turnRun.skipped}`, ["trigger: agent_end"]);
-      }
-      let counts: ReadonlyMap<string, number> = new Map();
-      for (const verdict of turnRun.verdicts) counts = rulesGuard.count(verdict);
-      const hasFindings = turnRun.verdicts.some(verdict => verdict.findings.length > 0);
-      const told = hasFindings && adaptiveSend(ctx, config, "rules") ? turnSteer(turnRun.verdicts, counts) : undefined;
-      const delivered = told ? steer(config, "rules", told, { deliverAs: "followUp", triggerTurn: true }) : false;
-      if (delivered) watchSteer(ctx, config, ["rules"]);
-      for (const verdict of turnRun.verdicts) {
-        const shown = renderTemplate(config.widget.rules, { ...rulesTokens(verdict), tool: verdict.tool === "turn" ? "turn" : "unseen change", path: verdict.tool === "turn" ? "the run's diff" : verdict.path });
-        const cuts = verdict.tool === "turn" && turnRun.cuts.length ? [`diff caps cut: ${turnRun.cuts.join("; ")}`] : [];
-        if (verdict.source !== "skipped") {
-          stats.ruleChecks++;
-          if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
-          if (verdict.source === "typesafe") {
-            for (const observation of rulesLog?.record(verdict, config.rules.threshold, Date.now(), config.rules.softThreshold) ?? []) {
-              if (observation.cleared) record(ctx, config, "rules", `rules: ${observation.name} now clear on ${verdict.path}`, [`clear: a later judgment on this path scored ${observation.violation.toFixed(2)}, below the ${config.rules.threshold} threshold`]);
+      const set = rulesGuard.store.load(ctx.cwd, config.rules);
+      if (!snapshot.tree) {
+        if (set && turnRulesFor(set).length) record(ctx, config, "rules", `warden · rules · turn rules skipped this run: ${snapshot.reason}`, ["trigger: agent_end", "no working-tree snapshot: the end-of-run pass will not run this turn rules check"]);
+      } else {
+        const turnRun = await evaluateTurnRun({ cwd: ctx.cwd, config: config.rules, set, judge, timeoutMs: config.timeoutMs, signal: ctx.signal, task: latestUserPrompt(ctx), startTree: snapshot.tree, alreadyJudged: turnJudged });
+        if (turnRun.skipped) {
+          record(ctx, config, "rules", `warden · rules · end-of-run pass skipped: ${turnRun.skipped}`, ["trigger: agent_end"]);
+        }
+        // One trace line names the files the per-run cap left unjudged, like the skips of one command's shell writes.
+        if (turnRun.skips.length) {
+          const paths = turnRun.skips.flatMap(skip => (skip.path ? [skip.path] : []));
+          record(ctx, config, "rules", renderTemplate(config.widget.rules, { guard: "rules", tool: "unseen change", path: paths.length ? paths.join(", ") : "file change", status: "skipped" }), turnRun.skips.map(skip => `unseen change not judged${skip.path ? ` (${skip.path})` : ""}: ${skip.reason}`));
+        }
+        let counts: ReadonlyMap<string, number> = new Map();
+        for (const verdict of turnRun.verdicts) counts = rulesGuard.count(verdict);
+        const hasFindings = turnRun.verdicts.some(verdict => verdict.findings.length > 0);
+        const told = hasFindings && adaptiveSend(ctx, config, "rules") ? turnSteer(turnRun.verdicts, counts) : undefined;
+        const delivered = told ? steer(config, "rules", told, { deliverAs: "followUp", triggerTurn: true }) : false;
+        if (delivered) watchSteer(ctx, config, ["rules"]);
+        for (const verdict of turnRun.verdicts) {
+          const shown = renderTemplate(config.widget.rules, { ...rulesTokens(verdict), tool: verdict.tool === "turn" ? "turn" : "unseen change", path: verdict.tool === "turn" ? "the run's diff" : verdict.path });
+          const cuts = verdict.tool === "turn" && turnRun.cuts.length ? [`diff caps cut: ${turnRun.cuts.join("; ")}`] : [];
+          if (verdict.source !== "skipped") {
+            stats.ruleChecks++;
+            if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
+            if (verdict.source === "typesafe") {
+              for (const observation of rulesLog?.record(verdict, config.rules.threshold, Date.now(), config.rules.softThreshold) ?? []) {
+                if (observation.cleared) record(ctx, config, "rules", `rules: ${observation.name} now clear on ${verdict.path}`, [`clear: a later judgment on this path scored ${observation.violation.toFixed(2)}, below the ${config.rules.threshold} threshold`]);
+              }
             }
+            if (verdict.findings.length) {
+              stats.ruleViolations++;
+              if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${verdict.tool === "turn" ? "this run's changes" : verdict.path}: ${verdict.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
+            }
+            const agentTold = told && delivered ? `agent told: ${told}` : told ? `steer recorded, not delivered (a repeat or the per-run budget): ${told}` : undefined;
+            record(ctx, config, "rules", shown, [...cuts, ...rulesDetails(verdict, agentTold)]);
+          } else {
+            record(ctx, config, "rules", shown, [`${verdict.tool} ${verdict.path}: ${verdict.skippedReason}`]);
           }
-          if (verdict.findings.length) {
-            stats.ruleViolations++;
-            if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${verdict.tool === "turn" ? "this run's changes" : verdict.path}: ${verdict.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
-          }
-          const agentTold = told && delivered ? `agent told: ${told}` : told ? `steer recorded, not delivered (a repeat or the per-run budget): ${told}` : undefined;
-          record(ctx, config, "rules", shown, [...cuts, ...rulesDetails(verdict, agentTold)]);
-        } else {
-          record(ctx, config, "rules", shown, [`${verdict.tool} ${verdict.path}: ${verdict.skippedReason}`]);
         }
       }
     }
