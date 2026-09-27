@@ -14,8 +14,9 @@ import {
 import type { EditView, Rule, RuleAnswer, RuleSet, RulesTarget } from "./rules.js";
 
 /**
- * `/warden rules calibrate`: replay recent git history through the project rules and find the rules that never fire, fire
- * on everything, or cannot decide. The core is a plain function of the history and the rule set: the history in, per-rule
+ * `/warden rules calibrate`: replay recent git history through the project rules and find the rules that fire on
+ * everything or cannot decide. A rule the sample never caught shows `no violation in sample` and is not flagged: the
+ * replayed commits are mostly reviewed, compliant code, so a rule that never fires there is often a rule people follow. The core is a plain function of the history and the rule set: the history in, per-rule
  * results out. The caller collects the history (`collectHistory`, read-only `git log -p`), shows the confirm dialog, and
  * writes the scores to the local rules log; nothing here sends anything on its own and nothing here writes a file.
  *
@@ -334,7 +335,12 @@ export interface RuleCalibration {
   /** fired / applied. */
   firedRate: number;
   meanViolation: number;
-  /** The same flags `/warden report` gives a rule, with the same thresholds. */
+  /**
+   * True when the sample held no violation of this rule. Not a flag: replayed commits are mostly reviewed, compliant
+   * code, so a rule that never fires there is often a rule people follow. The line says `no violation in sample`.
+   */
+  unfired: boolean;
+  /** The `/warden report` flags with the same thresholds, without `never fires`: see `unfired`. */
   flags: RuleFlag[];
 }
 
@@ -417,7 +423,11 @@ export async function calibrate(history: readonly HistoryCommit[], options: Cali
   return {
     rows: report.rows.map(row => ({
       id: row.id, name: row.name, applied: row.judged, fired: row.fired, firedRate: row.firedRate,
-      meanViolation: row.meanViolation, flags: row.flags,
+      meanViolation: row.meanViolation,
+      // `never fires` means something different in the live report; on a replayed history it mostly means people
+      // follow the rule, so it is not carried as a flag here.
+      unfired: row.fired === 0,
+      flags: row.flags.filter(flag => flag !== "never fires"),
     })),
     neverApplied: report.unheard,
     requests: options.judge ? plan.requests : 0,
@@ -451,8 +461,9 @@ export function formatCalibration(result: Calibration): string {
   if (result.rows.length) {
     lines.push("Worst first:");
     result.rows.forEach((row, index) => {
-      const flag = row.flags.length ? ` · ${row.flags.join(" · ")}` : "";
-      lines.push(`${index + 1}. ${shortName(row.name)} · ${row.applied} applied · ${row.fired} fired ${Math.round(row.firedRate * 100)}% · mean ${row.meanViolation.toFixed(2)}${flag}`);
+      const notes = [...(row.unfired ? ["no violation in sample"] : []), ...row.flags];
+      const suffix = notes.length ? ` · ${notes.join(" · ")}` : "";
+      lines.push(`${index + 1}. ${shortName(row.name)} · ${row.applied} applied · ${row.fired} fired ${Math.round(row.firedRate * 100)}% · mean ${row.meanViolation.toFixed(2)}${suffix}`);
     });
   } else {
     lines.push("No rule was applied to any file in the sample.");
@@ -499,7 +510,7 @@ export function calibrationNotice(plan: CalibratePlan): string {
     lines.push(`  (${removed} lines around the change)`);
     lines.push("");
   }
-  if (plan.dropped.length) lines.push(`${plan.dropped.length} further change${plan.dropped.length === 1 ? "" : "s"} ${plan.dropped.length === 1 ? "stays" : "stay"} inside the --max cap and ${plan.dropped.length === 1 ? "is" : "are"} not sent.`);
+  if (plan.dropped.length) lines.push(`${plan.dropped.length} further change${plan.dropped.length === 1 ? "" : "s"} ${plan.dropped.length === 1 ? "stays" : "stay"} outside the --max cap and ${plan.dropped.length === 1 ? "is" : "are"} not sent.`);
   return lines.join("\n");
 }
 
@@ -527,8 +538,11 @@ export function tuneTargets(options: { calibration?: Calibration | undefined; ch
     targets.set(id, entry);
   };
   for (const row of options.calibration?.rows ?? []) {
-    if (!row.flags.length) continue;
-    add(row.id, `flagged ${row.flags.join(", ")} in the latest calibrate: ${row.applied} applied, ${row.fired} fired (${Math.round(row.firedRate * 100)}%), mean ${row.meanViolation.toFixed(2)}`);
+    // Only noise and indecision ask for a rewrite. A rule with no violation in the sample is not flagged: replayed
+    // commits are mostly compliant code, so it is often a rule people follow.
+    const flags = row.flags.filter(flag => flag === "fires on everything" || flag === "undecided");
+    if (!flags.length) continue;
+    add(row.id, `flagged ${flags.join(", ")} in the latest calibrate: ${row.applied} applied, ${row.fired} fired (${Math.round(row.firedRate * 100)}%), mean ${row.meanViolation.toFixed(2)}`);
   }
   for (const flagged of options.check?.attention ?? []) {
     add(flagged.id, `flagged by the rules check: ${checkReasons(flagged as RuleCheck).join("; ")}`);

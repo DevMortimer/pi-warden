@@ -4634,7 +4634,7 @@ test("/warden rules calibrate: --yes sends with no dialog, respects the cap, and
   assert.equal(requests.length, 2, "the cap is the number of requests");
   const report = sentMessages.at(-1)!.message.content;
   assert.match(report, /Rules calibrate: 2 requests, 3 commits, 1 past the cap, not sent\./);
-  assert.match(report, /Worst first:\n1\. No console statements · 2 applied · 0 fired 0% · mean 0\.07/);
+  assert.match(report, /Worst first:\n1\. No console statements · 2 applied · 0 fired 0% · mean 0\.07 · no violation in sample/);
   assert.match(report, /2 scores saved to the local rules log with source "calibrate"/);
   const stored = await calibrateRecords(2);
   assert.equal(stored.every(record => record.source === "calibrate" && record.tool === "edit"), true);

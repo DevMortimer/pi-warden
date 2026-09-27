@@ -292,7 +292,7 @@ test("calibrationNotice: the dialog names the request count and shows the diffs 
   assert.match(notice, /src\/app\.ts/);
   assert.match(notice, /password: \[redacted\]/);
   assert.equal(notice.includes("hunter2secret"), false, "the diff is redacted before it is shown");
-  assert.match(notice, /1 further change stays inside the --max cap and is not sent\./);
+  assert.match(notice, /1 further change stays outside the --max cap and is not sent\./);
 });
 
 // ---------------------------------------------------------------------------
@@ -321,7 +321,9 @@ test("calibrate: one line per rule, worst first, with the /warden report flags; 
   assert.ok(Math.abs(hot!.meanViolation - 0.95) < 1e-9, `mean ${hot!.meanViolation}`);
   assert.deepEqual(mid!.flags, ["undecided"]);
   assert.equal(mid!.fired, 10);
-  assert.deepEqual(cold!.flags, ["never fires"]);
+  assert.deepEqual(cold!.flags, [], "no fire in a replayed sample is not a flag");
+  assert.equal(cold!.unfired, true);
+  assert.equal(hot!.unfired, false);
   assert.equal(cold!.applied, 21);
   assert.equal(cold!.fired, 0);
   assert.deepEqual(result.neverApplied, [{ id: "py-rule", name: "Py rule" }]);
@@ -331,7 +333,7 @@ test("calibrate: one line per rule, worst first, with the /warden report flags; 
   assert.equal(lines[0], "Rules calibrate: 21 requests, 1 commit.");
   assert.equal(lines[1], "Worst first:");
   assert.equal(lines[2], "1. Hot rule · 21 applied · 21 fired 100% · mean 0.95 · fires on everything");
-  assert.equal(lines[4], "3. Cold rule · 21 applied · 0 fired 0% · mean 0.05 · never fires");
+  assert.equal(lines[4], "3. Cold rule · 21 applied · 0 fired 0% · mean 0.05 · no violation in sample");
   assert.match(lines[5]!, /Never applied to any file in the sample \(1\): Py rule\./);
 });
 
@@ -387,18 +389,18 @@ function checkResult(flagged: RuleCheck[]): RulesCheckResult {
 
 const flaggedCheck: RuleCheck = { id: "cold-rule", name: "Cold rule", judgeability: "needs_other_files", judgeabilityScore: 0.8, mechanical: 0.05, needsAttention: true };
 
-test("tuneTargets: flagged rules from the latest calibrate and from the rules check arrive with both reasons", async () => {
+test("tuneTargets: flagged rules from the latest calibrate and from the rules check arrive with their reasons", async () => {
   const history: HistoryCommit[] = [{
     hash: "c1", at: "2026-01-01T00:00:00.000Z",
     files: Array.from({ length: 21 }, (_value, index) => ({ path: `f${String(index + 1).padStart(2, "0")}.ts`, binary: false, hunks: [hunk({ newText: `change ${index}` })] })),
   }];
   const judge = stubJudge(ruleId => ruleId === "hot-rule" ? 0.95 : ruleId === "cold-rule" ? 0.05 : 0.4);
   const calibration = await calibrate(history, { set: ruleSet(FLAGS_MD), config: rulesConfig(), cwd: dir, maxRequests: 40, judge, timeoutMs: 1000 });
+  // Only noise and indecision tune: the rule with no fire in the sample is not flagged even on its own.
+  assert.deepEqual(tuneTargets({ calibration, rules: parseRules(FLAGS_MD) }).map(target => target.id).sort(), ["hot-rule", "mid-rule"]);
   const targets = tuneTargets({ calibration, check: checkResult([flaggedCheck]), rules: parseRules(FLAGS_MD) });
   const cold = targets.find(target => target.id === "cold-rule")!;
-  assert.equal(cold.reasons.length, 2, "flagged by both sources, one entry with both reasons");
-  assert.match(cold.reasons[0]!, /never fires in the latest calibrate: 21 applied, 0 fired \(0%\), mean 0\.05/);
-  assert.match(cold.reasons[1]!, /flagged by the rules check: needs another file to judge \(0\.80\)/);
+  assert.deepEqual(cold.reasons, ["flagged by the rules check: needs another file to judge (0.80)"], "no fire in the calibrate sample is not a reason to rewrite");
   assert.equal(targets.some(target => target.id === "py-rule"), false, "a rule the sample never reached is not flagged");
 });
 
@@ -421,6 +423,14 @@ test("tuneRequest: with nothing flagged it says so and returns no prompt, so not
   const clean = tuneRequest({ calibration: untouched, check: checkResult([]), rules });
   assert.equal("prompt" in clean, false);
   assert.match((clean as { reason: string }).reason, /no rule that needs a rewrite/);
+  // A calibrate sample where the only signal is "no violation in sample" sends nothing.
+  const quiet: Calibration = {
+    ...untouched,
+    rows: [{ id: "cold-rule", name: "Cold rule", applied: 21, fired: 0, firedRate: 0, meanViolation: 0.05, unfired: true, flags: [] }],
+  };
+  const quietResult = tuneRequest({ calibration: quiet, rules });
+  assert.equal("prompt" in quietResult, false, "rules with no fire in the sample alone tune nothing");
+  assert.match((quietResult as { reason: string }).reason, /no rule that needs a rewrite/);
   const noRules = tuneRequest({ rules: [] });
   assert.match((noRules as { reason: string }).reason, /no separate rules/);
   const sent = tuneRequest({ check: checkResult([flaggedCheck]), rules });
