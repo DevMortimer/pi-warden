@@ -1,6 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { FALLBACK_FILES } from "./rules.js";
+import { FALLBACK_FILES, MAX_RULES } from "./rules.js";
+
+/** Fallback files whose content is instruction text to compile into small rules; a README-style file stays whole text. */
+const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md"];
 
 /** Paths to scan for project context when generating a starter rules file. */
 const CONTEXT_CANDIDATES = [
@@ -95,6 +98,23 @@ function readExistingPiWarden(cwd: string): string | null {
   }
 }
 
+/** The first instruction file's lines with their 1-based line numbers, or null when none exists. */
+function readNumberedInstructions(cwd: string): { file: string; text: string } | null {
+  for (const file of INSTRUCTION_FILES) {
+    const fullPath = join(cwd, file);
+    if (!existsSync(fullPath)) continue;
+    try {
+      const lines = readFileSync(fullPath, "utf8").split(/\r\n|\r|\n/);
+      if (lines.at(-1) === "") lines.pop();
+      if (!lines.some(line => line.trim())) continue;
+      return { file, text: lines.map((line, index) => `${index + 1}: ${line}`).join("\n") };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 /** Standard safety rules that ship in every starter pi-warden.md. */
 const SAFETY_RULES = `# No hardcoded secrets
 Source code must not contain passwords, API keys, tokens, or connection URLs with credentials.
@@ -186,8 +206,31 @@ export function buildInitPrompt(cwd: string): string {
   const existingPiWarden = readExistingPiWarden(cwd);
   if (existingPiWarden) {
     lines.push("", "## Existing pi-warden.md rules (preserve these)", existingPiWarden, "");
-  } else if (existingRules) {
-    lines.push("", "## Existing project rules (preserve these)", existingRules, "");
+  } else {
+    const instructions = readNumberedInstructions(cwd);
+    if (instructions) {
+      lines.push(
+        "",
+        `## Existing instructions to compile (from ${instructions.file}, each line prefixed with its line number)`,
+        instructions.text,
+        "",
+        "Compile these instructions into rules: one small rule per instruction that can be judged from one changed file alone, without other files, repository history, or the task.",
+        "- Give each rule a `source: <file>:<line>` header naming the instruction line it came from, for example `source: AGENTS.md:65`.",
+        "- Add a `paths:` header when the instruction concerns certain files only.",
+        "- Keep each rule's wording close to the source instruction.",
+        "- Name the concrete pattern that shows a violation: a symbol, a comment phrase, a command, a file shape.",
+        `- Stay under the rule cap: at most ${MAX_RULES} rules.`,
+        "",
+        "Leave these instructions out of pi-warden.md, and list each left-out instruction in your reply with the reason:",
+        "- an instruction that needs other files, repository history, or the task to judge",
+        "- an instruction that a linter, formatter, or type checker already enforces",
+        "",
+        "In your reply, suggest running `/warden rules check` when the user has a TypeSafe key. Suggest it only; never run it as part of this task.",
+        "",
+      );
+    } else if (existingRules) {
+      lines.push("", "## Existing project rules (preserve these)", existingRules, "");
+    }
   }
 
   if (projectType === "typescript" || projectType === "javascript") {
