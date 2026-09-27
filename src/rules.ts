@@ -72,9 +72,9 @@ export const FALLBACK_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"];
 /** TypeSafe answers at most 32 questions per request; one is kept for the edit locator. */
 export const MAX_RULES = 31;
 const CONTENT_LIMIT = 6000;
-const EDIT_TEXT_LIMIT = 1500;
-const EDIT_CONTEXT_LINES = 20;
-const MAX_EDITS = 6;
+export const EDIT_TEXT_LIMIT = 1500;
+export const EDIT_CONTEXT_LINES = 20;
+export const MAX_EDITS = 6;
 const RULE_BODY_LIMIT = 400;
 const STEER_BODY_LIMIT = 200;
 const ID_LIMIT = 64;
@@ -550,6 +550,66 @@ export interface RuleFinding extends RuleScore {
   body: string;
 }
 
+/** One answer of the judge as the scoring reads it: the choice it picked and the probabilities behind it. */
+export type RuleAnswer = { type: string; choice?: string; probabilities?: Record<string, number> } | undefined;
+
+export interface RuleScoring {
+  scores: RuleScore[];
+  /** Violations at or above the rule's cutoff, severity first then strongest. */
+  findings: RuleFinding[];
+  /** Scores at or above `rules.softThreshold` but below the rule's cutoff. */
+  softFindings: RuleFinding[];
+}
+
+/**
+ * Score the judge's answers rule by rule: one score each, a finding at the rule's own cutoff (or `rules.threshold` when
+ * the rule sets none), and a soft finding between `rules.softThreshold` and that cutoff. An aggregate document is one
+ * rule under its source's name. Shared by the live guard and history replays, so both respect the same cutoffs.
+ */
+export function scoreRuleAnswers(
+  applicable: readonly Rule[],
+  answers: Record<string, RuleAnswer>,
+  config: RulesConfig,
+  aggregateName?: string,
+): RuleScoring {
+  const scores: RuleScore[] = [];
+  const findings: RuleFinding[] = [];
+  const softFindings: RuleFinding[] = [];
+  const softThreshold = config.softThreshold ?? 0;
+  const read = (key: string, id: string, name: string): RuleScore | undefined => {
+    const answer = answers[key];
+    if (!answer || typeof answer.choice !== "string") return undefined;
+    const violation = answer.probabilities?.violation ?? (answer.choice === "violation" ? 1 : 0);
+    const outcome = (answer.choice in OUTCOMES ? answer.choice : "insufficient_context") as RuleOutcome;
+    return { id, name, outcome, violation };
+  };
+  // A finding needs the rule's own cutoff when it set one, else the global threshold. The soft tier sits under that cutoff.
+  const scoreRule = (score: RuleScore, rule: Pick<Rule, "threshold" | "severity" | "sourceRef"> | undefined, body: string): void => {
+    const cutoff = rule?.threshold ?? config.threshold;
+    const scored: RuleScore = {
+      ...score,
+      ...(rule?.threshold === undefined ? {} : { threshold: rule.threshold }),
+      ...(rule?.severity === undefined ? {} : { severity: rule.severity }),
+      ...(rule?.sourceRef === undefined ? {} : { sourceRef: rule.sourceRef }),
+    };
+    scores.push(scored);
+    if (scored.violation >= cutoff) findings.push({ ...scored, body });
+    else if (softThreshold > 0 && scored.violation >= softThreshold) softFindings.push({ ...scored, body });
+  };
+  if (aggregateName !== undefined) {
+    const score = read(AGGREGATE_QUESTION, AGGREGATE_QUESTION, aggregateName);
+    if (score) scoreRule(score, undefined, "");
+  } else {
+    for (const rule of applicable) {
+      const score = read(`rule_${rule.id}`, rule.id, rule.name);
+      if (score) scoreRule(score, rule, rule.body);
+    }
+  }
+  findings.sort(bySeverityThenScore);
+  softFindings.sort(bySeverityThenScore);
+  return { scores, findings, softFindings };
+}
+
 export interface RulesVerdict {
   source: "skipped" | "typesafe" | "error";
   path: string;
@@ -585,10 +645,10 @@ export interface RulesOptions {
   signal?: AbortSignal | undefined;
 }
 
-/** Check whether a project-relative path is ignored by the project's gitignore rules. Uses `git check-ignore -q` run from `cwd`. Returns false when git is unavailable or the path cannot be checked. */
-export function gitIgnored(projectRel: string, cwd: string): boolean {
+/** Check whether a project-relative path is ignored by the project's gitignore rules. Uses `git check-ignore -q` run from `cwd` (with `--no-index`, so a force-added ignored file still counts as ignored). Returns false when git is unavailable or the path cannot be checked. */
+export function gitIgnored(projectRel: string, cwd: string, noIndex = false): boolean {
   try {
-    execFileSync("git", ["check-ignore", "-q", projectRel], { cwd, timeout: 2000, stdio: "pipe" });
+    execFileSync("git", ["check-ignore", ...(noIndex ? ["--no-index"] : []), "-q", projectRel], { cwd, timeout: 2000, stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -624,43 +684,13 @@ export async function evaluateRules(tool: string, input: Record<string, unknown>
   const base = { tool: target.tool, path: target.path, sources: set.sources, asked: aggregate ? 1 : request.applicable.length, aggregate, ...(request.firstDropped ? { dropped: request.dropped, firstDropped: request.firstDropped } : {}) };
   const result = await ask(options.judge, { state: request.state, questions: request.questions }, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { source: "error", ...base, findings: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
-  const answers = result.answers as Record<string, { type: string; choice?: string; probabilities?: Record<string, number> } | undefined>;
-  const read = (key: string, id: string, name: string): RuleScore | undefined => {
-    const answer = answers[key];
-    if (!answer || typeof answer.choice !== "string") return undefined;
-    const violation = answer.probabilities?.violation ?? (answer.choice === "violation" ? 1 : 0);
-    const outcome = (answer.choice in OUTCOMES ? answer.choice : "insufficient_context") as RuleOutcome;
-    return { id, name, outcome, violation };
-  };
-  const scores: RuleScore[] = [];
-  const findings: RuleFinding[] = [];
-  const softFindings: RuleFinding[] = [];
-  const softThreshold = options.config.softThreshold ?? 0;
-  // A finding needs the rule's own cutoff when it set one, else the global threshold. The soft tier sits under that cutoff.
-  const scoreRule = (score: RuleScore, rule: Pick<Rule, "threshold" | "severity" | "sourceRef"> | undefined, body: string): void => {
-    const cutoff = rule?.threshold ?? options.config.threshold;
-    const scored: RuleScore = {
-      ...score,
-      ...(rule?.threshold === undefined ? {} : { threshold: rule.threshold }),
-      ...(rule?.severity === undefined ? {} : { severity: rule.severity }),
-      ...(rule?.sourceRef === undefined ? {} : { sourceRef: rule.sourceRef }),
-    };
-    scores.push(scored);
-    if (scored.violation >= cutoff) findings.push({ ...scored, body });
-    else if (softThreshold > 0 && scored.violation >= softThreshold) softFindings.push({ ...scored, body });
-  };
-  if (aggregate) {
-    const score = read(AGGREGATE_QUESTION, AGGREGATE_QUESTION, `the project's ${set.sources[0]}`);
-    if (score) scoreRule(score, undefined, "");
-  } else {
-    for (const rule of request.applicable) {
-      const score = read(`rule_${rule.id}`, rule.id, rule.name);
-      if (score) scoreRule(score, rule, rule.body);
-    }
-  }
-  findings.sort(bySeverityThenScore);
-  softFindings.sort(bySeverityThenScore);
-  const verdict: RulesVerdict = { source: "typesafe", ...base, scores, findings, ...(softFindings.length ? { softFindings } : {}), model: result.model, elapsedMs: result.elapsedMs };
+  const answers = result.answers as Record<string, RuleAnswer>;
+  const { scores, findings, softFindings } = scoreRuleAnswers(
+    request.applicable,
+    answers,
+    options.config,
+    aggregate ? `the project's ${set.sources[0]}` : undefined,
+  );  const verdict: RulesVerdict = { source: "typesafe", ...base, scores, findings, ...(softFindings.length ? { softFindings } : {}), model: result.model, elapsedMs: result.elapsedMs };
   const locator = answers[LOCATOR_QUESTION];
   if (findings.length && typeof locator?.choice === "string") {
     const edit = target.edits?.find(item => item.id === locator.choice);

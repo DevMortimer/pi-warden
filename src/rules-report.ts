@@ -33,6 +33,9 @@ export interface RulesReport {
   records: number;
 }
 
+/** Which records count: live verdicts (no `source` field), history replays (`source: "calibrate"`), or both. */
+export type ReportSource = "live" | "calibrate" | "all";
+
 export const REPORT_DEFAULT_DAYS = 30;
 /** A rule with this many judgments and no fire is flagged `never fires`. */
 export const NEVER_FIRES_MIN = 20;
@@ -59,12 +62,15 @@ export function compareRows(a: RuleReportRow, b: RuleReportRow): number {
 
 export function buildRulesReport(
   records: readonly RuleRecord[],
-  options: { days?: number; now?: number; currentRules?: readonly { id: string; name: string }[] } = {},
+  options: { days?: number; now?: number; currentRules?: readonly { id: string; name: string }[]; source?: ReportSource } = {},
 ): RulesReport {
   const days = options.days ?? REPORT_DEFAULT_DAYS;
   const until = options.now ?? Date.now();
   const since = until - days * DAY_MS;
+  const wanted = options.source ?? "all";
   const inWindow = records.filter(record => {
+    if (wanted === "live" && record.source === "calibrate") return false;
+    if (wanted === "calibrate" && record.source !== "calibrate") return false;
     const at = Date.parse(record.at);
     return Number.isFinite(at) && at >= since && at <= until;
   });

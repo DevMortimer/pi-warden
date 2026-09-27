@@ -43,6 +43,8 @@ export interface RuleRecord {
   soft?: true;
   /** True when this judgment clears an earlier finding of the same rule on the same path in the same session. */
   cleared?: true;
+  /** `"calibrate"` on scores from a history replay; live verdicts leave it unset. `/warden report` counts them apart. */
+  source?: "calibrate";
 }
 
 /** One judgment within a verdict, after clear detection. */
@@ -69,7 +71,8 @@ const isRuleRecord = (value: unknown): value is RuleRecord => {
     && typeof record.violation === "number"
     && typeof record.threshold === "number"
     && typeof record.finding === "boolean"
-    && (record.soft === undefined || record.soft === true);
+    && (record.soft === undefined || record.soft === true)
+    && (record.source === undefined || record.source === "calibrate");
 };
 
 /** The log file for a project: the working directory's hash keeps two projects apart without naming either. */
@@ -172,6 +175,11 @@ export class RulesLog {
     }));
     this.append(records.map(record => JSON.stringify(record)));
     return observations;
+  }
+
+  /** Appends records built elsewhere (a history replay carries its own `source` tag); never throws. */
+  appendRecords(records: readonly RuleRecord[]): void {
+    this.append(records.map(record => JSON.stringify(record)));
   }
 
   /** The last write error, if the most recent append failed. */
