@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.72.0
+
 ### Added
 
 - A project rule may cite where its wording came from with a `source: <file>:<line>` header beside `paths:`, for example `source: AGENTS.md:65`. `/warden rules` shows it, and when the rule fires the steer names it: `"<rule>" (from AGENTS.md line 65) ...`. A bad value is ignored and `/warden rules` reports the line.
