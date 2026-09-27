@@ -1,82 +1,105 @@
 {
   "window": {
-    "since": "2026-09-20T16:00:00.000Z",
-    "until": "2026-09-24T09:00:00.000Z"
+    "since": "2026-09-15T16:00:00.000Z",
+    "until": "2026-09-24T16:00:00.000Z"
   },
-  "sessions": 397,
-  "entries": 63031,
-  "bashCalls": 20574,
+  "sessions": 759,
+  "entries": 125129,
+  "bashCalls": 37865,
   "unreadableLines": 0,
   "holds": {
-    "judged": 19695,
+    "judged": 23664,
     "levels": {
-      "confirm": 143,
-      "allow": 15165,
-      "warn": 4387
+      "confirm": 219,
+      "allow": 17276,
+      "warn": 6169
     },
-    "held": 143,
+    "held": 220,
     "outcomes": {
-      "approved": 10,
-      "unlabelled": 99,
-      "replanned": 33,
+      "approved": 24,
+      "unlabelled": 155,
+      "replanned": 40,
       "declined": 1
     },
     "reasons": {
-      "judged irreversible": 5,
-      "force push": 4,
-      "recursive rm (absolute or temp path)": 94,
-      "other": 8,
-      "file outside the project": 23,
-      "git reset --hard": 9
+      "git reset --hard": 18,
+      "judged irreversible": 33,
+      "file outside the project": 32,
+      "recursive rm (absolute or temp path)": 111,
+      "other": 12,
+      "force push": 14
     }
   },
-  "heldResultsInSessions": 169,
+  "heldResultsInSessions": 503,
   "steers": {
-    "total": 624,
+    "total": 1356,
     "byKind": {
-      "rules": 195,
-      "intent mismatch": 160,
-      "credential notice": 105,
-      "done-check": 47,
-      "needs user input": 47,
-      "stuck": 24,
-      "prose trend": 15,
-      "slop": 14,
-      "other": 13,
-      "runaway": 2,
-      "prompt injection": 2
+      "credential notice": 400,
+      "rules": 349,
+      "intent mismatch": 287,
+      "other": 86,
+      "done-check": 75,
+      "needs user input": 59,
+      "slop": 33,
+      "stuck": 31,
+      "prose trend": 19,
+      "prompt injection": 14,
+      "runaway": 3
     }
   },
   "doneCheckFollowUp": {
-    "ranCheck": 35,
-    "noCheck": 12
-  },
-  "rulesByName": {
-    "Do not bump version in a feature or fix commit": 42,
-    "House prose": 40,
-    "Nothing that leaves the machine carries a secret or unshown path": 36,
-    "A new Jev question ships with a measurement": 16,
-    "Errors are not swallowed": 13,
-    "Comments explain why, not what": 12,
-    "Config is additive": 7,
-    "TypeScript and Python discipline": 6,
-    "Tests carry intent": 5,
-    "No partial implementations": 4,
-    "Public text has no local traces": 3,
-    "Verification before done": 3,
-    "Waits are bounded": 2,
-    "Steers never hold": 2,
-    "No error escapes a thread": 1,
-    "Hooks and claimers return at once": 1,
-    "No tool or AI attribution lines": 1,
-    "Do not run destructive commands that erase uncommitted work": 1
+    "ranCheck": 57,
+    "noCheck": 18
   },
   "conscience": {
-    "tool": 57,
-    "skill": 13,
-    "coreTool": 55
+    "tool": 110,
+    "skill": 22,
+    "coreTool": 103
   },
   "contextSaver": {
-    "compressedResults": 143
+    "compressedResults": 298
+  },
+  "rules": {
+    "steers": 349,
+    "distinctRules": 36,
+    "countsPerRuleTopFirst": [
+      56,
+      56,
+      51,
+      31,
+      24,
+      19,
+      17,
+      17,
+      14,
+      12,
+      9,
+      7,
+      6,
+      4,
+      2,
+      2,
+      2,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "note": "Rule names are left out: they come from private projects."
   }
 }

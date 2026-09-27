@@ -18,9 +18,9 @@
 
 <div align="center">
 
-**743 sessions · 193 risky actions stopped before they ran · 78% of fake "done"s turned into real test runs**
+**759 sessions · 220 risky actions stopped before they ran · 76% of fake "done"s turned into real test runs**
 
-<sub>Nine days of real use, 2026-09-16 to 2026-09-24. Method and noise: [field report](eval/reports/2026-09-24-field-usage/).</sub>
+<sub>Nine days of the maintainer's real use across all their projects, not just this one, 2026-09-16 to 2026-09-24. Method and noise: [field report](eval/reports/2026-09-24-field-usage/).</sub>
 
 </div>
 
@@ -64,8 +64,8 @@ Each `#` heading is one rule. Every write and edit is judged against it in about
 ## Receipts
 
 - **Rules:** in 150 paired agent runs, the agent without pi-warden broke the tested rule **6 times**. With it: **0**.
-- **Done-check:** after a nudge, the agent ran a check **74–78%** of the time, and sometimes found a failure it had missed.
-- **Holds:** when the agent was stopped, it found a safer way **33 of 44** times.
+- **Done-check:** after a nudge, the agent ran a check **57 of 75** times, and sometimes found a failure it had missed.
+- **Holds:** when the agent was stopped, it found a safer way **40 of 65** times; you approved 24.
 - **Stability:** 13,952 guard cases over 109 overnight cycles, no score drift.
 
 Every number has a script and a raw report in [`eval/reports/`](eval/reports/). They are the maintainer's measurements, not a universal promise, and the reports list what was noise.

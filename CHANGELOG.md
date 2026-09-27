@@ -10,6 +10,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - Two store writes in one process no longer race. Every write to a loops, prefs, user-config, steer-stats, or rules-log file now goes to a temporary file unique to the process and the write before the rename, and the read-modify-write changes to the loops and prefs files run one after another, so a `warden_loops` or `warden_remember` call can no longer fail with `ENOENT` or silently lose the other call's change. A second Pi process writing the same file is still not guarded.
 
+## 0.70.1
+
+### Tests
+
+- Rules bench (`eval/rules-bench/`, `npm run eval:rules`): 17 fixture rules and 153 labelled cases (four violations, three compliant near-misses and two cases where the rule does not apply for each rule), split into a fixed `tune` set (102) and a fixed `holdout` set (51), one request per case. `--split` selects the set, `--budget` caps requests, `--concurrency` sets parallel requests, `--dry-run` lists the plan and sends nothing, and `--rescore DIR` re-scores saved answers without spending. The scorer reports recall, false-alarm rate, precision and counts at cutoffs 0.3 to 0.9, AUC per rule, the rules whose clean cases sit in the 0.3 to 0.5 band, and the two-tier view (raise at 0.7 against a 0.5 to 0.7 double-check). Cases where a path-scoped rule is not asked at all are counted apart from the metrics. The first run is in `eval/reports/2026-09-26-rules-bench/`. The guard is unchanged.
+
 ## 0.70.0
 
 ### Added
