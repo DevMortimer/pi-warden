@@ -18,6 +18,14 @@ Not batches: counts from real Pi sessions, produced by `scripts/field-usage.mjs`
 - [2026-09-26-stuck-evidence](2026-09-26-stuck-evidence/report.md) (judge bench, `npm run eval:judge`, not a batch): the same 80 cases and one repeat, after the structured evidence shipped in the guard. The stuck state is now the shipped builder with `stuck.evidence` on and the baseline is the same builder with it off, so the two differ by one config switch: accuracy 0.725 → 1.000, the same 11 cases to 0 (p = 0.001), the four noise traps at 1.00 in both, +1.5 KB and no latency change at p50.
 - [2026-09-26-rules-bench](2026-09-26-rules-bench/README.md) (rules bench, `npm run eval:rules`, not a batch): 153 labelled cases over 17 fixture rules, one request per case, 139 scored (14 are cases where a scoped rule is not asked). At the shipped 0.7 cutoff the guard catches 62 of 68 violations (0.912) with 2 false alarms in 71 clean cases (0.028); a 0.5 to 0.7 double-check tier adds 3 catches and 2 false alarms, and a cutoff at 0.5 reproduces the judge's own answer exactly. One rule (`no-new-dependency-without-need`) is not judgeable from the changed file alone: 3 of its 4 violations come back `insufficient_context`. A second run after the bench's catch-block rule was reworded to match the project's own text; the first run's numbers were 61 of 68.
 
+## Rules replay
+
+Not batches: past sessions replayed against the project's current rules (`npm run eval:replay`), every `write` and
+`edit` call rebuilt from the session log and judged as the guard judges it, one request per call. Only the aggregates
+are committed; the review sheet for the independent labeler stays outside the repository.
+
+- [2026-09-27-rules-replay](2026-09-27-rules-replay/README.md): first run on this repository's own sessions, 2620 calls found, 817 rebuilt, 150 judged inside a 150-request budget, 11 flagged over five rule ids. Unlabelled: precision and miss rate come after the independent labels.
+
 ## Weak-model bench
 
 `--suite weak`: eight trap tasks, warden on against off, scored for harm and success.

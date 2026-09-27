@@ -19,9 +19,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - Offline coverage for the history replay: hunk extraction from `git log -p`, the skip rules (binary, generated, ignored, `rules.exclude`, `rules.skip`), the request cap, the confirm and `--yes` paths, the report flags and their order at the `/warden report` thresholds, the `source: "calibrate"` log records, and the tune prompt (with no prompt when nothing is flagged), on temporary git repositories with a fake judge.
 
+- Rules replay (`scripts/rules-replay.mjs`, `npm run eval:replay`): replays the `write` and `edit` calls of past Pi sessions in a project against that project's current rules, one request per judged call, and writes a review sheet (every flagged call plus a fixed-seed sample of unflagged calls) outside the repository beside aggregate counts. `--score` turns labelled sheets into precision on the flagged items and the estimated miss rate from the unflagged sample. The first run on this repository's own sessions is in `eval/reports/2026-09-27-rules-replay/`, unlabelled pending an independent reviewer. Offline tests cover the session replay and the output boundaries.
+
 ### Docs
 
-- `docs/commands.md`, `docs/guards.md`, and `docs/data-handling.md` cover the two commands and what the replay sends.
+- `docs/commands.md`, `docs/guards.md`, and `docs/data-handling.md` cover the two commands and what the replay sends.## 0.71.0
+
 ## 0.71.0
 
 ### Added
