@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.71.0
+
 ### Added
 
 - A project rule may set its own cutoff and severity in header lines at the top of its body, beside `paths:`: `threshold: 0.8` (a number from 0 to 1) and `severity: high|normal|low` (default `normal`). A rule with a `threshold:` fires at its own cutoff instead of `rules.threshold`; severity only orders findings (high, normal, low, then score), in the steer and in the trace. A bad value is ignored and `/warden rules` reports the line.
