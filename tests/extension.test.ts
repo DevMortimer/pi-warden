@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -4560,4 +4561,86 @@ test("waste: the trigger line in the trace carries a redacted command, never a c
   assert.ok(!rendered.includes(token), "the command's credential must not reach the trace");
   assert.ok(!rendered.includes("Bearer sk-"), "no part of the credential reaches the trace");
   assert.match(rendered, /Authorization: \[redacted\]/, "the command preview is the redacted one");
+});
+
+// ── Turn rules: one end-of-run judgment against the whole diff ──
+
+const TURN_RULES_MD = [
+  "# The change stays inside the task",
+  "when: turn",
+  "The diff must contain only what the user's task asked for.",
+  "",
+  "# No console statements",
+  "Code must not contain `console.log` calls.",
+].join("\n");
+
+/** A seeded git repository whose working tree the end-of-run pass diffs. */
+const turnRepo = async (rules: string): Promise<string> => {
+  const dir = await mkdtemp(join(temporary, "turn-repo-"));
+  const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: dir, stdio: "pipe" });
+  git("init", "-q", "-b", "main");
+  await writeFile(join(dir, "app.txt"), "alpha\n");
+  await writeFile(join(dir, "pi-warden.md"), rules);
+  git("add", ".");
+  git("commit", "-q", "-m", "seed");
+  return dir;
+};
+const turnConfig = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, ...STACK_BAR }));
+const steersOnly = () => sentMessages.filter(message => message.message.customType === "pi-warden-steer");
+
+test("turn rules: one end-of-run steer covers the run's diff and the files no per-edit check saw, with the done-check's delivery", async () => {
+  const repo = await turnRepo(TURN_RULES_MD);
+  await turnConfig();
+  await sessionStart(context({ cwd: repo }));
+  await newPrompt("rename alpha to beta", context({ cwd: repo }));
+  // The command changes the file in place; it writes no literal content, so no per-edit check judges it.
+  await writeFile(join(repo, "app.txt"), "beta\n");
+  assert.equal(await toolCall("bash", { command: "sed -i -e 's/alpha/beta/' app.txt" }, context({ cwd: repo })), undefined);
+  requests.length = 0;
+  sentMessages.length = 0;
+  nextAnswers = { ...nextAnswers, "turn_the-change-stays-inside-the-task": "violation", "rule_no-console-statements": "violation" };
+  await agentEnd("Done.", context({ cwd: repo }));
+  assert.equal(requests.length, 2, "one turn request and one request for the file the per-edit guard never saw");
+  const steers = steersOnly().filter(message => /project rule/.test(message.message.content));
+  assert.equal(steers.length, 1, `one steer per run: ${JSON.stringify(sentMessages.map(message => message.message.content.slice(0, 60)))}`);
+  assert.match(steers[0]!.message.content, /the changes this run made violate a project rule: "The change stays inside the task"/);
+  assert.match(steers[0]!.message.content, /the change to app\.txt \(made by a command, not an edit\)/);
+  assert.equal(steers[0]!.options?.deliverAs, "followUp");
+  assert.equal(steers[0]!.options?.triggerTurn, true, "the same delivery as the done-check");
+  // A second run with no change judges nothing and steers nothing.
+  requests.length = 0;
+  sentMessages.length = 0;
+  await newPrompt("thanks", context({ cwd: repo }));
+  await agentEnd("You're welcome.", context({ cwd: repo }));
+  assert.equal(requests.length, 0);
+  assert.equal(steersOnly().length, 0);
+});
+
+test("turn rules: with no turn rules and no change the per-edit guard missed, the end of the run asks nothing and sends nothing", async () => {
+  const repo = await turnRepo("# No console statements\nCode must not contain `console.log` calls.\n");
+  await turnConfig();
+  await sessionStart(context({ cwd: repo }));
+  await newPrompt("update the app", context({ cwd: repo }));
+  await writeFile(join(repo, "app.txt"), "updated\n");
+  assert.equal(await toolCall("write", { path: join(repo, "app.txt"), content: "updated\n" }, context({ cwd: repo })), undefined);
+  requests.length = 0;
+  sentMessages.length = 0;
+  await agentEnd("Done.", context({ cwd: repo }));
+  assert.equal(requests.length, 0, "no request at the end of the run");
+  assert.equal(steersOnly().length, 0);
+});
+
+test("turn rules: no repository means the run is skipped with one trace line and no request", async () => {
+  const dir = await mkdtemp(join(temporary, "turn-norepo-"));
+  await writeFile(join(dir, "pi-warden.md"), TURN_RULES_MD);
+  await turnConfig();
+  await sessionStart(context({ cwd: dir }));
+  await newPrompt("restructure the parser", context({ cwd: dir }));
+  requests.length = 0;
+  sentMessages.length = 0;
+  await agentEnd("Done.", context({ cwd: dir }));
+  assert.equal(requests.length, 0);
+  assert.equal(steersOnly().length, 0);
+  await runCommand("trace", context({ hasUI: false, cwd: dir }));
+  assert.match(sentMessages.at(-1)!.message.content, /turn rules skipped this run: not a git repository/);
 });

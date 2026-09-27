@@ -18,6 +18,9 @@ import { DEFAULT_TEMPLATES, renderTemplate, rulesTokens } from "./widget.js";
 /** How badly a rule matters; used only to order findings, never to decide whether a rule fires. */
 export type RuleSeverity = "high" | "normal" | "low";
 
+/** When a rule is judged: `edit` on each write or edit (the default), `turn` once at the end of a run against the whole diff. */
+export type RuleWhen = "edit" | "turn";
+
 const SEVERITY_RANK: Record<RuleSeverity, number> = { high: 0, normal: 1, low: 2 };
 
 /** Severity first, then the strongest score; rules without a severity count as `normal`. */
@@ -35,6 +38,8 @@ export interface Rule {
   threshold?: number;
   /** Ordering only; absent means `normal`. */
   severity?: RuleSeverity;
+  /** `turn` rules are judged once per run against the whole diff, never per edit; absent means `edit`. */
+  when?: RuleWhen;
   /** Header lines that carried a bad value, reported by `/warden rules`; the line is dropped either way. */
   headerWarnings?: string[];
   /** Project-relative source file when the rule came from a resolved RuleSet. */
@@ -73,8 +78,8 @@ const CONTENT_LIMIT = 6000;
 const EDIT_TEXT_LIMIT = 1500;
 const EDIT_CONTEXT_LINES = 20;
 const MAX_EDITS = 6;
-const RULE_BODY_LIMIT = 400;
-const STEER_BODY_LIMIT = 200;
+export const RULE_BODY_LIMIT = 400;
+export const STEER_BODY_LIMIT = 200;
 const ID_LIMIT = 64;
 const RULE_SHAPE_CONTEXT_LINES = 15;
 const MODAL_WORDS = /^(?:must|shall|never|always|do not|don't|cannot|can't|avoid|prefer|require|should not|shouldn't|no |not )/i;
@@ -88,7 +93,9 @@ const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
 const PATHS_LINE = /^\s*(?:paths?|applies to|files?)\s*:\s*(.+?)\s*$/i;
 const THRESHOLD_LINE = /^\s*threshold\s*:\s*(.+?)\s*$/i;
 const SEVERITY_LINE = /^\s*severity\s*:\s*(.+?)\s*$/i;
+const WHEN_LINE = /^\s*when\s*:\s*(.+?)\s*$/i;
 const SEVERITIES: readonly RuleSeverity[] = ["high", "normal", "low"];
+const WHENS: readonly RuleWhen[] = ["edit", "turn"];
 
 function slug(name: string, used: Set<string>): string {
   const full = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -161,10 +168,12 @@ export function parseRules(markdown: string): Rule[] {
     let paths: string[] = [];
     let threshold: number | undefined;
     let severity: RuleSeverity | undefined;
+    let when: RuleWhen | undefined;
     const headerWarnings: string[] = [];
     let seenPaths = false;
     let seenThreshold = false;
     let seenSeverity = false;
+    let seenWhen = false;
     // Header lines may sit in any order and at most once. A bad value is dropped with a warning; the line never stays in the body.
     for (;;) {
       const first = lines.findIndex(text => text.trim());
@@ -196,12 +205,22 @@ export function parseRules(markdown: string): Rule[] {
         else { severity = raw; seenSeverity = true; }
         continue;
       }
+      const timing = WHEN_LINE.exec(line);
+      if (timing) {
+        lines.splice(first, 1);
+        const raw = timing[1]!.trim().toLowerCase() as RuleWhen;
+        if (seenWhen) headerWarnings.push("when: appears more than once; the first is kept");
+        else if (!WHENS.includes(raw)) headerWarnings.push(`when: ${timing[1]!.trim() || "(empty)"} is not edit or turn; ignored`);
+        else { when = raw; seenWhen = true; }
+        continue;
+      }
       break;
     }
     return {
       id: slug(draft.name, used), name: draft.name.trim(), body: lines.join("\n").trim(), paths,
       ...(threshold === undefined ? {} : { threshold }),
       ...(severity === undefined ? {} : { severity }),
+      ...(when === undefined ? {} : { when }),
       ...(headerWarnings.length ? { headerWarnings } : {}),
     };
   });
@@ -335,6 +354,16 @@ export function rulesFor(set: RuleSet, path: string): Rule[] {
   return set.rules.filter(rule => !rule.paths.length || matchGlob(path, rule.paths) !== undefined);
 }
 
+/** Rules asked about a write or edit: those that apply to the path without a `when: turn` header. */
+export function editRulesFor(set: RuleSet, path: string): Rule[] {
+  return rulesFor(set, path).filter(rule => rule.when !== "turn");
+}
+
+/** Rules judged once per run against the whole diff: those with a `when: turn` header. */
+export function turnRulesFor(set: RuleSet): Rule[] {
+  return set.rules.filter(rule => rule.when === "turn");
+}
+
 export function describeRuleSet(set: RuleSet | undefined): string {
   if (!set) return "none found";
   const where = set.sources.join(", ");
@@ -360,6 +389,7 @@ export function formatRuleSetDetails(set: RuleSet | undefined, tier: RulesTier, 
       `paths: ${rule.paths.length ? rule.paths.join(", ") : "(all)"}`,
       ...(rule.threshold === undefined ? [] : [`threshold: ${rule.threshold}`]),
       ...(rule.severity === undefined ? [] : [`severity: ${rule.severity}`]),
+      ...(rule.when === undefined || rule.when === "edit" ? [] : [`when: ${rule.when}`]),
     ].join(", ");
     lines.push(`${index + 1}. ${rule.id}${from} ${settings}`);
     if (rule.headerWarnings?.length) lines.push(`   ${rule.headerWarnings.join("; ")}`);
@@ -455,7 +485,7 @@ export function describeTarget(tool: string, input: Record<string, unknown>, cwd
 
 export type RuleOutcome = "compliant" | "violation" | "not_applicable" | "insufficient_context";
 
-const OUTCOMES: Record<RuleOutcome, string> = {
+export const OUTCOMES: Record<RuleOutcome, string> = {
   compliant: "The change follows this rule, or leaves an earlier violation as it was.",
   violation: "The change introduces a violation of this rule.",
   not_applicable: "This rule does not concern the kind of content written: another language, file type, or subject.",
@@ -471,9 +501,9 @@ export function ruleQuestion(rule: Rule) {
   return choice(`${FRAME}\nRule: ${rule.name}\n${rule.body ? clip(rule.body, RULE_BODY_LIMIT) : "(no further detail beyond the heading)"}`, OUTCOMES);
 }
 
-/** The rules asked about for a write: scoped to its path first, then cut to the request cap in file order. */
+/** The rules asked about for a write: scoped to its path first, `when: turn` rules excluded, then cut to the request cap in file order. */
 export function buildRulesRequest(target: RulesTarget, set: RuleSet) {
-  const scoped = rulesFor(set, target.path);
+  const scoped = editRulesFor(set, target.path);
   const applicable = scoped.slice(0, MAX_RULES);
   const dropped = scoped.length - applicable.length;
   const questions: Record<string, ReturnType<typeof choice>> = {};
@@ -531,7 +561,7 @@ export interface RuleFinding extends RuleScore {
 export interface RulesVerdict {
   source: "skipped" | "typesafe" | "error";
   path: string;
-  tool: "write" | "edit";
+  tool: "write" | "edit" | "turn";
   sources: string[];
   /** Rules asked about, after path scoping and the cap; 1 for an aggregate document. */
   asked: number;
@@ -582,7 +612,7 @@ export function skipReason(target: RulesTarget | undefined, set: RuleSet | undef
   const skipped = matchGlob(target.path, config.skip);
   if (skipped) return `rules do not apply by rules.skip (${skipped})`;
   if (set.proseOnly) return `no rules found in ${set.sources.join(", ")} (prose only)`;
-  if (set.rules.length && !rulesFor(set, target.path).length) return "no rule's paths match this file";
+  if (set.rules.length && !editRulesFor(set, target.path).length) return "no rule's paths match this file";
   return undefined;
 }
 
@@ -590,9 +620,62 @@ function skipped(target: RulesTarget | undefined, tool: string, path: string, se
   return { source: "skipped", tool: target?.tool ?? (tool === "edit" ? "edit" : "write"), path, sources: set?.sources ?? [], asked: 0, aggregate: false, findings: [], skippedReason: reason };
 }
 
+/** One request's answer payload as Jev returns it. */
+export interface RuleAnswer {
+  type: string;
+  choice?: string;
+  probabilities?: Record<string, number>;
+}
+
+/** One question in a rules request: its key, the rule it came from, and the body quoted in a steer. */
+export interface RuleScoreEntry {
+  key: string;
+  id: string;
+  name: string;
+  body: string;
+  /** The rule's own cutoff and severity when it set them. */
+  rule?: Pick<Rule, "threshold" | "severity">;
+}
+
+/**
+ * Scores and findings for one request's answers: a finding needs the rule's own cutoff when it set one, else the global
+ * threshold, and the soft tier sits under that cutoff. Findings are ordered severity first, then the strongest score.
+ */
+export function scoreAnswers(answers: Record<string, RuleAnswer | undefined>, entries: readonly RuleScoreEntry[], config: RulesConfig): { scores: RuleScore[]; findings: RuleFinding[]; softFindings: RuleFinding[] } {
+  const scores: RuleScore[] = [];
+  const findings: RuleFinding[] = [];
+  const softFindings: RuleFinding[] = [];
+  const softThreshold = config.softThreshold ?? 0;
+  for (const entry of entries) {
+    const answer = answers[entry.key];
+    if (!answer || typeof answer.choice !== "string") continue;
+    const violation = answer.probabilities?.violation ?? (answer.choice === "violation" ? 1 : 0);
+    const outcome = (answer.choice in OUTCOMES ? answer.choice : "insufficient_context") as RuleOutcome;
+    const score: RuleScore = {
+      id: entry.id, name: entry.name, outcome, violation,
+      ...(entry.rule?.threshold === undefined ? {} : { threshold: entry.rule.threshold }),
+      ...(entry.rule?.severity === undefined ? {} : { severity: entry.rule.severity }),
+    };
+    const cutoff = entry.rule?.threshold ?? config.threshold;
+    scores.push(score);
+    if (score.violation >= cutoff) findings.push({ ...score, body: entry.body });
+    else if (softThreshold > 0 && score.violation >= softThreshold) softFindings.push({ ...score, body: entry.body });
+  }
+  findings.sort(bySeverityThenScore);
+  softFindings.sort(bySeverityThenScore);
+  return { scores, findings, softFindings };
+}
+
 export async function evaluateRules(tool: string, input: Record<string, unknown>, options: RulesOptions): Promise<RulesVerdict> {
   const target = describeTarget(tool, input, options.cwd);
-  const shownPath = target?.path ?? (typeof input.path === "string" ? input.path : tool);
+  return evaluateRulesTarget(target, tool, typeof input.path === "string" ? input.path : tool, options);
+}
+
+/**
+ * The judgment half of `evaluateRules` for a prepared target: skip reasons, one request, scores, findings. A caller that
+ * builds its own target (the end-of-run pass judges a file's diff as one edit) gets the same question and scoring.
+ */
+export async function evaluateRulesTarget(target: RulesTarget | undefined, tool: string, shownPath: string, options: RulesOptions): Promise<RulesVerdict> {
   const { set } = options;
   const reason = skipReason(target, set, options.config);
   if (reason || !target || !set) return skipped(target, tool, shownPath, set, reason ?? "nothing to judge");
@@ -602,41 +685,11 @@ export async function evaluateRules(tool: string, input: Record<string, unknown>
   const base = { tool: target.tool, path: target.path, sources: set.sources, asked: aggregate ? 1 : request.applicable.length, aggregate, ...(request.firstDropped ? { dropped: request.dropped, firstDropped: request.firstDropped } : {}) };
   const result = await ask(options.judge, { state: request.state, questions: request.questions }, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { source: "error", ...base, findings: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
-  const answers = result.answers as Record<string, { type: string; choice?: string; probabilities?: Record<string, number> } | undefined>;
-  const read = (key: string, id: string, name: string): RuleScore | undefined => {
-    const answer = answers[key];
-    if (!answer || typeof answer.choice !== "string") return undefined;
-    const violation = answer.probabilities?.violation ?? (answer.choice === "violation" ? 1 : 0);
-    const outcome = (answer.choice in OUTCOMES ? answer.choice : "insufficient_context") as RuleOutcome;
-    return { id, name, outcome, violation };
-  };
-  const scores: RuleScore[] = [];
-  const findings: RuleFinding[] = [];
-  const softFindings: RuleFinding[] = [];
-  const softThreshold = options.config.softThreshold ?? 0;
-  // A finding needs the rule's own cutoff when it set one, else the global threshold. The soft tier sits under that cutoff.
-  const scoreRule = (score: RuleScore, rule: Pick<Rule, "threshold" | "severity"> | undefined, body: string): void => {
-    const cutoff = rule?.threshold ?? options.config.threshold;
-    const scored: RuleScore = {
-      ...score,
-      ...(rule?.threshold === undefined ? {} : { threshold: rule.threshold }),
-      ...(rule?.severity === undefined ? {} : { severity: rule.severity }),
-    };
-    scores.push(scored);
-    if (scored.violation >= cutoff) findings.push({ ...scored, body });
-    else if (softThreshold > 0 && scored.violation >= softThreshold) softFindings.push({ ...scored, body });
-  };
-  if (aggregate) {
-    const score = read(AGGREGATE_QUESTION, AGGREGATE_QUESTION, `the project's ${set.sources[0]}`);
-    if (score) scoreRule(score, undefined, "");
-  } else {
-    for (const rule of request.applicable) {
-      const score = read(`rule_${rule.id}`, rule.id, rule.name);
-      if (score) scoreRule(score, rule, rule.body);
-    }
-  }
-  findings.sort(bySeverityThenScore);
-  softFindings.sort(bySeverityThenScore);
+  const answers = result.answers as Record<string, RuleAnswer | undefined>;
+  const entries: RuleScoreEntry[] = aggregate
+    ? [{ key: AGGREGATE_QUESTION, id: AGGREGATE_QUESTION, name: `the project's ${set.sources[0]}`, body: "" }]
+    : request.applicable.map(rule => ({ key: `rule_${rule.id}`, id: rule.id, name: rule.name, body: rule.body, rule }));
+  const { scores, findings, softFindings } = scoreAnswers(answers, entries, options.config);
   const verdict: RulesVerdict = { source: "typesafe", ...base, scores, findings, ...(softFindings.length ? { softFindings } : {}), model: result.model, elapsedMs: result.elapsedMs };
   const locator = answers[LOCATOR_QUESTION];
   if (findings.length && typeof locator?.choice === "string") {

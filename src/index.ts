@@ -38,8 +38,10 @@ export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, run
 export type { WidgetConfig, WidgetPlacement, WidgetBarMode, Tokens } from "./widget.js";
 export { Trace, actionDetails, stuckDetails, doneDetails, proseDetails, runawayDetails, rulesDetails } from "./trace.js";
 export type { TraceEntry, GuardName } from "./trace.js";
-export { parseRules, condense, isRuleShaped, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, describeRuleSet, formatRuleSetDetails, describeTarget, buildRulesRequest, ruleQuestion, evaluateRules, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, AGGREGATE_QUESTION, LOCATOR_QUESTION } from "./rules.js";
-export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef, RulesTier, RulesSourceConfig } from "./rules.js";
+export { parseRules, condense, isRuleShaped, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, editRulesFor, turnRulesFor, describeRuleSet, formatRuleSetDetails, describeTarget, buildRulesRequest, ruleQuestion, evaluateRules, evaluateRulesTarget, scoreAnswers, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, AGGREGATE_QUESTION, LOCATOR_QUESTION } from "./rules.js";
+export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RuleWhen, RuleAnswer, RuleScoreEntry, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef, RulesTier, RulesSourceConfig } from "./rules.js";
+export { snapshotTree, diffSince, unjudgedFiles, evaluateTurnRules, evaluateTurnRun, buildTurnRequest, turnRuleQuestion, turnSteer, TURN_PATH, TURN_QUESTION_PREFIX } from "./turn-rules.js";
+export type { SnapshotResult, TurnDiff, TurnFileDiff, TurnRunOptions, TurnRunResult, TurnRulesOptions } from "./turn-rules.js";
 export { checkRules, formatRulesCheck, formatRuleCheck, buildRulesCheckRequest, ruleCheckView, judgeableQuestion, mechanicalQuestion, MECHANICAL_CUTOFF, CHECK_ABOUT, JUDGEABILITY_REASONS, JUDGEABLE_PREFIX, MECHANICAL_PREFIX } from "./rules-lint.js";
 export type { RuleCheck, RuleCheckView, RuleJudgeability, RulesCheckOptions, RulesCheckRequest, RulesCheckResult, RulesCheckSource } from "./rules-lint.js";
 export { rulesLogPath, readRulesLog, trimRecords, RuleClearTracker, RulesLog, RULES_LOG_MAX_RECORDS } from "./rules-log.js";
