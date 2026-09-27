@@ -1,0 +1,47 @@
+{
+ "date": "2026-09-27",
+ "project": "pi-warden",
+ "sessions": 191,
+ "calls": {
+  "found": 2620,
+  "selected": 2620,
+  "rebuilt": 817,
+  "unrebuilt": 1455,
+  "outside": 348,
+  "skipped": 2,
+  "judged": 150,
+  "flagged": 11,
+  "errors": 0,
+  "budgetSkipped": 665
+ },
+ "unrebuiltReasons": {
+  "content before the call unknown": 1413,
+  "old text not found or not unique": 36,
+  "edit without edits": 4,
+  "empty old text": 2
+ },
+ "skippedReasons": {
+  "nothing to judge or outside the project": 2
+ },
+ "flaggedPerRule": {
+  "no-partial-implementations": 4,
+  "nothing-that-leaves-the-machine-carries-a-secret-or-unshown-path": 4,
+  "errors-are-not-swallowed": 3,
+  "a-new-jev-question-ships-with-a-measurement": 1,
+  "steers-never-hold": 1
+ },
+ "requests": {
+  "budget": 150,
+  "spent": 150
+ },
+ "labels": "unlabelled",
+ "usage": {
+  "requestsStarted": 150,
+  "requestsSucceeded": 150,
+  "requestsFailed": 0,
+  "inputTokens": 919756,
+  "outputTokens": 116643,
+  "estimatedUsd": 0.03863
+ },
+ "wallMs": 41721
+}

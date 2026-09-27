@@ -65,3 +65,35 @@ processes are in flight. Use `--keep` to leave the temp dirs for inspection and
 Interpretation rules: quote the report folder next to every claim; quote the offending
 sentence for a false claim; a negative stays in the table; a claim that does not
 survive a re-run on your model gets rewritten.
+
+# Rules replay
+
+Measures how often the rules guard is right on real work: the `write` and `edit` calls of
+past Pi sessions in one project, judged against that project's current rules. One request
+per judged call, built by `evaluateRules` exactly as the extension sends it.
+
+```
+npm run build
+npm run eval:replay -- --project <dir> --dry-run          # count calls, classify locally, send nothing
+npm run eval:replay -- --project <dir> --budget 150       # replay and judge, hard cap of 150 requests
+npm run eval:replay -- --score <review-sheet>             # score a labelled sheet
+```
+
+Options: `--project DIR` (the sessions whose working directory is `DIR`), `--since DATE`
+(only sessions that started at or after it), `--max N` (replay at most N calls, oldest
+first), `--budget N` (hard cap passed to the TypeSafe client as `maxRequests`), `--out DIR`,
+`--dry-run`, `--score SHEET`. Session logs come from `PI_SESSIONS_DIR` (default
+`~/.pi/agent/sessions`). See `scripts/rules-replay.mjs` for the rebuild rules: an edit is
+only replayed when the log shows the file's content before it (every `oldText` must appear
+exactly once), otherwise the call is skipped and counted.
+
+Outputs go to `--out` (default: a fresh directory under the system temp dir, printed at the
+end). `review-sheet.json` carries file paths, short code excerpts, and scores: every
+flagged call plus an equal-sized random sample of unflagged calls (fixed seed), each with
+an empty `label` for an independent reviewer to fill in as `real`, `false-alarm`, or
+`unsure`. **The review sheet is written outside the repository and must never be
+committed.** `aggregates.json` holds counts only — calls found, rebuilt, judged, flagged
+per rule id, requests spent — and is what belongs in `eval/reports/`, marked `unlabelled`
+until the labels arrive. `--score` then prints precision over the flagged items and the
+miss rate estimated from the unflagged sample.
+

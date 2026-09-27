@@ -61,6 +61,7 @@
     "prepack": "npm run build",
     "eval:ab": "node scripts/eval-ab.mjs",
     "eval:judge": "node scripts/judge-bench.mjs",
+    "eval:replay": "node scripts/rules-replay.mjs",
     "eval:rules": "node scripts/rules-bench.mjs"
   },
   "peerDependencies": {
