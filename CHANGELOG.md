@@ -6,7 +6,18 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- `/warden rules calibrate [--commits N] [--max N] [--yes]` replays the changed files of the last N non-merge commits (default 20) through the project rules and reports, per rule, how often it applied and fired, the mean score, and the same flags as `/warden report` (`never fires`, `fires on everything`, `undecided`), worst first, then the rules no file in the sample reached. Each changed file is one `edit` request (the removed lines as `oldText`, the added lines as `newText`, the file after the commit as context), capped at `--max` (default 40); binary, generated, gitignored, `rules.exclude`, and `rules.skip` files are skipped, and a rule fires at its own `threshold:` cutoff. The scores go to the local rules log with `source: "calibrate"`, which `/warden report` counts apart from live verdicts. Nothing is sent before a confirm dialog showing the request count and the redacted diffs; a headless run needs the explicit `--yes`.
+- `/warden rules tune` sends the session's agent one prompt with the rules the latest calibrate or `/warden rules check` (this session) flagged: each rule's current text and why it was flagged, and the ask for a rewrite that is concrete and judgeable from one changed file. The agent edits `pi-warden.md` with its own tools. With nothing flagged it says so and sends nothing.
+
+### Tests
+
+- Offline coverage for the history replay: hunk extraction from `git log -p`, the skip rules (binary, generated, ignored, `rules.exclude`, `rules.skip`), the request cap, the confirm and `--yes` paths, the report flags and their order at the `/warden report` thresholds, the `source: "calibrate"` log records, and the tune prompt (with no prompt when nothing is flagged), on temporary git repositories with a fake judge.
+
+### Docs
+
+- `docs/commands.md`, `docs/guards.md`, and `docs/data-handling.md` cover the two commands and what the replay sends.
 
 ## 0.71.0
 

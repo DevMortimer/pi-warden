@@ -39,6 +39,9 @@ import { maskSecrets, redact } from "./redact.js";
 import { formatRules, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
 import type { RulesVerdict } from "./rules.js";
 import { checkRules, formatRulesCheck } from "./rules-lint.js";
+import type { RulesCheckResult } from "./rules-lint.js";
+import { calibrate, calibrateGate, calibrationNotice, collectHistory, formatCalibration, planCalibration, tuneRequest, CALIBRATE_DEFAULT_COMMITS, CALIBRATE_DEFAULT_MAX } from "./rules-calibrate.js";
+import type { Calibration, HistoryCommit } from "./rules-calibrate.js";
 import { readRulesLog, RulesLog, rulesLogPath } from "./rules-log.js";
 import { buildRulesReport, formatRulesReport, REPORT_DEFAULT_DAYS } from "./rules-report.js";
 import { checkPiWardenMissing } from "./rules-file.js";
@@ -381,6 +384,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
   let warnedMissingRules = false;
   /** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
   let initRunning = false;
+  /** The most recent /warden rules calibrate result; /warden rules tune reads its flagged rules. */
+  let lastCalibration: Calibration | undefined;
+  /** The most recent /warden rules check result of this session; /warden rules tune reads its flagged rules. */
+  let lastCheck: RulesCheckResult | undefined;
   /** True while /warden audit is sending a prompt and waiting for the agent to write the report. */
   let auditRunning = false;
   const prose = new ProseTrend();
@@ -864,6 +871,8 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     warnedFallback = false;
     warnedMissingRules = false;
     initRunning = false;
+    lastCalibration = undefined;
+    lastCheck = undefined;
     await initSchema(loadConfig().learning.retentionDays);
     stats = freshStats();
     steerWatch.clear();
@@ -2271,8 +2280,10 @@ export default function wardenExtension(pi: ExtensionAPI): void {
     description: "pi-warden status, active rules, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, open loops, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches: Array<{ value: string; label: string; description?: string }> = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
-      // `rules check` is the one two-word action: `rules` on its own stays the local list.
+      // `rules check`, `rules calibrate`, and `rules tune` are two-word actions: `rules` on its own stays the local list.
       if ("rules check".startsWith(prefix)) matches.push({ value: "rules check", label: "rules check", description: "which of the active rules the guard cannot judge well" });
+      if ("rules calibrate".startsWith(prefix)) matches.push({ value: "rules calibrate", label: "rules calibrate", description: "replay recent commits through the active rules and flag the ones that never fire, fire on everything, or cannot decide" });
+      if ("rules tune".startsWith(prefix)) matches.push({ value: "rules tune", label: "rules tune", description: "ask the agent to rewrite the rules the latest calibrate or rules check flagged" });
       return matches.length ? matches : null;
     },
     async handler(args, ctx) {
@@ -2325,7 +2336,77 @@ export default function wardenExtension(pi: ExtensionAPI): void {
               report(`Rules check sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config.typesafeBackend, !ctx.hasUI)}` : ""} /warden rules shows the rule set locally.`);
               return;
             }
+            if (result.source === "typesafe") lastCheck = result;
             report(formatRulesCheck(result));
+            return;
+          }
+          if (argument === "calibrate") {
+            const usage = "Usage: /warden rules calibrate [--commits N] [--max N] [--yes].";
+            const commitsMatch = /(?:^|\s)--commits\s+(\S+)/.exec(tail);
+            const maxMatch = /(?:^|\s)--max\s+(\S+)/.exec(tail);
+            const yes = /(?:^|\s)--yes(?:\s|$)/.test(tail);
+            const commits = commitsMatch ? Number(commitsMatch[1]) : CALIBRATE_DEFAULT_COMMITS;
+            const max = maxMatch ? Number(maxMatch[1]) : CALIBRATE_DEFAULT_MAX;
+            if ((commitsMatch && (!Number.isInteger(commits) || commits < 1)) || (maxMatch && (!Number.isInteger(max) || max < 1))) { report(usage, "warning"); return; }
+            const set = rulesGuard.store.load(ctx.cwd, config.rules);
+            if (!set) { report("No rules file detected. Run /warden init to create project-specific rules."); return; }
+            if (set.proseOnly) { report(`No rules to calibrate: ${set.sources.join(", ")} has no rule-shaped sections, so the guard judges nothing there.`); return; }
+            if (set.aggregate !== undefined && !set.rules.length) { report(`No separate rules to calibrate: ${set.sources.join(", ")} has no rule headings, so the guard judges it as one document.`); return; }
+            const off = judgmentsOffReason(config);
+            const judge = judgeFor(config);
+            if (!judge) {
+              report(`Rules calibrate sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config.typesafeBackend, !ctx.hasUI)}` : ""} /warden rules shows the rule set locally.`);
+              return;
+            }
+            let history: HistoryCommit[];
+            try {
+              history = collectHistory(ctx.cwd, commits);
+            } catch (error) {
+              report(`Rules calibrate could not read the git history: ${error instanceof Error ? error.message : String(error)}`, "warning");
+              return;
+            }
+            const plan = planCalibration(history, { set, config: config.rules, cwd: ctx.cwd, maxRequests: max });
+            if (!plan.requests) {
+              report(`Rules calibrate sent nothing: no changed file in the last ${commits} non-merge commit${commits === 1 ? "" : "s"} is judgeable${plan.skipped.length ? ` (${plan.skipped.length} change${plan.skipped.length === 1 ? "" : "s"} skipped)` : ""}.`);
+              return;
+            }
+            // Nothing leaves the machine before this gate: the dialog shows the count and the redacted diffs, and a
+            // headless run needs the explicit --yes.
+            const gate = calibrateGate({ hasUI: ctx.hasUI, yes });
+            if (gate.kind === "refuse") { report(gate.reason, "warning"); return; }
+            if (gate.kind === "confirm" && !await ctx.ui.confirm(`warden: send ${plan.requests} calibration request${plan.requests === 1 ? "" : "s"}?`, calibrationNotice(plan))) {
+              report("Cancelled. Nothing was sent.");
+              return;
+            }
+            const result = await calibrate(history, { set, config: config.rules, cwd: ctx.cwd, judge, timeoutMs: config.timeoutMs, maxRequests: max, signal: ctx.signal });
+            (rulesLog ??= new RulesLog(ctx.cwd, String(process.pid))).appendRecords(result.records);
+            lastCalibration = result;
+            report(formatCalibration(result));
+            return;
+          }
+          if (argument === "tune") {
+            const request = tuneRequest({ calibration: lastCalibration, check: lastCheck, rules: rulesGuard.store.load(ctx.cwd, config.rules)?.rules ?? [] });
+            if ("reason" in request) { report(request.reason); return; }
+            initRunning = true;
+            let sent = true;
+            if (ctx.hasUI) ctx.ui.notify("pi-warden: Sending the rules rewrite prompt...", "info");
+            try {
+              // sendUserMessage throws when the agent is not idle. Brief wait so a
+              // just-closing confirm dialog does not cause a race.
+              for (let attempt = 0; attempt < 40; attempt++) {
+                if (ctx.isIdle()) break;
+                await new Promise(resolve => setTimeout(resolve, 250));
+              }
+              pi.sendUserMessage(request.prompt);
+              await ctx.waitForIdle();
+            } catch (err) {
+              sent = false;
+              const detail = err instanceof Error ? err.message : String(err);
+              report(`pi-warden rules tune failed: ${detail}.`, "error");
+            } finally {
+              initRunning = false;
+            }
+            if (sent) report("Rewrite prompt sent. The agent edits pi-warden.md with its own tools; review the changes.");
             return;
           }
           report(rulesGuard.details(ctx.cwd, config.rules));
@@ -2335,9 +2416,13 @@ export default function wardenExtension(pi: ExtensionAPI): void {
           const match = /--days\s+(\d+)/.exec(tail);
           const days = match ? Number(match[1]) : REPORT_DEFAULT_DAYS;
           if (match && days < 1) { report("Usage: /warden report [--days N], where N is at least 1. Default: 30 days.", "warning"); return; }
-          const records = await readRulesLog(rulesLogPath(ctx.cwd));
+          const all = await readRulesLog(rulesLogPath(ctx.cwd));
+          // Calibration replays carry `source: "calibrate"`; the live verdict report counts only the live records and
+          // says how many replays it set apart.
+          const replays = all.filter(record => record.source === "calibrate").length;
           const set = rulesGuard.store.load(ctx.cwd, config.rules);
-          report(formatRulesReport(buildRulesReport(records, { days, currentRules: set?.rules.map(rule => ({ id: rule.id, name: rule.name })) ?? [] })));
+          const text = formatRulesReport(buildRulesReport(all, { days, currentRules: set?.rules.map(rule => ({ id: rule.id, name: rule.name })) ?? [], source: "live" }));
+          report(replays ? `${text}\n${replays} calibration replay record${replays === 1 ? "" : "s"} in this log, counted apart (source: calibrate).` : text);
           return;
         }
         if (action === "trace") {

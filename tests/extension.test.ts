@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,6 +7,7 @@ import { after, before, beforeEach, test, type TestContext } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
+import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
 import { defaultConfig } from "../src/config.js";
 import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
 import { _testSetIndexRunning, assistantPlan } from "../src/extension.js";
@@ -2540,11 +2542,11 @@ test("/warden rules check names the rules that need attention, and sends nothing
   await runCommand("rules check", ctx);
   assert.match(notices.at(-1)!.text, /\n- No console statements \(no-console-statements\): a linter could enforce it exactly \(0\.92\)\. Fix: move it to your linter\.\n- No duplicate logic \(no-duplicate-logic\): needs another file to judge \(0\.80\)\. Fix: split it so the changed file alone shows the violation, or leave it to review\.\n0 fine, 2 need attention\.$/);
 
-  // The two-word action completes after `rules`, and `rules` on its own still completes as the local list.
+  // The two-word actions complete after `rules`, and `rules` on its own still completes as the local list.
   const completions = await command.getArgumentCompletions!("rules ");
-  assert.deepEqual(completions?.map(item => item.value), ["rules check"]);
+  assert.deepEqual(completions?.map(item => item.value), ["rules check", "rules calibrate", "rules tune"]);
   const both = await command.getArgumentCompletions!("rules");
-  assert.deepEqual(both?.map(item => item.value), ["rules", "rules check"]);
+  assert.deepEqual(both?.map(item => item.value), ["rules", "rules check", "rules calibrate", "rules tune"]);
 
   // Plain /warden rules is unchanged: the local list, and nothing sent.
   const sentBeforeList = requests.length;
@@ -4560,4 +4562,116 @@ test("waste: the trigger line in the trace carries a redacted command, never a c
   assert.ok(!rendered.includes(token), "the command's credential must not reach the trace");
   assert.ok(!rendered.includes("Bearer sk-"), "no part of the credential reaches the trace");
   assert.match(rendered, /Authorization: \[redacted\]/, "the command preview is the redacted one");
+});
+
+// ---------------------------------------------------------------------------
+// /warden rules calibrate and /warden rules tune
+
+const gitEnv = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com",
+  GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com",
+};
+
+/** A project with a rules file, an ignore file, and a git history the calibrate can replay. */
+async function rulesProject(name: string, rules: string[]): Promise<string> {
+  const project = join(temporary, name);
+  await mkdir(join(project, "src"), { recursive: true });
+  await writeFile(join(project, "pi-warden.md"), rules.join("\n"));
+  await writeFile(join(project, ".gitignore"), "ignored.log\n");
+  execFileSync("git", ["init", "-q"], { cwd: project, env: gitEnv, stdio: "pipe" });
+  return project;
+}
+
+async function gitCommit(project: string, files: Record<string, string>, message: string): Promise<void> {
+  for (const [path, content] of Object.entries(files)) {
+    await mkdir(join(project, path, ".."), { recursive: true });
+    await writeFile(join(project, path), content);
+    execFileSync("git", ["add", "-f", path], { cwd: project, env: gitEnv, stdio: "pipe" });
+  }
+  execFileSync("git", ["commit", "-q", "-m", message], { cwd: project, env: gitEnv, stdio: "pipe" });
+}
+
+/** The session's rules log is written in the background; wait for the calibrate records to land. */
+async function calibrateRecords(atLeast: number): Promise<Awaited<ReturnType<typeof readRulesLog>>> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const mine = (await readRulesLog(rulesLogPath(temporary))).filter(record => record.source === "calibrate");
+    if (mine.length >= atLeast) return mine;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error("calibrate records did not reach the rules log");
+}
+
+test("/warden rules calibrate: the confirm dialog shows the requests and the redacted diffs, and declining sends nothing", async () => {
+  const project = await rulesProject("rules-calibrate", ["# No console statements", "Code must not contain `console.log`. Use the logger."]);
+  await gitCommit(project, { "src/app.ts": "const a = 1;\npassword: hunter2secret\n" }, "first");
+  await gitCommit(project, { "src/app.ts": "const a = 2;\npassword: hunter2secret2\n" }, "second");
+  await gitCommit(project, { "ignored.log": "log\n" }, "third");
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+
+  confirmResult = false;
+  await runCommand("rules calibrate --commits 5 --max 10", context({ cwd: project }));
+  assert.equal(confirms.length, 1, "the dialog is shown before anything is sent");
+  assert.match(confirms[0]!.title, /send 2 calibration requests\?/);
+  assert.match(confirms[0]!.message, /2 requests will go to the judgment backend/);
+  assert.match(confirms[0]!.message, /src\/app\.ts/);
+  assert.match(confirms[0]!.message, /redacted/);
+  assert.equal(confirms[0]!.message.includes("hunter2secret"), false, "the diff is redacted before it is shown");
+  assert.equal(requests.length, 0, "declining sends nothing");
+  assert.match(notices.at(-1)!.text, /Cancelled\. Nothing was sent\./);
+});
+
+test("/warden rules calibrate: --yes sends with no dialog, respects the cap, and records source calibrate", async () => {
+  const project = await rulesProject("rules-calibrate-yes", ["# No console statements", "Code must not contain `console.log`. Use the logger."]);
+  await gitCommit(project, { "src/app.ts": "const a = 1;\n" }, "first");
+  await gitCommit(project, { "src/app.ts": "const a = 2;\n" }, "second");
+  await gitCommit(project, { "src/other.ts": "const b = 3;\n" }, "third");
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+
+  sentMessages.length = 0;
+  await runCommand("rules calibrate --commits 5 --max 2 --yes", context({ cwd: project, hasUI: false }));
+  assert.equal(confirms.length, 0, "--yes stands in for the dialog");
+  assert.equal(requests.length, 2, "the cap is the number of requests");
+  const report = sentMessages.at(-1)!.message.content;
+  assert.match(report, /Rules calibrate: 2 requests, 3 commits, 1 past the cap, not sent\./);
+  assert.match(report, /Worst first:\n1\. No console statements · 2 applied · 0 fired 0% · mean 0\.07/);
+  assert.match(report, /2 scores saved to the local rules log with source "calibrate"/);
+  const stored = await calibrateRecords(2);
+  assert.equal(stored.every(record => record.source === "calibrate" && record.tool === "edit"), true);
+
+  // A headless run without --yes refuses and sends nothing.
+  requests.length = 0;
+  await runCommand("rules calibrate --commits 5 --max 2", context({ cwd: project, hasUI: false }));
+  assert.equal(requests.length, 0);
+  assert.match(sentMessages.at(-1)!.message.content, /headless run needs an explicit --yes/);
+});
+
+test("/warden rules tune: with nothing flagged it says so and sends the agent nothing", async () => {
+  const project = await rulesProject("rules-tune", ["# No console statements", "Code must not contain `console.log`. Use the logger."]);
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  sentUserMessages.length = 0;
+  await runCommand("rules tune", context({ cwd: project }));
+  assert.equal(sentUserMessages.length, 0, "nothing flagged means no prompt");
+  assert.match(notices.at(-1)!.text, /Nothing flagged: run \/warden rules calibrate or \/warden rules check first/);
+});
+
+test("/warden rules tune: a rule flagged by rules check sends one rewrite prompt to the session agent", async () => {
+  const project = await rulesProject("rules-tune-check", [
+    "# No console statements", "Code must not contain `console.log`. Use the logger.", "",
+    "# No duplicate logic", "Do not duplicate logic that exists elsewhere in the codebase.",
+  ]);
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  const ctx = context({ cwd: project });
+  nextAnswers = { "judgeable_no-duplicate-logic": "too_vague" };
+  await runCommand("rules check", ctx);
+  sentUserMessages.length = 0;
+  await runCommand("rules tune", ctx);
+  assert.equal(sentUserMessages.length, 1, "one prompt for the session's agent");
+  const prompt = sentUserMessages[0]!;
+  assert.match(prompt, /Rewrite the flagged project rules in `pi-warden\.md` with your file tools/);
+  assert.match(prompt, /## No duplicate logic \(no-duplicate-logic\)/);
+  assert.match(prompt, /Flagged: flagged by the rules check: too vague to judge twice \(0\.80\)\./);
+  assert.match(prompt, /Current text:\nDo not duplicate logic that exists elsewhere in the codebase\./);
+  assert.match(prompt, /judgeable from the content of one changed file alone/);
+  assert.equal(prompt.includes("No console statements"), false, "only the flagged rule is named");
 });

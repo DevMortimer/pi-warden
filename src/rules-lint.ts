@@ -245,11 +245,17 @@ const FIX: Record<RuleJudgeability, string> = {
   too_vague: "name the concrete pattern a violation shows",
 };
 
-/** One line per rule that needs attention: why, then one short suggestion. */
-export function formatRuleCheck(rule: RuleCheck): string {
+/** The reasons a rule needs attention, each with its score; empty for a rule judged healthy on both questions. */
+export function checkReasons(rule: RuleCheck): string[] {
   const reasons: string[] = [];
   if (rule.judgeability !== "from_change_alone") reasons.push(`${WHY[rule.judgeability]} (${rule.judgeabilityScore.toFixed(2)})`);
   if (rule.mechanical >= MECHANICAL_CUTOFF) reasons.push(`a linter could enforce it exactly (${rule.mechanical.toFixed(2)})`);
+  return reasons;
+}
+
+/** One line per rule that needs attention: why, then one short suggestion. */
+export function formatRuleCheck(rule: RuleCheck): string {
+  const reasons = checkReasons(rule);
   const fix = rule.mechanical >= MECHANICAL_CUTOFF ? "move it to your linter" : FIX[rule.judgeability];
   return `- ${rule.name} (${rule.id}): ${reasons.join("; ")}. Fix: ${fix}.`;
 }
