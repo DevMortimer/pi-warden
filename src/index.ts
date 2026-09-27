@@ -42,6 +42,10 @@ export { parseRules, condense, isRuleShaped, globToRegExp, matchGlob, projectPat
 export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef, RulesTier, RulesSourceConfig } from "./rules.js";
 export { checkRules, formatRulesCheck, formatRuleCheck, buildRulesCheckRequest, ruleCheckView, judgeableQuestion, mechanicalQuestion, MECHANICAL_CUTOFF, CHECK_ABOUT, JUDGEABILITY_REASONS, JUDGEABLE_PREFIX, MECHANICAL_PREFIX } from "./rules-lint.js";
 export type { RuleCheck, RuleCheckView, RuleJudgeability, RulesCheckOptions, RulesCheckRequest, RulesCheckResult, RulesCheckSource } from "./rules-lint.js";
+export { rulesLogPath, readRulesLog, trimRecords, RuleClearTracker, RulesLog, RULES_LOG_MAX_RECORDS } from "./rules-log.js";
+export type { RuleRecord, RuleObservation, RulesLogOptions } from "./rules-log.js";
+export { buildRulesReport, formatRulesReport, compareRows, REPORT_DEFAULT_DAYS, NEVER_FIRES_MIN, FIRES_RATE_MAX, UNDECIDED_LOW, UNDECIDED_HIGH } from "./rules-report.js";
+export type { RuleFlag, RuleReportRow, RulesReport } from "./rules-report.js";
 export { resolveRulesFile, extractRules, checkPiWardenMissing } from "./rules-file.js";
 export type { ResolvedRulesFile } from "./rules-file.js";
 export { writeStarterRules, generateStarterRules, detectProjectType, buildProjectContext, buildInitPrompt } from "./init.js";

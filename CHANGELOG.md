@@ -10,6 +10,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - `/warden rules check` asks Jev which of the active rules the rules guard cannot judge well, and prints one line per rule that needs attention with the reason, its score, and one suggestion (`move it to your linter`, `split it so the changed file alone shows the violation`), then `N fine, M need attention`. Two questions per rule: whether it can be judged from one changed file's content alone (`from_change_alone`, `needs_other_files`, `needs_task_or_history`, `too_vague`) and whether a standard linter, formatter, or type checker could enforce it exactly (cutoff 0.70, measured in `docs/guards.md` → Calibration). Rule names, text, and `paths:` scopes are sent redacted, with no file content and no task text; with no key or no consent it says so and sends nothing, and plain `/warden rules` stays local. Advice only: no rule is changed, disabled, or skipped, and the guard's questions, thresholds, and defaults are untouched.
 
+## 0.69.0
+
+### Added
+
+- `/warden report [--days N]` reads a local rules verdict log and reports, per rule, how often it was judged, fired, was cleared after a fire, and its mean violation score, with a flag for `never fires`, `fires on everything`, or `undecided`, then the rules in the current set with no records. Default 30 days; local only, nothing is sent. Each judgment from the rules guard is now recorded (time, session id, project-relative path, tool, rule id and name, outcome, P(violation), the threshold, whether it was a finding, and whether it cleared an earlier finding), keyed by a hash of the project path under `~/.pi/agent/pi-warden/rules/`; the file keeps the newest 5,000 records and a write failure is silent to the agent and shown once in the trace.
+
 ### Docs
 
 - README rewritten shorter: badges, one headline claim, a table of what the agent does and what pi-warden does, and the measured numbers in one list.
