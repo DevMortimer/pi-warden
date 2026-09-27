@@ -38,6 +38,26 @@ Every request is billable unless `--dry-run`.
   stub judge; `scripts/rules-bench.mjs` wires it to `dist/` and pi-typesafe.
 - `score.mjs`: the scorer. Pure functions over the saved answers: no judge, no network.
 
+## The end-of-run bench
+
+`turn-cases.mjs` holds the cases for the questions the end-of-run pass asks, and `turn.mjs` runs them:
+
+```
+npm run eval:rules-turn -- --dry-run                     # list cases and counts, send nothing
+npm run eval:rules-turn -- --split tune                  # tune set only
+npm run eval:rules-turn -- --split all --out DIR         # the full run that backs a report
+```
+
+- `turn-rules.md`: six `when: turn` rules (task scope, single-use abstractions, duplication across files,
+  speculative work, one concern per change, updating what a change invalidates).
+- `turn-cases.mjs`: 36 turn cases (six per rule, three violations and three compliant near-misses, split 18 tune /
+  18 holdout), each a task plus a multi-file diff sent through `evaluateTurnRules`; and six shell cases, each a set of
+  starting files plus one command (`sed -i`-style in-place edits that break an edit rule, generated files that break
+  none) driven through the production `evaluateTurnRun` on a temporary git repository. The loader validates labels,
+  splits, target rules, and that every turn diff touches at least two files.
+- `turn.mjs`: the runner; `tables` reports recall and false alarms at 0.5, 0.6, 0.7, and 0.8 per split from the saved
+  scores, and `--rescore DIR` re-prints them offline. `scripts/rules-turn-bench.mjs` wires it to `dist/`.
+
 ## Cases
 
 161 cases: mostly nine per rule (four clear violations, three compliant near-misses, and two cases where the rule does

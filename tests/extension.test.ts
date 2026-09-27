@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,6 +12,7 @@ import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
 import { defaultConfig } from "../src/config.js";
 import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
 import { _testSetIndexRunning, assistantPlan } from "../src/extension.js";
+import { SHELL_RULES_CHECKS } from "../src/turn-rules.js";
 import { indexPath } from "../src/index-cmd.js";
 
 let temporary: string;
@@ -4739,4 +4741,175 @@ test("/warden rules tune: a rule flagged by rules check sends one rewrite prompt
   assert.match(prompt, /Current text:\nDo not duplicate logic that exists elsewhere in the codebase\./);
   assert.match(prompt, /judgeable from the content of one changed file alone/);
   assert.equal(prompt.includes("No console statements"), false, "only the flagged rule is named");
+});
+
+// ── Turn rules: one end-of-run judgment against the whole diff ──
+
+const TURN_RULES_MD = [
+  "# The change stays inside the task",
+  "when: turn",
+  "The diff must contain only what the user's task asked for.",
+  "",
+  "# No console statements",
+  "Code must not contain `console.log` calls.",
+].join("\n");
+
+/** A seeded git repository whose working tree the end-of-run pass diffs. */
+const turnRepo = async (rules: string): Promise<string> => {
+  const dir = await mkdtemp(join(temporary, "turn-repo-"));
+  const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: dir, stdio: "pipe" });
+  git("init", "-q", "-b", "main");
+  await writeFile(join(dir, "app.txt"), "alpha\n");
+  await writeFile(join(dir, "pi-warden.md"), rules);
+  git("add", ".");
+  git("commit", "-q", "-m", "seed");
+  return dir;
+};
+const turnConfig = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, ...STACK_BAR }));
+const steersOnly = () => sentMessages.filter(message => message.message.customType === "pi-warden-steer");
+
+/**
+ * A git on PATH whose `add` marks when it finished, and whose `write-tree` can wait for a release file. Ordering goes
+ * through real git work: the loader gives the extension its own module instance, so a module seam cannot see its state.
+ */
+const snapshotGuard = async (holdTree: boolean) => {
+  const bin = await mkdtemp(join(temporary, "git-guard-"));
+  const realGit = execFileSync("sh", ["-c", "command -v git"]).toString().trim();
+  const marker = (name: string) => join(bin, name);
+  await writeFile(join(bin, "git"), [
+    "#!/bin/sh",
+    'if [ "$1" = "add" ]; then',
+    `  "${realGit}" "$@" || exit $?`,
+    `  touch "${marker("added")}"`,
+    "  exit 0",
+    "fi",
+    ...(holdTree ? [
+      `if [ "$1" = "write-tree" ] && [ ! -e "${marker("released")}" ]; then`,
+      "  i=0",
+      `  while [ ! -e "${marker("released")}" ] && [ $i -lt 300 ]; do sleep 0.05; i=$((i+1)); done`,
+      "fi",
+    ] : []),
+    `exec "${realGit}" "$@"`,
+    "",
+  ].join("\n"), { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  return { marker, restore: () => { process.env.PATH = savedPath; } };
+};
+/** Returns once the run-start snapshot has read the working tree, so a write now lands outside its baseline. */
+const afterBaseline = async (guard: { marker: (name: string) => string }) => {
+  for (let attempt = 0; attempt < 200 && !existsSync(guard.marker("added")); attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(existsSync(guard.marker("added")), "the run-start snapshot took its baseline");
+};
+
+test("turn rules: one end-of-run steer covers the run's diff and the files no per-edit check saw, with the done-check's delivery", async () => {
+  const repo = await turnRepo(TURN_RULES_MD);
+  await turnConfig();
+  await sessionStart(context({ cwd: repo }));
+  const guard = await snapshotGuard(false);
+  try {
+    await newPrompt("rename alpha to beta", context({ cwd: repo }));
+    await afterBaseline(guard);
+    // The command changes the file in place; it writes no literal content, so no per-edit check judges it.
+    await writeFile(join(repo, "app.txt"), "beta\n");
+    assert.equal(await toolCall("bash", { command: "sed -i -e 's/alpha/beta/' app.txt" }, context({ cwd: repo })), undefined);
+    requests.length = 0;
+    sentMessages.length = 0;
+    nextAnswers = { ...nextAnswers, "turn_the-change-stays-inside-the-task": "violation", "rule_no-console-statements": "violation" };
+    await agentEnd("Done.", context({ cwd: repo }));
+    assert.equal(requests.length, 2, "one turn request and one request for the file the per-edit guard never saw");
+    const steers = steersOnly().filter(message => /project rule/.test(message.message.content));
+    assert.equal(steers.length, 1, `one steer per run: ${JSON.stringify(sentMessages.map(message => message.message.content.slice(0, 60)))}`);
+    assert.match(steers[0]!.message.content, /the changes this run made violate a project rule: "The change stays inside the task"/);
+    assert.match(steers[0]!.message.content, /the change to app\.txt \(made by a command, not an edit\)/);
+    assert.equal(steers[0]!.options?.deliverAs, "followUp");
+    assert.equal(steers[0]!.options?.triggerTurn, true, "the same delivery as the done-check");
+    // A second run with no change judges nothing and steers nothing.
+    requests.length = 0;
+    sentMessages.length = 0;
+    await newPrompt("thanks", context({ cwd: repo }));
+    await agentEnd("You're welcome.", context({ cwd: repo }));
+    assert.equal(requests.length, 0);
+    assert.equal(steersOnly().length, 0);
+  } finally {
+    guard.restore();
+  }
+});
+
+test("turn rules: with no turn rules and no change the per-edit guard missed, the end of the run asks nothing and sends nothing", async () => {
+  const repo = await turnRepo("# No console statements\nCode must not contain `console.log` calls.\n");
+  await turnConfig();
+  await sessionStart(context({ cwd: repo }));
+  await newPrompt("update the app", context({ cwd: repo }));
+  await writeFile(join(repo, "app.txt"), "updated\n");
+  assert.equal(await toolCall("write", { path: join(repo, "app.txt"), content: "updated\n" }, context({ cwd: repo })), undefined);
+  requests.length = 0;
+  sentMessages.length = 0;
+  await agentEnd("Done.", context({ cwd: repo }));
+  assert.equal(requests.length, 0, "no request at the end of the run");
+  assert.equal(steersOnly().length, 0);
+});
+
+test("turn rules: no repository means the run is skipped with one trace line and no request", async () => {
+  const dir = await mkdtemp(join(temporary, "turn-norepo-"));
+  await writeFile(join(dir, "pi-warden.md"), TURN_RULES_MD);
+  await turnConfig();
+  await sessionStart(context({ cwd: dir }));
+  await newPrompt("restructure the parser", context({ cwd: dir }));
+  requests.length = 0;
+  sentMessages.length = 0;
+  await agentEnd("Done.", context({ cwd: dir }));
+  assert.equal(requests.length, 0);
+  assert.equal(steersOnly().length, 0);
+  await runCommand("trace", context({ hasUI: false, cwd: dir }));
+  assert.match(sentMessages.at(-1)!.message.content, /turn rules skipped this run: not a git repository/);
+});
+
+test("turn rules: the end-of-run pass judges at most SHELL_RULES_CHECKS files and names the ones it leaves out", async () => {
+  const repo = await turnRepo("# No console statements\nCode must not contain `console.log` calls.\n");
+  await turnConfig();
+  await sessionStart(context({ cwd: repo }));
+  const guard = await snapshotGuard(false);
+  try {
+    await newPrompt("generate the reports", context({ cwd: repo }));
+    await afterBaseline(guard);
+    // Twelve files changed outside any tool call, like a generator's output; no per-edit check judged them.
+    for (let index = 1; index <= 12; index++) await writeFile(join(repo, `f${String(index).padStart(2, "0")}.txt`), `generated ${index}\n`);
+    requests.length = 0;
+    sentMessages.length = 0;
+    await agentEnd("Done.", context({ cwd: repo }));
+    assert.equal(requests.length, SHELL_RULES_CHECKS, "one request per judged file, capped");
+    assert.deepEqual(requests.map(request => request.state.path), ["f01.txt", "f02.txt", "f03.txt", "f04.txt", "f05.txt"], "the first files in diff order are judged");
+    await runCommand("trace", context({ hasUI: false, cwd: repo }));
+    const trace = sentMessages.at(-1)!.message.content;
+    for (let index = 6; index <= 12; index++) {
+      const path = `f${String(index).padStart(2, "0")}.txt`;
+      assert.match(trace, new RegExp(`unseen change not judged \\(${path}\\): only the first ${SHELL_RULES_CHECKS} files a run changes are judged`), `${path} is named as left out`);
+    }
+  } finally {
+    guard.restore();
+  }
+});
+
+test("turn rules: agent_start returns without waiting for the snapshot, and the run end waits for it", async () => {
+  const repo = await turnRepo(TURN_RULES_MD);
+  await turnConfig();
+  await sessionStart(context({ cwd: repo }));
+  prompt = "rename alpha to beta";
+  // The guard holds `write-tree`, so the snapshot is provably still running when agent_start returns and when the run ends.
+  const guard = await snapshotGuard(true);
+  try {
+    const started = Date.now();
+    await fire("agent_start", {}, context({ cwd: repo }));
+    const held = Date.now() - started;
+    assert.ok(held < 1500, `agent_start must return without waiting for the snapshot: held ${held} ms`);
+    await afterBaseline(guard);
+    await writeFile(join(repo, "app.txt"), "beta\n");
+    requests.length = 0;
+    await writeFile(guard.marker("released"), "");
+    await agentEnd("Done.", context({ cwd: repo }));
+    assert.equal(requests.length, 2, "the run end waits for the snapshot and judges the change made after it started");
+  } finally {
+    guard.restore();
+  }
 });
