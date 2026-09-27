@@ -27,7 +27,7 @@ const bySeverityThenScore = (a: RuleScore, b: RuleScore): number =>
 export interface Rule {
   id: string;
   name: string;
-  /** Rule text under the heading, fences included, `paths:`/`threshold:`/`severity:` lines removed. */
+  /** Rule text under the heading, fences included, `paths:`/`threshold:`/`severity:`/`source:` lines removed. */
   body: string;
   /** Globs the rule applies to; empty means every file. */
   paths: string[];
@@ -35,6 +35,8 @@ export interface Rule {
   threshold?: number;
   /** Ordering only; absent means `normal`. */
   severity?: RuleSeverity;
+  /** The `source: <file>:<line>` header: the instruction line the rule's wording came from. */
+  sourceRef?: { file: string; line: number };
   /** Header lines that carried a bad value, reported by `/warden rules`; the line is dropped either way. */
   headerWarnings?: string[];
   /** Project-relative source file when the rule came from a resolved RuleSet. */
@@ -88,6 +90,7 @@ const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
 const PATHS_LINE = /^\s*(?:paths?|applies to|files?)\s*:\s*(.+?)\s*$/i;
 const THRESHOLD_LINE = /^\s*threshold\s*:\s*(.+?)\s*$/i;
 const SEVERITY_LINE = /^\s*severity\s*:\s*(.+?)\s*$/i;
+const SOURCE_REF_LINE = /^\s*source\s*:\s*(.+?)\s*$/i;
 const SEVERITIES: readonly RuleSeverity[] = ["high", "normal", "low"];
 
 function slug(name: string, used: Set<string>): string {
@@ -161,10 +164,12 @@ export function parseRules(markdown: string): Rule[] {
     let paths: string[] = [];
     let threshold: number | undefined;
     let severity: RuleSeverity | undefined;
+    let sourceRef: { file: string; line: number } | undefined;
     const headerWarnings: string[] = [];
     let seenPaths = false;
     let seenThreshold = false;
     let seenSeverity = false;
+    let seenSource = false;
     // Header lines may sit in any order and at most once. A bad value is dropped with a warning; the line never stays in the body.
     for (;;) {
       const first = lines.findIndex(text => text.trim());
@@ -196,12 +201,26 @@ export function parseRules(markdown: string): Rule[] {
         else { severity = raw; seenSeverity = true; }
         continue;
       }
+      // One small block for the `source: <file>:<line>` citation header, beside the other header lines.
+      const cited = SOURCE_REF_LINE.exec(line);
+      if (cited) {
+        lines.splice(first, 1);
+        const raw = cited[1]!.replace(/^`|`$/g, "").trim();
+        const ref = /^(.+):(\d+)$/.exec(raw);
+        const file = ref?.[1]?.trim();
+        const at = ref ? Number(ref[2]) : 0;
+        if (seenSource) headerWarnings.push("source: appears more than once; the first is kept");
+        else if (!file || !at) headerWarnings.push(`source: ${raw || "(empty)"} is not a file:line reference; ignored`);
+        else { sourceRef = { file, line: at }; seenSource = true; }
+        continue;
+      }
       break;
     }
     return {
       id: slug(draft.name, used), name: draft.name.trim(), body: lines.join("\n").trim(), paths,
       ...(threshold === undefined ? {} : { threshold }),
       ...(severity === undefined ? {} : { severity }),
+      ...(sourceRef === undefined ? {} : { sourceRef }),
       ...(headerWarnings.length ? { headerWarnings } : {}),
     };
   });
@@ -360,6 +379,7 @@ export function formatRuleSetDetails(set: RuleSet | undefined, tier: RulesTier, 
       `paths: ${rule.paths.length ? rule.paths.join(", ") : "(all)"}`,
       ...(rule.threshold === undefined ? [] : [`threshold: ${rule.threshold}`]),
       ...(rule.severity === undefined ? [] : [`severity: ${rule.severity}`]),
+      ...(rule.sourceRef === undefined ? [] : [`source: ${rule.sourceRef.file}:${rule.sourceRef.line}`]),
     ].join(", ");
     lines.push(`${index + 1}. ${rule.id}${from} ${settings}`);
     if (rule.headerWarnings?.length) lines.push(`   ${rule.headerWarnings.join("; ")}`);
@@ -522,6 +542,8 @@ export interface RuleScore {
   threshold?: number;
   /** The rule's severity when it set one; absent means `normal`. */
   severity?: RuleSeverity;
+  /** The instruction line the rule's wording came from when its `source:` header set one. */
+  sourceRef?: { file: string; line: number };
 }
 
 export interface RuleFinding extends RuleScore {
@@ -615,12 +637,13 @@ export async function evaluateRules(tool: string, input: Record<string, unknown>
   const softFindings: RuleFinding[] = [];
   const softThreshold = options.config.softThreshold ?? 0;
   // A finding needs the rule's own cutoff when it set one, else the global threshold. The soft tier sits under that cutoff.
-  const scoreRule = (score: RuleScore, rule: Pick<Rule, "threshold" | "severity"> | undefined, body: string): void => {
+  const scoreRule = (score: RuleScore, rule: Pick<Rule, "threshold" | "severity" | "sourceRef"> | undefined, body: string): void => {
     const cutoff = rule?.threshold ?? options.config.threshold;
     const scored: RuleScore = {
       ...score,
       ...(rule?.threshold === undefined ? {} : { threshold: rule.threshold }),
       ...(rule?.severity === undefined ? {} : { severity: rule.severity }),
+      ...(rule?.sourceRef === undefined ? {} : { sourceRef: rule.sourceRef }),
     };
     scores.push(scored);
     if (scored.violation >= cutoff) findings.push({ ...scored, body });
@@ -665,7 +688,8 @@ export function rulesSteer(verdict: RulesVerdict, counts: ReadonlyMap<string, nu
     const count = counts.get(finding.id) ?? 0;
     const repeat = count >= 3 ? `; ${count}${count === 3 ? "rd" : "th"} time this session` : "";
     const body = finding.body ? `: ${clip(finding.body.replace(/\s+/g, " ").trim(), STEER_BODY_LIMIT).replace(/[.;:,]+$/, "")}` : "";
-    return `"${finding.name}" (${finding.violation.toFixed(2)}${repeat})${body}`;
+    const from = finding.sourceRef ? ` (from ${finding.sourceRef.file} line ${finding.sourceRef.line})` : "";
+    return `"${finding.name}"${from} (${finding.violation.toFixed(2)}${repeat})${body}`;
   }).join("; ");
   // The steer names the rule and the written file only: a named rules or config file sends a weak model off to read it.
   const what = verdict.aggregate ? "breaks a project rule" : `violates project rule${verdict.findings.length === 1 ? "" : "s"}`;

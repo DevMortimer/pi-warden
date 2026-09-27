@@ -726,6 +726,48 @@ test("buildInitPrompt: includes project context and safety rules", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+test("buildInitPrompt: compiles AGENTS.md instructions as numbered lines with the source: header and the leave-out list", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  await writeFile(join(dir, "AGENTS.md"), ["# Project", "Always run the tests before you commit.", "Use tabs, never spaces.", ""].join("\n"));
+  const prompt = buildInitPrompt(dir);
+  assert.match(prompt, /2: Always run the tests before you commit\./);
+  assert.match(prompt, /3: Use tabs, never spaces\./);
+  assert.match(prompt, /source: <file>:<line>/);
+  assert.match(prompt, /source: AGENTS\.md:65/);
+  assert.match(prompt, /`paths:`/);
+  assert.match(prompt, /judged from one changed file alone/);
+  assert.match(prompt, /wording close to the source instruction/);
+  assert.match(prompt, /at most 31 rules/);
+  assert.match(prompt, /list each left-out instruction in your reply with the reason/);
+  assert.match(prompt, /needs other files, repository history, or the task to judge/);
+  assert.match(prompt, /linter, formatter, or type checker already enforces/);
+  assert.match(prompt, /suggest running `\/warden rules check`/);
+  assert.match(prompt, /never run it as part of this task/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("buildInitPrompt: CLAUDE.md compiles the same way", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  await writeFile(join(dir, "CLAUDE.md"), "Never commit with a dirty tree.\n");
+  const prompt = buildInitPrompt(dir);
+  assert.match(prompt, /from CLAUDE\.md, each line prefixed with its line number/);
+  assert.match(prompt, /1: Never commit with a dirty tree\./);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("buildInitPrompt: unchanged when pi-warden.md exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
+  await writeFile(join(dir, "pi-warden.md"), "# Prior rule\nKeep the supported protocol version.\n");
+  await writeFile(join(dir, "AGENTS.md"), "# Project\nAlways run the tests before you commit.\n");
+  const prompt = buildInitPrompt(dir);
+  assert.match(prompt, /## Existing pi-warden\.md rules \(preserve these\)/);
+  assert.match(prompt, /Keep the supported protocol version\./);
+  assert.doesNotMatch(prompt, /source: <file>:<line>/);
+  assert.doesNotMatch(prompt, /left-out instruction/);
+  assert.doesNotMatch(prompt, /\n\d+: /);
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("buildInitPrompt: generic project omits type-specific rules", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-init-"));
   const prompt = buildInitPrompt(dir);

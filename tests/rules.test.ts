@@ -249,6 +249,42 @@ test("parseRules: threshold and severity headers parse in any order with paths:,
   assert.equal(rules[3]!.body, "Body with no headers.");
 });
 
+test("parseRules: a source: header cites the instruction line it came from; a bad value is dropped with a warning", () => {
+  const md = [
+    "# Cited rule",
+    "source: AGENTS.md:65",
+    "paths: src/**/*.ts",
+    "Body.",
+    "",
+    "# Bad citation",
+    "source: AGENTS.md",
+    "Body.",
+    "",
+    "# Duplicated",
+    "source: AGENTS.md:1",
+    "source: CLAUDE.md:9",
+    "Body.",
+  ].join("\n");
+  const rules = parseRules(md);
+  assert.deepEqual(rules[0]!.sourceRef, { file: "AGENTS.md", line: 65 });
+  assert.equal(rules[0]!.body, "Body.");
+  assert.equal(rules[0]!.headerWarnings, undefined);
+  assert.equal(rules[1]!.sourceRef, undefined);
+  assert.deepEqual(rules[1]!.headerWarnings, ["source: AGENTS.md is not a file:line reference; ignored"]);
+  assert.equal(rules[1]!.body, "Body.");
+  assert.deepEqual(rules[2]!.sourceRef, { file: "AGENTS.md", line: 1 }, "the first value wins");
+  assert.deepEqual(rules[2]!.headerWarnings, ["source: appears more than once; the first is kept"]);
+  assert.match(formatRuleSetDetails({ sources: ["pi-warden.md"], rules: [rules[0]!], alwaysDropped: 0 }, "root"), /1\. cited-rule paths: src\/\*\*\/\*\.ts, source: AGENTS\.md:65/);
+});
+
+test("the steer names the instruction line a cited rule came from", () => {
+  const verdict: RulesVerdict = {
+    source: "typesafe", tool: "write", path: "src/a.ts", sources: ["pi-warden.md"], asked: 1, aggregate: false,
+    findings: [{ id: "imperative-commits", name: "Imperative commit messages", outcome: "violation", violation: 0.9, body: "Use the imperative mood.", sourceRef: { file: "AGENTS.md", line: 65 } }],
+  };
+  assert.equal(rulesSteer(verdict, new Map()), "pi-warden: the content just written to src/a.ts violates project rule: \"Imperative commit messages\" (from AGENTS.md line 65) (0.90): Use the imperative mood. Fix it in your next edit.");
+});
+
 test("formatRuleSetDetails shows a rule's threshold, severity, and a bad-header warning", () => {
   const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules("# Cut\nthreshold: 0.9\nseverity: high\nBody.\n\n# Bad\nthreshold: nope\nBody."), alwaysDropped: 0 };
   const text = formatRuleSetDetails(set, "root");

@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- A project rule may cite where its wording came from with a `source: <file>:<line>` header beside `paths:`, for example `source: AGENTS.md:65`. `/warden rules` shows it, and when the rule fires the steer names it: `"<rule>" (from AGENTS.md line 65) ...`. A bad value is ignored and `/warden rules` reports the line.
+- `/warden init` compiles an existing `AGENTS.md` or `CLAUDE.md` into small rules. The prompt hands the agent the instruction file's lines with line numbers and asks for one rule per instruction that can be judged from one changed file, each with a `source:` header and a `paths:` header when the instruction concerns certain files, wording close to the source, and a concrete violation pattern. Instructions that need other files, repository history, or the task, and anything a linter or type checker enforces, are left out of the file and listed in the reply with the reason. The reply suggests `/warden rules check` when the user has a key; the check is never run automatically. When `pi-warden.md` already exists the prompt is unchanged.
 
 ## 0.71.0
 
