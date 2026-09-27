@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.70.2
+
 ### Fixed
 
 - Two store writes in one process no longer race. Every write to a loops, prefs, user-config, steer-stats, or rules-log file now goes to a temporary file unique to the process and the write before the rename, and the read-modify-write changes to the loops and prefs files run one after another, so a `warden_loops` or `warden_remember` call can no longer fail with `ENOENT` or silently lose the other call's change. A second Pi process writing the same file is still not guarded.
