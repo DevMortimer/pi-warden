@@ -6,7 +6,22 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- A project rule may set its own cutoff and severity in header lines at the top of its body, beside `paths:`: `threshold: 0.8` (a number from 0 to 1) and `severity: high|normal|low` (default `normal`). A rule with a `threshold:` fires at its own cutoff instead of `rules.threshold`; severity only orders findings (high, normal, low, then score), in the steer and in the trace. A bad value is ignored and `/warden rules` reports the line.
+- `rules.softThreshold` (default `0`, off): a score from this value up to a rule's cutoff becomes a soft "please double-check" finding. Soft findings never hold, get one short separate sentence in the same steer (`Also check whether "<rule>" applies here (0.62).`), count against the steer budget like any other steer, and are recorded in the rules log with `soft: true`. When only soft findings exist the steer is that sentence alone.
+
+### Changed
+
+- The rule question now says that new text breaking a rule again in a file where it was already broken counts as a violation, while a violation left as it was does not.
+
+### Tests
+
+- Rules bench (`eval/rules-bench/`): 161 labelled cases (107 tune, 54 holdout) and eight new cases: six add a new violation of a rule the file already breaks and two touch only a line next to an old violation. Three fixture rules carry header lines (`severity:` on two, `threshold: 0.9` on the boolean-name rule). The scorer reads those headers and reports each rule at its own cutoff and the soft tier under it. The run is in `eval/reports/2026-09-27-rules-tiers/`.
+
+### Docs
+
+- `docs/guards.md` → Calibration records the rules-tier measurement, and `docs/configuration.md` documents `rules.softThreshold`.
 
 ## 0.70.2
 
