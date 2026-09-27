@@ -61,7 +61,7 @@ export function auc(rows) {
   return (sum - (positives.length * (positives.length + 1)) / 2) / (positives.length * negatives.length);
 }
 
-function metrics(rows, cutoff) {
+export function metrics(rows, cutoff) {
   const positives = rows.filter(row => row.label === "violation");
   const negatives = rows.filter(row => row.label === "clean");
   const tp = positives.filter(row => row.violation >= cutoff).length;

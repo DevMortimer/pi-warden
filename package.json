@@ -61,7 +61,8 @@
     "prepack": "npm run build",
     "eval:ab": "node scripts/eval-ab.mjs",
     "eval:judge": "node scripts/judge-bench.mjs",
-    "eval:rules": "node scripts/rules-bench.mjs"
+    "eval:rules": "node scripts/rules-bench.mjs",
+    "eval:rules-turn": "node scripts/rules-turn-bench.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.1 <1",
