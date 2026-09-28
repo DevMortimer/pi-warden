@@ -8,6 +8,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.74.0
+
+### Added
+
+- `typesafeBackend` accepts `"commandcode"`: judgments go to api.commandcode.ai under `/provider/v1/systemone`, with the key from `COMMANDCODE_API_KEY` and the model `typesafe/jev`.
+- `typesafeBackend` accepts a caller-supplied endpoint object (`{ "label", "host", "path", "keyEnv", "defaultModel" }`, plus optional model-list fields) for a gateway that serves the same decisions protocol (pi-typesafe 0.8.0). The object is passed to the judge as written and validated on every call. It reads only its own `keyEnv` variable: the TypeSafe key and the `/typesafe login` store are never sent to it. `/warden status`, the `/warden enable` dialog, and the `/warden test` confirmation name the label, host, and model sent for any non-TypeSafe backend, and the consent disclosure names the real destination host.
+
+### Changed
+
+- An unknown `typesafeBackend` name, or an endpoint object the judge refuses, no longer silently falls back to `"typesafe"`: judgments turn off, the refusal message is shown once and in `/warden status`, and nothing is sent to api.typesafe.ai because a value was mistyped.
+
 ## 0.73.1
 
 ### Tests

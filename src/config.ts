@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeFileAtomicSync } from "./atomic.js";
 import type { JudgmentBackend } from "./backend.js";
-import { resolveBackend } from "./backend.js";
+import { resolveJudgmentBackend } from "./backend.js";
 import { defaultHostDirs } from "./host-dirs.js";
 import type { HostDirs } from "./host-dirs.js";
 import { COMMAND_TOOLS } from "./tools.js";
@@ -420,8 +420,10 @@ export interface WardenConfig {
   enabled: boolean;
   /** Consent to send task and action summaries to api.typesafe.ai. Set by /warden enable; never by a project file. */
   typesafe: boolean;
-  /** The decisions service the judgments go to. User file only: a project must not redirect judgments to another vendor. */
-  typesafeBackend: JudgmentBackend;
+  /** The decisions service the judgments go to: a name ("typesafe", "openrouter", "commandcode") or a caller-supplied endpoint object. User file only: a project must not redirect judgments to another vendor. Undefined when the configured value was refused. */
+  typesafeBackend: JudgmentBackend | undefined;
+  /** Why the configured typesafeBackend was refused: judgments stay off, and the once-per-session notice and /warden status quote this. */
+  backendRefusal: string | undefined;
   /**
    * steer (default): a confirm-level call is held and the agent receives the judgment as its tool result, so it re-plans or asks
    * the user in chat. confirm: open a dialog and let the user decide (falls back to steer without a UI). advise: never hold; report only.
@@ -476,6 +478,7 @@ export function defaultConfig(): WardenConfig {
     enabled: true,
     typesafe: false,
     typesafeBackend: "typesafe",
+    backendRefusal: undefined,
     mode: "steer",
     timeoutMs: 5000,
     maxRequests: 500,
@@ -930,10 +933,12 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
 export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConfig {
   if (!isObject(raw)) return base;
   const shared = applyShared(base, raw);
+  const backend = resolveJudgmentBackend(raw.typesafeBackend);
   return {
     enabled: boolean(raw.enabled, base.enabled),
     typesafe: boolean(raw.typesafe, base.typesafe),
-    typesafeBackend: resolveBackend(raw.typesafeBackend),
+    typesafeBackend: backend.typesafeBackend,
+    backendRefusal: backend.backendRefusal,
     mode: isMode(raw.mode) ? raw.mode : base.mode,
     ...shared,
     ...applyGuards(base, raw, shared.timeoutMs, "user"),
