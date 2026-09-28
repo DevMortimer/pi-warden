@@ -1,6 +1,6 @@
 import { isMode } from "./config.js";
 import type { WardenConfig } from "./config.js";
-import { resolveBackend } from "./backend.js";
+import { resolveJudgmentBackend } from "./backend.js";
 import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
@@ -17,6 +17,10 @@ const off = { enabled: false };
 // Duplicated from defaultConfig(): this file must work when the config module is stale and lacks the key.
 const coreTools = () => ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const proseOff = () => ({ ...off, audience: "technical", threshold: 1, trend: 3, minChars: 1 });
+// A stale config module hands back either its own resolution or a raw value; both end up resolved here.
+const resolveSetting = (source: Partial<WardenConfig>) => source.backendRefusal !== undefined
+  ? { typesafeBackend: source.typesafeBackend, backendRefusal: source.backendRefusal }
+  : resolveJudgmentBackend(source.typesafeBackend);
 
 /**
  * `loadConfig()` always returns a complete object, yet live sessions crashed at `config.slop.prose.enabled` after a package
@@ -32,10 +36,12 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     missing.push(key);
     return fallback;
   };
+  const backend = resolveSetting(source);
   const config: WardenConfig = {
     enabled: source.enabled ?? true,
     typesafe: source.typesafe ?? false,
-    typesafeBackend: resolveBackend(source.typesafeBackend),
+    typesafeBackend: backend.typesafeBackend,
+    backendRefusal: backend.backendRefusal,
     mode: isMode(source.mode) ? source.mode : "steer",
     timeoutMs: source.timeoutMs ?? 5000,
     maxRequests: source.maxRequests ?? 500,

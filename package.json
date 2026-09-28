@@ -63,8 +63,8 @@
     "eval:judge": "node scripts/judge-bench.mjs",
     "eval:replay": "node scripts/rules-replay.mjs",
     "eval:rules": "node scripts/rules-bench.mjs",
-    "eval:replay": "node scripts/rules-replay.mjs",
-    "eval:rules-turn": "node scripts/rules-turn-bench.mjs"  },
+    "eval:rules-turn": "node scripts/rules-turn-bench.mjs"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.1 <1",
     "@earendil-works/pi-tui": ">=0.85.1 <1"
@@ -85,6 +85,6 @@
     "typescript": "^6.0.0"
   },
   "dependencies": {
-    "pi-typesafe": "^0.7.0"
+    "pi-typesafe": "^0.8.0"
   }
 }

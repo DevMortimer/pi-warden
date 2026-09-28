@@ -4,7 +4,7 @@ What pi-warden sends to TypeSafe, what it keeps on this machine, and what it nev
 
 ## What is sent, per guard
 
-With consent, requests go to `https://api.typesafe.ai` (default) or `https://openrouter.ai` when `typesafeBackend` is set to `"openrouter"` in the user config.
+With consent, requests go to `https://api.typesafe.ai` (default), or to the host `typesafeBackend` names in the user config: `https://openrouter.ai` for `"openrouter"`, `https://api.commandcode.ai` for `"commandcode"`, or the `host` of a caller-supplied endpoint object. `/warden status`, the `/warden enable` dialog, and the `/warden test` confirmation name the destination host — and for a non-TypeSafe backend the label, host, and model sent — so who answers is always visible before anything leaves. An endpoint object never receives the TypeSafe key or the `/typesafe login` store; it gets only the key from the environment variable its `keyEnv` names.
 
 | Guard | Sent |
 | --- | --- |

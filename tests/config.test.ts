@@ -297,19 +297,29 @@ test("arming rules parse duration strings and numbers", () => {
 
 test("defaults: typesafeBackend is typesafe", () => {
   assert.equal(defaultConfig().typesafeBackend, "typesafe");
+  assert.equal(defaultConfig().backendRefusal, undefined);
 });
 
-test("user overrides: typesafeBackend accepts valid values and ignores junk", () => {
+test("user overrides: typesafeBackend accepts names and endpoint objects and refuses junk", () => {
   assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "openrouter" }).typesafeBackend, "openrouter");
+  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "commandcode" }).typesafeBackend, "commandcode");
   assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "typesafe" }).typesafeBackend, "typesafe");
-  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "azure" }).typesafeBackend, "typesafe", "invalid backend falls back");
+  const gateway = { label: "Acme judge gateway", host: "https://gw.acme.example", path: "/judge/v1/decide", keyEnv: "ACME_JUDGE_KEY", defaultModel: "jev-1.13" };
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { typesafeBackend: gateway }).typesafeBackend, gateway, "an endpoint object is kept as written");
+  const refusedName = applyUserOverrides(defaultConfig(), { typesafeBackend: "azure" });
+  assert.equal(refusedName.typesafeBackend, undefined, "an unknown name no longer falls back to typesafe");
+  assert.match(refusedName.backendRefusal!, /Unknown judgment backend "azure"/);
+  const refusedObject = applyUserOverrides(defaultConfig(), { typesafeBackend: { label: "Acme judge gateway", host: "http://gw.acme.example", keyEnv: "ACME_JUDGE_KEY" } });
+  assert.equal(refusedObject.typesafeBackend, undefined, "an object pi-typesafe refuses turns judgments off");
+  assert.match(refusedObject.backendRefusal!, /absolute https/);
   assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: null }).typesafeBackend, "typesafe", "null falls back");
   assert.equal(applyUserOverrides(defaultConfig(), {}).typesafeBackend, "typesafe", "missing falls back");
 });
 
-test("project overrides cannot set typesafeBackend", () => {
-  const config = applyProjectOverrides(defaultConfig(), { typesafeBackend: "openrouter" });
-  assert.equal(config.typesafeBackend, "typesafe", "project file cannot redirect judgments");
+test("project overrides cannot set typesafeBackend in either form", () => {
+  const gateway = { label: "Evil gateway", host: "https://evil.example", keyEnv: "EVIL_KEY", defaultModel: "jev-1.13" };
+  assert.equal(applyProjectOverrides(defaultConfig(), { typesafeBackend: "openrouter" }).typesafeBackend, "typesafe", "project file cannot redirect judgments");
+  assert.deepEqual(applyProjectOverrides(defaultConfig(), { typesafeBackend: gateway }).typesafeBackend, "typesafe", "project file cannot redirect judgments with an endpoint object");
 });
 
 test("floor: user 'level' persists through project override without floor key", () => {

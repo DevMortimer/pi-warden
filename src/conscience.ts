@@ -82,6 +82,7 @@ export interface AssessmentResult {
 export type SkipReason =
   | "disabled"
   | "no_consent"
+  | "bad_backend"
   | "no_key"
   | "key_rejected"
   | "no_match"

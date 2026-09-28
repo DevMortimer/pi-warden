@@ -41,7 +41,10 @@ let hangNetwork = false;
 let failStatus: number | undefined;
 const sentMessages: Array<{ message: { customType: string; content: string }; options?: Record<string, unknown> }> = [];
 const sentUserMessages: Array<string> = [];
-const requests: Array<{ state: Record<string, unknown>; questions: Record<string, { type: string }> }> = [];
+const requests: Array<{ model?: string; state: Record<string, unknown>; questions: Record<string, { type: string }> }> = [];
+/** Where each judgment request went, and with what Authorization header, so a backend test can see the wire. */
+const requestUrls: string[] = [];
+const requestAuth: Array<string | null> = [];
 let prompt: string | undefined = "Run the test suite";
 
 const ui = {
@@ -149,8 +152,10 @@ before(async () => {
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     });
     if (failStatus !== undefined) return new Response("upstream body must not leak", { status: failStatus });
-    const body = JSON.parse(String(init?.body)) as { state: Record<string, unknown>; questions: Record<string, { type: string; criteria?: unknown }> };
+    const body = JSON.parse(String(init?.body)) as { model?: string; state: Record<string, unknown>; questions: Record<string, { type: string; criteria?: unknown }> };
     requests.push(body);
+    requestUrls.push(String(input));
+    requestAuth.push(new Headers(init?.headers).get("authorization"));
     // Answer every asked question from nextAnswers so slop, approval, stuck, and done requests all work with one mock.
     const answers: Record<string, unknown> = {};
     for (const [id, question] of Object.entries(body.questions)) {
@@ -193,7 +198,7 @@ before(async () => {
 beforeEach(async () => {
   notices.length = 0; widgets.length = 0; confirms.length = 0;
   confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; hangNetwork = false; failStatus = undefined; prompt = "Run the test suite";
-  keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0;
+  keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0; requestUrls.length = 0; requestAuth.length = 0;
   widgetComponent = undefined; widgetPlacement = undefined; customCalls.length = 0; openPanels.length = 0; panelClosed.length = 0; renders = 0;
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
@@ -4177,6 +4182,84 @@ test("judgments off: no key on OpenRouter names only its variable, since /typesa
   } finally {
     if (savedOpenRouter !== undefined) process.env.OPENROUTER_API_KEY = savedOpenRouter;
   }
+});
+
+const gateway = { label: "Acme judge gateway", host: "https://gw.acme.example", path: "/judge/v1/decide", keyEnv: "ACME_JUDGE_KEY", defaultModel: "jev-1.13" };
+
+test("the commandcode backend sends judgments to its own host, path, and model", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: "commandcode", rules: { enabled: false }, ...STACK_BAR }));
+  const saved = process.env.COMMANDCODE_API_KEY;
+  process.env.COMMANDCODE_API_KEY = "cc-fake-test-key-000";
+  try {
+    await toolCall("bash", { command: "npm test" });
+    assert.equal(networkCalls, 1);
+    assert.equal(requestUrls[0], "https://api.commandcode.ai/provider/v1/systemone");
+    assert.equal(requests[0]!.model, "typesafe/jev");
+    assert.equal(requestAuth[0], "Bearer cc-fake-test-key-000", "the key comes from COMMANDCODE_API_KEY");
+  } finally {
+    if (saved === undefined) delete process.env.COMMANDCODE_API_KEY; else process.env.COMMANDCODE_API_KEY = saved;
+  }
+});
+
+test("a caller-supplied endpoint object reaches createTypeSafe unchanged and answers from its own host, model, and key", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
+  process.env.ACME_JUDGE_KEY = "acme-fake-test-key-000";
+  try {
+    await toolCall("bash", { command: "npm test" });
+    assert.equal(networkCalls, 1);
+    assert.equal(requestUrls[0], "https://gw.acme.example/judge/v1/decide", "the object's host and path are used as written");
+    assert.equal(requests[0]!.model, "jev-1.13", "the model goes out unmapped, as the object wrote it");
+    assert.equal(requestAuth[0], "Bearer acme-fake-test-key-000", "the endpoint's own keyEnv carries the key");
+    assert.notEqual(requestAuth[0], `Bearer ${process.env.TYPESAFE_API_KEY}`, "the TypeSafe key never goes to a caller-supplied endpoint");
+  } finally {
+    delete process.env.ACME_JUDGE_KEY;
+  }
+});
+
+test("judgments off: an unknown typesafeBackend name is refused with the message, in the notice and in /warden status", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: "azure", rules: { enabled: false }, ...STACK_BAR }));
+  await toolCall("bash", { command: "npm test" });
+  await toolCall("bash", { command: "npm run lint" });
+  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend \"azure\". Valid backends: typesafe, openrouter, commandcode.)"], "said once, carrying pi-typesafe's refusal message");
+  assert.equal(networkCalls, 0, "no client is created and nothing is sent");
+  assert.equal(requests.length, 0);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /typesafeBackend refused: Unknown judgment backend "azure"/);
+});
+
+test("judgments off: an endpoint object pi-typesafe refuses is refused with the message and never creates a client", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: { label: "Acme judge gateway", host: "http://gw.acme.example", keyEnv: "ACME_JUDGE_KEY" }, rules: { enabled: false }, ...STACK_BAR }));
+  await toolCall("bash", { command: "npm test" });
+  assert.equal(judgmentsOff().length, 1);
+  assert.match(judgmentsOff()[0]!, /^warden: Jev judgments are off \(typesafeBackend refused: Backend host must be an absolute https/);
+  assert.equal(networkCalls, 0, "no client is created and nothing is sent");
+  assert.equal(requests.length, 0);
+});
+
+test("a custom backend's label, host, and model are named in /warden status, the /warden enable dialog, and the /warden test confirmation", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
+  process.env.ACME_JUDGE_KEY = "acme-fake-test-key-000";
+  try {
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /Acme judge gateway at gw\.acme\.example, model jev-1\.13/);
+    confirmResult = false;
+    await runCommand("enable");
+    assert.match(confirms.at(-1)!.message, /Judgments go to Acme judge gateway at gw\.acme\.example, model jev-1\.13/);
+    assert.doesNotMatch(confirms.at(-1)!.message, /api\.typesafe\.ai/, "the disclosure names the real destination");
+    await runCommand("test");
+    assert.match(confirms.at(-1)!.message, /goes to Acme judge gateway at gw\.acme\.example, model jev-1\.13/);
+    assert.doesNotMatch(confirms.at(-1)!.message, /api\.typesafe\.ai/);
+  } finally {
+    delete process.env.ACME_JUDGE_KEY;
+  }
+});
+
+test("judgments off: no key on a custom endpoint names its own key variable and no login", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
+  delete process.env.ACME_JUDGE_KEY;
+  await toolCall("bash", { command: "npm test" });
+  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (no key for Acme judge gateway). Set ACME_JUDGE_KEY."]);
+  assert.equal(networkCalls, 0);
 });
 
 test("judgments off: a rejected key saved by /typesafe login is named as that key, and the notice never shows it", async () => {
