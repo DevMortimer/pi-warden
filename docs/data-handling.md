@@ -19,6 +19,8 @@ With consent, requests go to `https://api.typesafe.ai` (default) or `https://ope
 
 ## What stays on this machine
 
+With `typesafeBackend: "laya"`, every judge payload in the table above stays on this machine: the local judge server receives the same redacted requests and no key is configured. The remote backends are untouched by the setting.
+
 Default paths below are for Pi. On oh-my-pi, pi-warden uses `~/.omp/agent` instead of `~/.pi/agent`, but pi-typesafe's `auth.json` still defaults to `~/.pi/agent/pi-typesafe/`. `PI_CODING_AGENT_DIR` overrides both. One-time migration for existing oh-my-pi users: an interactive oh-my-pi session shows a notice once per machine, with the two paths filled in. It says to close all Pi and oh-my-pi sessions first (the SQLite database keeps write-ahead logs while a session is open), then run `{ [ ! -e "$HOME/.omp/agent/pi-warden" ] || mv "$HOME/.omp/agent/pi-warden" "$HOME/.omp/agent/pi-warden.before-migration"; } && cp -R "$HOME/.pi/agent/pi-warden" "$HOME/.omp/agent/pi-warden"` — the `mv` keeps the fresh data the new host created aside instead of deleting it — and copy the project file `.pi/pi-warden.json` to `.omp/pi-warden.json` (keep the original so Pi sessions in that project still read it).
 
 - The hold feedback log under `~/.pi/agent/pi-warden/holds/`, owner-only: one JSON line per judged call with tool, pattern ids, scores, level, mode, outcome, and the length of the agent's stated plan; never the command, prompt, or plan text. A redacted tool+path excerpt is included for auditing off-task and intent-mismatch. `"action": { "feedbackLog": false }` turns the file off.
