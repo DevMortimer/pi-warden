@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.74.0
+
 ### Added
 
 - `typesafeBackend` accepts `"commandcode"`: judgments go to api.commandcode.ai under `/provider/v1/systemone`, with the key from `COMMANDCODE_API_KEY` and the model `typesafe/jev`.
