@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.74.0
+
 ### Added
 
 - `"laya"` as a `typesafeBackend` value runs every judgment against a local Laya-MLX model instead of a remote Jev host. `src/laya-judge.ts` implements the `Judge` contract by POSTing the same `SystemOneRequest` to a local `/v1/systemone` endpoint — the wire shape the TypeSafe SDK uses — so requests and answers are unchanged and every guard works through the existing seam. No key, no model download, no Python subprocess: the endpoint is a long-running server the user starts themselves, and `/warden status` names it. Consent is still required (`/warden enable` shows a local dialog: nothing is sent to any server). A dead or failing endpoint behaves like any failing backend — per-request failures, then the judge cooldown, with a notice that says how to start the server.
