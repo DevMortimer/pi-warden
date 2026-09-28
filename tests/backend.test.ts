@@ -6,6 +6,7 @@ import { backendHost, disclosureFor, judgeOptions, keyEnvFor, resolveBackend } f
 test("resolveBackend: valid values pass through, junk falls back to typesafe", () => {
   assert.equal(resolveBackend("typesafe"), "typesafe");
   assert.equal(resolveBackend("openrouter"), "openrouter");
+  assert.equal(resolveBackend("laya"), "laya");
   assert.equal(resolveBackend(undefined), "typesafe");
   assert.equal(resolveBackend(null), "typesafe");
   assert.equal(resolveBackend(""), "typesafe");
@@ -16,6 +17,7 @@ test("resolveBackend: valid values pass through, junk falls back to typesafe", (
 test("backendHost returns the right host for each backend", () => {
   assert.equal(backendHost("typesafe"), "api.typesafe.ai");
   assert.equal(backendHost("openrouter"), "openrouter.ai");
+  assert.equal(backendHost("laya"), "this machine (local Laya-MLX)");
 });
 
 test("disclosureFor: typesafe returns the original text unchanged", () => {

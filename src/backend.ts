@@ -2,19 +2,25 @@ import type { TypeSafeOptions } from "pi-typesafe";
 import { DECISIONS_BACKENDS, DEFAULT_BACKEND } from "pi-typesafe";
 
 /** The judgment backend that receives pi-warden's Jev requests. */
-export type JudgmentBackend = "typesafe" | "openrouter";
+export type JudgmentBackend = "typesafe" | "openrouter" | "laya";
+
+/** The local judge: judged content never leaves this machine. */
+export const LAYA_BACKEND = "laya";
 
 /** Why no judge is available: consent not given, no key for the backend, a saved 401 or 403, or the request budget spent. */
 export type JudgmentsOffReason = "no_consent" | "no_key" | "key_rejected" | "budget";
 
 /** The host the consent disclosure names as the destination, without scheme: `api.typesafe.ai`, `openrouter.ai`. */
 export function backendHost(backend: JudgmentBackend): string {
+  if (backend === LAYA_BACKEND)
+    return "this machine (local Laya-MLX)";
   return new URL(DECISIONS_BACKENDS[backend].host).host;
 }
 
 /** The environment variable that carries the backend's key, for messages that tell the user what to set. */
 export function keyEnvFor(backend: JudgmentBackend): string {
-  return DECISIONS_BACKENDS[backend].keyEnv ?? DECISIONS_BACKENDS[DEFAULT_BACKEND].keyEnv ?? "TYPESAFE_API_KEY";
+  const config = backend === LAYA_BACKEND ? undefined : DECISIONS_BACKENDS[backend];
+  return config?.keyEnv ?? DECISIONS_BACKENDS[DEFAULT_BACKEND].keyEnv ?? "TYPESAFE_API_KEY";
 }
 
 /** Whether the backend takes the TypeSafe key, the only one `/typesafe login` stores; pi-typesafe's `usesTypesafeKey`, which its package does not export. */
@@ -35,11 +41,11 @@ export function judgeOptions(config: { maxRequests: number; timeoutMs: number; t
   return {
     maxRequests: config.maxRequests,
     timeoutMs: config.timeoutMs,
-    ...(config.typesafeBackend === DEFAULT_BACKEND ? {} : { backend: config.typesafeBackend }),
+    ...(config.typesafeBackend === DEFAULT_BACKEND || config.typesafeBackend === LAYA_BACKEND ? {} : { backend: config.typesafeBackend }),
   };
 }
 
 /** Resolve the effective backend from a raw config value; invalid values fall back to "typesafe". */
 export function resolveBackend(raw: unknown): JudgmentBackend {
-  return raw === "typesafe" || raw === "openrouter" ? raw : DEFAULT_BACKEND;
+  return raw === "typesafe" || raw === "openrouter" || raw === LAYA_BACKEND ? raw : DEFAULT_BACKEND;
 }
