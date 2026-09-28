@@ -11,7 +11,7 @@ import * as tuiModule from "@earendil-works/pi-tui";
 type MouseRegionConstructor = new (child: ReturnType<typeof statusWidget>, onMouse: (event: { type: string; button: string }) => { handled: boolean } | undefined) => import("@earendil-works/pi-tui").Component;
 const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ MouseRegion: MouseRegionConstructor }>).MouseRegion;
 import { authState, createTypeSafe, describeAuth } from "pi-typesafe";
-import type { TypeSafe } from "pi-typesafe";
+import type { Judge, TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
 import { backendHost, disclosureFor, judgeOptions, keyEnvFor, loginStoresKey, resolveBackend } from "./backend.js";
 import type { JudgmentBackend, JudgmentsOffReason } from "./backend.js";
@@ -69,6 +69,7 @@ import type { IndexFile } from "./index-cmd.js";
 import type { IntegrationErrorCode } from "pi-typesafe";
 
 import { classifyJudgeError, cooldownFailureKind, JudgeCooldown } from "./judge-cooldown.js";
+import { LayaJudge } from "./laya-judge.js";
 import type { CooldownEvent } from "./judge-cooldown.js";
 import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
@@ -380,7 +381,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
   // check; there is no module state. A question-wording change breaks the hash test and the gate
   // fail-closes (no delivery) until the policy is re-measured.
   const consciencePolicy = CONSCIENCE_BETA_POLICY;
-  let client: TypeSafe | undefined;
+  let client: TypeSafe | LayaJudge | undefined;
   const cooldown = new JudgeCooldown();
   let judgeConfig: WardenConfig | undefined;
   /** Where cooldown notices go; unset headless, where a failure is already silent (see noteError). */
@@ -566,6 +567,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   const judgmentsOffReason = (config: WardenConfig): JudgmentsOffReason | undefined => {
     if (!consentGiven(config)) return "no_consent";
     if (budgetExhausted) return "budget";
+    // The local judge needs no key; a dead server surfaces as per-request failures and the cooldown.
+    if (config.typesafeBackend === "laya") return undefined;
     const auth = authState({ backend: config.typesafeBackend });
     if (auth.usable) return undefined;
     // No key in effect, or one whose last request came back 401 or 403.
@@ -581,22 +584,23 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // The budget has its own notice in noteError.
     if (reason === undefined || reason === "budget" || judgmentsReported.has(reason)) return;
     judgmentsReported.add(reason);
-    const auth = reason === "key_rejected" ? authState({ backend: config.typesafeBackend }) : undefined;
+    const auth = reason === "key_rejected" && config.typesafeBackend !== "laya" ? authState({ backend: config.typesafeBackend }) : undefined;
     judgmentsNotify?.(judgmentsOffText(reason, config.typesafeBackend, judgmentsHeadless, auth?.kind === "environment" ? auth.keyName : undefined));
   };
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
   /** A consent flag is not proof that judgments happen; check the key state for the chosen backend. */
-  const judgeFor = (config: WardenConfig): TypeSafe | undefined => {
+  const judgeFor = (config: WardenConfig): TypeSafe | LayaJudge | undefined => {
     const off = judgmentsOffReason(config);
     noteJudgments(config, off);
     if (off) return undefined;
     judgeConfig = config;
     // Absent, exactly as with no judge configured, so no guard needs to know a cooldown exists.
     if (cooldown.active()) { stats.cooldownSkips++; return undefined; }
+    if (config.typesafeBackend === "laya") return client ??= watched(new LayaJudge());
     return client ??= watched(createTypeSafe(judgeOptions(config)));
   };
   /** Every guard reaches the backend through `evaluate`, so this one seam sees each failure and each success. */
-  const watched = (typesafe: TypeSafe): TypeSafe => new Proxy(typesafe, {
+  const watched = <T extends Judge>(judge: T): T => new Proxy(judge, {
     get(target, prop, receiver) {
       if (prop !== "evaluate") return Reflect.get(target, prop, receiver);
       return async (...args: Parameters<TypeSafe["evaluate"]>) => {
@@ -618,7 +622,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const seconds = Math.round(event.ms / 1000);
     const remedy = event.kind === "auth"
       ? ` Set ${keyEnvFor(judgeConfig?.typesafeBackend ?? "typesafe")} or run /warden enable.`
-      : event.kind === "configuration" ? " /warden status shows the backend setup." : "";
+      : event.kind === "configuration" ? " /warden status shows the backend setup."
+        : judgeConfig?.typesafeBackend === "laya" ? " Start the local judge server (http://127.0.0.1:8700 by default) and retry." : "";
     noticeUi.notify(`warden: judgments paused for ${seconds}s after a ${event.kind} failure; pattern checks run alone until then.${remedy}`, "warning");
   };
   const noteError = (ctx: ExtensionContext, message: string, code: string | undefined) => {
@@ -2436,7 +2441,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
       try {
         const config = configFor(ctx);
         if (action === "status") {
-          const auth = describeAuth(authState({ backend: config.typesafeBackend }));
+          const local = config.typesafeBackend === "laya";
+          const auth = config.typesafeBackend === "laya"
+            ? { level: "info" as const, text: "judge: local Laya-MLX (127.0.0.1:8700) — no key, nothing leaves this machine" }
+            : describeAuth(authState({ backend: config.typesafeBackend }));
           const source = consentSource(config);
           const usage = client?.getUsage();
           const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.rules.enabled && "rules", config.context.enabled && "context", config.runaway.enabled && "runaway", config.subagent.enabled && "subagent triage", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
@@ -2445,7 +2453,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
             ? `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, not yet measurable (${ls.allowed} allowed).`
             : `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, ${ls.labeled} labeled, ${ls.declined + ls.replanned} stood (${ls.declined + ls.replanned}/${ls.labeled}), ${ls.allowed} allowed (${ls.accepted} accepted, ${ls.regretted} regretted).`;
           report([
-            `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}${config.typesafeBackend !== "typesafe" ? ` (${config.typesafeBackend})` : ""}; ${auth.text}`,
+            `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; ${local ? "judgments" : "TypeSafe judgments"} ${source ? `consented via ${source}` : "not consented (run /warden enable)"}${config.typesafeBackend !== "typesafe" ? ` (${config.typesafeBackend})` : ""}; ${auth.text}`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan (${stats.offPlanTraceOnly} trace-only), ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors, ${stats.cooldownSkips} checks without Jev during a judge cooldown; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}. Steer budget: ${config.steerBudget === 0 ? "off" : `${config.steerBudget} per run`}.`,
             formatSteers(stats),
             `${formatMuted(steerStats.muted(), config.steers)}${stats.steersMuted ? ` This session: ${stats.steersMuted} steer${stats.steersMuted === 1 ? "" : "s"} kept in the trace only.` : ""}`,
@@ -2687,6 +2695,15 @@ export default function wardenExtension(host: ExtensionAPI): void {
           return;
         }
         if (action === "enable") {
+          if (config.typesafeBackend === "laya") {
+            if (!ctx.hasUI) { report("Local Laya-MLX judgments need no key. For headless runs set PI_WARDEN_ENABLED=1 — judged content never leaves this machine.", "info"); return; }
+            if (!await ctx.ui.confirm("Enable local Laya-MLX judgments for pi-warden?", "Judged content stays on this machine; nothing is sent to any server.")) return;
+            const path = setUserSetting("typesafe", true, dirs);
+            client = undefined;
+            budgetExhausted = false;
+            report(`Local Laya-MLX judgments enabled and saved to ${path}. No key, no network. This stays on in new sessions until /warden disable.`);
+            return;
+          }
           if (!ctx.hasUI) { report(`Consent needs an interactive session. For headless runs set PI_WARDEN_ENABLED=1 and ${keyEnvFor(config.typesafeBackend)} explicitly.`, "warning"); return; }
           if (!await ctx.ui.confirm("Enable TypeSafe judgments for pi-warden?", disclosure)) return;
           // One flow: consent, then a key if none is configured yet. TypeSafe prompts, verifies, and stores the key for every
@@ -2807,7 +2824,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
         }
         if (action === "test") {
           const judge = judgeFor(config);
-          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${backendHost(config.typesafeBackend)} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
+          const where = config.typesafeBackend === "laya"
+            ? "runs locally against Laya-MLX — no network, no charges."
+            : `goes to ${backendHost(config.typesafeBackend)} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`;
+          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Prepare the demo environment") ${where}`)) return;
           const verdict = await evaluateAction(
             { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge, rules: config.rules },
