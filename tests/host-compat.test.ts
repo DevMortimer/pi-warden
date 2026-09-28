@@ -19,11 +19,13 @@ function fakeHost(extras: Record<string, unknown> = {}) {
     let result: unknown;
     let error: unknown;
     // omp's per-handler timeout: the host stops awaiting a handler that runs too long and
-    // advances to the next one; the handler's promise keeps running.
+    // advances to the next one; the handler's promise keeps running. The timer stays
+    // referenced for the dispatch: an unref'd timeout is not a loop wakeup, so an awaited
+    // emit whose handler promise stays pending would drain the loop before the timeout can
+    // advance to the next handler. Every emit clears the timer before it returns.
     let onTimeout = (): void => {};
     const timeout = new Promise<void>(resolve => { onTimeout = resolve; });
     const timer = setTimeout(onTimeout, handlerTimeoutMs ?? 2 ** 30);
-    timer.unref?.();
     const run = (handler: Handler) => Promise.race([Promise.resolve(handler(payload, ctx)), timeout]);
     for (const handler of handlers.get(event) ?? []) {
       try { result = await run(handler); } catch (failure) { error ??= failure; }
