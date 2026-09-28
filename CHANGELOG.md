@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.73.1
+
+### Tests
+
+- `tests/host-compat.test.ts`: the fake host's per-handler timeout stays referenced while a dispatch runs and is cleared before `emit()` returns, so an awaited `emit()` always has a loop wakeup. The timer was unref'd, so on Node 22 the event loop could drain mid-dispatch and node:test cancelled the rest of the file with `Promise resolution is still pending but the event loop has already resolved`.
+
 ## 0.73.0
 
 ### Fixed
