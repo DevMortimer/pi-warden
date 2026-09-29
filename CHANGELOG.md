@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.80.0
+
 ### Changed
 
 - Rule values are never silently weakened. Every rule kind reads `deny` and `block` as the same value. An unknown `severity` in a command rule, or an unknown `action` in a path or arming rule, used to fall back to the weakest level (`warn`, `note`, or dropping the arming rule); it now applies at `confirm` (a deny-list rule stays `deny`), and a config warning names the rule, the value, and the valid values.
