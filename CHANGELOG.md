@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.75.0
+
+### Changed
+
+- The default `action.irreversible.confirm` (the hold threshold) is 0.9 instead of 0.7, so a judge-only hold waits for the confidence the recorded action-guard corpus shows is safe: the judge's error rate falls from 15% below confidence 0.8 to under 1% above it, and a 0.9 cutoff chosen on one half of the corpus removed about 52 false alarms on the other half without losing a true catch. A call the judge scores 0.5 to 0.9 now warns instead of holding; pattern holds and user or project overrides are unchanged. Restore the old behaviour with `"action": { "irreversible": { "confirm": 0.7 } }`.
+
 ## 0.74.1
 
 ### Fixed

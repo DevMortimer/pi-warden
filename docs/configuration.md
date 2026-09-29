@@ -21,7 +21,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "enabled": true,
     "tools": ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file", "write", "edit"],
     "failOpen": true,
-    "irreversible": { "warn": 0.5, "confirm": 0.7 },
+    "irreversible": { "warn": 0.5, "confirm": 0.9 },
     "offTask": { "warn": 0.6, "steer": 0.85 },
     "intentMismatch": 0.9,
     "visibleMismatch": 0.8,
@@ -85,7 +85,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `timeoutMs` | Per-request timeout. On timeout the call is allowed with a warning when `action.failOpen` is true. |
 | `maxRequests` | Per-session request budget. When spent, pi-warden says so once and continues with offline checks. |
 | `action.tools` | Tools the action guard inspects. Add your own shell-like tools here. |
-| `action.irreversible` | `warn` and `confirm` (hold) thresholds on P(irreversible). |
+| `action.irreversible` | `warn` and `confirm` (hold) thresholds on P(irreversible). Defaults `warn` 0.5 and `confirm` 0.9. The 0.9 hold waits for the confidence at which the judge stops being wrong: on the recorded action-guard corpus the judge errs on 15% of calls below confidence 0.8 and under 1% above it, and a 0.9 cutoff removed about 52 false alarms on a held-out half of the corpus without losing a true catch. Calls the judge scores 0.5 to 0.9 warn instead of holding. See [guards.md](guards.md#irreversible-hold-threshold-2026-09-29-held-out-split). |
 | `action.offTask` | `warn` and `steer` thresholds on P(off-task). Off-task never holds. |
 | `action.intentMismatch` | P(call differs from the agent's stated plan) that warns and tells the agent, on calls that can change something. |
 | `action.visibleMismatch` | Lower mismatch threshold for commands whose effect is visible outside the working tree (commit, push, publish, install, launch). |
