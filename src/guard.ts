@@ -2211,9 +2211,11 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   const visibleDrift = judgment.intentMismatch !== undefined && (judgment.visible ?? 0) >= VISIBLE_THRESHOLD && judgment.intentMismatch >= config.visibleMismatch;
   const mismatch = judgment.intentMismatch !== undefined && canChange && (judgment.intentMismatch >= config.intentMismatch || visibleDrift);
   // The steer reaches the agent after the call ran (275 of 275 recorded steers), and a strict course change followed 8% of
-  // them. A call with no visible effect keeps the finding in the trace only; a visible one still tells the agent. Visible
-  // is either rule: the code's (commit, push, merge, tag, reset, pull request, release, publish) or the judge's `visible`
-  // score at 0.8, which also covers an install, a launched program, or a message sent from a script.
+  // them; blind labels of 140 sampled calls found that of the 37 steers that would reach the agent, 36 were calls the plan
+  // or the user's latest request had asked for, so the default keeps every mismatch in the trace only ("all"). Under
+  // "invisible" only a call with a visible effect tells the agent: the code's (commit, push, merge, tag, reset, pull
+  // request, release, publish) or the judge's `visible` score at 0.8, which also covers an install, a launched program, or
+  // a message sent from a script.
   const visibleEffect = (view?.shell === true && isVisibleCommand(view.command)) || (judgment.visible ?? 0) >= VISIBLE_THRESHOLD;
   const intentTraceOnly = mismatch && (config.intentTraceOnly === "all" || (config.intentTraceOnly === "invisible" && !visibleEffect));
   let intentTraceOnlyReasonIndex: number | undefined;
