@@ -129,6 +129,10 @@ Secrets and unshown paths are stripped before anything leaves your machine. The 
 - **Chunk scoring in the context filter:** GPT Researcher's [context filter](https://docs.gptr.dev/docs/gpt-researcher/gptr/context-filter).
 - **The judge:** [Jev](https://typesafe.ai) by TypeSafe.
 
+## Versioning
+
+From 1.0, pi-warden follows semver for: the documented config keys and their defaults (except `compaction.*`, `context.filter.*`, and `conscience.*`, which are experimental or beta); the `/warden` commands and their arguments; the `warden_remember`, `warden_loops`, and `warden_recall` tools; the documented `PI_WARDEN_*` environment variables; the widget template tokens; and the exports named in [docs/extension-authors.md](docs/extension-authors.md). The trace file format, the files in pi-warden's data folder, session message types, and every other export are internal and may change in any release.
+
 ## Docs
 
 [Guards](docs/guards.md) · [Configuration](docs/configuration.md) · [Commands](docs/commands.md) · [FAQ](docs/faq.md) · [Data handling](docs/data-handling.md) · [Examples](docs/examples.md)

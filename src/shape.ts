@@ -48,13 +48,13 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     steerVisible: source.steerVisible ?? false,
     notices: source.notices ?? false,
     steerBudget: typeof source.steerBudget === "number" && source.steerBudget >= 0 ? source.steerBudget : 3,
-    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "all", shouldProceed: { hold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
+    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "all", shouldProceed: { threshold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false }),
     rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
-    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 3, maxKeptChars: 6000, timeoutMs: 4000 } }),
+    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
     // A stale config module leaves the judge trusted: never pausing is today's behaviour, not a new failure mode.
@@ -65,16 +65,18 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     steers: section("steers", { adaptive: false, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 }),
     // A missing section turns the notes off: the guard is new, so nothing it says was expected.
     waste: section("waste", { ...off, tip: false, every: 20, sleep: false, paging: false, search: false, recheck: false }),
-    learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 }),
+    learning: section("learning", { patternAnalysis: true, retentionDays: 365 }),
     prefs: section("prefs", { enabled: false, inject: false }),
     // A missing section keeps Pi's own compaction summary, as before the section existed.
     compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
-    conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }),
+    // An older config module collects no warnings.
+    warnings: Array.isArray(source.warnings) ? source.warnings : [],
+    conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70 }),
   };
   // A missing/invalid runtime section falls back to disabled conscience, no loads, and the existing update warning.
   if (typeof config.conscience !== "object" || config.conscience === null) {
     missing.push("conscience");
-    config.conscience = { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 };
+    config.conscience = { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70 };
   }
   if (typeof config.conscience.skills !== "object" || config.conscience.skills === null) {
     config.conscience = { ...config.conscience, skills: { mode: "recommend", exclude: [] } };
@@ -103,14 +105,19 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.context.dedupeRuns !== "boolean") config.context = { ...config.context, dedupeRuns: false };
   if (typeof config.context.dedupeMessages !== "boolean") config.context = { ...config.context, dedupeMessages: false };
   // The context filter was added inside the context section later than the section itself; an older config module leaves it undefined and the filter stays off.
-  if (typeof config.context.filter !== "object" || config.context.filter === null) config.context = { ...config.context, filter: { ...off, chunkChars: 2000, minScore: 3, maxKeptChars: 6000, timeoutMs: 4000 } };
+  if (typeof config.context.filter !== "object" || config.context.filter === null) config.context = { ...config.context, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } };
   if (typeof config.widget.panelWidth !== "string" && typeof config.widget.panelWidth !== "number") config.widget = { ...config.widget, panelWidth: "40%" };
   // The feedback log flag was added inside the action section later than the section itself; an older config module leaves it undefined and the log stays on.
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };
   if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.9 };
   if (typeof config.action.visibleMismatch !== "number") config.action = { ...config.action, visibleMismatch: 0.8 };
   if (config.action.intentTraceOnly !== "invisible" && config.action.intentTraceOnly !== "all" && config.action.intentTraceOnly !== "none") config.action = { ...config.action, intentTraceOnly: "all" };
-  if (typeof config.action.shouldProceed !== "object" || config.action.shouldProceed === null || typeof config.action.shouldProceed.hold !== "number") config.action = { ...config.action, shouldProceed: { hold: 0.6, steer: false } };
+  if (typeof config.action.shouldProceed !== "object" || config.action.shouldProceed === null) config.action = { ...config.action, shouldProceed: { threshold: 0.6, steer: false } };
+  // 1.0 renamed shouldProceed.hold to shouldProceed.threshold; an older config module still delivers `hold`.
+  if (typeof config.action.shouldProceed.threshold !== "number") {
+    const hold = (config.action.shouldProceed as { hold?: unknown }).hold;
+    config.action = { ...config.action, shouldProceed: { threshold: typeof hold === "number" ? hold : 0.6, steer: config.action.shouldProceed.steer } };
+  }
   if (typeof config.action.shouldProceed.steer !== "boolean") config.action = { ...config.action, shouldProceed: { ...config.action.shouldProceed, steer: false } };
   if (typeof config.action.escalationThreshold !== "number") config.action = { ...config.action, escalationThreshold: 0.85 };
   if (config.action.floor !== "level" && config.action.floor !== "evidence") config.action = { ...config.action, floor: "evidence" };

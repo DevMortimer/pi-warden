@@ -534,6 +534,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let exemptReported = false;
   let inertReported = false;
   let unparseableReported = false;
+  // Config values that were not applied as written: said once per session; /warden status repeats them.
+  let configWarningsReported = false;
   const configFor = (ctx: ExtensionContext | ExtensionCommandContext): WardenConfig => {
     const { config, missing } = guardCurrentSections(completeConfig(loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted(), dirs })));
     if (missing.length && !shapeReported) {
@@ -559,6 +561,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
       // Separate flag so an operator with both an inert path rule and a bad arming regex sees both warnings.
       unparseableReported = true;
       const text = `warden: arming rules ${unparseable.join(", ")} have an invalid command regex; the rules will never fire`;
+      if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
+    }
+    const warnings = config.warnings ?? [];
+    if (warnings.length && !configWarningsReported) {
+      configWarningsReported = true;
+      const text = `warden: config warnings: ${warnings.join("; ")}`;
       if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
     }
     arming.updateRules(config.action.armingRules);
@@ -964,6 +972,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
     noticeUi = ctx.hasUI ? ctx.ui : undefined;
+    // Each session hears the config warnings once, from the configFor call below.
+    configWarningsReported = false;
     // The one-time migration notice runs before any call creates <agentDir>/pi-warden (the
     // initSchema below does). Interactive sessions only: a headless session neither consumes the
     // notice nor injects a cp instruction into the agent, and the marker records what was shown.
@@ -2559,6 +2569,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
             ...(config.action.armingRules.length > 0 ? [`Arming: ${arming.statusLine() || "no rules armed"}.`] : []),
             `Desktop notifications: ${config.notify.enabled ? `on (${config.notify.command.length ? `command ${config.notify.command[0]}` : (await (notifier ??= detectNotifier())) ?? "no notifier found on this machine"}; cooldown ${config.notify.cooldownMs} ms)` : "off (\"notify\": { \"enabled\": true } in the config turns them on)"}.`,
             `Config: ${userConfigPath(dirs)}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd, dirs)}` : ""}.`,
+            ...(config.warnings?.length ? [`Config warnings: ${config.warnings.join("; ")}.`] : []),
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
             `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode; each toggles the sidebar). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,
           ].join(" "));

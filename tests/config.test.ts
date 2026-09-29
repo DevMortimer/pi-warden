@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { ArmingTracker } from "../src/arming.js";
 import { applyProjectOverrides, applyUserOverrides, defaultConfig, loadConfig, setUserSetting, userConfigPath } from "../src/config.js";
+import { completeConfig } from "../src/shape.js";
 
 let temporary: string;
 let project: string;
@@ -40,9 +42,9 @@ test("defaults: guards on, steer mode, TypeSafe consent off, nudges on", () => {
 
 test("should-proceed steer parser accepts booleans and defaults invalid or missing values", () => {
   const base = defaultConfig();
-  assert.deepEqual(base.action.shouldProceed, { hold: 0.6, steer: false });
+  assert.deepEqual(base.action.shouldProceed, { threshold: 0.6, steer: false });
   for (const apply of [applyUserOverrides, applyProjectOverrides]) {
-    assert.deepEqual(apply(base, { action: { shouldProceed: { steer: true, hold: 0.3 } } }).action.shouldProceed, { hold: 0.3, steer: true });
+    assert.deepEqual(apply(base, { action: { shouldProceed: { steer: true, threshold: 0.3 } } }).action.shouldProceed, { threshold: 0.3, steer: true });
     for (const steer of [undefined, "true", 1, null, false]) {
       assert.equal(apply(base, { action: { shouldProceed: { steer } } }).action.shouldProceed.steer, false);
     }
@@ -108,8 +110,9 @@ test("project overrides cannot grant consent, change the mode, or raise budgets"
   assert.equal(config.mode, "steer");
   assert.equal(config.maxRequests, 500);
   assert.equal(config.action.timeoutMs, 5000);
-  assert.deepEqual(config.action.tools, ["bash"]);
-  assert.equal(config.action.irreversible.confirm, 0.95, "a project override still moves the hold threshold");
+  assert.deepEqual(config.action.tools, defaultConfig().action.tools, "a project cannot remove guarded tools");
+  assert.equal(config.action.irreversible.confirm, 0.9, "nor raise the hold threshold");
+  assert.equal(applyProjectOverrides(defaultConfig(), { action: { irreversible: { confirm: 0.8 } } }).action.irreversible.confirm, 0.8, "a project override still lowers the hold threshold");
   assert.equal(config.stuck.enabled, false);
   const quiet = applyProjectOverrides(defaultConfig(), { notify: { enabled: false, command: ["evil"] } });
   assert.equal(quiet.notify.enabled, false, "a project may switch notifications off");
@@ -130,8 +133,8 @@ test("a trusted project action block cannot wipe the user's command rules", () =
     commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b" }],
     exemptRules: ["sudo"],
   } });
-  const config = applyProjectOverrides(userBase, { action: { tools: ["bash", "write"] } });
-  assert.deepEqual(config.action.tools, ["bash", "write"], "the project override applied where it may");
+  const config = applyProjectOverrides(userBase, { action: { tools: ["bash", "write", "read"] } });
+  assert.deepEqual(config.action.tools, [...defaultConfig().action.tools, "read"], "the project override applied where it may: it added read");
   assert.equal(config.action.commandRules.length, 1, "user command rules survive the project override");
   assert.equal(config.action.commandRules[0]!.id, "kubectl-delete");
   assert.equal(config.action.commandDenyRules.length, 1, "user deny rules survive the project override");
@@ -367,4 +370,171 @@ test("prefs: on for /warden prefs, injection on by default; invalid values fall 
   assert.deepEqual(applyUserOverrides(defaultConfig(), { prefs: { inject: false } }).prefs, { enabled: true, inject: false });
   assert.deepEqual(applyUserOverrides(defaultConfig(), { prefs: { enabled: "no", inject: 1 } }).prefs, { enabled: true, inject: true });
   assert.deepEqual(applyProjectOverrides(defaultConfig(), { prefs: { enabled: false } }).prefs, { enabled: false, inject: true });
+});
+
+test("every rule kind reads deny and block as the same value, with no warning", () => {
+  const config = applyUserOverrides(defaultConfig(), { action: {
+    commandRules: [{ id: "c-block", pattern: "a", severity: "block" }, { id: "c-deny", pattern: "b", severity: "deny" }],
+    commandDenyRules: [{ id: "d-block", pattern: "c", severity: "block" }],
+    pathRules: [{ id: "p-deny", paths: ["~/.ssh/*"], action: "deny" }, { id: "p-block", paths: ["~/.aws/*"], action: "block" }],
+    armingRules: [
+      { id: "a-deny", when: { edited: ["**/x"] }, arms: { command: "apply" }, action: "deny" },
+      { id: "a-block", when: { edited: ["**/y"] }, arms: { command: "apply" }, action: "block" },
+    ],
+  } });
+  assert.deepEqual(config.action.commandRules.map(rule => rule.severity), ["deny", "deny"]);
+  assert.equal(config.action.commandRules[0]!.action, undefined, "a deny rule carries no dialog action");
+  assert.deepEqual(config.action.commandDenyRules.map(rule => rule.severity), ["deny"]);
+  assert.deepEqual(config.action.pathRules.map(rule => rule.action), ["block", "block"]);
+  assert.deepEqual(config.action.armingRules.map(rule => rule.action), ["block", "block"]);
+  assert.deepEqual(config.warnings, []);
+});
+
+test("an unknown rule value applies at confirm, never weaker, and warns once naming the rule, the value, and the valid values", () => {
+  const config = applyUserOverrides(defaultConfig(), { action: {
+    commandRules: [{ id: "c-typo", pattern: "a", severity: "blok" }, { id: "c-missing", pattern: "b" }],
+    commandDenyRules: [{ id: "d-typo", pattern: "c", severity: "stop" }],
+    pathRules: [{ id: "p-typo", paths: ["~/.ssh/*"], action: "forbid" }, { id: "p-missing", paths: ["~/.aws/*"] }],
+    armingRules: [{ id: "a-typo", when: { edited: ["**/x"] }, arms: { command: "apply", for: "5m" }, action: "halt" }],
+  } });
+  assert.equal(config.action.commandRules[0]!.severity, "confirm", "an unknown severity holds instead of warning");
+  assert.equal(config.action.commandRules[0]!.action, "dialog", "the hold is one the user can approve");
+  assert.equal(config.action.commandRules[1]!.severity, "warn", "a missing severity keeps the documented default");
+  assert.equal(config.action.commandDenyRules[0]!.severity, "deny", "a deny rule never drops below its own list's level");
+  assert.equal(config.action.pathRules[0]!.action, "confirm", "an unknown path action holds instead of noting");
+  assert.equal(config.action.pathRules[1]!.action, "note", "a missing action keeps the documented default");
+  assert.equal(config.action.armingRules.length, 1, "an unknown arming action no longer drops the rule");
+  assert.equal(config.action.armingRules[0]!.action, "confirm");
+  assert.deepEqual(config.warnings, [
+    'command rule "c-typo": severity "blok" is not one of warn, confirm, deny, block; the rule applies at confirm',
+    'command rule "d-typo": severity "stop" is not one of warn, confirm, deny, block; the rule applies at deny',
+    'path rule "p-typo": action "forbid" is not one of note, warn, confirm, block, deny; the rule applies at confirm',
+    'arming rule "a-typo": action "halt" is not one of confirm, hold, block, deny; the rule applies at confirm',
+  ]);
+  assert.deepEqual(defaultConfig().warnings, [], "the defaults carry no warning");
+});
+
+test("arming durations: a number is milliseconds, a string takes a unit or means minutes, and surprises warn", () => {
+  const rule = (id: string, forValue: unknown) => ({ id, when: { edited: ["**/x"] }, arms: { command: "apply", for: forValue }, action: "confirm" });
+  const config = applyUserOverrides(defaultConfig(), { action: { armingRules: [
+    rule("ms-number", 30), rule("bare-string", "30"), rule("hours", "1.5h"), rule("half-second", "500ms"), rule("seconds", "45s"),
+  ] } });
+  assert.deepEqual(config.action.armingRules.map(entry => entry.arms.for), [30, 1_800_000, 5_400_000, 500, 45_000]);
+  assert.deepEqual(config.warnings, [
+    'arming rule "ms-number": arms for 30 ms, under one second; a number in arms.for is milliseconds, "10m" is ten minutes',
+    'arming rule "bare-string": arms.for "30" has no unit and is read as minutes; write it with ms, s, m, or h',
+    'arming rule "half-second": arms for 500 ms, under one second; a number in arms.for is milliseconds, "10m" is ten minutes',
+  ]);
+});
+
+test("arming durations: the tracker reads a string duration the same way the config does", () => {
+  let now = 0;
+  const tracker = new ArmingTracker([{ id: "bare", when: { edited: ["**/x.yaml"] }, arms: { command: "apply", for: "30" }, action: "confirm" }], () => now);
+  tracker.arm("write", "/p/x.yaml", "/p");
+  now = 29 * 60_000;
+  assert.equal(tracker.checkArmed("apply").length, 1, "a unitless string is minutes in the tracker too");
+  now = 31 * 60_000;
+  assert.equal(tracker.checkArmed("apply").length, 0);
+});
+
+test("project file: the action guard and security keys take a stricter value and ignore a weaker one with one warning each", () => {
+  const cases: Array<{ key: string; raw: Record<string, unknown>; read: (config: ReturnType<typeof defaultConfig>) => unknown; user?: Record<string, unknown>; tighter: unknown; weaker: Record<string, unknown>; kept: unknown }> = [
+    { key: "enabled", raw: { enabled: true }, user: { enabled: false }, read: c => c.enabled, tighter: true, weaker: { enabled: false }, kept: true },
+    { key: "action.enabled", raw: { action: { enabled: true } }, user: { action: { enabled: false } }, read: c => c.action.enabled, tighter: true, weaker: { action: { enabled: false } }, kept: true },
+    { key: "security.enabled", raw: { security: { enabled: true } }, user: { security: { enabled: false } }, read: c => c.security.enabled, tighter: true, weaker: { security: { enabled: false } }, kept: true },
+    { key: "action.irreversible.warn", raw: { action: { irreversible: { warn: 0.3 } } }, read: c => c.action.irreversible.warn, tighter: 0.3, weaker: { action: { irreversible: { warn: 0.6 } } }, kept: 0.5 },
+    { key: "action.irreversible.confirm", raw: { action: { irreversible: { confirm: 0.8 } } }, read: c => c.action.irreversible.confirm, tighter: 0.8, weaker: { action: { irreversible: { confirm: 0.95 } } }, kept: 0.9 },
+    { key: "security.threshold", raw: { security: { threshold: 0.5 } }, read: c => c.security.threshold, tighter: 0.5, weaker: { security: { threshold: 0.9 } }, kept: 0.7 },
+    { key: "action.failOpen", raw: { action: { failOpen: false } }, user: { action: { failOpen: false } }, read: c => c.action.failOpen, tighter: false, weaker: { action: { failOpen: true } }, kept: false },
+  ];
+  for (const { key, raw, user, read, tighter, weaker, kept } of cases) {
+    const userBase = applyUserOverrides(defaultConfig(), user ?? {});
+    const stricter = applyProjectOverrides(userBase, raw);
+    assert.equal(read(stricter), tighter, `${key}: the stricter project value is taken`);
+    assert.deepEqual(stricter.warnings, [], `${key}: no warning for a stricter value`);
+    // Weaker is measured against the user's value: for the switches and failOpen that is the default (on, closed).
+    const weakerBase = key === "action.failOpen" ? userBase : defaultConfig();
+    const ignored = applyProjectOverrides(weakerBase, weaker);
+    assert.equal(read(ignored), kept, `${key}: the weaker project value is ignored`);
+    assert.equal(ignored.warnings.length, 1, `${key}: one warning`);
+    assert.match(ignored.warnings[0]!, new RegExp(`^project file: ${key.replace(/\./g, "\\.")} `));
+  }
+  // A project on a user file that already failed open changes nothing and says nothing.
+  assert.deepEqual(applyProjectOverrides(defaultConfig(), { action: { failOpen: true } }).warnings, []);
+});
+
+test("project file: action.tools may add a tool but a left-out tool stays guarded, with one warning", () => {
+  const added = applyProjectOverrides(defaultConfig(), { action: { tools: [...defaultConfig().action.tools, "read"] } });
+  assert.deepEqual(added.action.tools, [...defaultConfig().action.tools, "read"]);
+  assert.deepEqual(added.warnings, []);
+  const shrunk = applyProjectOverrides(defaultConfig(), { action: { tools: [] } });
+  assert.deepEqual(shrunk.action.tools, defaultConfig().action.tools, "an empty list removes nothing");
+  assert.deepEqual(shrunk.warnings, [`project file: action.tools leaves out ${defaultConfig().action.tools.join(", ")}; a project file may add tools but not remove them, so they stay guarded`]);
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { action: { tools: ["bash"] } }).action.tools, ["bash"], "the user file still sets the list");
+});
+
+test("project file: other guards stay tunable both ways, and the user file is never limited", () => {
+  const loose = applyProjectOverrides(defaultConfig(), { stuck: { enabled: false }, rules: { threshold: 0.95 }, action: { offTask: { warn: 0.9, steer: 0.95 } } });
+  assert.equal(loose.stuck.enabled, false);
+  assert.equal(loose.rules.threshold, 0.95);
+  assert.deepEqual(loose.action.offTask, { warn: 0.9, steer: 0.95 });
+  assert.deepEqual(loose.warnings, []);
+  const user = applyUserOverrides(defaultConfig(), { enabled: false, action: { enabled: false, failOpen: true, irreversible: { warn: 0.8, confirm: 0.99 } }, security: { enabled: false, threshold: 0.9 } });
+  assert.equal(user.enabled, false);
+  assert.equal(user.action.enabled, false);
+  assert.deepEqual(user.action.irreversible, { warn: 0.8, confirm: 0.99 });
+  assert.deepEqual([user.security.enabled, user.security.threshold], [false, 0.9]);
+  assert.deepEqual(user.warnings, []);
+});
+
+test("project warnings follow the user file's own warnings", () => {
+  const user = applyUserOverrides(defaultConfig(), { action: { commandRules: [{ id: "x", pattern: "x", severity: "nope" }] } });
+  const project = applyProjectOverrides(user, { security: { enabled: false } });
+  assert.equal(project.warnings.length, 2);
+  assert.match(project.warnings[0]!, /^command rule "x"/);
+  assert.match(project.warnings[1]!, /^project file: security\.enabled false is ignored/);
+});
+
+test("learning.retentionDays 0 keeps every record, as documented; invalid values keep the default", () => {
+  assert.equal(applyUserOverrides(defaultConfig(), { learning: { retentionDays: 0 } }).learning.retentionDays, 0);
+  assert.equal(applyUserOverrides(defaultConfig(), { learning: { retentionDays: 30 } }).learning.retentionDays, 30);
+  for (const junk of [-1, 1.5, "0", null]) {
+    assert.equal(applyUserOverrides(defaultConfig(), { learning: { retentionDays: junk } }).learning.retentionDays, 365, JSON.stringify(junk));
+  }
+});
+
+test("action.shouldProceed.hold, the deprecated name of threshold, still sets it through 1.x", () => {
+  assert.equal(applyUserOverrides(defaultConfig(), { action: { shouldProceed: { hold: 0.3 } } }).action.shouldProceed.threshold, 0.3);
+  assert.equal(applyProjectOverrides(defaultConfig(), { action: { shouldProceed: { hold: 0.4 } } }).action.shouldProceed.threshold, 0.4);
+  assert.equal(applyUserOverrides(defaultConfig(), { action: { shouldProceed: { hold: 0.3, threshold: 0.2 } } }).action.shouldProceed.threshold, 0.2, "the new name wins");
+  // A config module from before the rename hands the extension `hold`.
+  const stale = { ...defaultConfig(), action: { ...defaultConfig().action, shouldProceed: { hold: 0.45, steer: true } } };
+  assert.deepEqual(completeConfig(stale as never).config.action.shouldProceed, { threshold: 0.45, steer: true });
+});
+
+test("a config file that still sets the removed keys loads cleanly", async () => {
+  const path = userConfigPath();
+  await mkdir(join(path, ".."), { recursive: true });
+  await writeFile(path, JSON.stringify({
+    learning: { adaptiveThresholds: false, patternAnalysis: false, minHoldsForAdaptive: 3, adaptationRate: 0.5, retentionDays: 30 },
+    conscience: { loadThreshold: 0.2, recommendThreshold: 0.9 },
+  }));
+  try {
+    const config = loadConfig();
+    assert.deepEqual(config.learning, { patternAnalysis: false, retentionDays: 30 });
+    assert.equal("loadThreshold" in config.conscience, false);
+    assert.equal(config.conscience.recommendThreshold, 0.9, "the rest of the section still applies");
+    assert.deepEqual(config.warnings, []);
+  } finally {
+    await rm(path, { force: true });
+  }
+});
+
+test("an arming rule with no action is still ignored, now with one config warning naming it", () => {
+  const config = applyUserOverrides(defaultConfig(), { action: { armingRules: [
+    { id: "no-action", when: { edited: ["**/x"] }, arms: { command: "apply", for: "5m" } },
+    { id: "kept", when: { edited: ["**/y"] }, arms: { command: "apply", for: "5m" }, action: "hold" },
+  ] } });
+  assert.deepEqual(config.action.armingRules.map(rule => rule.id), ["kept"]);
+  assert.deepEqual(config.warnings, ['arming rule "no-action": has no action and is ignored; set action to confirm, hold, or block']);
 });

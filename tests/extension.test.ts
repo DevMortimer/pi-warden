@@ -565,17 +565,12 @@ test("URL passwords, Authorization and Bearer values are masked, so their notice
   assert.ok(shown.startsWith("pi-warden: Possible credentials in this output: 3 values masked in this output as [redacted]"), shown);
 });
 
-test("a project file with security.enabled false still masks a real-shaped key in a tool result", async () => {
-  const projectPath = join(temporary, ".pi", "pi-warden.json");
-  await mkdir(join(temporary, ".pi"), { recursive: true });
-  try {
-    await writeFile(projectPath, JSON.stringify({ security: { enabled: false } }));
-    const key = projectKey();
-    const result = await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, `${key}\n`, false) as { content: Array<{ text: string }> };
-    assert.equal(result.content[0]!.text, "[redacted]\n", "masked, and no banner: the banner follows security.enabled");
-  } finally {
-    await rm(projectPath, { force: true });
-  }
+// A project file can no longer turn security off (it may only make it stricter), so the user file does it here.
+test("the user file with security.enabled false still masks a real-shaped key in a tool result", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: false, security: { enabled: false }, ...STACK_BAR }));
+  const key = projectKey();
+  const result = await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, `${key}\n`, false) as { content: Array<{ text: string }> };
+  assert.equal(result.content[0]!.text, "[redacted]\n", "masked, and no banner: the banner follows security.enabled");
 });
 
 test("the user file with security.maskOutput false turns masking off even with the security guard off", async () => {
@@ -2875,6 +2870,24 @@ test("user command rules: a dialog rule prompts even in advise mode, where nothi
   const advisory = await toolCall("bash", { command: "git push --force origin main" });
   assert.equal(advisory, undefined, "advise mode, not held");
   assert.equal(confirms.length, 0, "no dialog for a built-in in advise mode");
+});
+
+test("user command rules: an unknown severity holds for the user, and its config warning shows once per session and in /warden status", async () => {
+  await writeFile(configPath(), JSON.stringify({ action: { commandRules: [{ id: "prod-deploy", pattern: "\\bdeploy\\s+prod\\b", severity: "blok" }] }, ...STACK_BAR }));
+  await sessionStart();
+  const warning = /^warden: config warnings: command rule "prod-deploy": severity "blok" is not one of warn, confirm, deny, block; the rule applies at confirm$/;
+  assert.deepEqual(notices.filter(notice => warning.test(notice.text)).map(notice => notice.level), ["warning"], "said once at session start");
+  confirmResult = false;
+  const declined = await toolCall("bash", { command: "deploy prod now" });
+  assert.equal(declined?.block, true, "held for the user, not warned");
+  assert.equal(confirms.length, 1);
+  confirmResult = true;
+  confirms.length = 0;
+  assert.equal(notices.filter(notice => warning.test(notice.text)).length, 1, "not repeated on later calls");
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /Config warnings: command rule "prod-deploy": severity "blok" is not one of warn, confirm, deny, block; the rule applies at confirm\./);
+  await sessionStart();
+  assert.equal(notices.filter(notice => warning.test(notice.text)).length, 2, "a new session hears it again");
 });
 
 test("user command rules: a deny rule blocks without a dialog and without a TypeSafe request", async () => {

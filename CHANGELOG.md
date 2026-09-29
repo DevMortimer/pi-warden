@@ -8,6 +8,32 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.80.0
+
+### Changed
+
+- Rule values are never silently weakened. Every rule kind reads `deny` and `block` as the same value. An unknown `severity` in a command rule, or an unknown `action` in a path or arming rule, used to fall back to the weakest level (`warn`, `note`, or dropping the arming rule); it now applies at `confirm` (a deny-list rule stays `deny`), and a config warning names the rule, the value, and the valid values.
+- Arming durations: a number in `arms.for` is milliseconds and a string without a unit is minutes, as before; a string also takes `ms`, `s`, `m`, or `h` with decimals (`"1.5h"`) in every code path. A config warning names a rule that arms for under one second and a string with no unit.
+- A project file may make the action guard and security stricter, never weaker. It can no longer set `enabled`, `action.enabled`, or `security.enabled` to `false`, raise `action.irreversible.warn`, `action.irreversible.confirm`, or `security.threshold` above the user's value, remove a tool from `action.tools` (it may add one), or set `action.failOpen` to `true` over the user's `false`. Each ignored value gives one config warning. Other guards stay tunable both ways from a project file.
+- Config warnings: a value pi-warden cannot apply as written is shown once when a session starts and again in `/warden status`.
+- `action.shouldProceed.hold` is renamed `action.shouldProceed.threshold`; it never held a call. The old name is still read through 1.x and is deprecated.
+- An arming rule with no `action` is still ignored, and now gives a config warning naming the rule.
+- Removed the settings nothing read: `learning.adaptiveThresholds`, `learning.minHoldsForAdaptive`, `learning.adaptationRate`, and `conscience.loadThreshold`. A config file that still sets them loads as before.
+
+### Fixed
+
+- `learning.retentionDays: 0` keeps every hold record, as documented; it used to become 365.
+- The capability index files that `/warden index` writes are owner-only, as documented: the folders are created `0700` and each file is written `0600` through an atomic replace; before, they had the default permissions.
+
+### Docs
+
+- `docs/configuration.md` lists the project-file keys that only get stricter, documents `widget.barMode` and `stuck.churnThreshold`, and the lab profile now turns the security guard off in the user file.
+- `docs/commands.md` has a row for `/warden enable` and shows `/warden init [--force]`.
+- `docs/data-handling.md` lists `steer-stats.json`, the capability index files, and the migration notice marker.
+- `docs/extension-authors.md` names exactly the exports semver covers; every other export is internal.
+- `README.md` has a Versioning section that says what semver covers from 1.0.
+- `CONTRIBUTING.md` gives the hold threshold as 0.9.
+
 ## 0.79.1
 
 ### Fixed

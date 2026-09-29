@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test, before, after, beforeEach } from "node:test";
@@ -280,6 +280,28 @@ test("re-running writeIndex overwrites both files", () => {
   writeIndex(globalPath, file3);
   const r3 = readIndex(globalPath)!;
   assert.equal(r3.entries.length, 0, "should be overwritten");
+});
+
+test("the index is owner-only: folders 0700, files 0600, also over a file that was readable by others", { skip: process.platform === "win32" }, () => {
+  const env = { PI_WARDEN_INDEX_DIR: join(temporary, "owner-only") };
+  ensureIndexDir("global", env);
+  ensureIndexDir("project", env);
+  const dir = join(temporary, "owner-only", "pi-warden", "index");
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  assert.equal(statSync(join(dir, "projects")).mode & 0o777, 0o700);
+  const file: IndexFile = { formatVersion: 1, builtAt: "t", model: "m", entries: [SAMPLE_ENTRY] };
+  const projectPath = indexPath("project", "/owner/only", env);
+  writeIndex(projectPath, file);
+  assert.equal(statSync(projectPath).mode & 0o777, 0o600);
+  const fresh = join(temporary, "owner-only-fresh", "projects", "abc.json");
+  writeIndex(fresh, file);
+  assert.equal(statSync(join(temporary, "owner-only-fresh", "projects")).mode & 0o777, 0o700, "writeIndex creates a missing folder owner-only");
+  assert.equal(statSync(fresh).mode & 0o777, 0o600);
+  const globalPath = indexPath("global", undefined, env);
+  writeFileSync(globalPath, "{}", { mode: 0o644 });
+  writeIndex(globalPath, file);
+  assert.equal(statSync(globalPath).mode & 0o777, 0o600, "an earlier world-readable index file is replaced owner-only");
+  assert.equal(readIndex(globalPath)!.entries.length, 1);
 });
 
 /* ─── Index placement: project vs global ─────────────────────────────── */

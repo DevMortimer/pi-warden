@@ -2232,7 +2232,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   let shouldProceedTraceOnlyReasonIndex: number | undefined;
   if (typeof answers.should_proceed?.noul === "number") {
     judgment.shouldProceed = answers.should_proceed.noul;
-    if (judgment.shouldProceed <= config.shouldProceed.hold) {
+    if (judgment.shouldProceed <= config.shouldProceed.threshold) {
       shouldProceedSteer = true;
       level = higher(level, "warn");
       if (!config.shouldProceed.steer) shouldProceedTraceOnlyReasonIndex = reasons.length;
