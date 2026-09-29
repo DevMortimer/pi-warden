@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.74.1
+
+### Fixed
+
+- Learning features work when Pi runs on Bun. Pi's release binaries (`pi-linux-x64.tar.gz` and the rest) are Bun `--compile` executables in which `import("node:sqlite")` fails with `No such built-in module: node:sqlite`, so `holds.db` never opened and learning was off for every release-binary user. `node:sqlite` is still tried first and is unchanged; only when that import fails and the process runs on Bun does `src/sqlite-adapter.ts` open the database through `bun:sqlite` behind the `DatabaseSync` subset learning uses. With neither module loading, learning stays off behind one warning that now names both modules.
+
 ## 0.74.0
 
 ### Added

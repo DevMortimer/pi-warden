@@ -1,6 +1,6 @@
 {
   "name": "pi-warden",
-  "version": "0.74.0",
+  "version": "0.74.1",
   "description": "Makes the Pi agent follow your project's rules. Jev judges every write against your pi-warden.md and quotes the broken rule back to the agent, names slop, breaks stuck loops, calls out unverified done claims, compresses large tool output, and holds the rare destructive command. Built on pi-typesafe.",
   "type": "module",
   "license": "MIT",
@@ -54,6 +54,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
+    "test:bun": "bun test tests/sqlite-adapter.test.ts tests/learning.test.ts",
     "test:live": "node --env-file-if-exists=.env scripts/live-smoke.mjs",
     "dev:pi": "node scripts/dev-pi.mjs",
     "preview": "node scripts/render-preview.mjs",

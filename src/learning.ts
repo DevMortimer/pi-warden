@@ -4,15 +4,18 @@
 import { createHash } from "crypto";
 import { mkdirSync } from "fs";
 import { dirname, join } from "path";
-import type { DatabaseSync } from "node:sqlite";
+import { isBunRuntime, openBunSqlite, SqliteUnavailableError } from "./sqlite-adapter.js";
+import type { SqliteDb, SqliteDriver } from "./sqlite-adapter.js";
 import type { HostDirs } from "./host-dirs.js";
 import { defaultHostDirs } from "./host-dirs.js";
 import { userConfigPath } from "./config.js";
 import { redact } from "./redact.js";
 import type { CallScores } from "./holds.js";
 
-const dbs = new Map<string, Promise<DatabaseSync>>();
+const dbs = new Map<string, Promise<SqliteDb>>();
 let sqliteAvailable: boolean | undefined;
+/** Which module opened the learning database; undefined while learning is off. */
+let driver: SqliteDriver | undefined;
 
 // --- Schema (shared constant) ---
 
@@ -46,20 +49,42 @@ const NOOP_DB = {
   exec() {},
   prepare() { return { run() { return { changes: 0, lastInsertRowid: 0 }; }, get() { return undefined; }, all() { return []; } }; },
   pragma() {},
-} as unknown as DatabaseSync;
+} as unknown as SqliteDb;
+
+/** Learning stays off: one warning names both candidate modules so the report says what to look at. */
+function disableLearning(detail: unknown): SqliteDb {
+  sqliteAvailable = false;
+  console.warn("pi-warden: node:sqlite unavailable, bun:sqlite unavailable, learning features disabled:", detail);
+  return NOOP_DB;
+}
+
+/** Pi's release binaries are Bun --compile executables, where node:sqlite may not be a built-in
+ *  module while bun:sqlite always is. On Bun the database opens through the adapter; with neither
+ *  module loading, learning stays off behind one warning. */
+async function openBunFallback(dbPath: string, nodeFailure: unknown): Promise<SqliteDb> {
+  if (!isBunRuntime()) return disableLearning(nodeFailure);
+  try {
+    const db = await openBunSqlite(dbPath);
+    sqliteAvailable = true;
+    driver = "bun:sqlite";
+    return db;
+  } catch (err) {
+    if (err instanceof SqliteUnavailableError) return disableLearning(err);
+    // bun:sqlite did load (this is Bun), so only this path failed, as on the node:sqlite path.
+    sqliteAvailable = true;
+    console.warn(`pi-warden: could not open ${dbPath}:`, err);
+    return NOOP_DB;
+  }
+}
 
 /** Open one connection; a failure is remembered per path so later calls neither warn again nor retry forever. */
-async function openDb(dbPath: string): Promise<DatabaseSync> {
-  let opened: DatabaseSync | undefined;
+async function openDb(dbPath: string): Promise<SqliteDb> {
+  let opened: SqliteDb | undefined;
   try {
     // Static import cannot work: node:sqlite is flagged experimental and loads lazily so a missing
     // or broken build of it disables learning features instead of failing the whole process.
     const sqlite = await import("node:sqlite").catch(err => ({ importFailed: err as unknown }));
-    if ("importFailed" in sqlite) {
-      sqliteAvailable = false;
-      console.warn("pi-warden: node:sqlite unavailable, learning features disabled:", sqlite.importFailed);
-      return NOOP_DB;
-    }
+    if ("importFailed" in sqlite) return await openBunFallback(dbPath, sqlite.importFailed);
     const { DatabaseSync } = sqlite;
     sqliteAvailable = true;
     // DatabaseSync does not create parent directories; on a fresh machine the folder may not exist yet.
@@ -67,6 +92,7 @@ async function openDb(dbPath: string): Promise<DatabaseSync> {
     opened = new DatabaseSync(dbPath);
     opened.exec("PRAGMA journal_mode = WAL");
     opened.exec("PRAGMA busy_timeout = 10000");
+    driver = "node:sqlite";
     return opened;
   } catch (err) {
     // Import failures are handled above; this is a path open or PRAGMA failure for this path only.
@@ -79,12 +105,17 @@ async function openDb(dbPath: string): Promise<DatabaseSync> {
 }
 
 /** One connection per resolved path; concurrent first calls share one open. */
-async function getDb(dirs: HostDirs = defaultHostDirs()): Promise<DatabaseSync> {
+async function getDb(dirs: HostDirs = defaultHostDirs()): Promise<SqliteDb> {
   const dbPath = process.env.PI_WARDEN_DB ?? join(dirname(userConfigPath(dirs)), "holds.db");
   if (sqliteAvailable === false) return NOOP_DB;
   let opening = dbs.get(dbPath);
   if (!opening) dbs.set(dbPath, opening = openDb(dbPath));
   return opening;
+}
+
+/** Which module opened the learning database: "node:sqlite", "bun:sqlite", or undefined while learning is off. */
+export function sqliteDriver(): SqliteDriver | undefined {
+  return driver;
 }
 
 export async function initSchema(retentionDays = 365, dirs: HostDirs = defaultHostDirs()): Promise<void> {
