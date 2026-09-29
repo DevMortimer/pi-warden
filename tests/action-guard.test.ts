@@ -96,22 +96,22 @@ test("regression: approval applies to the action, not the exact command string; 
   // `command -v` prefix and was held twice more, then fell back to DROP DATABASE. The approval question was never asked.
   const guard = new ActionGuard();
   const judge = stubJudge();
-  judge.next = { irreversible: 0.87, mutates: 0.95 };
+  judge.next = { irreversible: 0.92, mutates: 0.95 };
   assert.equal((await guard.inspect(bash("c1", "cd wt && command -v supabase; supabase db reset 2>&1 | tail -25"), under("prove the three migrations"), options(judge))).level, "confirm");
   guard.hold("prove the three migrations");
-  judge.next = { irreversible: 0.87, mutates: 0.95, approved: 0.93 };
+  judge.next = { irreversible: 0.92, mutates: 0.95, approved: 0.93 };
   const reworded = await guard.inspect(bash("c2", "cd wt && supabase db reset 2>&1 | tail -25"), under("Yes you can."), options(judge));
   assert.equal(reworded.level, "allow", "reworded retry after approval runs");
   assert.ok(askedApproval(judge), "Jev was asked whether the reply approves this action");
 
   // Same shape, but Jev says the reply does not approve the first retry (0.2); a second, reworded retry must still be asked.
-  judge.next = { irreversible: 0.87, mutates: 0.95 };
+  judge.next = { irreversible: 0.92, mutates: 0.95 };
   assert.equal((await guard.inspect(bash("c3", "supabase db reset"), under("wipe the local db and replay migrations"), options(judge))).level, "confirm");
   guard.hold("wipe the local db and replay migrations");
-  judge.next = { irreversible: 0.87, mutates: 0.95, approved: 0.2 };
+  judge.next = { irreversible: 0.92, mutates: 0.95, approved: 0.2 };
   assert.equal((await guard.inspect(bash("c4", "supabase db reset 2>&1 | tail -25"), under("Yes you can."), options(judge))).level, "confirm", "held again: 0.2 is not approval");
   guard.hold("Yes you can.");
-  judge.next = { irreversible: 0.87, mutates: 0.95, approved: 0.9 };
+  judge.next = { irreversible: 0.92, mutates: 0.95, approved: 0.9 };
   const again = await guard.inspect(bash("c5", "supabase db reset 2>&1 | tail -40"), under("Yes you can."), options(judge));
   assert.ok(askedApproval(judge), "the re-hold did not consume the user's reply");
   assert.equal(again.level, "allow");

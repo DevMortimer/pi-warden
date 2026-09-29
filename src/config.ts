@@ -487,7 +487,8 @@ export function defaultConfig(): WardenConfig {
       tools: [...COMMAND_TOOLS, "write", "edit"],
       failOpen: true,
       timeoutMs: 5000,
-      irreversible: { warn: 0.5, confirm: 0.7 },
+      // 0.9 holds: below it the judge is wrong one call in two to one in seven, and the 0.7 to 0.9 band held no call the user regretted.
+      irreversible: { warn: 0.5, confirm: 0.9 },
       offTask: { warn: 0.6, steer: 0.85 },
       intentMismatch: 0.9,
       visibleMismatch: 0.8,

@@ -27,6 +27,7 @@ test("defaults: guards on, steer mode, TypeSafe consent off, nudges on", () => {
   assert.equal(config.mode, "steer");
   assert.deepEqual(config.action.tools, ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file", "write", "edit"]);
   assert.equal(config.action.failOpen, true);
+  assert.deepEqual(config.action.irreversible, { warn: 0.5, confirm: 0.9 }, "0.9 is the surveyed hold threshold");
   assert.ok(config.action.irreversible.warn < config.action.irreversible.confirm);
   assert.equal(config.stuck.nudge, true);
   assert.equal(config.done.nudge, true);
@@ -102,13 +103,13 @@ test("0.1.x files keep working: action.timeoutMs and action.maxRequests are read
 });
 
 test("project overrides cannot grant consent, change the mode, or raise budgets", () => {
-  const config = applyProjectOverrides(defaultConfig(), { typesafe: true, mode: "advise", maxRequests: 9999, timeoutMs: 1, action: { tools: ["bash"], irreversible: { confirm: 0.9 } }, stuck: { enabled: false } });
+  const config = applyProjectOverrides(defaultConfig(), { typesafe: true, mode: "advise", maxRequests: 9999, timeoutMs: 1, action: { tools: ["bash"], irreversible: { confirm: 0.95 } }, stuck: { enabled: false } });
   assert.equal(config.typesafe, false);
   assert.equal(config.mode, "steer");
   assert.equal(config.maxRequests, 500);
   assert.equal(config.action.timeoutMs, 5000);
   assert.deepEqual(config.action.tools, ["bash"]);
-  assert.equal(config.action.irreversible.confirm, 0.9);
+  assert.equal(config.action.irreversible.confirm, 0.95, "a project override still moves the hold threshold");
   assert.equal(config.stuck.enabled, false);
   const quiet = applyProjectOverrides(defaultConfig(), { notify: { enabled: false, command: ["evil"] } });
   assert.equal(quiet.notify.enabled, false, "a project may switch notifications off");

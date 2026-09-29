@@ -672,7 +672,10 @@ test("evaluateAction applies thresholds from config", async () => {
   const config = defaultConfig().action;
   const warn = await evaluateAction({ tool: "bash", input: { command: "npm run migrate" }, cwd, task: "add a column" }, { config, judge: judge(0.55, 0.1) });
   assert.equal(warn.level, "warn");
-  const confirm = await evaluateAction({ tool: "bash", input: { command: "npm run migrate" }, cwd, task: "add a column" }, { config, judge: judge(0.8, 0.1) });
+  // The 0.5 to 0.9 band warns: the default confirm is 0.9, so a judge-only 0.8 does not hold.
+  const band = await evaluateAction({ tool: "bash", input: { command: "npm run migrate" }, cwd, task: "add a column" }, { config, judge: judge(0.8, 0.1) });
+  assert.equal(band.level, "warn");
+  const confirm = await evaluateAction({ tool: "bash", input: { command: "npm run migrate" }, cwd, task: "add a column" }, { config, judge: judge(0.92, 0.1) });
   assert.equal(confirm.level, "confirm");
   const allow = await evaluateAction({ tool: "bash", input: { command: "npm run migrate" }, cwd, task: "add a column" }, { config, judge: judge(0.2, 0.2) });
   assert.equal(allow.level, "allow");
