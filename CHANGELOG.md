@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- Context filter (beta, off by default). With `"context": { "filter": { "enabled": true } }`, an output that would get the generic head/diagnostic/tail excerpt is split at line boundaries and Jev scores each chunk for the agent's current task; chunks scoring at least `minScore` (1.5) are kept word for word in original order, up to `maxKeptChars` (6000) with the last 1000 characters always kept, and each gap is marked. Parser excerpts, `all`, duplicates, and repeated runs are unchanged. Any error, a timeout (`timeoutMs`, 4000), judgments off, an exhausted request budget, or no passing chunk keeps today's excerpt. `/warden status`, the trace, and the new offline `scripts/filter-report.mjs` count filtered and excerpt outputs apart (count, recalls, kept size, requests, time, fallbacks), so a trial can be judged.
 
 ## 0.75.0
 

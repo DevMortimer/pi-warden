@@ -396,6 +396,20 @@ Only the newest tool result or message is ever changed, before it enters the ses
 
 Set `context.enabled: false` to turn it off. Full-output files can contain secrets and stay in the OS temporary directory until removed.
 
+### Context filter (beta, off by default)
+
+`context.filter.enabled: true` changes one case only: a single text block for which the saver would build the generic head/diagnostic/tail excerpt (retention `errors_and_summary` or `summary_only`, and no format parser fits). Parser excerpts, `all`, duplicates, repeated runs, multi-block results, and outputs below `tailMinChars` are unchanged.
+
+1. **Chunks.** The output is split at line boundaries into chunks of about `chunkChars` (2000) characters. A line is split only when it alone is longer than `chunkChars`.
+2. **One score question per chunk.** The request state carries the task (your latest request and the task spine), the agent's own words for the call when it gave any, the tool and command, and the chunks as named fields (`c1`, `c2`, …), all redacted. Each chunk gets one `score` question for the agent's current task with four levels: 0 "Unrelated to the question", 1 "Same topic, but does not help answer the question", 2 "Partially answers the question or gives useful supporting facts", 3 "Directly answers the question with specific facts". Chunks share requests up to pi-typesafe's limits (64 KiB of JSON, 32 questions); the requests run in parallel.
+3. **Threshold, then budget.** Chunks scoring at least `minScore` (1.5: they at least partly answer) are kept word for word, in original order, up to `maxKeptChars` (6000). When more qualify, the highest scores are kept and the original order is restored. The last 1000 characters (the final status) are always kept and count toward `maxKeptChars`. Each gap is marked `[… N lines omitted …]`.
+4. **Header and footer.** `[pi-warden: filtered; N original characters, M lines. Passages selected for the current task; omitted text is in the full-output file.]`, then the kept text, then the same full-output footer as the excerpt.
+5. **Fallback.** On a Jev error, a timeout (`timeoutMs`, 4000), judgments off (no consent, no key, or an exhausted request budget), a judge cooldown, or no chunk at the threshold, the excerpt is used unchanged. A filtered output that would be longer than the excerpt by more than `maxKeptChars` also falls back.
+
+**Measuring it.** While the filter is on, `/warden status` adds a line that counts filtered outputs and excerpt outputs apart: count, recalls (whole-file and scoped), characters kept, requests, milliseconds, and fallbacks by reason. Each filtered output leaves one trace entry with the chunks kept, the characters kept, the requests, and the milliseconds; a fallback adds its reason to the excerpt's trace entry. `node scripts/filter-report.mjs --since <ISO date>` reads Pi session files offline and prints the same comparison (outputs, original and kept size, recall rates) from the header texts; it sends no request and prints counts only.
+
+**Method source and limits.** The method is GPT Researcher's Jev context filter, measured on 28 research tasks: one score question per chunk, a fixed threshold, original order. There the threshold, not the ranking, made the gain: 73% of kept passages were relevant with it, 50% without. It has not yet been measured on tool output; this beta is for that trial. Batching several chunk questions into one request is a known compromise: other questions in the same request shift probabilities by about 0.05 (arXiv 2609.26550), and a replay on this codebase found 85% agreement on keep decisions between many questions per request and one per request.
+
 ## Call waste
 
 Every tool call re-reads the whole conversation, so the number of calls drives what a run costs. Four patterns spend calls without gaining anything a single call would not. Each earns one advisory sentence, attached to the tool result that triggers it: the result already goes to the model, so the note costs no extra call and never makes a request of its own.

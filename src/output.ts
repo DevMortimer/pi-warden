@@ -265,6 +265,13 @@ export function securityNotice(verdict: OutputVerdict, masked = 0, maskOutput = 
   return messages.length ? `pi-warden: ${messages.join(" ")}` : undefined;
 }
 
+export const EXCERPT_NOTE = "Excerpts only; omitted text is in the full-output file.";
+
+/** Whether `compressOutput` built the head/diagnostic/tail excerpt, not a format parser's; only that one may be filtered. */
+export function isGenericExcerpt(excerpt: string): boolean {
+  return excerpt.slice(0, excerpt.indexOf("\n")).endsWith(`${EXCERPT_NOTE}]`);
+}
+
 /**
  * Deterministic excerpts, not an AI-written summary. At most 6K characters, including diagnostic lines. A recognised
  * `format` uses its parser (exact failing tests, errors with file:line, changed files); otherwise head/diagnostics/tail.
@@ -290,7 +297,7 @@ export function compressOutput(text: string, retention: Retention, format?: Outp
     diagnosticChars += clipped.length + 1;
   }
   const body = [head && `[head excerpt]\n${head}`, diagnostics.length && `[diagnostic excerpts; may be incomplete]\n${diagnostics.join("\n")}`, `[tail excerpt]\n${tail}`].filter(Boolean).join("\n\n");
-  const result = `[pi-warden: ${retention}; ${text.length} original characters, ${lines.length} lines. Excerpts only; omitted text is in the full-output file.]\n${body}`;
+  const result = `[pi-warden: ${retention}; ${text.length} original characters, ${lines.length} lines. ${EXCERPT_NOTE}]\n${body}`;
   return text.length - result.length >= 1000 ? result : undefined;
 }
 
