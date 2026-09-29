@@ -34,7 +34,7 @@ test("filter config: off by default, parsed from user and project files, malform
   assert.deepEqual(config(), { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 });
   for (const apply of [applyUserOverrides, applyProjectOverrides]) {
     const on = apply(defaultConfig(), { context: { filter: { enabled: true, chunkChars: 3000, minScore: 2, maxKeptChars: 8000, timeoutMs: 2500 } } });
-    assert.deepEqual(on.context.filter, { enabled: true, chunkChars: 3000, minScore: 2, maxKeptChars: 8000, timeoutMs: 2500 });
+    assert.deepEqual(on.context.filter, { enabled: apply === applyUserOverrides, chunkChars: 3000, minScore: 2, maxKeptChars: 8000, timeoutMs: 2500 });
     const bad = apply(defaultConfig(), { context: { filter: { enabled: "yes", chunkChars: -5, minScore: 4, maxKeptChars: 1.5, timeoutMs: 0 } } });
     assert.deepEqual(bad.context.filter, config());
     assert.deepEqual(apply(defaultConfig(), { context: { filter: null } }).context.filter, config());
@@ -43,6 +43,14 @@ test("filter config: off by default, parsed from user and project files, malform
   const legacy = defaultConfig();
   delete (legacy.context as Partial<typeof legacy.context>).filter;
   assert.equal(completeConfig(legacy).config.context.filter.enabled, false);
+});
+
+test("a project file tunes the filter but cannot turn it on or off; only the user file can", () => {
+  const project = applyProjectOverrides(defaultConfig(), { context: { filter: { enabled: true, minScore: 2 } } });
+  assert.equal(project.context.filter.enabled, false, "a project cannot enable the filter");
+  assert.equal(project.context.filter.minScore, 2, "a project may tune it");
+  const user = applyUserOverrides(defaultConfig(), { context: { filter: { enabled: true } } });
+  assert.equal(applyProjectOverrides(user, { context: { filter: { enabled: false, timeoutMs: 3000 } } }).context.filter.enabled, true, "nor turn off what the user turned on");
 });
 
 test("chunks end at line boundaries near chunkChars; only a line longer than chunkChars is split", () => {

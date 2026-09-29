@@ -941,7 +941,8 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
         threshold: probability(raw.context.largeOutput.threshold, base.context.largeOutput.threshold),
       } : base.context.largeOutput,
       filter: isObject(raw.context.filter) ? {
-        enabled: boolean(raw.context.filter.enabled, base.context.filter.enabled),
+        // User file only: turning it on sends whole redacted outputs to the judge and spends requests.
+        enabled: source === "user" ? boolean(raw.context.filter.enabled, base.context.filter.enabled) : base.context.filter.enabled,
         chunkChars: positiveInteger(raw.context.filter.chunkChars, base.context.filter.chunkChars),
         minScore: typeof raw.context.filter.minScore === "number" && raw.context.filter.minScore >= 0 && raw.context.filter.minScore <= 3 ? raw.context.filter.minScore : base.context.filter.minScore,
         maxKeptChars: positiveInteger(raw.context.filter.maxKeptChars, base.context.filter.maxKeptChars),
