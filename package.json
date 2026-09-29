@@ -53,7 +53,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --import ./tests/setup-env.ts --test tests/*.test.ts",
     "test:bun": "bun test tests/sqlite-adapter.test.ts tests/learning.test.ts",
     "test:live": "node --env-file-if-exists=.env scripts/live-smoke.mjs",
     "dev:pi": "node scripts/dev-pi.mjs",

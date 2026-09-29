@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Tests
+
+- `npm test` clears every `PI_*` variable and judge key and gives each test process its own agent directory, so a run in a shell inside Pi no longer writes trace lines or steer stats to the developer's directories; the host test builds into a temporary directory instead of `dist/`, and no test file shares a fixed temporary path.
+- A flaky extension test read the hold log while it was rewritten in place and parsed a line cut short; the hold log is now written to a temporary file and renamed into place, so a reader always sees a whole file.
 
 ## 0.79.0
 
