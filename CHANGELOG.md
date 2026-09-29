@@ -13,11 +13,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 - A project file may make the action guard and security stricter, never weaker. It can no longer set `enabled`, `action.enabled`, or `security.enabled` to `false`, raise `action.irreversible.warn`, `action.irreversible.confirm`, or `security.threshold` above the user's value, remove a tool from `action.tools` (it may add one), or set `action.failOpen` to `true` over the user's `false`. Each ignored value gives one config warning. Other guards stay tunable both ways from a project file.
 - Config warnings: a value pi-warden cannot apply as written is shown once when a session starts and again in `/warden status`.
 - `action.shouldProceed.hold` is renamed `action.shouldProceed.threshold`; it never held a call. The old name is still read through 1.x and is deprecated.
+- An arming rule with no `action` is still ignored, and now gives a config warning naming the rule.
 - Removed the settings nothing read: `learning.adaptiveThresholds`, `learning.minHoldsForAdaptive`, `learning.adaptationRate`, and `conscience.loadThreshold`. A config file that still sets them loads as before.
 
 ### Fixed
 
 - `learning.retentionDays: 0` keeps every hold record, as documented; it used to become 365.
+- The capability index files that `/warden index` writes are owner-only, as documented: the folders are created `0700` and each file is written `0600` through an atomic replace; before, they had the default permissions.
 
 ### Docs
 

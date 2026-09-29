@@ -529,3 +529,12 @@ test("a config file that still sets the removed keys loads cleanly", async () =>
     await rm(path, { force: true });
   }
 });
+
+test("an arming rule with no action is still ignored, now with one config warning naming it", () => {
+  const config = applyUserOverrides(defaultConfig(), { action: { armingRules: [
+    { id: "no-action", when: { edited: ["**/x"] }, arms: { command: "apply", for: "5m" } },
+    { id: "kept", when: { edited: ["**/y"] }, arms: { command: "apply", for: "5m" }, action: "hold" },
+  ] } });
+  assert.deepEqual(config.action.armingRules.map(rule => rule.id), ["kept"]);
+  assert.deepEqual(config.warnings, ['arming rule "no-action": has no action and is ignored; set action to confirm, hold, or block']);
+});

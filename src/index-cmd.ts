@@ -3,9 +3,10 @@
  * uses instead of bare names and descriptions. The session model writes the
  * entries in a fixed format; the extension validates and sanitizes them.
  */
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { writeFileAtomicSync } from "./atomic.js";
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { sanitizeDescription } from "./conscience.js";
 import type { CapabilityRole } from "./conscience.js";
@@ -67,7 +68,8 @@ export function indexPath(kind: "global" | "project", projectRoot?: string, env:
 
 export function ensureIndexDir(kind: "global" | "project", env: NodeJS.ProcessEnv = process.env, dirs?: HostDirs): void {
   const dir = kind === "global" ? indexDir(env, dirs) : join(indexDir(env, dirs), "projects");
-  mkdirSync(dir, { recursive: true });
+  // Owner-only, like the files writeIndex puts in it.
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
 /* ─── Content hashing ───────────────────────────────────────────────── */
@@ -91,9 +93,8 @@ export function readIndex(filePath: string): IndexFile | undefined {
 }
 
 export function writeIndex(filePath: string, index: IndexFile): void {
-  // The target's parent: `<index dir>/projects` for a project file, the index dir for the global one.
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, JSON.stringify(index, null, 2), "utf8");
+  // Owner-only: a missing parent (`<index dir>/projects` or the index dir) is created 0700, the file is written 0600.
+  writeFileAtomicSync(filePath, JSON.stringify(index, null, 2));
 }
 
 function isIndexFile(value: unknown): value is IndexFile {

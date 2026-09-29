@@ -738,7 +738,10 @@ function parseArmingRule(raw: unknown, warnings: string[]): ArmingRule | undefin
   const armsRaw = isObject(raw.arms) ? raw.arms as Record<string, unknown> : {};
   const command = typeof armsRaw.command === "string" && armsRaw.command.trim() ? armsRaw.command : undefined;
   if (!command) return undefined;
-  if (raw.action === undefined) return undefined;
+  if (raw.action === undefined) {
+    warnings.push(`arming rule "${id}": has no action and is ignored; set action to confirm, hold, or block`);
+    return undefined;
+  }
   let action: ArmingRule["action"];
   if (raw.action === "confirm" || raw.action === "hold" || raw.action === "block") action = raw.action;
   else if (raw.action === "deny") action = "block";
