@@ -18,7 +18,7 @@ declare module "bun:sqlite" {
   }
 
   export interface DatabaseOptions {
-    /** Refuse to create a file that does not exist. Defaults to `true`. */
+    /** Create the file when it does not exist. Defaults to `true`. */
     create?: boolean;
     /** Open read-only. */
     readonly?: boolean;
