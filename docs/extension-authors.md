@@ -21,6 +21,20 @@ rules.findings;     // [{ id: "no-console-statements", name, violation: 0.97, bo
 
 What spans calls in a session lives in `ActionGuard` (hold, reply, retry approval, sibling batching) and `RulesGuard` (rule cache, sibling prejudging, repeat counts, sensitive-path notes).
 
-Also exported: `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `describeAction`, `parseRules`, `matchGlob`, `redact`, `syntheticish`, `partitionSecrets`, `formatVerdict`, the question sets, the stuck detector, the runaway guard, the notifier, the done-check, the subagent triage (`newReports`, `triageReport`, `WakePolicy`), and the config helpers.
+## What semver covers
+
+From 1.0, semver covers exactly these exports of the package root (`pi-warden`), together with the types of their parameters and results:
+
+- Action guard: `evaluateAction`, `ActionGuard`, `describeAction`, `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `formatVerdict`, and the question sets `questions`, `intentQuestion`, `visibleQuestion`, `slopQuestions`, `approvalQuestion`, `securityQuestion`, `regretQuestions`.
+- Rules: `evaluateRules`, `RuleStore`, `RulesGuard`, `parseRules`, `matchGlob`.
+- Redaction: `redact`, `syntheticish`, `partitionSecrets`.
+- Stuck detector: `AttemptWindow`, `makeAttempt`, `evaluateStuck`.
+- Done-check: `emptyEvidence`, `classifyToolResult`, `recordOutcome`, `needsDoneCheck`, `evaluateDone`.
+- Runaway guard: `RunawayMonitor`.
+- Notifier: `detectNotifier`, `sendNotification`.
+- Subagent triage: `newReports`, `triageReport`, `WakePolicy`.
+- Config helpers: `defaultConfig`, `loadConfig`, `applyUserOverrides`, `applyProjectOverrides`, `userConfigPath`, `projectConfigPath`.
+
+Every other export of `pi-warden`, and every export of `pi-warden/extension`, is internal: it may change or go away in any release.
 
 For the Jev client itself (`createTypeSafe`, `ask`, `choice`, `score`, `noul`, `authState`, `describeAuth`, `getSpend`, the key store, the login prompt, `pi-typesafe/calibrate`) see [pi-typesafe](https://github.com/DevMortimer/pi-typesafe#for-extension-authors).

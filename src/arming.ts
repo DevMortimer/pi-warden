@@ -15,6 +15,7 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { matchPathGlobs, stripDataText } from "./guard.js";
+import { DEFAULT_ARMING_DURATION, parseDuration } from "./config.js";
 import type { ArmingRule } from "./config.js";
 
 /** A single armed rule's state. */
@@ -38,27 +39,11 @@ interface CompiledArmingRule {
 function compileArmingRule(rule: ArmingRule): CompiledArmingRule | undefined {
   try {
     const flags = rule.arms.caseSensitive ? "" : "i";
-    const duration = parseDuration(rule.arms.for);
+    // The config parser already turned `for` into milliseconds; a rule built in code may still carry a string.
+    const duration = parseDuration(rule.arms.for, DEFAULT_ARMING_DURATION);
     return { rule, commandRegex: new RegExp(rule.arms.command, flags), durationMs: duration };
   } catch {
     return undefined;
-  }
-}
-
-/** Parse a duration string like "10m", "30s", "2h" into milliseconds. Returns 600000 (10m) for undefined/invalid. */
-function parseDuration(forValue: string | number | undefined): number {
-  if (forValue === undefined) return 600_000;
-  if (typeof forValue === "number") return forValue > 0 ? forValue : 600_000;
-  const match = /^(\d+)(ms|s|m|h)$/.exec(forValue);
-  if (!match) return 600_000;
-  const value = parseInt(match[1]!, 10);
-  if (value <= 0) return 600_000;
-  switch (match[2]) {
-    case "ms": return value;
-    case "s": return value * 1_000;
-    case "m": return value * 60_000;
-    case "h": return value * 3_600_000;
-    default: return 600_000;
   }
 }
 

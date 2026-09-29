@@ -29,7 +29,7 @@ export interface CommandRule {
   id: string;
   /** Regex source string; compiled case-insensitively unless caseSensitive is true. */
   pattern: string;
-  /** warn: notice to the agent; confirm: hold (action dialog steers); deny: block with no dialog. */
+  /** warn: notice to the agent; confirm: hold (action dialog steers); deny (or its alias block): block with no dialog. */
   severity: "warn" | "confirm" | "deny";
   /** When severity is confirm, dialog (default) prompts the user; hold uses steer semantics. */
   action?: "dialog" | "hold";
@@ -55,8 +55,8 @@ export interface ActionGuardConfig {
   visibleMismatch: number;
   /** Which intent mismatches stay in the trace without a steer: "all" (default) every one, "invisible" only a call with no visible effect (neither a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`, nor judged `visible` at 0.8 or more), "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. On blind labels of 140 sampled calls the score separates a differing call well (AUROC 0.815), but of 37 steers that would reach the agent, 36 were calls the plan or the user's latest request had asked for. */
   intentTraceOnly: "invisible" | "all" | "none";
-  /** Low P(should_proceed) is trace-only unless steer is enabled; hold is the inclusive threshold, not a blocking decision. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
-  shouldProceed: { hold: number; steer: boolean };
+  /** Low P(should_proceed) is trace-only unless steer is enabled; threshold is inclusive and never holds a call. `hold` is its deprecated 1.x name. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
+  shouldProceed: { threshold: number; steer: boolean };
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
   feedbackLog: boolean;
   /** User-defined command rules (user file only; project files cannot set severity above warn). */
@@ -88,7 +88,7 @@ export interface PathRule {
   access: "none" | "read" | "write";
   /** Which surfaces check the rule: file tools by name ("write", "edit", "read"), or "*" to also match bash commands. */
   tools: string[];
-  /** note: tell the agent after the fact (the default, today's sensitive-path behavior); warn: notice; confirm: dialog; block: deny. */
+  /** note: tell the agent after the fact (the default, today's sensitive-path behavior); warn: notice; confirm: dialog; block (or its alias deny): deny. */
   action: "note" | "warn" | "confirm" | "block";
   /** Optional human label shown instead of the derived one. */
   message?: string;
@@ -121,7 +121,7 @@ export interface ArmingRule {
     /** Match the command case-sensitively. */
     caseSensitive?: boolean;
   };
-  /** confirm: dialog (user-invoked prompt); hold: steer hold; block: deny. */
+  /** confirm: dialog (user-invoked prompt); hold: steer hold; block (or its alias deny): deny. */
   action: "confirm" | "hold" | "block";
   /** Optional human label shown in the dialog/status. */
   message?: string;
@@ -389,14 +389,8 @@ export interface SteersConfig {
 }
 
 export interface LearningConfig {
-  /** Enable adaptive thresholds based on learning data. */
-  adaptiveThresholds: boolean;
   /** Enable pattern analysis and recommendations. */
   patternAnalysis: boolean;
-  /** Minimum number of holds before adaptive thresholds kick in. */
-  minHoldsForAdaptive: number;
-  /** How aggressively to adjust thresholds (0-1). Higher values mean faster adaptation. */
-  adaptationRate: number;
   /** Days to keep hold records in SQLite before pruning. 0 disables pruning. */
   retentionDays: number;
 }
@@ -440,8 +434,6 @@ export interface ConscienceConfig {
   recommendThreshold: number;
   /** P(advance) from the disposition question must reach this before a candidate is considered. Default 0.70. */
   advanceThreshold: number;
-  /** P(useful now) must reach this to auto-load. Must be >= recommendThreshold. Default 1.0 (trace-only until calibrated). */
-  loadThreshold: number;
 }
 
 
@@ -498,6 +490,8 @@ export interface WardenConfig {
   waste: WasteConfig;
   /** Relevance compaction in place of Pi's compaction summary. Off by default. */
   compaction: CompactionConfig;
+  /** Config values that were not applied as written, one message each; shown once per session and in `/warden status`. */
+  warnings: string[];
 }
 
 export const PACKAGE_NAME = "pi-warden";
@@ -525,7 +519,7 @@ export function defaultConfig(): WardenConfig {
       intentMismatch: 0.9,
       visibleMismatch: 0.8,
       intentTraceOnly: "all",
-      shouldProceed: { hold: 0.6, steer: false },
+      shouldProceed: { threshold: 0.6, steer: false },
       feedbackLog: true,
       commandRules: [],
       commandDenyRules: [],
@@ -550,7 +544,7 @@ export function defaultConfig(): WardenConfig {
     notices: false,
     steerBudget: 3,
     steers: { adaptive: true, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 },
-    learning: { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 },
+    learning: { patternAnalysis: true, retentionDays: 365 },
     conscience: {
       enabled: false,
       skills: { mode: "recommend", exclude: [] },
@@ -564,12 +558,12 @@ export function defaultConfig(): WardenConfig {
       // Beta policy thresholds (measured 2026-09-22); disabled by default, conscience.enabled is the switch.
       recommendThreshold: 0.80,
       advanceThreshold: 0.70,
-      loadThreshold: 1.0,
     },
     prefs: { enabled: true, inject: true },
     waste: { enabled: true, tip: false, every: 20, sleep: true, paging: true, search: true, recheck: true },
     // pi-claude-bridge compacts its own models and cancels on failure; its summary must not be replaced.
     compaction: { enabled: false, keepThreshold: 0.5, maxSummaryTokens: 20000, timeoutMs: 20000, maxRequests: 12, skipProviders: ["claude-bridge"] },
+    warnings: [],
   };
 }
 
@@ -628,12 +622,26 @@ export function isMode(value: unknown): value is WardenMode {
   return value === "steer" || value === "confirm" || value === "advise";
 }
 
-function parseCommandRule(raw: unknown, defaultSeverity: CommandRule["severity"]): CommandRule | undefined {
+/** One config warning for a rule value no kind accepts; the rule still applies, at the level named. */
+function unknownRuleValue(kind: string, id: string, key: string, value: unknown, valid: readonly string[], applied: string): string {
+  return `${kind} "${id}": ${key} ${String(JSON.stringify(value)).slice(0, 40)} is not one of ${valid.join(", ")}; the rule applies at ${applied}`;
+}
+
+function parseCommandRule(raw: unknown, defaultSeverity: CommandRule["severity"], warnings: string[]): CommandRule | undefined {
   if (!isObject(raw)) return undefined;
   const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : undefined;
   const pattern = typeof raw.pattern === "string" && raw.pattern.trim() ? raw.pattern : undefined;
   if (!id || !pattern) return undefined;
-  const severity = raw.severity === "warn" || raw.severity === "confirm" || raw.severity === "deny" ? raw.severity : defaultSeverity;
+  // `block` is the path and arming rule word for deny. An unknown value holds (never weaker than the list's own
+  // default): a typo in a deny rule must not let the command through, nor one in a warn rule leave it unheld.
+  let severity: CommandRule["severity"];
+  if (raw.severity === undefined) severity = defaultSeverity;
+  else if (raw.severity === "warn" || raw.severity === "confirm" || raw.severity === "deny") severity = raw.severity;
+  else if (raw.severity === "block") severity = "deny";
+  else {
+    severity = defaultSeverity === "deny" ? "deny" : "confirm";
+    warnings.push(unknownRuleValue("command rule", id, "severity", raw.severity, ["warn", "confirm", "deny", "block"], severity));
+  }
   // Dialog is the default for a confirm rule (the reason one writes such a rule); hold restores steer semantics.
   // A deny or warn rule cannot carry an action: there is nothing to prompt and nothing to steer differently, and a
   // stray action on one would misreport in traces as a dialog rule.
@@ -643,12 +651,12 @@ function parseCommandRule(raw: unknown, defaultSeverity: CommandRule["severity"]
   return { id, pattern, severity, ...(action ? { action } : {}), ...(message ? { message } : {}), ...(caseSensitive ? { caseSensitive } : {}) };
 }
 
-function parseCommandRules(raw: unknown, defaultSeverity: CommandRule["severity"]): CommandRule[] {
+function parseCommandRules(raw: unknown, defaultSeverity: CommandRule["severity"], warnings: string[]): CommandRule[] {
   if (!Array.isArray(raw)) return [];
   const ids = new Set<string>();
   const rules: CommandRule[] = [];
   for (const item of raw) {
-    const rule = parseCommandRule(item, defaultSeverity);
+    const rule = parseCommandRule(item, defaultSeverity, warnings);
     if (!rule || ids.has(rule.id)) continue;
     ids.add(rule.id);
     rules.push(rule);
@@ -667,7 +675,7 @@ function parseExemptRules(raw: unknown): string[] {
 
 const PATH_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file"]);
 
-function parsePathRule(raw: unknown): PathRule | undefined {
+function parsePathRule(raw: unknown, warnings: string[]): PathRule | undefined {
   if (!isObject(raw)) return undefined;
   const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : undefined;
   const paths = globList(raw.paths, []);
@@ -676,18 +684,25 @@ function parsePathRule(raw: unknown): PathRule | undefined {
   const requested = Array.isArray(raw.tools) ? raw.tools.filter((tool): tool is string => typeof tool === "string" && tool.trim().length > 0).map(tool => tool.trim()) : ["*"];
   const tools = requested.length > 0 ? requested : ["*"];
   const access = raw.access === "none" || raw.access === "read" || raw.access === "write" ? raw.access : "none";
-  const action = raw.action === "warn" || raw.action === "confirm" || raw.action === "block" ? raw.action : "note";
+  let action: PathRule["action"];
+  if (raw.action === undefined) action = "note";
+  else if (raw.action === "note" || raw.action === "warn" || raw.action === "confirm" || raw.action === "block") action = raw.action;
+  else if (raw.action === "deny") action = "block";
+  else {
+    action = "confirm";
+    warnings.push(unknownRuleValue("path rule", id, "action", raw.action, ["note", "warn", "confirm", "block", "deny"], action));
+  }
   const message = typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : undefined;
   const onlyIfExists = raw.onlyIfExists === false ? false : true;
   return { id, paths, ...(raw.regex === true ? { regex: true } : {}), access, tools, action, ...(message ? { message } : {}), ...(onlyIfExists === false ? { onlyIfExists: false } : {}) };
 }
 
-function parsePathRules(raw: unknown): PathRule[] {
+function parsePathRules(raw: unknown, warnings: string[]): PathRule[] {
   if (!Array.isArray(raw)) return [];
   const ids = new Set<string>();
   const rules: PathRule[] = [];
   for (const item of raw) {
-    const rule = parsePathRule(item);
+    const rule = parsePathRule(item, warnings);
     // A tool name that is neither a structured surface nor "*" is inert on every surface; keep it only when it means something.
     if (!rule || ids.has(rule.id) || !rule.tools.some(tool => tool === "*" || PATH_TOOL_NAMES.has(tool))) continue;
     ids.add(rule.id);
@@ -696,21 +711,25 @@ function parsePathRules(raw: unknown): PathRule[] {
   return rules;
 }
 
-/** Parse a duration string ("10m", "30s", "2h") or number (ms) into milliseconds. */
-function parseDuration(raw: unknown, fallback: number): number {
-  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return raw;
+/**
+ * An arming duration in milliseconds: a number is milliseconds; a string takes `ms`, `s`, `m`, or `h`, and a string
+ * without a unit means minutes. Zero, negative, and unreadable values give the fallback. The one parser for `arms.for`.
+ */
+export function parseDuration(raw: unknown, fallback: number): number {
+  if (typeof raw === "number") return Number.isFinite(raw) && raw > 0 ? raw : fallback;
   if (typeof raw !== "string") return fallback;
   const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/.exec(raw.trim());
   if (!match) return fallback;
   const value = parseFloat(match[1]!);
   const unit = match[2] ?? "m";
-  return value * (unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000);
+  const ms = value * (unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000);
+  return ms > 0 ? ms : fallback;
 }
 
-const DEFAULT_ARMING_DURATION = 600_000; // 10 minutes
+export const DEFAULT_ARMING_DURATION = 600_000; // 10 minutes
 const ARMING_TOOLS = new Set(["write", "edit"]);
 
-function parseArmingRule(raw: unknown): ArmingRule | undefined {
+function parseArmingRule(raw: unknown, warnings: string[]): ArmingRule | undefined {
   if (!isObject(raw)) return undefined;
   const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : undefined;
   const whenRaw = isObject(raw.when) ? raw.when : undefined;
@@ -719,8 +738,14 @@ function parseArmingRule(raw: unknown): ArmingRule | undefined {
   const armsRaw = isObject(raw.arms) ? raw.arms as Record<string, unknown> : {};
   const command = typeof armsRaw.command === "string" && armsRaw.command.trim() ? armsRaw.command : undefined;
   if (!command) return undefined;
-  const action = raw.action === "confirm" || raw.action === "hold" || raw.action === "block" ? raw.action : undefined;
-  if (!action) return undefined;
+  if (raw.action === undefined) return undefined;
+  let action: ArmingRule["action"];
+  if (raw.action === "confirm" || raw.action === "hold" || raw.action === "block") action = raw.action;
+  else if (raw.action === "deny") action = "block";
+  else {
+    action = "confirm";
+    warnings.push(unknownRuleValue("arming rule", id, "action", raw.action, ["confirm", "hold", "block", "deny"], action));
+  }
   const toolsProvided = Array.isArray(whenRaw?.tools) && whenRaw!.tools.length > 0;
   const tools = toolsProvided
     ? (whenRaw!.tools as unknown[]).filter((t): t is string => typeof t === "string" && ARMING_TOOLS.has(t))
@@ -728,6 +753,11 @@ function parseArmingRule(raw: unknown): ArmingRule | undefined {
   // A when.tools that filters to nothing (e.g. ["bash"]) is inert: no tool would ever arm it.
   if (toolsProvided && tools.length === 0) return undefined;
   const forMs = parseDuration(armsRaw.for, DEFAULT_ARMING_DURATION);
+  // A bare number reads as milliseconds and a bare string as minutes; both surprise someone, so both are named.
+  if (typeof armsRaw.for === "string" && /^\d+(?:\.\d+)?$/.test(armsRaw.for.trim())) {
+    warnings.push(`arming rule "${id}": arms.for "${armsRaw.for.trim()}" has no unit and is read as minutes; write it with ms, s, m, or h`);
+  }
+  if (forMs < 1000) warnings.push(`arming rule "${id}": arms for ${forMs} ms, under one second; a number in arms.for is milliseconds, "10m" is ten minutes`);
   const caseSensitive = typeof armsRaw.caseSensitive === "boolean" ? armsRaw.caseSensitive : false;
   const message = typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : undefined;
   const regex = whenRaw?.regex === true;
@@ -740,12 +770,12 @@ function parseArmingRule(raw: unknown): ArmingRule | undefined {
   };
 }
 
-function parseArmingRules(raw: unknown): ArmingRule[] {
+function parseArmingRules(raw: unknown, warnings: string[]): ArmingRule[] {
   if (!Array.isArray(raw)) return [];
   const ids = new Set<string>();
   const rules: ArmingRule[] = [];
   for (const item of raw) {
-    const rule = parseArmingRule(item);
+    const rule = parseArmingRule(item, warnings);
     if (!rule || ids.has(rule.id)) continue;
     ids.add(rule.id);
     rules.push(rule);
@@ -753,34 +783,68 @@ function parseArmingRules(raw: unknown): ArmingRule[] {
   return rules;
 }
 
-function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, source: "user" | "project"): ActionGuardConfig {
+/** One config warning for a project value that would weaken the action guard or security. */
+function projectIgnored(key: string, value: unknown, kept: unknown): string {
+  return `project file: ${key} ${JSON.stringify(value)} is ignored; a project file may make the action guard and security stricter, not weaker, so the user value ${JSON.stringify(kept)} applies`;
+}
+
+/** A project switch may turn a guard on, never off. */
+function projectSwitch(key: string, value: unknown, base: boolean, warnings: string[]): boolean {
+  if (base && value === false) { warnings.push(projectIgnored(key, false, true)); return true; }
+  return boolean(value, base);
+}
+
+/** A project threshold may be lowered (stricter), never raised above the user's. */
+function projectProbability(key: string, value: unknown, base: number, warnings: string[]): number {
+  const parsed = probability(value, base);
+  if (parsed <= base) return parsed;
+  warnings.push(projectIgnored(key, parsed, base));
+  return base;
+}
+
+function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, source: "user" | "project", warnings: string[]): ActionGuardConfig {
   const withTimeout = { ...base, timeoutMs };
   if (!isObject(raw)) return withTimeout;
-  const tools = Array.isArray(raw.tools) ? raw.tools.filter((tool): tool is string => typeof tool === "string" && tool.trim().length > 0) : base.tools;
+  const project = source === "project";
+  const listed = Array.isArray(raw.tools) ? raw.tools.filter((tool): tool is string => typeof tool === "string" && tool.trim().length > 0) : base.tools;
+  // A project adds guarded tools; one it leaves out stays guarded.
+  const dropped = project ? base.tools.filter(tool => !listed.includes(tool)) : [];
+  if (dropped.length) warnings.push(`project file: action.tools leaves out ${dropped.join(", ")}; a project file may add tools but not remove them, so they stay guarded`);
+  const tools = project ? [...base.tools, ...listed.filter(tool => !base.tools.includes(tool))] : listed;
+  const irreversibleRaw = isObject(raw.irreversible) ? raw.irreversible : undefined;
+  const irreversible = project && irreversibleRaw ? (() => {
+    const warn = projectProbability("action.irreversible.warn", irreversibleRaw.warn, base.irreversible.warn, warnings);
+    const confirm = projectProbability("action.irreversible.confirm", irreversibleRaw.confirm, base.irreversible.confirm, warnings);
+    return { warn: Math.min(warn, confirm), confirm };
+  })() : threshold(raw.irreversible, base.irreversible);
+  let failOpen = boolean(raw.failOpen, base.failOpen);
+  if (project && failOpen && !base.failOpen) { warnings.push(projectIgnored("action.failOpen", true, false)); failOpen = false; }
+  const shouldProceed = isObject(raw.shouldProceed) ? raw.shouldProceed : {};
   return {
-    enabled: boolean(raw.enabled, base.enabled),
+    enabled: project ? projectSwitch("action.enabled", raw.enabled, base.enabled, warnings) : boolean(raw.enabled, base.enabled),
     tools,
-    failOpen: boolean(raw.failOpen, base.failOpen),
+    failOpen,
     timeoutMs,
-    irreversible: threshold(raw.irreversible, base.irreversible),
+    irreversible,
     offTask: offTaskThreshold(raw.offTask, base.offTask),
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
     visibleMismatch: Math.min(probability(raw.visibleMismatch, base.visibleMismatch), probability(raw.intentMismatch, base.intentMismatch)),
     intentTraceOnly: raw.intentTraceOnly === "invisible" || raw.intentTraceOnly === "all" || raw.intentTraceOnly === "none" ? raw.intentTraceOnly : base.intentTraceOnly,
     shouldProceed: {
-      hold: probability((raw.shouldProceed as { hold?: number } | undefined)?.hold, base.shouldProceed.hold),
-      steer: boolean((raw.shouldProceed as { steer?: boolean } | undefined)?.steer, base.shouldProceed.steer),
+      // `hold` is the pre-1.0 name of `threshold`; files that still set it keep working through 1.x.
+      threshold: probability(shouldProceed.threshold ?? shouldProceed.hold, base.shouldProceed.threshold),
+      steer: boolean(shouldProceed.steer, base.shouldProceed.steer),
     },
     feedbackLog: boolean(raw.feedbackLog, base.feedbackLog),
     // Only the user file declares these; a project file cannot add, edit, or remove them. The base (already the
     // user's rules when a project file layers on top) is carried through, so a project "action" block cannot wipe them.
-    commandRules: source === "user" ? parseCommandRules(raw.commandRules, "warn") : base.commandRules,
-    commandDenyRules: source === "user" ? parseCommandRules(raw.commandDenyRules, "deny") : base.commandDenyRules,
+    commandRules: source === "user" ? parseCommandRules(raw.commandRules, "warn", warnings) : base.commandRules,
+    commandDenyRules: source === "user" ? parseCommandRules(raw.commandDenyRules, "deny", warnings) : base.commandDenyRules,
     exemptRules: source === "user" ? parseExemptRules(raw.exemptRules) : base.exemptRules,
     // Path rules are user-declared security policy: a project file cannot add, edit, or remove them either.
-    pathRules: source === "user" ? parsePathRules(raw.pathRules) : base.pathRules,
+    pathRules: source === "user" ? parsePathRules(raw.pathRules, warnings) : base.pathRules,
     // Arming rules are user-declared security policy: same gate.
-    armingRules: source === "user" ? parseArmingRules(raw.armingRules) : base.armingRules,
+    armingRules: source === "user" ? parseArmingRules(raw.armingRules, warnings) : base.armingRules,
     escalationThreshold: probability(raw.escalationThreshold, base.escalationThreshold),
     floor: source === "user" && (raw.floor === "level" || raw.floor === "evidence") ? raw.floor : base.floor,
   };
@@ -927,7 +991,7 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
   return {
     compaction: applyCompaction(base.compaction, raw.compaction, source),
     waste: applyWaste(base.waste, raw.waste),
@@ -937,13 +1001,13 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
     // A project file may switch notifications off or on, but never names a command to run.
     notify: applyNotify(base.notify, raw.notify, source === "user"),
     judge: applyJudge(base.judge, raw.judge),
-    action: applyAction(base.action, raw.action, timeoutMs, source),
+    action: applyAction(base.action, raw.action, timeoutMs, source, warnings),
     stuck: applyStuck(base.stuck, raw.stuck),
     done: applyDone(base.done, raw.done),
     slop: applySlop(base.slop, raw.slop),
     security: isObject(raw.security) ? {
-      enabled: boolean(raw.security.enabled, base.security.enabled),
-      threshold: probability(raw.security.threshold, base.security.threshold),
+      enabled: source === "project" ? projectSwitch("security.enabled", raw.security.enabled, base.security.enabled, warnings) : boolean(raw.security.enabled, base.security.enabled),
+      threshold: source === "project" ? projectProbability("security.threshold", raw.security.threshold, base.security.threshold, warnings) : probability(raw.security.threshold, base.security.threshold),
       // Only the user file can turn masking off: a repository must not unmask credentials in its own agent's output.
       maskOutput: source === "user" ? boolean(raw.security.maskOutput, base.security.maskOutput) : base.security.maskOutput,
     } : base.security,
@@ -976,8 +1040,10 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
 /** Unknown keys and invalid values fall back to the base; nothing throws on a malformed file. */
 export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConfig {
   if (!isObject(raw)) return base;
+  const warnings: string[] = [];
   const shared = applyShared(base, raw);
   const backend = resolveJudgmentBackend(raw.typesafeBackend);
+  const guards = applyGuards(base, raw, shared.timeoutMs, "user", warnings);
   return {
     enabled: boolean(raw.enabled, base.enabled),
     typesafe: boolean(raw.typesafe, base.typesafe),
@@ -985,7 +1051,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     backendRefusal: backend.backendRefusal,
     mode: isMode(raw.mode) ? raw.mode : base.mode,
     ...shared,
-    ...applyGuards(base, raw, shared.timeoutMs, "user"),
+    ...guards,
     widget: applyWidget(base.widget, raw.widget),
     steerVisible: boolean(raw.steerVisible, base.steerVisible),
     notices: boolean(raw.notices, base.notices),
@@ -994,6 +1060,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     learning: applyLearning(base.learning, raw.learning),
     conscience: applyConscience(base.conscience, raw.conscience),
     prefs: applyPrefs(base.prefs, raw.prefs),
+    warnings: [...(base.warnings ?? []), ...warnings],
   };
 }
 
@@ -1046,11 +1113,9 @@ function applySteers(base: SteersConfig, raw: unknown): SteersConfig {
 function applyLearning(base: LearningConfig, raw: unknown): LearningConfig {
   if (!isObject(raw)) return base;
   return {
-    adaptiveThresholds: boolean(raw.adaptiveThresholds, base.adaptiveThresholds),
     patternAnalysis: boolean(raw.patternAnalysis, base.patternAnalysis),
-    minHoldsForAdaptive: Math.max(5, positiveInteger(raw.minHoldsForAdaptive, base.minHoldsForAdaptive)),
-    adaptationRate: Math.max(0, Math.min(1, probability(raw.adaptationRate, base.adaptationRate))),
-    retentionDays: Math.max(0, positiveInteger(raw.retentionDays, base.retentionDays)),
+    // 0 keeps every record: no pruning.
+    retentionDays: typeof raw.retentionDays === "number" && Number.isSafeInteger(raw.retentionDays) && raw.retentionDays >= 0 ? raw.retentionDays : base.retentionDays,
   };
 }
 
@@ -1077,14 +1142,19 @@ function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig
     maxLoadedBytes: Math.max(1024, Math.min(262144, typeof raw.maxLoadedBytes === "number" ? raw.maxLoadedBytes : base.maxLoadedBytes)),
     recommendThreshold: Math.max(0, Math.min(1, typeof raw.recommendThreshold === "number" ? raw.recommendThreshold : base.recommendThreshold)),
     advanceThreshold: Math.max(0, Math.min(1, typeof raw.advanceThreshold === "number" ? raw.advanceThreshold : base.advanceThreshold)),
-    loadThreshold: Math.max(0, Math.min(1, typeof raw.loadThreshold === "number" ? raw.loadThreshold : base.loadThreshold)),
   };
 }
 
-/** Project files may tune the guards but cannot grant TypeSafe consent, change the mode, or raise budgets. */
+/**
+ * Project files may tune the guards but cannot grant TypeSafe consent, change the mode, or raise budgets. The action
+ * guard and security only get stricter: a value that would weaken them is ignored with one config warning.
+ */
 export function applyProjectOverrides(base: WardenConfig, raw: unknown): WardenConfig {
   if (!isObject(raw)) return base;
-  return { ...base, enabled: boolean(raw.enabled, base.enabled), ...applyGuards(base, raw, base.timeoutMs, "project"), prefs: applyPrefs(base.prefs, raw.prefs) };
+  const warnings: string[] = [];
+  const enabled = projectSwitch("enabled", raw.enabled, base.enabled, warnings);
+  const guards = applyGuards(base, raw, base.timeoutMs, "project", warnings);
+  return { ...base, enabled, ...guards, prefs: applyPrefs(base.prefs, raw.prefs), warnings: [...(base.warnings ?? []), ...warnings] };
 }
 
 export interface LoadOptions {

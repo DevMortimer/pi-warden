@@ -43,7 +43,6 @@ const fakeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceConfig
   maxLoadedBytes: 65536,
   recommendThreshold: 0.80,
   advanceThreshold: 0.70,
-  loadThreshold: 1.0,
   ...overrides,
 });
 
@@ -795,7 +794,7 @@ test("conscience config defaults: recommend mode, tools enabled, thresholds at 1
   assert.equal(config.maxLoadedBytes, 65536);
   assert.equal(config.recommendThreshold, 0.80);
   assert.equal(config.advanceThreshold, 0.70);
-  assert.equal(config.loadThreshold, 1.0);
+  assert.equal("loadThreshold" in config, false, "conscience.loadThreshold was removed: nothing read it");
 });
 
 /* ─── advanceThreshold gate ─────────────────────────────────────────── */
