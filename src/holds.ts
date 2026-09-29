@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { writeFileAtomic } from "./atomic.js";
 import { userConfigPath } from "./config.js";
 import type { WardenMode } from "./config.js";
 import { defaultHostDirs } from "./host-dirs.js";
@@ -300,7 +300,10 @@ export function holdLogPath(sessionId: string, at = new Date(), dirs = defaultHo
   return join(dirname(userConfigPath(dirs)), "holds", `${day}-${sessionFileId(sessionId)}.jsonl`);
 }
 
-/** Rewrites the session's records as JSON lines, owner-only, one write at a time so outcomes never interleave. */
+/**
+ * Rewrites the session's records as JSON lines, owner-only, one write at a time so outcomes never interleave. The
+ * rewrite goes through a rename: a reader during an in-place rewrite could get a line cut short.
+ */
 export class HoldLog {
   private queue: Promise<void> = Promise.resolve();
   private failure: string | undefined;
@@ -310,8 +313,7 @@ export class HoldLog {
   save(records: readonly CallRecord[]): Promise<void> {
     const text = records.map(record => JSON.stringify(record)).join("\n") + (records.length ? "\n" : "");
     this.queue = this.queue.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-      await writeFile(this.path, text, { mode: 0o600 });
+      await writeFileAtomic(this.path, text);
       this.failure = undefined;
     }).catch(error => { this.failure = error instanceof Error ? error.message : String(error); });
     return this.queue;
