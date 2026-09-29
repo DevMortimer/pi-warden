@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.78.0
+
 ### Added
 
 - Relevance compaction (`compaction`): experimental, off by default, not recommended. In a replay of 48 recorded compactions its summary was 4.7 times the size of Pi's at the median and kept whole only 1 of the 34 files the agent read again. Try it or improve it; changes that make it smaller or keep what the agent goes back for are welcome. At compaction, pi-warden can write the summary instead of Pi's model. User messages and assistant text stay word for word, thinking is left out, and Jev scores each tool call with its result, each extension message, and each part of the previous summary against the current task; kept units go in verbatim, tool output inside a fence marked untrusted, and the rest become one line each. Every kept section is fenced, and a `<` that starts a `summary` tag in kept text is written `&lt;`, so kept text cannot end Pi's summary wrapper. When the security check is on, results it flagged as a possible prompt injection are never kept verbatim; results the context saver compressed keep their excerpt. `compaction.enabled` is user file only; a project may tune the other keys. One compaction sends at most `compaction.maxRequests` (12) requests sends nothing when its requests would leave fewer than 50 of the session's `maxRequests`, and stops before any request when fewer than 50 remain, so it never turns judgments off for the guards; `compaction.timeoutMs` bounds the whole compaction and the global `timeoutMs` each request. Any failure, timeout, abort, missing consent, a provider in `compaction.skipProviders` (default `claude-bridge`), a request limit, or a summary over `compaction.maxSummaryTokens` lets Pi's own summary run; the hook never cancels a compaction. One trace entry per compaction and a line in `/warden status`.
