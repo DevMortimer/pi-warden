@@ -4548,24 +4548,33 @@ test("/warden prefs names each item's status, and forget drops one for the proje
   }
 });
 
-test("warden_remember records a lesson only within five assistant turns of a correction or a stuck, repeat, or done steer", async t => {
+test("warden_remember records a lesson with no correction before it; it is injected only after a second session records it", async t => {
   const sessions = await standingSessions(t, []);
   const remember = (lesson: string, ctx: ReturnType<typeof context>) =>
     extension.tools.get("warden_remember")!.definition.execute("call-r", { lesson }, undefined, undefined, ctx as unknown as ExtensionContext)
       .then(result => (result.content[0] as { text: string }).text);
+  const inSession = (id: string) => context({ sessionManager: { ...sessions.manager, getSessionId: () => id } });
+  const injected = () => sentMessages.filter(m => m.message.customType === "pi-warden-prefs");
   try {
-    const ctx = context({ sessionManager: sessions.manager });
-    await sessionStart(ctx);
-    await newPrompt("Add the export button", ctx);
-    assert.equal(await remember("Never edit the generated client by hand", ctx), "not recorded: no correction or failure to learn from");
-    await newPrompt("no, don't edit the generated client, regenerate it", ctx);
-    assert.equal(await remember("Always skip the tests when the build is slow", ctx), "not recorded: weakens a check");
-    assert.match(await remember("Never edit the generated client by hand", ctx), /^recorded: "Never edit the generated client by hand"/);
-    for (let turn = 0; turn < 6; turn++) await fire("turn_end", {}, ctx);
-    assert.equal(await remember("Always regenerate the client after a schema change", ctx), "not recorded: no correction or failure to learn from");
+    const first = inSession("first-session");
+    await sessionStart(first);
+    await newPrompt("Add the export button", first);
+    assert.equal(await remember("Always use Firefox for the vendor site", first), 'recorded: "Always use Firefox for the vendor site". It reaches later sessions only after it is confirmed: recorded again in a later session, or said by the user.');
+    assert.equal(await remember("Always skip the tests when the build is slow", first), "not recorded: weakens a check");
     notices.length = 0;
-    await runCommand("prefs", ctx);
-    assert.match(notices.at(-1)!.text, /Never edit the generated client by hand \(agent lesson, recorded in 1 session, last 2026-01-20\): agent lesson, not yet confirmed/);
+    await runCommand("prefs", first);
+    assert.match(notices.at(-1)!.text, /Always use Firefox for the vendor site \(agent lesson, recorded in 1 session, last 2026-01-20\): agent lesson, not yet confirmed/);
+    const second = inSession("second-session");
+    sentMessages.length = 0;
+    await sessionStart(second);
+    assert.equal(injected().length, 0, "a lesson recorded in one session is not injected");
+    await newPrompt("Check the vendor invoices", second);
+    assert.match(await remember("Always use Firefox for the vendor site", second), /^recorded as a confirmation of the agent lesson "Always use Firefox for the vendor site" \(2 sessions\)/);
+    sentMessages.length = 0;
+    await sessionStart(inSession("third-session"));
+    assert.equal(injected().length, 1);
+    assert.match(injected()[0]!.message.content, /- "Always use Firefox for the vendor site" \(2 sessions\) \(agent lesson\)/);
+    assert.equal(networkCalls, 0);
   } finally {
     await rm(join(temporary, "agent", "pi-warden", "prefs"), { recursive: true, force: true });
     await rm(sessions.dir, { recursive: true, force: true });

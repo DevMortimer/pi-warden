@@ -35,8 +35,6 @@ export const CLAUSE_CHARS = 160;
 export const LESSON_CHARS = CLAUSE_CHARS;
 /** The whole injected message, lead and closing sentence included. */
 export const MESSAGE_CHARS = 400;
-/** An agent lesson is accepted only this many assistant turns after a correction or a stuck, repeat, or done-check steer. */
-export const LESSON_TURNS = 5;
 /** Stored lessons per project; the oldest go first. */
 const MAX_LESSONS = 50;
 export const SIMILARITY = 0.6;
@@ -221,14 +219,6 @@ function standingClauses(text: string): string[] {
 /** The preference clauses in one user message, redacted, each at most CLAUSE_CHARS characters. */
 export function extractPreferences(text: string): string[] {
   return standingClauses(text).filter(substantive).map(tidy);
-}
-
-/**
- * The user corrected the agent: a typed message in one of the standing forms, temporary holds included ("don't commit
- * yet" corrects the agent as much as "never commit" does).
- */
-export function isCorrection(text: string): boolean {
-  return standingClauses(text).length > 0;
 }
 
 /** "Do use subagents here", "feel free to push", "you can skip it": a permission that lifts an earlier prohibition. */
@@ -786,25 +776,20 @@ export function forgetPref(store: PrefsStore, item: PrefItem, now = Date.now()):
   };
 }
 
-export const NO_LESSON_SIGNAL = "not recorded: no correction or failure to learn from";
-
 export interface LessonInput {
   lesson: string;
   session: string;
   now: number;
-  /** A user correction, or a stuck, repeat, or done-check steer, within the last LESSON_TURNS assistant turns of this run. */
-  signal: boolean;
   scan: Pick<PrefsScan, "prefs" | "candidates" | "counts">;
   store: PrefsStore;
 }
 
 /**
- * The `warden_remember` gate. A lesson is recorded only after a correction or a failure, only in a standing form, not
- * task-bound, keeping every check, and within LESSON_CHARS. One that repeats a stored lesson confirms it; one that
- * repeats a listed user preference is counted for that preference. `store` is undefined when nothing changes.
+ * The `warden_remember` gate. A lesson is recorded only in a standing form, not task-bound, keeping every check, and
+ * within LESSON_CHARS. One that repeats a stored lesson confirms it; one that repeats a listed user preference is
+ * counted for that preference. `store` is undefined when nothing changes.
  */
 export function recordLesson(input: LessonInput): { reply: string; store?: PrefsStore } {
-  if (!input.signal) return { reply: NO_LESSON_SIGNAL };
   const raw = input.lesson.trim();
   if (raw.length > LESSON_CHARS) return { reply: `not recorded: longer than ${LESSON_CHARS} characters` };
   const clauses = extractPreferences(raw);
