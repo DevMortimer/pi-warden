@@ -149,12 +149,12 @@ test("(b) level mode: destructive hit, no judge → confirm as today", async () 
   assert.equal(verdict.level, "confirm");
 });
 
-test("(c) evidence mode: destructive hit, judge present, Jev 0.85 → confirm via irreversible", async () => {
+test("(c) evidence mode: destructive hit, judge present, Jev 0.92 → confirm via irreversible", async () => {
   const config = defaultConfig().action;
-  const j = fakeJudge({ irreversible: 0.85 });
+  const j = fakeJudge({ irreversible: 0.92 });
   const verdict = await evaluateAction({ tool: "bash", input: { command: "git reset --hard HEAD~1" }, cwd, task: "undo last commit" }, { config, judge: j });
   assert.equal(verdict.level, "confirm");
-  assert.ok(verdict.reasons.some(r => /irreversible 0\.85/.test(r)));
+  assert.ok(verdict.reasons.some(r => /irreversible 0\.92/.test(r)));
 });
 
 test("(d) user command rule severity destructive, judge present, Jev 0.1 → confirm (user rule wins)", async () => {

@@ -11,6 +11,24 @@ How to keep this current: add the entry in the same pull request as the change, 
 - Relevance compaction (`compaction`): experimental, off by default, not recommended. In a replay of 48 recorded compactions its summary was 4.7 times the size of Pi's at the median and kept whole only 1 of the 34 files the agent read again. Try it or improve it; changes that make it smaller or keep what the agent goes back for are welcome. At compaction, pi-warden can write the summary instead of Pi's model. User messages and assistant text stay word for word, thinking is left out, and Jev scores each tool call with its result, each extension message, and each part of the previous summary against the current task; kept units go in verbatim, tool output inside a fence marked untrusted, and the rest become one line each. Every kept section is fenced, and a `<` that starts a `summary` tag in kept text is written `&lt;`, so kept text cannot end Pi's summary wrapper. When the security check is on, results it flagged as a possible prompt injection are never kept verbatim; results the context saver compressed keep their excerpt. `compaction.enabled` is user file only; a project may tune the other keys. One compaction sends at most `compaction.maxRequests` (12) requests sends nothing when its requests would leave fewer than 50 of the session's `maxRequests`, and stops before any request when fewer than 50 remain, so it never turns judgments off for the guards; `compaction.timeoutMs` bounds the whole compaction and the global `timeoutMs` each request. Any failure, timeout, abort, missing consent, a provider in `compaction.skipProviders` (default `claude-bridge`), a request limit, or a summary over `compaction.maxSummaryTokens` lets Pi's own summary run; the hook never cancels a compaction. One trace entry per compaction and a line in `/warden status`.
 - `scripts/relevance-replay.mjs` replays recorded compactions through the relevance compaction and compares size, re-fetch coverage, and cost with Pi's summaries. First measurement in `docs/guards.md` → Calibration.
 
+## 0.77.0
+
+### Added
+
+- Context filter (beta, off by default). With `"context": { "filter": { "enabled": true } }`, an output that would get the generic head/diagnostic/tail excerpt is split at line boundaries and Jev scores each chunk for the agent's current task; chunks scoring at least `minScore` (1.5) are kept word for word in original order, up to `maxKeptChars` (6000) with the last 1000 characters always kept, and each gap is marked. Parser excerpts, `all`, duplicates, and repeated runs are unchanged. Any error, a timeout (`timeoutMs`, 4000), judgments off, an exhausted request budget, or no passing chunk keeps today's excerpt. `/warden status`, the trace, and the new offline `scripts/filter-report.mjs` count filtered and excerpt outputs apart (count, recalls, kept size, requests, time, fallbacks), so a trial can be judged.
+
+## 0.76.0
+
+### Changed
+
+- The intent-mismatch verdict is trace-only by default: `action.intentTraceOnly` is `"all"` instead of `"invisible"`, so a mismatch on a call with a visible effect (a commit, push, merge, tag, reset, pull request, release, publish, install, launched program, or a message sent from a script) no longer reaches the agent. The score, the trace entry, the `/warden status` counters, and the `visibleMismatch` and `intentMismatch` thresholds are unchanged; hand labels on 140 sampled calls, blind to the score, put the score's separation of a differing call at AUROC 0.815, but of the 37 steers that would reach the agent, 36 were calls the plan or the user's latest request had asked for. Restore the old delivery with `"action": { "intentTraceOnly": "invisible" }`.
+
+## 0.75.0
+
+### Changed
+
+- The default `action.irreversible.confirm` (the hold threshold) is 0.9 instead of 0.7, so a judge-only hold waits for the confidence the recorded action-guard corpus shows is safe: the judge's error rate falls from 15% below confidence 0.8 to under 1% above it, and a 0.9 cutoff chosen on one half of the corpus removed about 52 false alarms on the other half without losing a true catch. A call the judge scores 0.5 to 0.9 now warns instead of holding; pattern holds and user or project overrides are unchanged. Restore the old behaviour with `"action": { "irreversible": { "confirm": 0.7 } }`.
+
 ## 0.74.1
 
 ### Fixed

@@ -20,9 +20,30 @@ export interface ContextLedgerSnapshot {
   /** Times the agent went back to a stored full output after compression, by kind of access. */
   recalls: number;
   recallsFull: number;
+  /** Head/diagnostic/tail excerpts and context-filter outputs, kept apart so the filter trial can be judged against the excerpt. */
+  excerpt: CompressionCounts;
+  filter: CompressionCounts & FilterCounts;
+}
+
+export interface CompressionCounts {
+  count: number;
+  recalls: number;
+  recallsFull: number;
+}
+
+export interface FilterCounts {
+  /** Characters of the original output the filtered outputs kept. */
+  keptChars: number;
+  /** Requests and wall-clock time the filter spent, fallbacks included. */
+  requests: number;
+  ms: number;
+  /** Outputs that got the excerpt instead, by reason. */
+  fallbacks: Record<string, number>;
 }
 
 export type RecallKind = "full" | "scoped";
+/** Which excerpt replaced the output; a parser excerpt and a duplicate or repeat are neither kind. */
+export type CompressionKind = "excerpt" | "filtered" | "parser";
 
 /** Serialized tool input escapes backslashes, so a Windows path must also match in its JSON form. */
 function mentions(text: string, path: string): boolean {
@@ -41,7 +62,9 @@ export class ContextLedger {
   private tokenTurnsSaved = 0;
   private recalls = 0;
   private recallsFull = 0;
-  private readonly stored = new Map<string, { recalled: boolean; restored: boolean; saved: number; tool: string | undefined; bytes: number | undefined }>();
+  private excerpt: CompressionCounts = { count: 0, recalls: 0, recallsFull: 0 };
+  private filter: CompressionCounts & FilterCounts = { count: 0, recalls: 0, recallsFull: 0, keptChars: 0, requests: 0, ms: 0, fallbacks: {} };
+  private readonly stored = new Map<string, { recalled: boolean; restored: boolean; saved: number; tool: string | undefined; bytes: number | undefined; kind?: CompressionKind | undefined }>();
   /** Every sizeable text result seen this session, by content key, with the tool that produced it and its stored copy if any. */
   private readonly seen = new Map<string, { tool: string; path?: string }>();
 
@@ -50,11 +73,20 @@ export class ContextLedger {
   }
 
   /** `source` is the tool that produced the output and the full output's size in bytes; optional for callers that do not know them. */
-  record(path: string, bytesSaved: number, source?: { tool: string; bytes: number }): void {
+  record(path: string, bytesSaved: number, source?: { tool: string; bytes: number; kind?: CompressionKind; keptChars?: number }): void {
     this.compressed++;
     this.bytesSaved += bytesSaved;
     this.bytesAbsent += bytesSaved;
-    this.stored.set(path, { recalled: false, restored: false, saved: bytesSaved, tool: source?.tool, bytes: source?.bytes });
+    if (source?.kind === "excerpt") this.excerpt.count++;
+    if (source?.kind === "filtered") { this.filter.count++; this.filter.keptChars += source.keptChars ?? 0; }
+    this.stored.set(path, { recalled: false, restored: false, saved: bytesSaved, tool: source?.tool, bytes: source?.bytes, kind: source?.kind });
+  }
+
+  /** What one filter attempt cost, and why it fell back to the excerpt when it did. */
+  filterSpent(requests: number, ms: number, fallback?: string): void {
+    this.filter.requests += requests;
+    this.filter.ms += ms;
+    if (fallback) this.filter.fallbacks[fallback] = (this.filter.fallbacks[fallback] ?? 0) + 1;
   }
 
   /** Remember a result's identity so a later identical result can be dropped. `path` is set when a full copy exists. */
@@ -100,7 +132,13 @@ export class ContextLedger {
   noteAccess(text: string, kind: RecallKind = "full"): string | undefined {
     for (const [path, state] of this.stored) {
       if (!mentions(text, path)) continue;
-      if (!state.recalled) { state.recalled = true; this.recalls++; if (kind === "full") this.recallsFull++; }
+      if (!state.recalled) {
+        state.recalled = true;
+        this.recalls++;
+        if (kind === "full") this.recallsFull++;
+        const counts = state.kind === "excerpt" ? this.excerpt : state.kind === "filtered" ? this.filter : undefined;
+        if (counts) { counts.recalls++; if (kind === "full") counts.recallsFull++; }
+      }
       if (kind === "full" && !state.restored) { state.restored = true; this.bytesAbsent -= state.saved; }
       return path;
     }
@@ -108,7 +146,7 @@ export class ContextLedger {
   }
 
   snapshot(): ContextLedgerSnapshot {
-    return { large: this.large, compressed: this.compressed, duplicates: this.duplicates, repeats: this.repeats, bytesSaved: this.bytesSaved, turns: this.turns, tokenTurnsSaved: this.tokenTurnsSaved, recalls: this.recalls, recallsFull: this.recallsFull };
+    return { large: this.large, compressed: this.compressed, duplicates: this.duplicates, repeats: this.repeats, bytesSaved: this.bytesSaved, turns: this.turns, tokenTurnsSaved: this.tokenTurnsSaved, recalls: this.recalls, recallsFull: this.recallsFull, excerpt: { ...this.excerpt }, filter: { ...this.filter, fallbacks: { ...this.filter.fallbacks } } };
   }
 
   /** Paths to temp files for cleanup at session start. Internal only — paths never leave the machine. */
@@ -123,6 +161,8 @@ export class ContextLedger {
 
   reset(): void {
     this.large = 0; this.compressed = 0; this.duplicates = 0; this.repeats = 0; this.bytesSaved = 0; this.bytesAbsent = 0; this.turns = 0; this.tokenTurnsSaved = 0; this.recalls = 0; this.recallsFull = 0;
+    this.excerpt = { count: 0, recalls: 0, recallsFull: 0 };
+    this.filter = { count: 0, recalls: 0, recallsFull: 0, keptChars: 0, requests: 0, ms: 0, fallbacks: {} };
     this.stored.clear();
     this.seen.clear();
   }
@@ -136,4 +176,12 @@ export function formatLedger(snapshot: ContextLedgerSnapshot): string {
   const recallRate = stored ? Math.round((snapshot.recalls / stored) * 100) : 0;
   const scoped = snapshot.recalls - snapshot.recallsFull;
   return `Context saver: ${snapshot.large} large outputs, ${snapshot.compressed} compressed, ${snapshot.duplicates} duplicate${snapshot.duplicates === 1 ? "" : "s"} dropped, ${snapshot.repeats ? `${snapshot.repeats} repeat${snapshot.repeats === 1 ? "" : "s"} cut, ` : ""}${kb} KB removed (~${Math.round(snapshot.bytesSaved / 4)} tokens), ~${snapshot.tokenTurnsSaved} token-turns spared over ${snapshot.turns} turns, ${snapshot.recalls} recall${snapshot.recalls === 1 ? "" : "s"} of the full output (${recallRate}%; ${snapshot.recallsFull} whole-file, ${scoped} scoped).`;
+}
+
+/** One line for /warden status while the context filter is on or has run: filtered outputs beside excerpt outputs, for the trial. */
+export function formatFilterLedger(snapshot: ContextLedgerSnapshot): string {
+  const { excerpt, filter } = snapshot;
+  const rate = (counts: CompressionCounts) => counts.count ? `${Math.round((counts.recalls / counts.count) * 100)}%` : "n/a";
+  const fallbacks = Object.entries(filter.fallbacks).map(([reason, count]) => `${reason} ${count}`).join(", ");
+  return `Context filter (beta): ${filter.count} filtered (${filter.keptChars} characters kept), ${filter.recalls} recalled (${rate(filter)}; ${filter.recallsFull} whole-file, ${filter.recalls - filter.recallsFull} scoped); ${excerpt.count} excerpts, ${excerpt.recalls} recalled (${rate(excerpt)}; ${excerpt.recallsFull} whole-file, ${excerpt.recalls - excerpt.recallsFull} scoped); ${filter.requests} request${filter.requests === 1 ? "" : "s"}, ${filter.ms} ms; fallbacks: ${fallbacks || "none"}.`;
 }

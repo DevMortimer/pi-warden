@@ -1285,8 +1285,8 @@ test("the agent's plan comes from the message that makes the call or the text-on
   sentMessages.length = 0;
   assert.equal(await toolCall("bash", { command: "npm run clean" }, earlier), undefined, "a mismatch warns; it never holds");
   assert.equal(requests.at(-1)!.state.plan, "Let me first list what is in build/ before removing anything.");
-  assert.ok(!sentMessages.some(sent => sent.message.customType === "pi-warden-steer"), "npm run clean has no visible effect: trace-only by default");
-  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only, no visible effect\)$/);
+  assert.ok(!sentMessages.some(sent => sent.message.customType === "pi-warden-steer"), "by default every mismatch stays in the trace");
+  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only\)$/);
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+bash · .*off plan$/, "the mismatch leads the line as a warn chip");
 
   // A tool-calls-only message after an earlier tool call: the text before that call described it, so no plan, no question.
@@ -1310,13 +1310,13 @@ test("the agent's plan comes from the message that makes the call or the text-on
   await runCommand("status");
   const status = notices.at(-1)!.text;
   assert.match(status, /1 off plan \(1 trace-only\)/);
-  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action, trace-only: invisible\);/);
+  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action, trace-only: all\);/);
   const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
   const lines = await readLog(logPath, 4, false);
   assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined], [0, undefined]], "planChars says how often the agent called without a word");
 });
 
-test("intentTraceOnly: an invisible mismatch is traced without a steer, a visible one steers; \"none\" and \"all\" set every call", async () => {
+test("intentTraceOnly: every mismatch is trace-only by default; \"invisible\" steers only a visible effect, \"none\" every mismatch", async () => {
   prompt = "Verify the RPC endpoint end to end";
   const plan = "Let me first list what is in build/ before removing anything.";
   const branch = (command: string) => context({ hasUI: false, sessionManager: { getBranch: () => [
@@ -1333,20 +1333,22 @@ test("intentTraceOnly: an invisible mismatch is traced without a steer, a visibl
     return intentSteers().length;
   };
 
-  // Default "invisible": no steer, no headless warn notice, and one trace line that names the mismatch.
+  // Default "all": no steer, no headless warn notice, and one trace line that names the mismatch.
   assert.equal(await run(undefined, "npm run clean"), 0);
   assert.ok(!sentMessages.some(sent => /ran with a warning/.test(sent.message.content)), "the headless warn steer drops the trace-only reason too");
   await runCommand("trace", context({ hasUI: false }));
   const trace = sentMessages.at(-1)!.message.content;
-  assert.equal(trace.match(/intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only, no visible effect\)/g)?.length, 1);
+  assert.equal(trace.match(/intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only\)/g)?.length, 1);
 
-  // A push is visible by code, an install the judge scores visible: the steer still reaches the agent for both.
-  assert.equal(await run(undefined, "git push origin main"), 1);
-  assert.equal(await run(undefined, "npm install left-pad", 0.85), 1);
-  assert.equal(await run(undefined, "npm install left-pad", 0.5), 0);
-  // "none" restores the steer on every mismatch; "all" sends none, visible calls included.
+  // A push is visible by code and an install the judge scores visible: the default silences both.
+  assert.equal(await run(undefined, "git push origin main"), 0);
+  assert.equal(await run(undefined, "npm install left-pad", 0.85), 0);
+  // "invisible" tells the agent only about a call with a visible effect.
+  assert.equal(await run("invisible", "git push origin main"), 1);
+  assert.equal(await run("invisible", "npm install left-pad", 0.85), 1);
+  assert.equal(await run("invisible", "npm install left-pad", 0.5), 0);
+  // "none" restores the steer on every mismatch.
   assert.equal(await run("none", "npm run clean"), 1);
-  assert.equal(await run("all", "git push origin main"), 0);
   assert.equal(await run("all", "npm run clean"), 0);
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /1 off plan \(1 trace-only\)/);
@@ -1361,7 +1363,7 @@ test("adaptive steers: an intent-mismatch steer the model does not follow become
     { type: "message", message: { role: "user", content: prompt } },
     assistantEntry({ type: "text", text: plan }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command } }),
   ] } });
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, steers: { minSteers: 2, recheckEvery: 4, probeEvery: 2 }, ...STACK_BAR }));
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, intentTraceOnly: "invisible" }, steers: { minSteers: 2, recheckEvery: 4, probeEvery: 2 }, ...STACK_BAR }));
   const intentSteers = () => sentMessages.filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content)).length;
   /** One mismatching push; the agent's next two messages carry on without a course change. Returns whether the steer was sent. */
   const run = async (id: string) => {
@@ -5061,4 +5063,93 @@ test("turn rules: agent_start returns without waiting for the snapshot, and the 
   } finally {
     guard.restore();
   }
+});
+
+// ── Context filter (beta) ──
+const filterLog = () => Array.from({ length: 1000 }, (_, index) => index === 250 ? "FAIL parser.test.ts > keeps the header: expected 3 to equal 4" : `progress ${index} complete`).join("\n") + "\nsummary: 1 failed\nexit code 1";
+const filterQuestions = () => requests.flatMap(request => Object.keys(request.questions).filter(id => /^c\d+$/.test(id)));
+
+test("context filter: off by default, the generic excerpt is used and no filter question is asked", async () => {
+  await grantConsent();
+  nextAnswers = { retention: "errors_and_summary", format: "other" };
+  const result = await toolResult("bash", { command: "npm test" }, filterLog(), true) as { content: Array<{ text: string }> };
+  const path = result.content[0]!.text.match(/Full output: (.+)/)![1]!;
+  try {
+    assert.match(result.content[0]!.text, /^\[pi-warden: errors_and_summary; .*Excerpts only;/);
+    assert.equal(requests.length, 1, "only the output check");
+    assert.deepEqual(filterQuestions(), []);
+    await runCommand("status");
+    assert.ok(!/Context filter/.test(notices.at(-1)!.text), "status adds no filter line while it is off and unused");
+  } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
+});
+
+test("context filter: on, the passages that pass the threshold replace the excerpt, with the footer, ledger, trace, and recall counts", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, context: { filter: { enabled: true } }, ...STACK_BAR }));
+  await sessionStart();
+  const full = filterLog();
+  // The failing line sits in the 3rd 2000-character chunk; the fake judge rates only that one as useful.
+  nextAnswers = { retention: "errors_and_summary", format: "other", c3: 3 };
+  const result = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ text: string }> };
+  const text = result.content[0]!.text;
+  const path = text.match(/Full output: (.+)/)![1]!;
+  try {
+    assert.match(text, new RegExp(`^\\[pi-warden: filtered; ${full.length} original characters, ${full.split("\n").length} lines\\. Passages selected for the current task; omitted text is in the full-output file\\.\\]\n\\[… \\d+ lines omitted …\\]\n`));
+    assert.match(text, /FAIL parser\.test\.ts > keeps the header: expected 3 to equal 4/);
+    assert.ok(text.includes(full.slice(-1000)), "the final status is kept");
+    assert.ok(!text.includes("progress 5 complete"), "an unrelated chunk is omitted");
+    assert.match(text, /To recall a part, /, "the same footer as the excerpt");
+    assert.equal(await readFile(path, "utf8"), full);
+    const filterRequests = requests.filter(request => Object.keys(request.questions).some(id => /^c\d+$/.test(id)));
+    assert.equal(filterRequests.length, 1, "a 12k output fits one request");
+    assert.equal(filterRequests[0]!.state.task, prompt);
+    assert.equal(filterRequests[0]!.state.command, "npm test");
+    assert.equal(filterRequests[0]!.questions.c1!.type, "score");
+    await toolCall("bash", { command: `rg FAIL ${path}` });
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /Context filter \(beta\): 1 filtered \(\d+ characters kept\), 1 recalled \(100%; 0 whole-file, 1 scoped\); 0 excerpts, 0 recalled \(n\/a; 0 whole-file, 0 scoped\); 1 request, \d+ ms; fallbacks: none\./);
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /context filter: kept 1 of \d+ chunks, \d+ of \d+ characters; 1 request; \d+ ms/);
+  } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
+});
+
+test("context filter: no passing chunk falls back to the excerpt; retention all and duplicates never reach it", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, context: { filter: { enabled: true } }, ...STACK_BAR }));
+  await sessionStart();
+  nextAnswers = { retention: "errors_and_summary", format: "other" };
+  const full = filterLog();
+  const result = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ text: string }> };
+  const path = result.content[0]!.text.match(/Full output: (.+)/)![1]!;
+  try {
+    assert.match(result.content[0]!.text, /^\[pi-warden: errors_and_summary; .*Excerpts only;/, "today's excerpt, unchanged");
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /context filter fell back to the excerpt: none_passed; \d+ chunks; 1 request; \d+ ms/);
+    const asked = filterQuestions().length;
+    requests.length = 0;
+    await toolResult("bash", { command: "npm test" }, full, true);
+    assert.deepEqual(filterQuestions(), [], "a duplicate is dropped by code, never filtered");
+    nextAnswers = { retention: "all", format: "other", c3: 3 };
+    assert.equal(await toolResult("bash", { command: "npm test -- --verbose" }, full.replace("summary", "totals"), true), undefined, "retention all keeps the output whole");
+    assert.deepEqual(filterQuestions(), []);
+    await runCommand("status");
+    assert.match(notices.at(-1)!.text, /Context filter \(beta\): 0 filtered .*; 1 excerpts, .*; 1 request, \d+ ms; fallbacks: none_passed 1\./);
+    assert.ok(asked > 0);
+  } finally { await rm(join(path, ".."), { recursive: true, force: true }); }
+});
+
+test("context filter: a failed judge keeps the excerpt and counts the fallback", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, security: { enabled: false }, context: { filter: { enabled: true, timeoutMs: 200 } }, ...STACK_BAR }));
+  await sessionStart();
+  nextAnswers = { retention: "errors_and_summary", format: "other", c3: 3 };
+  // The output check answers; every later request fails upstream.
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (input, init) => { if (!String(input).endsWith("/v1/models") && calls++ >= 1) return new Response("upstream body must not leak", { status: 503 }); return realFetch(input, init); };
+  try {
+    const result = await toolResult("bash", { command: "npm test" }, filterLog(), true) as { content: Array<{ text: string }> };
+    const path = result.content[0]!.text.match(/Full output: (.+)/)![1]!;
+    await rm(join(path, ".."), { recursive: true, force: true });
+    assert.match(result.content[0]!.text, /^\[pi-warden: errors_and_summary; .*Excerpts only;/);
+  } finally { globalThis.fetch = realFetch; }
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /fallbacks: (?:error|timeout) 1\./);
 });

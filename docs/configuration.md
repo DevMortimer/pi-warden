@@ -21,11 +21,11 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "enabled": true,
     "tools": ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file", "write", "edit"],
     "failOpen": true,
-    "irreversible": { "warn": 0.5, "confirm": 0.7 },
+    "irreversible": { "warn": 0.5, "confirm": 0.9 },
     "offTask": { "warn": 0.6, "steer": 0.85 },
     "intentMismatch": 0.9,
     "visibleMismatch": 0.8,
-    "intentTraceOnly": "invisible",
+    "intentTraceOnly": "all",
     "shouldProceed": { "hold": 0.6, "steer": false },
     "feedbackLog": true,
     "floor": "evidence",
@@ -86,11 +86,11 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `timeoutMs` | Per-request timeout. On timeout the call is allowed with a warning when `action.failOpen` is true. |
 | `maxRequests` | Per-session request budget. When spent, pi-warden says so once and continues with offline checks. |
 | `action.tools` | Tools the action guard inspects. Add your own shell-like tools here. |
-| `action.irreversible` | `warn` and `confirm` (hold) thresholds on P(irreversible). |
+| `action.irreversible` | `warn` and `confirm` (hold) thresholds on P(irreversible). Defaults `warn` 0.5 and `confirm` 0.9. The 0.9 hold waits for the confidence at which the judge stops being wrong: on the recorded action-guard corpus the judge errs on 15% of calls below confidence 0.8 and under 1% above it, and a 0.9 cutoff removed about 52 false alarms on a held-out half of the corpus without losing a true catch. Calls the judge scores 0.5 to 0.9 warn instead of holding. See [guards.md](guards.md#irreversible-hold-threshold-2026-09-29-held-out-split). |
 | `action.offTask` | `warn` and `steer` thresholds on P(off-task). Off-task never holds. |
 | `action.intentMismatch` | P(call differs from the agent's stated plan) that warns and tells the agent, on calls that can change something. |
 | `action.visibleMismatch` | Lower mismatch threshold for commands whose effect is visible outside the working tree (commit, push, publish, install, launch). |
-| `action.intentTraceOnly` | Which intent mismatches stay in the trace without a steer to the agent. `"invisible"` (default): a call with no visible effect: not a commit, push, merge, tag, reset, pull request, release, or publish (decided in code), and not judged `visible` at 0.8 or more (an install, a launched program, a message sent from a script). `"all"`: every mismatch. `"none"`: none; every mismatch steers, as before. The steer arrives after the call ran. |
+| `action.intentTraceOnly` | Which intent mismatches stay in the trace without a steer to the agent. `"all"` (default): every mismatch, visible effect or not. `"invisible"`: only a call with no visible effect: not a commit, push, merge, tag, reset, pull request, release, or publish (decided in code), and not judged `visible` at 0.8 or more (an install, a launched program, a message sent from a script). `"none"`: none; every mismatch steers, as before. The steer arrives after the call ran. Blind labels on 140 sampled calls put the score's separation of a differing call at AUROC 0.815, but of the 37 steers that would reach the agent, 36 were calls the plan or the user's latest request had asked for. Restore the old behaviour with `"action": { "intentTraceOnly": "invisible" }`. |
 | `action.shouldProceed` | `{ hold, steer }`. Scores at or below `hold` (default 0.6) are trace-only by default until calibrated; they never hold a call. |
 | `action.shouldProceed.steer` | Default `false`. Set `true` to restore the steer that asks the agent to pause and seek user approval. |
 | `action.feedbackLog` | Write each judged call and its outcome to `~/.pi/agent/pi-warden/holds/`; never the command. |
@@ -125,6 +125,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `compaction.timeoutMs` | The overall deadline for one compaction; past it Pi's summary runs. Each request is also bounded by the global `timeoutMs`, so a request that takes longer than `timeoutMs` fails and Pi's summary runs, even with time left here. Default `20000`, at most `120000`. |
 | `compaction.maxRequests` | Requests one compaction may send. A span that needs more sends nothing, and Pi's summary runs. The compaction also shares the session's `maxRequests` budget with the guards: it sends nothing when its requests would leave fewer than 50 of that budget, and it stops before any request when fewer than 50 remain; either way Pi's summary runs, and judgments stay on for the guards. Default `12`. |
 | `compaction.skipProviders` | Providers of the active model for which Pi's summary always runs. Default `["claude-bridge"]`, because pi-claude-bridge compacts its own models. |
+| `context.filter` | Beta, default `{ "enabled": false, "chunkChars": 2000, "minScore": 1.5, "maxKeptChars": 6000, "timeoutMs": 4000 }`. When on, an output that would get the generic head/diagnostic/tail excerpt is split at line boundaries into chunks of about `chunkChars`; Jev scores each chunk 0 to 3 for the agent's current task, and chunks at or above `minScore` are kept word for word in original order, up to `maxKeptChars` including the last 1000 characters. Parser excerpts, `all`, duplicates, and repeated runs are unchanged. On an error, a timeout after `timeoutMs`, no consent, an exhausted request budget, or no chunk at `minScore`, the excerpt is used. Costs one or more requests per filtered output. `enabled` is read from the user file only: a project file may tune `chunkChars`, `minScore`, `maxKeptChars`, and `timeoutMs`, but cannot turn the filter on, because that sends whole redacted outputs to the judge and spends requests. See [guards.md](guards.md#context-filter-beta-off-by-default). |
 | `runaway.*` | Repeat counts that abort a reply, minimum size, whether the agent gets one recovery turn. |
 | `notify.*` | Desktop notifications, cooldown, optional relay command (user file only). |
 | `judge.failuresBeforeCooldown` | Consecutive timeout, network, or other judge failures before judgments pause for the session (3). One auth or configuration failure pauses at once. |

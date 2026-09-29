@@ -35,7 +35,9 @@ import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, 
 import { initSchema, recordHold, recordOutcome, toHoldRecord, holdStats, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
-import { compressOutput, duplicateNote, evaluateOutput, mergeOutput, outputKey, saveOutput, securityNotice, CompressionLearner } from "./output.js";
+import { compressOutput, duplicateNote, evaluateOutput, isGenericExcerpt, mergeOutput, outputKey, saveOutput, securityNotice, CompressionLearner } from "./output.js";
+import { filterOutput } from "./filter.js";
+import type { FilterResult } from "./filter.js";
 import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
@@ -73,7 +75,7 @@ import type { CooldownEvent } from "./judge-cooldown.js";
 import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
-import { ContextLedger, formatLedger } from "./saver.js";
+import { ContextLedger, formatFilterLedger, formatLedger } from "./saver.js";
 import { SeenText, collapseRuns, seenItem } from "./dedupe.js";
 import { buildCompactSnapshot, compactAppendix, recallText } from "./compact.js";
 import { formatCompaction, relevanceCompaction } from "./relevance.js";
@@ -89,7 +91,7 @@ import { TraceFile, judgmentsState, traceDir, traceFilePath } from "./trace-file
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, rulesTokens, SENTENCE_TEMPLATES, TOKEN_NAMES } from "./widget.js";
 import { statusWidget } from "./widget-render.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample, so Jev can say which to keep word for word. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); with the context filter on (`context.filter`, off by default), the redacted text of a large tool output in chunks, with the call's command and the agent's stated plan; a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample, so Jev can say which to keep word for word. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -780,6 +782,27 @@ export default function wardenExtension(host: ExtensionAPI): void {
     trace.push({ at: Date.now(), guard: "context", line: renderTemplate(config.widget.context, { tool, retention: "kept whole" }), details: [
       `${prefix}kept whole: retention ${verdict.retention}; confidence ${verdict.confidence?.toFixed(2)}; format ${verdict.format ?? "generic"}${verdict.formatConfidence === undefined ? "" : ` (${verdict.formatConfidence.toFixed(2)})`}; ${verdict.model}; ${verdict.elapsedMs} ms`,
     ] });
+  };
+  /**
+   * The context filter (beta) for one output that would get the generic excerpt. Never throws; a fallback keeps the
+   * excerpt. Its cost and fallback reason go to the ledger either way.
+   */
+  const runFilter = async (ctx: ExtensionContext, config: WardenConfig, tool: string, input: Record<string, unknown>, text: string, excerpt: string): Promise<FilterResult> => {
+    const judge = judgeFor(config);
+    if (!judge) {
+      const reason = judgmentsOffReason(config) ?? "cooldown";
+      ledger.filterSpent(0, 0, reason);
+      return { ok: false, reason, chunks: 0, requests: 0, elapsedMs: 0 };
+    }
+    const command = typeof input.command === "string" ? input.command : JSON.stringify(input);
+    let result = await filterOutput(text, {
+      tool, command, task: latestUserPrompt(ctx), spine: taskSpine(ctx.sessionManager.getBranch()), plan: assistantPlan(ctx),
+    }, { config: config.context.filter, judge, signal: ctx.signal });
+    // Kept text is bounded by maxKeptChars; the gap markers are not, so the bound is checked on the result.
+    if (result.ok && result.text.length > excerpt.length + config.context.filter.maxKeptChars) result = { ok: false, reason: "too_long", chunks: result.chunks, requests: result.requests, elapsedMs: result.elapsedMs };
+    ledger.filterSpent(result.requests, result.elapsedMs, result.ok ? undefined : result.reason);
+    if (!result.ok && result.reason === "budget") noteError(ctx, "TypeSafe request budget reached; the context filter kept the excerpt.", "budget");
+    return result;
   };
   /** Labels landed on earlier calls: their trace entries say so and the session log is rewritten. */
   const noteOutcomes = (config: WardenConfig, records: readonly CallRecord[]) => {
@@ -1946,7 +1969,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
             if (bytesSaved > 0) {
               replacement = body;
               compressed = true;
-              ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(blockText) });
+              ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(blockText), kind: isGenericExcerpt(excerpt) ? "excerpt" : "parser" });
               storedPath = path;
               compressionLearner.record(event.toolName, verdict.retention, verdict.format, false);
               savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: verdict.retention, bytesSaved: String(bytesSaved) }), [
@@ -1964,20 +1987,26 @@ export default function wardenExtension(host: ExtensionAPI): void {
       }
     } else {
       const excerpt = earlier ? undefined : compressOutput(text, output.retention, output.format);
+      const generic = excerpt !== undefined && isGenericExcerpt(excerpt);
       let compressed = false;
+      // Only the generic excerpt is filtered; parser excerpts, `all`, duplicates, and repeats never reach this.
+      const filtered = excerpt && generic && config.context.filter.enabled && !ctx.signal?.aborted ? await runFilter(ctx, config, event.toolName, event.input as Record<string, unknown>, text, excerpt) : undefined;
       if (excerpt && !ctx.signal?.aborted) {
         try {
           const path = await saveOutput(text);
-          const replacement = `${excerpt}\n\n${recallInstruction(recallTool, path)}`;
+          const replacement = `${filtered?.ok ? filtered.text : excerpt}\n\n${recallInstruction(recallTool, path)}`;
           const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement) - (notice ? Buffer.byteLength(notice) * 2 + 4 : 0);
           if (bytesSaved > 0) {
             content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
             compressed = true;
-            ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(text) });
+            ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(text), kind: filtered?.ok ? "filtered" : generic ? "excerpt" : "parser", ...(filtered?.ok ? { keptChars: filtered.keptChars } : {}) });
             storedPath = path;
             compressionLearner.record(event.toolName, output.retention, output.format, false);
-            savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: output.retention, bytesSaved: String(bytesSaved) }), [
+            savingEntry = record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: filtered?.ok ? "filtered" : output.retention, bytesSaved: String(bytesSaved) }), [
               `retention: ${output.retention}; confidence ${output.confidence?.toFixed(2)}; format ${output.format ?? "generic"}${output.formatConfidence === undefined ? "" : ` (${output.formatConfidence.toFixed(2)})`}; ${output.model}; ${output.elapsedMs} ms`,
+              ...(filtered ? [filtered.ok
+                ? `context filter: kept ${filtered.kept} of ${filtered.chunks} chunks, ${filtered.keptChars} of ${text.length} characters; ${filtered.requests} request${filtered.requests === 1 ? "" : "s"}; ${filtered.elapsedMs} ms`
+                : `context filter fell back to the excerpt: ${filtered.reason}; ${filtered.chunks} chunks; ${filtered.requests} request${filtered.requests === 1 ? "" : "s"}; ${filtered.elapsedMs} ms`] : []),
               `saved ${bytesSaved} bytes; full output: ${path}`,
               formatLedger(ledger.snapshot()),
             ]);
@@ -2533,6 +2562,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action, trace-only: ${config.action.intentTraceOnly}); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),
             formatCompaction(config.compaction.enabled, compactions),
+            ...(config.context.filter.enabled || ledger.snapshot().filter.requests > 0 || Object.keys(ledger.snapshot().filter.fallbacks).length > 0 ? [formatFilterLedger(ledger.snapshot())] : []),
             ...(config.learning.patternAnalysis ? [`Learning: ${(await generateRecommendations(ctx.cwd, dirs)).length} recommendations, steer effectiveness ${Math.round((await analyzeSteerEffectivenessReport(ctx.cwd, dirs)).overall * 100)}% (use /warden recommend for details)`] : []),
             `${formatHolds(holds.snapshot(), config.action.feedbackLog ? holdLog?.path : undefined)}${holdLog?.lastFailure ? ` Log write failed: ${holdLog.lastFailure}.` : ""}`,
             lifetimeLine,

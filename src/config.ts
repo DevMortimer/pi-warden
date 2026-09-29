@@ -53,7 +53,7 @@ export interface ActionGuardConfig {
   intentMismatch: number;
   /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
   visibleMismatch: number;
-  /** Which intent mismatches stay in the trace without a steer: "invisible" (default) a call with no visible effect (neither a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`, nor judged `visible` at 0.8 or more), "all" every one, "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. */
+  /** Which intent mismatches stay in the trace without a steer: "all" (default) every one, "invisible" only a call with no visible effect (neither a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`, nor judged `visible` at 0.8 or more), "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. On blind labels of 140 sampled calls the score separates a differing call well (AUROC 0.815), but of 37 steers that would reach the agent, 36 were calls the plan or the user's latest request had asked for. */
   intentTraceOnly: "invisible" | "all" | "none";
   /** Low P(should_proceed) is trace-only unless steer is enabled; hold is the inclusive threshold, not a blocking decision. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
   shouldProceed: { hold: number; steer: boolean };
@@ -259,6 +259,20 @@ export interface ContextConfig {
   dedupeMessages: boolean;
   /** Prevention before the call: a bash action request asks whether the command will print far more than the agent needs. Never holds. */
   largeOutput: LargeOutputConfig;
+  /** Beta, off by default: Jev picks the passages of a large output that matter for the current task instead of the head/diagnostic/tail excerpt. */
+  filter: FilterConfig;
+}
+
+export interface FilterConfig {
+  enabled: boolean;
+  /** Target chunk size; chunks end at line boundaries, and only a line longer than this is split. */
+  chunkChars: number;
+  /** Minimum usefulness score (0 to 3) a chunk needs to be kept; 1.5 means it at least partly answers. */
+  minScore: number;
+  /** Most characters kept, including the final 1000; above it the highest-scoring chunks win. */
+  maxKeptChars: number;
+  /** Deadline for the filter's requests; on expiry the excerpt is used. */
+  timeoutMs: number;
 }
 
 /** Relevance compaction (relevance.ts): Jev picks what of the discarded span is kept word for word instead of Pi's summary. */
@@ -505,11 +519,12 @@ export function defaultConfig(): WardenConfig {
       tools: [...COMMAND_TOOLS, "write", "edit"],
       failOpen: true,
       timeoutMs: 5000,
-      irreversible: { warn: 0.5, confirm: 0.7 },
+      // 0.9 holds: below it the judge is wrong one call in two to one in seven, and the 0.7 to 0.9 band held no call the user regretted.
+      irreversible: { warn: 0.5, confirm: 0.9 },
       offTask: { warn: 0.6, steer: 0.85 },
       intentMismatch: 0.9,
       visibleMismatch: 0.8,
-      intentTraceOnly: "invisible",
+      intentTraceOnly: "all",
       shouldProceed: { hold: 0.6, steer: false },
       feedbackLog: true,
       commandRules: [],
@@ -525,7 +540,7 @@ export function defaultConfig(): WardenConfig {
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true },
     rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
-    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 } },
+    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
     judge: { cooldownMs: 60000, failuresBeforeCooldown: 3 },
@@ -946,6 +961,14 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
         enabled: boolean(raw.context.largeOutput.enabled, base.context.largeOutput.enabled),
         threshold: probability(raw.context.largeOutput.threshold, base.context.largeOutput.threshold),
       } : base.context.largeOutput,
+      filter: isObject(raw.context.filter) ? {
+        // User file only: turning it on sends whole redacted outputs to the judge and spends requests.
+        enabled: source === "user" ? boolean(raw.context.filter.enabled, base.context.filter.enabled) : base.context.filter.enabled,
+        chunkChars: positiveInteger(raw.context.filter.chunkChars, base.context.filter.chunkChars),
+        minScore: typeof raw.context.filter.minScore === "number" && raw.context.filter.minScore >= 0 && raw.context.filter.minScore <= 3 ? raw.context.filter.minScore : base.context.filter.minScore,
+        maxKeptChars: positiveInteger(raw.context.filter.maxKeptChars, base.context.filter.maxKeptChars),
+        timeoutMs: positiveInteger(raw.context.filter.timeoutMs, base.context.filter.timeoutMs),
+      } : base.context.filter,
     } : base.context,
   };
 }
