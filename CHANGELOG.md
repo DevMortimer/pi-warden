@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.78.1
+
+### Docs
+
+- `docs/hero.png` is now rendered by `scripts/render-hero.mjs` (`npm run hero`), and every number in it comes from the 2026-09-24 field report (759 sessions); the install line reads `pi install npm:pi-warden`.
+
 ## 0.78.0
 
 ### Added
