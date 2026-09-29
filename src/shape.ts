@@ -68,7 +68,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 }),
     prefs: section("prefs", { enabled: false, inject: false }),
     // A missing section keeps Pi's own compaction summary, as before the section existed.
-    compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, skipProviders: [] }),
+    compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
     conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }),
   };
   // A missing/invalid runtime section falls back to disabled conscience, no loads, and the existing update warning.

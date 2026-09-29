@@ -187,8 +187,8 @@ const agreement = [];
 for (const plan of singles) {
   const batched = rows.find(row => row.id === plan.item.id);
   if (!batched) { skipped.push({ id: plan.item.id, requests: plan.candidates, why: 'one-question run: batched run skipped' }); continue; }
-  // A generous deadline: this run measures probabilities, not latency.
-  const single = await relevanceCompaction(plan.item.input, { judge, config: { ...compaction, timeoutMs: 600_000 }, questionsPerRequest: 1 });
+  // A generous deadline and no per-compaction cap: this run measures probabilities, not latency; the client cap still holds.
+  const single = await relevanceCompaction(plan.item.input, { judge, config: { ...compaction, timeoutMs: 600_000, maxRequests: Infinity }, questionsPerRequest: 1 });
   const ids = Object.keys(single.scores).filter(id => id in batched.scores);
   const same = ids.filter(id => (single.scores[id] >= compaction.keepThreshold) === (batched.scores[id] >= compaction.keepThreshold)).length;
   const diffs = ids.map(id => single.scores[id] - batched.scores[id]);

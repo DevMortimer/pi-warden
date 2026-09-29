@@ -63,7 +63,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     }
   },
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7, "dedupeRuns": true, "dedupeMessages": false, "largeOutput": { "enabled": true, "threshold": 0.85 } },
-  "compaction": { "enabled": false, "keepThreshold": 0.5, "maxSummaryTokens": 20000, "timeoutMs": 20000, "skipProviders": ["claude-bridge"] },
+  "compaction": { "enabled": false, "keepThreshold": 0.5, "maxSummaryTokens": 20000, "timeoutMs": 20000, "maxRequests": 12, "skipProviders": ["claude-bridge"] },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
   "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
   "judge": { "cooldownMs": 60000, "failuresBeforeCooldown": 3 },
@@ -119,10 +119,11 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `context.dedupeMessages` | Default `false`. With `context.dedupeRuns` also on, cut repeated runs in new user and custom messages the same way. Off by default because a repeat the user sends can itself carry meaning ("here it is again, still failing"), and on recent sessions messages gave about 0.8% of their bytes back. A custom message that Pi appends without an agent turn (`triggerTurn: false`, or unset while the agent is idle) does not pass Pi's `message_end` hook and stays whole. |
 | `context.largeOutput.enabled` | Add one question to each judged `bash` request: will the command print far more than the agent needs? Off keeps the question out of the request. Read-only commands (`cat`, `find`, `git log`) skip the judge, so the question does not ride them. |
 | `context.largeOutput.threshold` | P(large output) at or above which the agent is told, once per command family (`npm test`, `git log`, `find`) per session, to redirect or filter the command before it runs one like it again. The call is never held or warned. Default `0.85`. |
-| `compaction.enabled` | Default `false`. Replace the summary Pi's model writes at compaction with a relevance compaction: user messages and assistant text word for word, and the tool calls Jev scores as needed for the current task with their results word for word; see [guards.md → Relevance compaction](guards.md#relevance-compaction). Needs TypeSafe consent; without it Pi's summary runs. |
+| `compaction.enabled` | Experimental, off by default, not recommended. Default `false`. Replace the summary Pi's model writes at compaction with a relevance compaction: user messages and assistant text word for word, and the tool calls Jev scores as needed for the current task with their results word for word; see [guards.md → Relevance compaction](guards.md#relevance-compaction). In a replay of 48 recorded compactions its summary was 4.7 times the size of Pi's at the median and kept whole only 1 of the 34 files the agent read again. Try it or improve it; changes that make it smaller or keep what the agent goes back for are welcome. Needs TypeSafe consent; without it Pi's summary runs. User file only: it sends the session to Jev and spends requests, so a project's `.pi/pi-warden.json` cannot turn it on (or off); a project may set the other `compaction` keys. |
 | `compaction.keepThreshold` | P(the agent needs this exact content again) at or above which a tool call and its result are kept word for word. Default `0.5`. |
 | `compaction.maxSummaryTokens` | Size budget for the summary in tokens (characters / 4). Over it, the threshold rises to 0.6, 0.7, 0.8, 0.9, 0.95 on the same scores; still over, Pi's summary runs. Default `20000`, at least `1000`. |
-| `compaction.timeoutMs` | Deadline for all keep questions of one compaction; past it Pi's summary runs. Default `20000`, at most `120000`. |
+| `compaction.timeoutMs` | The overall deadline for one compaction; past it Pi's summary runs. Each request is also bounded by the global `timeoutMs`, so a request that takes longer than `timeoutMs` fails and Pi's summary runs, even with time left here. Default `20000`, at most `120000`. |
+| `compaction.maxRequests` | Requests one compaction may send. A span that needs more sends nothing, and Pi's summary runs. The compaction also shares the session's `maxRequests` budget with the guards: it sends nothing when its requests would leave fewer than 50 of that budget, and it stops before any request when fewer than 50 remain; either way Pi's summary runs, and judgments stay on for the guards. Default `12`. |
 | `compaction.skipProviders` | Providers of the active model for which Pi's summary always runs. Default `["claude-bridge"]`, because pi-claude-bridge compacts its own models. |
 | `runaway.*` | Repeat counts that abort a reply, minimum size, whether the agent gets one recovery turn. |
 | `notify.*` | Desktop notifications, cooldown, optional relay command (user file only). |
@@ -176,7 +177,7 @@ After building, `/warden index` reports which skill and tool descriptions would 
 
 ## Project config
 
-A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides: stricter thresholds, extra guarded tools, `rules.files`, `rules.skip`, `rules.sensitivePaths`, or `"done": { "enabled": false }`. Project files are read only when Pi trusts the project. They can never grant `typesafe` consent, change `mode`, raise `timeoutMs` or `maxRequests`, or set `notify.command`.
+A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides: stricter thresholds, extra guarded tools, `rules.files`, `rules.skip`, `rules.sensitivePaths`, or `"done": { "enabled": false }`. Project files are read only when Pi trusts the project. They can never grant `typesafe` consent, change `mode`, raise `timeoutMs` or `maxRequests`, set `notify.command`, or turn relevance compaction on or off (`compaction.enabled`).
 
 A wince-style setup for a backend repo (the full version is [`examples/pi-warden.json`](../examples/pi-warden.json)):
 

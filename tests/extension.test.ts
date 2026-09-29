@@ -3831,6 +3831,17 @@ test("session_before_compact: no consent, a skipped provider, a judge failure, o
   assert.ok(notices.some(notice => /Relevance compaction failed/.test(notice.text)), "a judge error is announced like other TypeSafe errors");
 });
 
+test("session_before_compact: inside the request reserve Pi's summary runs, nothing is sent, and judgments stay on", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, maxRequests: 50, compaction: { enabled: true }, ...STACK_BAR }));
+  assert.equal(await fire("session_before_compact", beforeCompact()), undefined);
+  assert.equal(networkCalls, 0, "one request would leave 49 of 50");
+  assert.ok(!notices.some(notice => /Pattern checks continue without TypeSafe/.test(notice.text)), "the budget is not marked as spent");
+  await fire("tool_call", { toolName: "bash", toolCallId: "call-1", input: { command: "npm publish" } });
+  assert.ok(networkCalls > 0, "the action guard still asks Jev");
+  await runCommand("status", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /Pi's summary ran instead \(budget 1\)/);
+});
+
 test("session_compact: appendix includes saved output, failed check, and held action", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
   sentMessages.length = 0;

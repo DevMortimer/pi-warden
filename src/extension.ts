@@ -2197,11 +2197,18 @@ export default function wardenExtension(host: ExtensionAPI): void {
         task,
         spine: taskSpine(ctx.sessionManager.getBranch(), task),
         focus: event.customInstructions,
-      }, { judge, config: config.compaction, signal: event.signal, savedPathFor: text => ledger.storedPathIn(text) });
+      }, {
+        judge, config: config.compaction, signal: event.signal, savedPathFor: text => ledger.storedPathIn(text),
+        // The client carries the global per-request timeout; compaction.timeoutMs bounds the whole compaction on top of it.
+        requestTimeoutMs: config.timeoutMs,
+        // Read from the shared client, so requests every guard started count against the reserve.
+        requestsLeft: () => (judge.getSpend().caps.maxRequests ?? config.maxRequests) - judge.getUsage().requestsStarted,
+      });
       const stats = result.stats;
       const counts = `${stats.candidates} scored units, ${stats.requests} request${stats.requests === 1 ? "" : "s"}, ${stats.inputTokens} input tokens, ${stats.elapsedMs} ms`;
       if (!result.ok) {
-        if (result.reason === "budget") noteError(ctx, "Relevance compaction stopped at the request budget; Pi's summary runs.", "budget");
+        // A budget stop never turns judgments off: the guards keep what is left of the budget.
+        if (result.reason === "budget") { if (ctx.hasUI) ctx.ui.notify(`warden: relevance compaction stopped to spare the request budget (${result.detail ?? "budget reached"}); Pi's summary runs.`, "warning"); }
         else if (result.reason === "judge error") noteError(ctx, `Relevance compaction failed (${result.detail ?? "TypeSafe error"}); Pi's summary runs.`, undefined);
         return fallback(result.reason, [`${counts}; ${result.reason}${result.detail ? `: ${result.detail}` : ""}`], stats);
       }
