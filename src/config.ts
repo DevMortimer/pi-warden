@@ -259,6 +259,20 @@ export interface ContextConfig {
   dedupeMessages: boolean;
   /** Prevention before the call: a bash action request asks whether the command will print far more than the agent needs. Never holds. */
   largeOutput: LargeOutputConfig;
+  /** Beta, off by default: Jev picks the passages of a large output that matter for the current task instead of the head/diagnostic/tail excerpt. */
+  filter: FilterConfig;
+}
+
+export interface FilterConfig {
+  enabled: boolean;
+  /** Target chunk size; chunks end at line boundaries, and only a line longer than this is split. */
+  chunkChars: number;
+  /** Minimum usefulness score (0 to 3) a chunk needs to be kept; 1.5 means it at least partly answers. */
+  minScore: number;
+  /** Most characters kept, including the final 1000; above it the highest-scoring chunks win. */
+  maxKeptChars: number;
+  /** Deadline for the filter's requests; on expiry the excerpt is used. */
+  timeoutMs: number;
 }
 
 export interface LargeOutputConfig {
@@ -508,7 +522,7 @@ export function defaultConfig(): WardenConfig {
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true },
     rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
-    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 } },
+    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
     judge: { cooldownMs: 60000, failuresBeforeCooldown: 3 },
@@ -926,6 +940,14 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
         enabled: boolean(raw.context.largeOutput.enabled, base.context.largeOutput.enabled),
         threshold: probability(raw.context.largeOutput.threshold, base.context.largeOutput.threshold),
       } : base.context.largeOutput,
+      filter: isObject(raw.context.filter) ? {
+        // User file only: turning it on sends whole redacted outputs to the judge and spends requests.
+        enabled: source === "user" ? boolean(raw.context.filter.enabled, base.context.filter.enabled) : base.context.filter.enabled,
+        chunkChars: positiveInteger(raw.context.filter.chunkChars, base.context.filter.chunkChars),
+        minScore: typeof raw.context.filter.minScore === "number" && raw.context.filter.minScore >= 0 && raw.context.filter.minScore <= 3 ? raw.context.filter.minScore : base.context.filter.minScore,
+        maxKeptChars: positiveInteger(raw.context.filter.maxKeptChars, base.context.filter.maxKeptChars),
+        timeoutMs: positiveInteger(raw.context.filter.timeoutMs, base.context.filter.timeoutMs),
+      } : base.context.filter,
     } : base.context,
   };
 }
