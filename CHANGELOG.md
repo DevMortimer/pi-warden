@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.76.0
+
 ### Changed
 
 - The intent-mismatch verdict is trace-only by default: `action.intentTraceOnly` is `"all"` instead of `"invisible"`, so a mismatch on a call with a visible effect (a commit, push, merge, tag, reset, pull request, release, publish, install, launched program, or a message sent from a script) no longer reaches the agent. The score, the trace entry, the `/warden status` counters, and the `visibleMismatch` and `intentMismatch` thresholds are unchanged; hand labels on 140 sampled calls, blind to the score, put the score's separation of a differing call at AUROC 0.815, but of the 37 steers that would reach the agent, 36 were calls the plan or the user's latest request had asked for. Restore the old delivery with `"action": { "intentTraceOnly": "invisible" }`.
