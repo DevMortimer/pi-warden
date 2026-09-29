@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import {
-  candidatesInSession, changePrefsStore, classifyClause, emptyPrefsStore, evaluatePrefs, extractPreferences, forgetPref, groupPreferences, isCorrection, LESSON_MARK,
-  MAX_INJECTED, MESSAGE_CHARS, NO_LESSON_SIGNAL, NOT_CONFIRMED, PREFS_CLOSING, PREFS_LEAD, prefsMessage, prefsStorePath, readPrefsStore, recordLesson,
+  candidatesInSession, changePrefsStore, classifyClause, emptyPrefsStore, evaluatePrefs, extractPreferences, forgetPref, groupPreferences, LESSON_MARK,
+  MAX_INJECTED, MESSAGE_CHARS, NOT_CONFIRMED, PREFS_CLOSING, PREFS_LEAD, prefsMessage, prefsStorePath, readPrefsStore, recordLesson,
   WAS_INJECTED, WEAKENS_CHECK, writePrefsStore,
 } from "../src/prefs.js";
 import type { PrefCandidate, PrefItem, PrefsStore, WordCounts } from "../src/prefs.js";
@@ -139,19 +139,16 @@ test("rule 7: at most five items and 400 characters; the closing sentence is exa
 });
 
 const lesson = (overrides: Partial<Parameters<typeof recordLesson>[0]> = {}) =>
-  recordLesson({ lesson: "Never edit the generated client by hand", session: "s1", now: at("2026-01-10"), signal: true, scan: scanOf([]), store: emptyPrefsStore(), ...overrides });
+  recordLesson({ lesson: "Never edit the generated client by hand", session: "s1", now: at("2026-01-10"), scan: scanOf([]), store: emptyPrefsStore(), ...overrides });
 
-test("agent lesson: rejected without a correction or failure, and when it weakens a check or is not standing", () => {
-  assert.deepEqual(lesson({ signal: false }), { reply: NO_LESSON_SIGNAL });
-  assert.equal(NO_LESSON_SIGNAL, "not recorded: no correction or failure to learn from");
+test("agent lesson: recorded with no correction before it; rejected when it weakens a check or is not standing", () => {
+  assert.equal(lesson({ lesson: "Always use Firefox for the vendor site" }).reply, 'recorded: "Always use Firefox for the vendor site". It reaches later sessions only after it is confirmed: recorded again in a later session, or said by the user.');
   assert.deepEqual(lesson({ lesson: "Always skip the tests when the build is slow" }), { reply: "not recorded: weakens a check" });
   assert.match(lesson({ lesson: "Don't commit or stage it" }).reply, /^not recorded: task-bound/);
   assert.match(lesson({ lesson: "The client is generated" }).reply, /^not recorded: not one standing instruction/);
   assert.match(lesson({ lesson: "Don't touch the schema yet" }).reply, /^not recorded: not one standing instruction/);
   assert.match(lesson({ lesson: `Never ${"write long notes ".repeat(12)}` }).reply, /^not recorded: longer than 160 characters/);
-  assert.equal(lesson({ signal: false }).store, undefined);
-  assert.ok(isCorrection("don't commit it yet"), "a temporary hold still corrects the agent");
-  assert.ok(!isCorrection("thanks, looks good"));
+  assert.equal(lesson({ lesson: "Always skip the tests when the build is slow" }).store, undefined);
 });
 
 test("agent lesson: recorded but not injected until confirmed; injected after a later session with the marker", () => {
@@ -236,7 +233,7 @@ test("two concurrent lesson changes on one store neither throw nor lose an updat
   try {
     const path = join(dir, "prefs.json");
     const record = (text: string, session: string) => changePrefsStore(path, store => {
-      const result = recordLesson({ lesson: text, session, now: NOW, signal: true, scan: scanOf([]), store });
+      const result = recordLesson({ lesson: text, session, now: NOW, scan: scanOf([]), store });
       return { value: result.reply, ...(result.store ? { store: result.store } : {}) };
     });
     const replies = await Promise.all([record("Never edit the generated client by hand", "s1"), record("Always sign the release tags", "s2")]);

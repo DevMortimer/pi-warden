@@ -81,7 +81,7 @@ import { buildCompactSnapshot, compactAppendix, recallText } from "./compact.js"
 import { formatCompaction, relevanceCompaction } from "./relevance.js";
 import type { CompactionStats, FallbackReason } from "./relevance.js";
 import { applyLoopAction, formatLoopsForUser, formatOpenLoops, LOOP_ACTIONS, LOOP_CHARS, loopsFingerprint, loopsPath, openLoops, readLoops, updateLoops } from "./loops.js";
-import { changePrefsStore, emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, isCorrection, LESSON_CHARS, LESSON_TURNS, NO_LESSON_SIGNAL, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences } from "./prefs.js";
+import { changePrefsStore, emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, LESSON_CHARS, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences } from "./prefs.js";
 import type { PrefItem, PrefsScan } from "./prefs.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
@@ -500,10 +500,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const path = prefsStorePath(scan.project, dirs);
     return { scan, path, items: evaluatePrefs(scan, await readPrefsStore(path)) };
   };
-  // Assistant turns this session, and the turn of the last user correction or stuck, repeat, or done-check steer in this
-  // run: `warden_remember` records a lesson only within LESSON_TURNS turns of one.
-  let assistantTurns = 0;
-  let lessonSignalTurn: number | undefined;
   // The open-loop list the last end-of-run reminder named: the same unchanged list is not named again.
   let loopsReminded: string | undefined;
   const LOOPS_TYPE = `${PACKAGE_NAME}-loops`;
@@ -867,7 +863,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
   const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean }): boolean => {
     const names = typeof guard === "string" ? [guard] : [...guard];
     for (const name of names) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
-    if (names.some(name => name === "stuck" || name === "repeat" || name === "done")) lessonSignalTurn = assistantTurns;
     const critical = names.every(name => CRITICAL_STEER_GUARDS.has(name));
     // A notice delivered once is already in the agent's context. Sending the repeat again costs the accounting turn it
     // forbids, so repeats are recorded only. The same goes for notices past the per-run steer budget: a steer sent during
@@ -1052,8 +1047,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
     notifier = undefined;
     lastNotifiedAt = 0;
     prefsScan = undefined;
-    assistantTurns = 0;
-    lessonSignalTurn = undefined;
     loopsReminded = undefined;
     // Load capability indexes (once per session, overwritten on every /warden index run).
     globalIndexFile = readIndex(indexPath("global", undefined, undefined, dirs)) ?? undefined;
@@ -1111,7 +1104,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
     doneNudged = false;
     wardenContinuation = false;
     steersThisRun = 0;
-    lessonSignalTurn = isCorrection(event.prompt ?? "") ? assistantTurns : undefined;
     finals.reset();
     runaway.reset();
     runawayStops = 0;
@@ -1391,7 +1383,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
 
   // Every turn that runs after a compression is a turn that did not carry the removed text.
   pi.on("turn_end", async (_event, ctx) => {
-    assistantTurns++;
     ledger.turnEnd();
     if (savingEntry) trace.amend(savingEntry, `at turn end: ${formatLedger(ledger.snapshot())}`);
     savingEntry = undefined;
@@ -2467,20 +2458,18 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.registerTool({
     name: "warden_remember",
     label: "warden remember",
-    description: `Record a standing lesson for this project, so later sessions keep it. Use it only right after the user corrected you, or after a mistake you had to undo; never for task notes, plans, or progress. The lesson is one instruction in a standing form (don't, never, always, stop, from now on, next time), names no ticket, branch, PR, or hash, and never skips a test, check, review, or confirmation. It reaches later sessions only once it is confirmed.`,
+    description: `Record a standing lesson for this project, so later sessions keep it. Use it after the user corrected you, after a mistake you had to undo, or when you learned a fact about this project that later sessions need (for example, a site blocks one browser and allows another); never for task notes, plans, or progress. The lesson is one instruction in a standing form (don't, never, always, stop, from now on, next time), names no ticket, branch, PR, or hash, and never skips a test, check, review, or confirmation. It reaches later sessions only once it is confirmed.`,
     parameters: rememberParameters,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const config = configFor(ctx);
       if (!config.enabled || !config.prefs.enabled) return toolReply(`not recorded: standing preferences are off (${config.enabled ? "prefs.enabled" : "enabled"} is false)`);
-      const signal = lessonSignalTurn !== undefined && assistantTurns - lessonSignalTurn <= LESSON_TURNS;
       const lesson = typeof (params as { lesson?: unknown }).lesson === "string" ? (params as { lesson: string }).lesson : "";
-      if (!signal) return toolReply(NO_LESSON_SIGNAL);
       const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
       const session = typeof manager.getSessionId === "function" ? manager.getSessionId() : "unknown";
       const scan = await standingPrefs(ctx);
       const path = prefsStorePath(scan.project, dirs);
       const reply = await changePrefsStore(path, store => {
-        const result = recordLesson({ lesson, session, now: Date.now(), signal, scan, store });
+        const result = recordLesson({ lesson, session, now: Date.now(), scan, store });
         return { value: result.reply, ...(result.store ? { store: result.store } : {}) };
       });
       return toolReply(reply);
