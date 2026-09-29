@@ -8,6 +8,16 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.79.1
+
+### Fixed
+
+- The hold log is now written to a temporary file and renamed into place, so a reader always sees a whole file. Before, a reader during an in-place rewrite could get a line cut short, which made an extension test fail now and then.
+
+### Tests
+
+- `npm test` clears every `PI_*` variable and judge key and gives each test process its own agent directory, so a run in a shell inside Pi no longer writes trace lines or steer stats to the developer's directories; the host test builds into a temporary directory instead of `dist/`, and no test file shares a fixed temporary path.
+
 ## 0.79.0
 
 ### Changed

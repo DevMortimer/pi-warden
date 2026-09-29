@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import type { Verdict } from "../src/guard.js";
 import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "../src/holds.js";
@@ -150,9 +150,12 @@ test("the log is one JSON line per call, owner-only, under the agent directory, 
   const ledger = new HoldLedger();
   ledger.record(verdict({ command: "git push --force origin main" }), { held: true, mode: "steer", at: 1 });
   await log.save(ledger.records());
+  const first = await stat(path);
   ledger.approved("bash", "retry", 2);
   ledger.record(verdict({ level: "allow", command: "rm -rf secret-dir" }), { held: false, mode: "steer", at: 3 });
   await log.save(ledger.records());
+  if (process.platform !== "win32") assert.notEqual((await stat(path)).ino, first.ino, "a save replaces the file, so a reader never gets a line cut short");
+  assert.deepEqual(await readdir(dirname(path)), [basename(path)], "no temporary file is left beside the log");
   const text = await readFile(path, "utf8");
   const lines = text.trimEnd().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
   assert.equal(lines.length, 2, "the file holds the current state of every record, not an event per change");
