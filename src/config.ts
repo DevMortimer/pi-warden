@@ -53,7 +53,7 @@ export interface ActionGuardConfig {
   intentMismatch: number;
   /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
   visibleMismatch: number;
-  /** Which intent mismatches stay in the trace without a steer: "invisible" (default) a call with no visible effect (neither a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`, nor judged `visible` at 0.8 or more), "all" every one, "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. */
+  /** Which intent mismatches stay in the trace without a steer: "all" (default) every one, "invisible" only a call with no visible effect (neither a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`, nor judged `visible` at 0.8 or more), "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. On blind labels of 140 sampled calls the score separates a differing call well (AUROC 0.815), but of 37 steers that would reach the agent, 36 were calls the plan or the user's latest request had asked for. */
   intentTraceOnly: "invisible" | "all" | "none";
   /** Low P(should_proceed) is trace-only unless steer is enabled; hold is the inclusive threshold, not a blocking decision. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
   shouldProceed: { hold: number; steer: boolean };
@@ -506,7 +506,7 @@ export function defaultConfig(): WardenConfig {
       offTask: { warn: 0.6, steer: 0.85 },
       intentMismatch: 0.9,
       visibleMismatch: 0.8,
-      intentTraceOnly: "invisible",
+      intentTraceOnly: "all",
       shouldProceed: { hold: 0.6, steer: false },
       feedbackLog: true,
       commandRules: [],

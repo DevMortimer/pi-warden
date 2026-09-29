@@ -25,7 +25,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "offTask": { "warn": 0.6, "steer": 0.85 },
     "intentMismatch": 0.9,
     "visibleMismatch": 0.8,
-    "intentTraceOnly": "invisible",
+    "intentTraceOnly": "all",
     "shouldProceed": { "hold": 0.6, "steer": false },
     "feedbackLog": true,
     "floor": "evidence",
@@ -89,7 +89,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `action.offTask` | `warn` and `steer` thresholds on P(off-task). Off-task never holds. |
 | `action.intentMismatch` | P(call differs from the agent's stated plan) that warns and tells the agent, on calls that can change something. |
 | `action.visibleMismatch` | Lower mismatch threshold for commands whose effect is visible outside the working tree (commit, push, publish, install, launch). |
-| `action.intentTraceOnly` | Which intent mismatches stay in the trace without a steer to the agent. `"invisible"` (default): a call with no visible effect: not a commit, push, merge, tag, reset, pull request, release, or publish (decided in code), and not judged `visible` at 0.8 or more (an install, a launched program, a message sent from a script). `"all"`: every mismatch. `"none"`: none; every mismatch steers, as before. The steer arrives after the call ran. |
+| `action.intentTraceOnly` | Which intent mismatches stay in the trace without a steer to the agent. `"all"` (default): every mismatch, visible effect or not. `"invisible"`: only a call with no visible effect: not a commit, push, merge, tag, reset, pull request, release, or publish (decided in code), and not judged `visible` at 0.8 or more (an install, a launched program, a message sent from a script). `"none"`: none; every mismatch steers, as before. The steer arrives after the call ran. Blind labels on 140 sampled calls put the score's separation of a differing call at AUROC 0.815, but of the 37 steers that would reach the agent, 36 were calls the plan or the user's latest request had asked for. Restore the old behaviour with `"action": { "intentTraceOnly": "invisible" }`. |
 | `action.shouldProceed` | `{ hold, steer }`. Scores at or below `hold` (default 0.6) are trace-only by default until calibrated; they never hold a call. |
 | `action.shouldProceed.steer` | Default `false`. Set `true` to restore the steer that asks the agent to pause and seek user approval. |
 | `action.feedbackLog` | Write each judged call and its outcome to `~/.pi/agent/pi-warden/holds/`; never the command. |
