@@ -152,7 +152,12 @@ test("every judge failure and an empty selection fall back with a reason", async
 });
 
 test("the filter's deadline is timeoutMs", async () => {
-  const hang: Judge = { evaluate: (_request, options) => new Promise((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal!.reason), { once: true })) };
+  // A dead backend holds its socket open; the fake holds a referenced timer instead. The deadline timer is unref'd, so
+  // without one the loop would drain before the abort fires. The timer is cleared on abort.
+  const hang: Judge = { evaluate: (_request, options) => new Promise((_, reject) => {
+    const alive = setTimeout(() => undefined, 60_000);
+    options?.signal?.addEventListener("abort", () => { clearTimeout(alive); reject(options.signal!.reason); }, { once: true });
+  }) };
   const started = Date.now();
   const result = await filterOutput(log(400), input, { config: { ...config(), timeoutMs: 50 }, judge: hang });
   assert.equal(!result.ok && result.reason, "timeout");
