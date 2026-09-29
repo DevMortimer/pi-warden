@@ -27,7 +27,8 @@ import { defaultConfig } from "../src/config.js";
 let temporary: string;
 let savedIndexDir: string | undefined;
 
-const FAKE_SKILL_FILE = join(tmpdir(), "pi-warden-test-skill.md");
+/** Inside this file's own temporary directory: a fixed name in the shared tmpdir is one file for every concurrent run. */
+let FAKE_SKILL_FILE: string;
 const FAKE_SKILL_CONTENT = "# Test Skill\n\nA test skill for unit tests.\n";
 
 const SAMPLE_ENTRY: IndexEntry = {
@@ -81,6 +82,7 @@ before(() => {
   savedIndexDir = process.env.PI_WARDEN_INDEX_DIR;
   process.env.PI_WARDEN_INDEX_DIR = temporary;
   // Create a fake skill file for hashing tests
+  FAKE_SKILL_FILE = join(temporary, "test-skill.md");
   writeFileSync(FAKE_SKILL_FILE, FAKE_SKILL_CONTENT, "utf8");
 });
 
@@ -88,7 +90,6 @@ after(() => {
   if (savedIndexDir === undefined) delete process.env.PI_WARDEN_INDEX_DIR;
   else process.env.PI_WARDEN_INDEX_DIR = savedIndexDir;
   rmSync(temporary, { recursive: true, force: true });
-  try { rmSync(FAKE_SKILL_FILE, { force: true }); } catch { /* best effort */ }
 });
 
 beforeEach(() => {

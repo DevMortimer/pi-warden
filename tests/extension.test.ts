@@ -117,11 +117,14 @@ const promptWithSkills = (text: string, skills: Array<{ name: string; descriptio
 };
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
-/** The hold log is written without blocking the hook; a test that reads it waits for the expected number of lines. */
+/**
+ * The hold log and the trace file are written without blocking the hook; a test that reads one waits for the expected
+ * number of lines. Every record ends in a newline, so text after the last one is an append still in progress.
+ */
 const readLog = async (path: string, lines: number, settled = true): Promise<Record<string, unknown>[]> => {
   for (let attempt = 0; attempt < 200; attempt++) {
     const text = await readFile(path, "utf8").catch(() => "");
-    const parsed = text.trimEnd().split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
+    const parsed = text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
     if (parsed.length === lines && (!settled || parsed.every(record => record.outcome !== "pending"))) return parsed;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
@@ -145,11 +148,14 @@ before(async () => {
     }
     networkCalls++;
     if (failNetwork) return new Response("upstream body must not leak", { status: 503 });
+    // A dead backend holds its socket open; the fake holds a referenced timer instead. The judge's deadline is an
+    // unref'd AbortSignal.timeout, so without one the loop could drain before the abort fires. Cleared on abort.
     if (hangNetwork) return new Promise<Response>((_, reject) => {
       const signal = init?.signal;
       if (!signal) return;
-      if (signal.aborted) reject(signal.reason);
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      if (signal.aborted) { reject(signal.reason); return; }
+      const alive = setTimeout(() => undefined, 60_000);
+      signal.addEventListener("abort", () => { clearTimeout(alive); reject(signal.reason); }, { once: true });
     });
     if (failStatus !== undefined) return new Response("upstream body must not leak", { status: failStatus });
     const body = JSON.parse(String(init?.body)) as { model?: string; state: Record<string, unknown>; questions: Record<string, { type: string; criteria?: unknown }> };
