@@ -8,6 +8,7 @@ coverage/
 *.tgz
 .DS_Store
 docs/preview.html
+docs/hero.html
 pi-warden.md
 AGENTS.md
 .pi-warden/audit-report.html

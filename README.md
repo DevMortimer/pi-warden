@@ -14,7 +14,7 @@
 
 </div>
 
-![pi-warden tells the agent what it got wrong and the agent fixes it: 65 untested "done" claims, 51 then ran the tests, 5 found a failure it had missed; after a hold the agent found a safer way 33 times](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/hero.png)
+![pi-warden tells the agent what it got wrong and the agent fixes it: told 75 times that it said done with nothing checked, the agent ran a check next 57 times (76%); of 65 held actions with a known outcome, the agent found a safer way 40 times, you approved 24, you said no once; 349 steers named a project rule; 759 real sessions, 2026-09-16 to 2026-09-24](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/hero.png)
 
 <div align="center">
 
