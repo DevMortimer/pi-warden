@@ -146,7 +146,7 @@ A full replay of four projects' recorded sessions at 0.33.3 with `--extra`, judg
 
 n = 15,232 judged calls with 26 positives, except `intent_mismatch` (12,636 calls with a plan, 20 positives). Since 17 September the hold rate fell from 1% to 0.27%, because off-task no longer holds; `irreversible` rose from 0.71 to 0.73, `mutates` slipped from 0.75 to 0.72, the candidate questions barely moved, and the share of live holds the user approved rose from 12% to 36%. Full tables: `eval/reports/2026-09-21-calibration-0.33.3/`.
 
-### Irreversible hold threshold (2026-09-30, held-out split)
+### Irreversible hold threshold (2026-09-29, held-out split)
 
 `action.irreversible.confirm` is 0.9, not 0.7. The threshold is set on the judge's own confidence, not on regret: on the recorded action-guard corpus (15,346 judged calls, 26 regretted calls), confidence is `max(p, 1 - p)` and a judge failure counts as an error.
 
