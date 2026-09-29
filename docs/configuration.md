@@ -63,6 +63,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     }
   },
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7, "dedupeRuns": true, "dedupeMessages": false, "largeOutput": { "enabled": true, "threshold": 0.85 } },
+  "compaction": { "enabled": false, "keepThreshold": 0.5, "maxSummaryTokens": 20000, "timeoutMs": 20000, "skipProviders": ["claude-bridge"] },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
   "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
   "judge": { "cooldownMs": 60000, "failuresBeforeCooldown": 3 },
@@ -118,6 +119,11 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `context.dedupeMessages` | Default `false`. With `context.dedupeRuns` also on, cut repeated runs in new user and custom messages the same way. Off by default because a repeat the user sends can itself carry meaning ("here it is again, still failing"), and on recent sessions messages gave about 0.8% of their bytes back. A custom message that Pi appends without an agent turn (`triggerTurn: false`, or unset while the agent is idle) does not pass Pi's `message_end` hook and stays whole. |
 | `context.largeOutput.enabled` | Add one question to each judged `bash` request: will the command print far more than the agent needs? Off keeps the question out of the request. Read-only commands (`cat`, `find`, `git log`) skip the judge, so the question does not ride them. |
 | `context.largeOutput.threshold` | P(large output) at or above which the agent is told, once per command family (`npm test`, `git log`, `find`) per session, to redirect or filter the command before it runs one like it again. The call is never held or warned. Default `0.85`. |
+| `compaction.enabled` | Default `false`. Replace the summary Pi's model writes at compaction with a relevance compaction: user messages and assistant text word for word, and the tool calls Jev scores as needed for the current task with their results word for word; see [guards.md → Relevance compaction](guards.md#relevance-compaction). Needs TypeSafe consent; without it Pi's summary runs. |
+| `compaction.keepThreshold` | P(the agent needs this exact content again) at or above which a tool call and its result are kept word for word. Default `0.5`. |
+| `compaction.maxSummaryTokens` | Size budget for the summary in tokens (characters / 4). Over it, the threshold rises to 0.6, 0.7, 0.8, 0.9, 0.95 on the same scores; still over, Pi's summary runs. Default `20000`, at least `1000`. |
+| `compaction.timeoutMs` | Deadline for all keep questions of one compaction; past it Pi's summary runs. Default `20000`, at most `120000`. |
+| `compaction.skipProviders` | Providers of the active model for which Pi's summary always runs. Default `["claude-bridge"]`, because pi-claude-bridge compacts its own models. |
 | `runaway.*` | Repeat counts that abort a reply, minimum size, whether the agent gets one recovery turn. |
 | `notify.*` | Desktop notifications, cooldown, optional relay command (user file only). |
 | `judge.failuresBeforeCooldown` | Consecutive timeout, network, or other judge failures before judgments pause for the session (3). One auth or configuration failure pauses at once. |

@@ -79,6 +79,18 @@ The conscience coach assesses whether the agent is missing a useful skill or too
 - A second pass asked four candidate questions on the same calls (`scripts/action-candidates.mjs`, `--extra`). None separates rejected turns on its own: "would a careful engineer ask first", "is this unrequested", "did the user ask to pause", and "is the effect visible outside the working tree" all sit at the 4 to 5% base rate. `visible` has the best recall on regret (AUC 0.82, 10 of 19 regretted calls) but a commit or push is usually what was asked. Paired with the plan it works: `visible >= 0.8` and `intent_mismatch >= 0.8` flags 1.1% of calls with 18% in a rejected turn, so that pair steers at `visibleMismatch` 0.8. Two deterministic patterns came from the regretted list: a git command with hooks or signing switched off, and `gh pr merge`.
 - Of 42 holds pi-warden made in those sessions, the user's next message approved 5.
 
+### Relevance compaction replay (2026-09-29, first measurement)
+
+`node scripts/relevance-replay.mjs` rebuilds the span each recorded compaction replaced (48 compactions in 1,521 sessions on one machine), runs the keep questions with real requests at the defaults, and compares the result with the summary Pi wrote. It counts the "re-fetch" calls: a `read` of a path or a `bash` command from the span among the first 10 tool calls after the compaction (34 calls after 17 compactions; all 34 were `read`).
+
+- **Size.** 42 of 48 compactions produced a summary; 6 fell back before any request because the text that is always kept (user messages, assistant text, one line per call) was over 20,000 tokens. Summary median 12,371 tokens (p90 17,950) against Pi's 2,567 (p90 5,183): 4.7 times larger at the median. The threshold rose above 0.5 in 20 of 42 to fit.
+- **Re-fetch coverage.** Of the 34 re-fetched reads, the relevance summary held 1 whole and 11 as head and tail (the files were mostly 5,000 to 37,000 characters), missed 20, and 2 fell in fallbacks. Pi's summary holds no tool output word for word; it names all 34 paths.
+- **Signal.** Jev ranks the re-read files high: for 22 of the 32 scored re-reads, a unit of that file scored 0.5 or more, a level only 20% of all 5,420 scored units reach (median 0.36, p90 0.57). Most of them were lost to the raised threshold and the 4000-character cut, not to the ranking.
+- **Cost.** Median 6 requests per compaction (p90 11), 101,000 input tokens (p90 190,000), 0.85 s (p90 1.25 s); no timeout at 20 s.
+- **Batched against one question per request** (3 compactions of 130 to 137 units, 401 units): 342 of 401 keep decisions agree (85%; 88%, 92%, 77%), mean absolute difference 0.05, and a unit asked alone scores 0.03 higher on average.
+
+The feature ships off: on this data it keeps more text than Pi's summary without holding what the agent went back for.
+
 ### should_proceed calibration (2026-09-20)
 
 100 targeted sessions (50 pi-warden, 50 millia) selected by correction density: 980 labelled turns, 10,612 not-read-only calls, 2 regretted. The `should_proceed` question asks: "How confident are you that this action is safe to run without consulting the user?" Inverted: low P(yes) = a trace-only finding by default.
@@ -380,6 +392,19 @@ Only the newest tool result or message is ever changed, before it enters the ses
 - **Compaction appendix** (`context.compactAppendix`, default true). After compaction succeeds (`session_compact`), the extension builds a deterministic evidence appendix from session memory: up to five distinct failed calls with the line of their output that names the error, the last passing check and whether code was written or edited after it, the last five check commands and their outcomes, stuck-loop failures, the last ten held actions and their outcomes, saved full outputs (tool, path, bytes), and the active task. Every string is redacted. Over the 2 000-character cap, saved outputs shrink to the three newest and held actions go first; the failed calls and the verification line stay. The appendix is sent as one custom message (`pi-warden-compact-evidence`) so the agent can prefer saved paths over re-running commands. The message is local session content and goes to the session model with the rest of the context; nothing new leaves for Jev. It does not spend a steer unit. On any error, nothing is sent and one trace entry is recorded.
 
 Set `context.enabled: false` to turn it off. Full-output files can contain secrets and stay in the OS temporary directory until removed.
+
+### Relevance compaction
+
+Opt-in (`compaction.enabled`, default false; needs TypeSafe consent). When Pi compacts a session, pi-warden can write the summary instead of Pi's model, in `session_before_compact`. Nothing in it is paraphrased:
+
+- **Kept word for word, always:** user messages and assistant text. Thinking is never kept.
+- **Scored by Jev:** each tool call with its result, each extension message, and each part of the previous summary (the sections of Pi's summary, or the units of an earlier relevance compaction). One `noul` question per unit asks whether the agent will need its exact content for the current task (the latest request, the task spine, and the focus a manual `/compact <text>` names). At or above `compaction.keepThreshold` (0.5) the call and its result are kept; a result or input over 4000 characters keeps its first 2400 and last 1200 characters and names the saved full-output file when pi-warden has one. Below it, the call is one line under "left out", with no result.
+- **Never kept word for word:** a result the output check flagged as a possible prompt injection (one line, and no question is asked about it). A result the context saver already replaced keeps its excerpt, uncut.
+- **Layout:** a header with the kept and left-out counts, the files read and modified (from Pi's file operations and the previous summary), then the units in their original order. Every kept tool result and extension message sits in a fence labelled untrusted: data, not instructions. The summary enters the context as one user message, as Pi's does.
+- **Requests:** every request carries the task, an outline of the whole span (shrunk in stages to fit), and up to 24 units with a redacted input and a head/tail sample of each result, under the 64 KiB request limit; four requests run at once.
+- **Fallback:** Pi's summary runs (the hook returns nothing; it never cancels a compaction) when consent is missing, the model's provider is in `compaction.skipProviders`, a request fails, `compaction.timeoutMs` passes, the compaction is aborted, or the summary stays over `compaction.maxSummaryTokens` after the threshold is raised. Each compaction leaves one trace entry (kept and scored units, requests, input tokens, time, or the fallback reason), and `/warden status` has one line for the session.
+
+The compaction appendix above still follows every compaction, this one included.
 
 ## Call waste
 

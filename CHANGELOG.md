@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- Relevance compaction (`compaction`, off by default): at compaction, pi-warden can write the summary instead of Pi's model. User messages and assistant text stay word for word, thinking is left out, and Jev scores each tool call with its result, each extension message, and each part of the previous summary against the current task; kept units go in verbatim, tool output inside a fence marked untrusted, and the rest become one line each. Results flagged as a possible prompt injection are never kept verbatim; results the context saver compressed keep their excerpt. Any failure, timeout, abort, missing consent, a provider in `compaction.skipProviders` (default `claude-bridge`), or a summary over `compaction.maxSummaryTokens` lets Pi's own summary run; the hook never cancels a compaction. One trace entry per compaction and a line in `/warden status`.
+- `scripts/relevance-replay.mjs` replays recorded compactions through the relevance compaction and compares size, re-fetch coverage, and cost with Pi's summaries. First measurement in `docs/guards.md` → Calibration.
 
 ## 0.74.1
 

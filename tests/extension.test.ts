@@ -3776,6 +3776,61 @@ test("stuck-loop diff: stuck.enabled: false prevents any replacement", async () 
   assert.ok(!third.content[0]!.text.includes("stuck-loop diff"), "no diff when stuck is disabled");
 });
 
+/** A compaction event with a two-call span; Pi's cut point and token count ride through unchanged. */
+const beforeCompact = (signal = new AbortController().signal) => ({
+  preparation: {
+    firstKeptEntryId: "entry-42", tokensBefore: 123456, isSplitTurn: false, turnPrefixMessages: [], previousSummary: undefined,
+    fileOps: { read: new Set(["src/a.ts"]), written: new Set<string>(), edited: new Set(["src/b.ts"]) },
+    messagesToSummarize: [
+      { role: "user", content: "Fix the build" },
+      { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "src/a.ts" } }, { type: "toolCall", id: "c2", name: "bash", arguments: { command: "npm run build" } }] },
+      { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "export const a = 1;" }], isError: false },
+      { role: "toolResult", toolCallId: "c2", toolName: "bash", content: [{ type: "text", text: "build log noise" }], isError: false },
+    ],
+  },
+  branchEntries: [], reason: "threshold", willRetry: false, signal,
+});
+
+test("session_before_compact: off by default, Pi's summary runs and nothing is sent", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  assert.equal(await fire("session_before_compact", beforeCompact()), undefined);
+  assert.equal(networkCalls, 0);
+});
+
+test("session_before_compact: enabled, kept output replaces Pi's summary with Pi's cut point unchanged", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, compaction: { enabled: true }, ...STACK_BAR }));
+  nextAnswers = { u1: 0.9, u2: 0.2 };
+  const result = await fire("session_before_compact", beforeCompact()) as { compaction: { summary: string; firstKeptEntryId: string; tokensBefore: number } };
+  assert.equal(result.compaction.firstKeptEntryId, "entry-42");
+  assert.equal(result.compaction.tokensBefore, 123456);
+  assert.match(result.compaction.summary, /^pi-warden relevance compaction/);
+  assert.match(result.compaction.summary, /export const a = 1;/);
+  assert.doesNotMatch(result.compaction.summary, /build log noise/);
+  assert.match(result.compaction.summary, /Files read:\n- src\/a\.ts\n\nFiles modified:\n- src\/b\.ts/);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(Object.keys(requests[0]!.questions), ["u1", "u2"]);
+  await runCommand("status", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /Relevance compaction: 1 compaction, 1 replaced Pi's summary\. Last: kept 1 of 2 scored units, 1 request/);
+});
+
+test("session_before_compact: no consent, a skipped provider, a judge failure, or an abort return nothing and never cancel", async () => {
+  await writeFile(configPath(), JSON.stringify({ compaction: { enabled: true }, ...STACK_BAR }));
+  assert.equal(await fire("session_before_compact", beforeCompact()), undefined);
+  assert.equal(networkCalls, 0, "no consent: nothing is sent");
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, compaction: { enabled: true }, ...STACK_BAR }));
+  assert.equal(await fire("session_before_compact", beforeCompact(), context({ model: { provider: "claude-bridge", id: "m" } })), undefined);
+  assert.equal(networkCalls, 0, "a provider in skipProviders keeps its own compaction");
+  failNetwork = true;
+  assert.equal(await fire("session_before_compact", beforeCompact()), undefined);
+  failNetwork = false;
+  const controller = new AbortController();
+  controller.abort();
+  assert.equal(await fire("session_before_compact", beforeCompact(controller.signal)), undefined);
+  await runCommand("status", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /Relevance compaction: 4 compactions, 0 replaced Pi's summary, Pi's summary ran instead \(judgments off 1, skipped 1, judge error 1, aborted 1\)/);
+  assert.ok(notices.some(notice => /Relevance compaction failed/.test(notice.text)), "a judge error is announced like other TypeSafe errors");
+});
+
 test("session_compact: appendix includes saved output, failed check, and held action", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
   sentMessages.length = 0;
