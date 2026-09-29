@@ -1285,8 +1285,8 @@ test("the agent's plan comes from the message that makes the call or the text-on
   sentMessages.length = 0;
   assert.equal(await toolCall("bash", { command: "npm run clean" }, earlier), undefined, "a mismatch warns; it never holds");
   assert.equal(requests.at(-1)!.state.plan, "Let me first list what is in build/ before removing anything.");
-  assert.ok(!sentMessages.some(sent => sent.message.customType === "pi-warden-steer"), "npm run clean has no visible effect: trace-only by default");
-  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only, no visible effect\)$/);
+  assert.ok(!sentMessages.some(sent => sent.message.customType === "pi-warden-steer"), "by default every mismatch stays in the trace");
+  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only\)$/);
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+bash · .*off plan$/, "the mismatch leads the line as a warn chip");
 
   // A tool-calls-only message after an earlier tool call: the text before that call described it, so no plan, no question.
@@ -1310,13 +1310,13 @@ test("the agent's plan comes from the message that makes the call or the text-on
   await runCommand("status");
   const status = notices.at(-1)!.text;
   assert.match(status, /1 off plan \(1 trace-only\)/);
-  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action, trace-only: invisible\);/);
+  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action, trace-only: all\);/);
   const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
   const lines = await readLog(logPath, 4, false);
   assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined], [0, undefined]], "planChars says how often the agent called without a word");
 });
 
-test("intentTraceOnly: an invisible mismatch is traced without a steer, a visible one steers; \"none\" and \"all\" set every call", async () => {
+test("intentTraceOnly: every mismatch is trace-only by default; \"invisible\" steers only a visible effect, \"none\" every mismatch", async () => {
   prompt = "Verify the RPC endpoint end to end";
   const plan = "Let me first list what is in build/ before removing anything.";
   const branch = (command: string) => context({ hasUI: false, sessionManager: { getBranch: () => [
@@ -1333,20 +1333,22 @@ test("intentTraceOnly: an invisible mismatch is traced without a steer, a visibl
     return intentSteers().length;
   };
 
-  // Default "invisible": no steer, no headless warn notice, and one trace line that names the mismatch.
+  // Default "all": no steer, no headless warn notice, and one trace line that names the mismatch.
   assert.equal(await run(undefined, "npm run clean"), 0);
   assert.ok(!sentMessages.some(sent => /ran with a warning/.test(sent.message.content)), "the headless warn steer drops the trace-only reason too");
   await runCommand("trace", context({ hasUI: false }));
   const trace = sentMessages.at(-1)!.message.content;
-  assert.equal(trace.match(/intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only, no visible effect\)/g)?.length, 1);
+  assert.equal(trace.match(/intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only\)/g)?.length, 1);
 
-  // A push is visible by code, an install the judge scores visible: the steer still reaches the agent for both.
-  assert.equal(await run(undefined, "git push origin main"), 1);
-  assert.equal(await run(undefined, "npm install left-pad", 0.85), 1);
-  assert.equal(await run(undefined, "npm install left-pad", 0.5), 0);
-  // "none" restores the steer on every mismatch; "all" sends none, visible calls included.
+  // A push is visible by code and an install the judge scores visible: the default silences both.
+  assert.equal(await run(undefined, "git push origin main"), 0);
+  assert.equal(await run(undefined, "npm install left-pad", 0.85), 0);
+  // "invisible" tells the agent only about a call with a visible effect.
+  assert.equal(await run("invisible", "git push origin main"), 1);
+  assert.equal(await run("invisible", "npm install left-pad", 0.85), 1);
+  assert.equal(await run("invisible", "npm install left-pad", 0.5), 0);
+  // "none" restores the steer on every mismatch.
   assert.equal(await run("none", "npm run clean"), 1);
-  assert.equal(await run("all", "git push origin main"), 0);
   assert.equal(await run("all", "npm run clean"), 0);
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /1 off plan \(1 trace-only\)/);
@@ -1361,7 +1363,7 @@ test("adaptive steers: an intent-mismatch steer the model does not follow become
     { type: "message", message: { role: "user", content: prompt } },
     assistantEntry({ type: "text", text: plan }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command } }),
   ] } });
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, steers: { minSteers: 2, recheckEvery: 4, probeEvery: 2 }, ...STACK_BAR }));
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, intentTraceOnly: "invisible" }, steers: { minSteers: 2, recheckEvery: 4, probeEvery: 2 }, ...STACK_BAR }));
   const intentSteers = () => sentMessages.filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content)).length;
   /** One mismatching push; the agent's next two messages carry on without a course change. Returns whether the steer was sent. */
   const run = async (id: string) => {
