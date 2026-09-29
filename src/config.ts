@@ -275,6 +275,22 @@ export interface FilterConfig {
   timeoutMs: number;
 }
 
+/** Relevance compaction (relevance.ts): Jev picks what of the discarded span is kept word for word instead of Pi's summary. */
+export interface CompactionConfig {
+  /** Replace Pi's compaction summary with a relevance compaction. Off by default. User file only: it sends data and spends requests. */
+  enabled: boolean;
+  /** P(needed again) at or above which a unit is kept word for word. */
+  keepThreshold: number;
+  /** Size budget for the summary in tokens (characters / 4); over it the threshold is raised, then Pi's summary runs. */
+  maxSummaryTokens: number;
+  /** Deadline for one whole compaction; past it Pi's summary runs. Each request is also bounded by the global `timeoutMs`. */
+  timeoutMs: number;
+  /** Requests one compaction may send; a span that needs more keeps Pi's summary and sends nothing. */
+  maxRequests: number;
+  /** Providers of the active model for which Pi's summary always runs (a provider that compacts on its own). */
+  skipProviders: string[];
+}
+
 export interface LargeOutputConfig {
   enabled: boolean;
   /** P(the command prints far more than the agent needs) at or above which the agent is steered once per command family per session. */
@@ -480,11 +496,13 @@ export interface WardenConfig {
   prefs: PrefsConfig;
   /** Call-waste notes: advisory sentences attached to the tool result that triggers them. */
   waste: WasteConfig;
+  /** Relevance compaction in place of Pi's compaction summary. Off by default. */
+  compaction: CompactionConfig;
 }
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 10;
+export const CONFIG_SCHEMA = 11;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -550,6 +568,8 @@ export function defaultConfig(): WardenConfig {
     },
     prefs: { enabled: true, inject: true },
     waste: { enabled: true, tip: false, every: 20, sleep: true, paging: true, search: true, recheck: true },
+    // pi-claude-bridge compacts its own models and cancels on failure; its summary must not be replaced.
+    compaction: { enabled: false, keepThreshold: 0.5, maxSummaryTokens: 20000, timeoutMs: 20000, maxRequests: 12, skipProviders: ["claude-bridge"] },
   };
 }
 
@@ -907,8 +927,9 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project"): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
   return {
+    compaction: applyCompaction(base.compaction, raw.compaction, source),
     waste: applyWaste(base.waste, raw.waste),
     rules: applyRules(base.rules, raw.rules),
     runaway: applyRunaway(base.runaway, raw.runaway),
@@ -986,6 +1007,22 @@ function applyWaste(base: WasteConfig, raw: unknown): WasteConfig {
     paging: boolean(raw.paging, base.paging),
     search: boolean(raw.search, base.search),
     recheck: boolean(raw.recheck, base.recheck),
+  };
+}
+
+/** Pi awaits the compaction hook with no deadline of its own, so this one is bounded too. */
+const MAX_COMPACTION_TIMEOUT_MS = 120_000;
+
+function applyCompaction(base: CompactionConfig, raw: unknown, source: "user" | "project"): CompactionConfig {
+  if (!isObject(raw)) return base;
+  return {
+    // Turning it on sends the session to Jev and spends requests, so only the user decides; a project tunes the rest.
+    enabled: source === "user" ? boolean(raw.enabled, base.enabled) : base.enabled,
+    keepThreshold: probability(raw.keepThreshold, base.keepThreshold),
+    maxSummaryTokens: Math.max(1000, positiveInteger(raw.maxSummaryTokens, base.maxSummaryTokens)),
+    timeoutMs: Math.min(MAX_COMPACTION_TIMEOUT_MS, positiveInteger(raw.timeoutMs, base.timeoutMs)),
+    maxRequests: positiveInteger(raw.maxRequests, base.maxRequests),
+    skipProviders: globList(raw.skipProviders, base.skipProviders),
   };
 }
 

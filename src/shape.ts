@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 10;
+export const EXPECTED_SCHEMA = 11;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -67,6 +67,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     waste: section("waste", { ...off, tip: false, every: 20, sleep: false, paging: false, search: false, recheck: false }),
     learning: section("learning", { adaptiveThresholds: true, patternAnalysis: true, minHoldsForAdaptive: 20, adaptationRate: 0.1, retentionDays: 365 }),
     prefs: section("prefs", { enabled: false, inject: false }),
+    // A missing section keeps Pi's own compaction summary, as before the section existed.
+    compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
     conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }),
   };
   // A missing/invalid runtime section falls back to disabled conscience, no loads, and the existing update warning.
