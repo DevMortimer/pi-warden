@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.79.0
+
 ### Changed
 
 - `warden_remember` records a lesson with no user correction or failure before it, for example a fact about the project that later sessions need; the rules for a lesson are unchanged, and it still reaches later sessions only once recorded in a second session or said by the user.
