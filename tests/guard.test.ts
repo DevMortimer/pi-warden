@@ -549,7 +549,7 @@ test("same-command mktemp: a recursive rm of the variable it made warns as sessi
     `d=$(mktemp -d); d+=x; rm -rf "$d"`,
     `d=$(mktemp -u); rm -rf "$d"`,
     `d=$(mktemp --dry-run -d); rm -rf "$d"`,
-    `d=$(mktemp -d /Users/anon/workbench/outside); rm -rf "$d"`,
+    `d=$(mktemp -d ~/projects/outside); rm -rf "$d"`,
     `d=$(mktemp -d); rm -rf "$d/../x"`,
     `rm -rf $NAME`,
     `rm -rf "$TMPDIR"`,
@@ -610,11 +610,11 @@ test("declared scratch paths: the root, the home directory, the project root, an
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
-test("temp subtree leaves the declined worktree call and paths outside the temp roots held", () => {
+test("temp subtree leaves the declined call and paths outside the temp roots held", () => {
   const held = [
-    `W=~/.pi/agent/carvel/worktrees; rm -rf "$W"/* ~/workbench/hunting`,
-    `rm -rf ~/workbench/hunting`,
-    `rm -rf /Users/anon/workbench/outside`,
+    `W=~/.cache/tool/worktrees; rm -rf "$W"/* ~/projects/app`,
+    `rm -rf ~/.cache/tool/worktrees`,
+    `rm -rf ~/projects/app`,
     `rm -rf /var/tmp/keep`,
     `rm -rf "$SCRATCH"`,
     `rm -rf /tmp/x/*`,
