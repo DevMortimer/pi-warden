@@ -558,16 +558,16 @@ test("assess marks the spine assessed so the next prompt on that spine is skippe
 
 const indexedSkill = (): Candidate => ({
   kind: "skill",
-  id: "carvel-ui-check",
+  id: "ui-check",
   description: "Browser checks of a UI with a real browser, screenshots, and clicks.",
   skill: {
-    name: "carvel-ui-check", description: "Browser checks of a UI", filePath: "/skills/carvel-ui-check/SKILL.md",
-    baseDir: "/skills/carvel-ui-check",
-    sourceInfo: { path: "/skills/carvel-ui-check/SKILL.md", source: "local", scope: "user", origin: "top-level" },
+    name: "ui-check", description: "Browser checks of a UI", filePath: "/skills/ui-check/SKILL.md",
+    baseDir: "/skills/ui-check",
+    sourceInfo: { path: "/skills/ui-check/SKILL.md", source: "local", scope: "user", origin: "top-level" },
     disableModelInvocation: false,
   } as Skill,
   indexEntry: {
-    kind: "skill", name: "carvel-ui-check", scope: "global", sourceHash: "missing", role: "conversation",
+    kind: "skill", name: "ui-check", scope: "global", sourceHash: "missing", role: "conversation",
     lead: "Check a running UI in a real browser", useWhen: ["the agent changed a web UI and must see it", "a screenshot proves the layout"],
     notWhen: [], inputs: "", examples: [], thin: false,
   },
@@ -579,8 +579,8 @@ test("tipLine picks the useWhen line that shares terms with the request", () => 
 
 test("recommendationText is the name, one line, and the skill file", () => {
   const text = recommendationText(indexedSkill(), "take a screenshot of this layout");
-  assert.match(text, /^Consider using the "carvel-ui-check" skill: a screenshot proves the layout/);
-  assert.match(text, /Read: \/skills\/carvel-ui-check\/SKILL\.md$/);
+  assert.match(text, /^Consider using the "ui-check" skill: a screenshot proves the layout/);
+  assert.match(text, /Read: \/skills\/ui-check\/SKILL\.md$/);
   assert.ok(!text.includes("Browser checks of a UI"), "the description never rides along");
   assert.ok(text.length < 200, `the tip stays short (${text.length} characters)`);
 });
@@ -592,7 +592,7 @@ test("recommendationText for a tool carries no file and falls back to one descri
 });
 
 test("a reminder lead reads as a reminder", () => {
-  assert.match(recommendationText(indexedSkill(), "screenshot", "consider"), /^consider using the "carvel-ui-check" skill/);
+  assert.match(recommendationText(indexedSkill(), "screenshot", "consider"), /^consider using the "ui-check" skill/);
 });
 
 /* ─── assess: answer parsing (defect 1) ─────────────────────────────── */

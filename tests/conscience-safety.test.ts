@@ -1,5 +1,5 @@
 /**
- * Gunner tests for feat/conscience.
+ * Safety tests for the conscience.
  *
  * Every test targets a safety rule the branch does not actually enforce.
  * Tests that PASS reveal existing enforcement; tests that FAIL reveal real defects.
@@ -136,7 +136,7 @@ const allLowScores = (): Record<string, { level: number; probs: number[] }> => (
 });
 
 before(async () => {
-  temp = await mkdtemp(join(tmpdir(), "conscience-gunner-"));
+  temp = await mkdtemp(join(tmpdir(), "conscience-safety-"));
 });
 
 after(async () => {
