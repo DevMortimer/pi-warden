@@ -98,7 +98,7 @@ function shouldProceedStratumOf(score) {
   return "S1d";
 }
 
-// The sample plan from the work order: 150 mutating calls with scope unrelated (stratified by score),
+// The sample plan: 150 mutating calls with scope unrelated (stratified by score),
 // 50 plausible side steps, 50 calls with no off-task reason, 150 calls at or below 0.6 (stratified by
 // score), 50 calls above. A call drawn by two plans is labelled once.
 const OFF_TASK_PLAN = { A1: 60, A2: 50, A3: 40, B: 50, C: 50 };
