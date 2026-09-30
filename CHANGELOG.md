@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.81.0
+
 ### Added
 - `compaction.mode` (`"replace"` or `"append"`, default `"replace"`, user file only): what pi-warden does with Pi's compaction summary. `"replace"` is the existing relevance compaction and behaves as before. `"append"` keeps Pi's summary and sends a small verbatim appendix right after it, as one custom message (`pi-warden-relevance-appendix`): the last touch of every file the span modified and its latest failing output first (kept in code, together at most half the budget), then the tool results Jev ranks at or above `compaction.keepThreshold`. The whole appendix is at most 30% of the size of the summary Pi wrote and each unit at most a sixth of that, head and tail past it. Any scoring failure, timeout, abort, or request-budget stop sends no appendix and the summary runs alone; the hook never cancels or replaces a compaction. Compaction stays off by default.
 
