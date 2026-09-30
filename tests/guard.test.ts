@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -246,6 +248,30 @@ const destructiveRm = (hits: ReturnType<typeof matchPatterns>) => hits.some(hit 
 /** The rm-family hit ids of a command, produced on darwin unless the caller overrides the options. */
 const rmIds = (command: string, options: Parameters<typeof matchPatterns>[3] = {}) =>
   matchPatterns("bash", { command }, cwd, { platform: "darwin", ...options }).filter(hit => /^rm/.test(hit.id)).map(hit => hit.id);
+/**
+ * Wrap the file-system reads the guard imports, so a test can prove none is called for a path. `syncBuiltinESMExports`
+ * makes the swapped functions visible to modules that imported them by name; restore swaps them back.
+ */
+function spyOnFileSystem(): { calls: string[]; restore: () => void } {
+  const names = ["realpathSync", "lstatSync", "statSync", "readdirSync", "existsSync"] as const;
+  const calls: string[] = [];
+  const swapped = names.map(name => {
+    const original = fs[name] as unknown as (...args: unknown[]) => unknown;
+    (fs as unknown as Record<string, unknown>)[name] = (...args: unknown[]) => {
+      if (typeof args[0] === "string") calls.push(args[0]);
+      return original(...args);
+    };
+    return { name, original };
+  });
+  syncBuiltinESMExports();
+  return {
+    calls,
+    restore: () => {
+      for (const { name, original } of swapped) (fs as unknown as Record<string, unknown>)[name] = original;
+      syncBuiltinESMExports();
+    },
+  };
+}
 
 test("session scratch: an rm of a recorded temp directory is risky, not destructive", async () => {
   const base = await scratchBase();
@@ -486,6 +512,19 @@ test("effective directory: a keyword before a cd counts, and an unread change ho
     "cd /tmp/x && popd && rm -rf projects",
   ];
   for (const command of held) assert.deepEqual(rmIds(command), ["rm-recursive-dangerous-target"], command);
+});
+
+test("temp classification: a path that cannot be temp is classified without a file-system call", () => {
+  const spy = spyOnFileSystem();
+  try {
+    assert.deepEqual(rmIds("rm -rf /net/example.invalid/x"), ["rm-recursive-dangerous-target"], "an absolute target outside the temp roots holds");
+    assert.deepEqual(rmIds("cd /net/example.invalid && rm -rf projects"), ["rm-recursive-dangerous-target"], "a cd destination outside the temp roots holds its relative target");
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `d=$(mktemp -d /net/example.invalid/x) && rm -rf "$d"` }, cwd)));
+    assert.ok(!spy.calls.some(path => path.startsWith("/net")), `the classifier never reads it: ${spy.calls.filter(path => path.startsWith("/net")).join(", ")}`);
+    assert.deepEqual(rmIds("rm -rf /tmp/pi-warden-missing/inside"), ["rm-temp-subtree"], "a literal temp target is still resolved");
+  } finally {
+    spy.restore();
+  }
 });
 
 test("moved-in data: the destination of a same-command mv or ln keeps every release rule off", () => {

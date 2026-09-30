@@ -717,12 +717,21 @@ function effectiveDirs(segments: readonly string[], cwd: string | undefined, var
 }
 
 /**
- * Whether two paths name the same path, or one lies inside the other, after `..` and symlinks are resolved. A path that
- * cannot be resolved counts as related: nothing about the other one is provable then.
+ * Whether two paths name the same path, or one lies inside the other. Only a path that could be temp is resolved
+ * through the file system; a non-temp path compares as written, so a target outside the temp roots never starts an
+ * automount or a network lookup. A temp path that cannot be resolved counts as related: nothing about the other one is
+ * provable then.
  */
 function relatedPaths(a: string, b: string): boolean {
-  const realA = realTarget(a);
-  const realB = realTarget(b);
+  const tempA = tempCandidate(a);
+  const tempB = tempCandidate(b);
+  if (!tempA && !tempB) {
+    const textA = resolve(a);
+    const textB = resolve(b);
+    return underPath(textA, textB) || underPath(textB, textA);
+  }
+  const realA = tempA ? realTarget(a) : resolve(a);
+  const realB = tempB ? realTarget(b) : resolve(b);
   if (realA === undefined || realB === undefined) return true;
   return underPath(realA, realB) || underPath(realB, realA);
 }
@@ -944,6 +953,22 @@ export function tempRootOf(real: string, roots: readonly string[] = tempRoots())
   return roots.find(root => real !== root && real.startsWith(root.endsWith(sep) ? root : root + sep));
 }
 
+/** Literal path texts a classifiable path may start with and still be temp, before any resolution. */
+function tempTextRoots(): string[] {
+  const roots = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
+  for (const root of [tmpdir(), process.env.TMPDIR]) if (root && isAbsolute(root) && dirname(root) !== root) roots.push(root.replace(/\/+$/, ""));
+  return roots;
+}
+
+/**
+ * Whether a literal path text could name a temp path or a declared scratch root. The classifier reads the file system
+ * (realpath, stat, readdir) only for these; any other path is not temp, so a target, a `cd` destination, or a `mktemp`
+ * template outside them classifies without touching the file system.
+ */
+function tempCandidate(text: string, roots: readonly string[] = []): boolean {
+  return [...tempTextRoots(), ...roots].some(root => root !== "" && underPath(text, root));
+}
+
 /** Directory names at `path`, or none when it cannot be read. */
 function entriesOf(path: string): string[] {
   try { return readdirSync(path); } catch { return []; }
@@ -986,7 +1011,9 @@ function macFolderRoots(): string[] {
 /**
  * Scratch roots a host declares for this session, from `PI_WARDEN_SCRATCH_PATHS` only (a `:`-separated list). A root is
  * used when it is an absolute path that is not a filesystem root, the home directory, the project root, or a git working
- * tree; every rejected entry is returned with its reason, so the session can say once why it had no effect.
+ * tree; every rejected entry is returned with its reason, so the session can say once why it had no effect. Each accepted
+ * root appears as its real path and as the entry wrote it, so a target that reaches it through a symlinked prefix
+ * (`/var/tmp` for `/private/var/tmp`) is still checked against it.
  */
 export const SCRATCH_PATHS_ENV = "PI_WARDEN_SCRATCH_PATHS";
 
@@ -1005,7 +1032,7 @@ export function scratchPaths(env: NodeJS.ProcessEnv = process.env, cwd?: string,
     if (homeReal !== undefined && real === homeReal) { ignored.push({ entry, reason: "is the home directory" }); continue; }
     if (projectReal !== undefined && real === projectReal) { ignored.push({ entry, reason: "is the project root" }); continue; }
     if (existsSync(join(real, ".git"))) { ignored.push({ entry, reason: "is a git working tree" }); continue; }
-    roots.push(real);
+    roots.push(real, entry);
   }
   return { roots: [...new Set(roots)], ignored };
 }
@@ -1066,6 +1093,7 @@ export function bornAfter(path: string, born: number, budget: ScratchBudget = sc
 function isSessionScratch(target: string, scratch: ScratchRecords, budget: ScratchBudget): boolean {
   const clean = target.replace(/^["']|["']$/g, "");
   if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
+  if (!tempCandidate(clean)) return false;
   const real = realTarget(clean);
   const root = real === undefined ? undefined : tempRootOf(real);
   if (!real || !root) return false;
@@ -1101,6 +1129,7 @@ function isTempSubtree(target: WordPath, roots: readonly string[]): boolean {
   if (target.kind !== "path") return false;
   const clean = target.path;
   if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
+  if (!tempCandidate(clean, roots)) return false;
   const real = realTarget(clean);
   if (real === undefined) return false;
   if (tempRootOf(real, roots) !== undefined) return true;
@@ -1113,6 +1142,7 @@ function inScratchRoot(target: WordPath, roots: readonly string[]): boolean {
   if (!roots.length || target.kind !== "path") return false;
   const clean = target.path;
   if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
+  if (!tempCandidate(clean, roots)) return false;
   const real = realTarget(clean);
   return real !== undefined && roots.some(root => real !== root && underPath(real, root));
 }
@@ -1145,11 +1175,14 @@ function mktempMakesTemp(args: string, roots: readonly string[]): boolean {
     if (tmpdirOperand) { tmpdirOperand = false; continue; }
     if (token === "-t" || token === "-p" || token === "--tmpdir") { tmpdirOperand = true; continue; }
     if (token.startsWith("--tmpdir=")) {
-      const real = realTarget(token.slice("--tmpdir=".length));
+      const text = token.slice("--tmpdir=".length);
+      if (!tempCandidate(text, roots)) return false;
+      const real = realTarget(text);
       if (!real || tempRootOf(real, roots) === undefined) return false;
       continue;
     }
     if (token.startsWith("-")) continue;
+    if (!tempCandidate(token, roots)) return false;
     const real = realTarget(token);
     if (!real || tempRootOf(real, roots) === undefined) return false;
   }
@@ -1288,6 +1321,7 @@ export function scratchCandidates(tool: string, input: Record<string, unknown>, 
   const roots = tempRoots();
   const missing = new Set<string>();
   for (const path of paths) {
+    if (!tempCandidate(path, roots)) continue;
     const real = realTarget(path);
     const root = real === undefined ? undefined : tempRootOf(real, roots);
     if (!real || !root) continue;
