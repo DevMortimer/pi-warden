@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.83.0
+
 ### Added
 
 - `conscience.localTopK` (default 31, the most one request holds) and `conscience.localFloor` (default 0.5): the local rank decides how many candidates reach Jev, and a prompt with no candidate above the floor gets no request at all.
