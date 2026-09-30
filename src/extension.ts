@@ -275,7 +275,7 @@ export function confirmMessage(verdict: Verdict): string {
   if (summary.path !== undefined) lines.push(`${summary.tool} ${summary.path}${summary.location === "outside_project" ? " (outside the project)" : ""}${summary.exists === false ? " (new file)" : ""}`);
   if (summary.input !== undefined) lines.push(clip(summary.input));
   lines.push("", `Why: ${verdict.reasons.join("; ")}`);
-  if (verdict.judgment) lines.push(`Jev: irreversible ${verdict.judgment.irreversible.toFixed(2)}, off-task ${verdict.judgment.offTask.toFixed(2)}, ${verdict.judgment.scope.replace(/_/g, " ")} (${verdict.judgment.model}, ${verdict.judgment.elapsedMs} ms)`);
+  if (verdict.judgment) lines.push(`Jev: irreversible ${verdict.judgment.irreversible.toFixed(2)}, off-task ${verdict.judgment.offTask?.toFixed(2) ?? "n/a"}, ${verdict.judgment.scope?.replace(/_/g, " ") ?? "n/a"} (${verdict.judgment.model}, ${verdict.judgment.elapsedMs} ms)`);
   lines.push("Judgments are model output, not authorization. Yes runs the tool; No blocks it and tells the agent.");
   return lines.join("\n");
 }
