@@ -6,7 +6,20 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- A recursive `rm` whose target is a variable the same command assigns once before it, to a literal value with no `$`, backtick, substitution, or glob (a leading `~` is allowed), is classified by what that value names: `D=/tmp/x && rm -rf "$D"` warns as `rm-temp-subtree`, `rm -rf "$HOME/projects"` holds, and `"$D"/*` stays held as a wildcard. `$HOME` and `$TMPDIR` resolve from the session environment unless the command writes them. A variable a `mktemp` holds resolves to the directory it made, so `cd "$d" && rm -rf build` warns.
+- A relative `rm` target after `cd DIR` or `pushd DIR` in the same command resolves against `DIR` — a literal path, `~`, `$HOME`, a `mktemp` variable, or a same-command literal assignment — and is then classified as an absolute target: `cd /tmp/x && rm -rf build` warns, while `cd ~ && rm -rf projects` and `cd /Users && rm -rf someone/projects` hold. A `cd` the guard cannot read (`cd -`, `cd` alone, a substitution, an unknown variable) leaves relative targets as they were read before, and so does a command with no `cd`.
+
+### Fixed
+
+- Data a command moved in no longer loses the hold. A `mv` or `ln` destination that is equal to, inside, or above an `rm` target keeps every release rule off (`mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app`, and `ln -s ~/projects/app /tmp/lnk && rm -rf /tmp/lnk/`, where the trailing slash deletes the link's target), and so do `mount`, `hdiutil`, `bindfs`, `rsync --remove-source-files`/`--remove-sent-files`, and `tar --remove-files` anywhere in the command. A plain `cp`, `tar`, `rsync`, `git clone`, or `git archive` keeps its source, so such a target still warns as `rm-temp-subtree`.
+- The session records every `mv`/`ln` destination it resolved inside a volatile temp root or a declared scratch root, so a later `rm -rf /tmp/old-app` of a path equal to, inside, or above one of them holds even when the birth-time walk cannot tell.
+- A `mktemp` variable counts only when nothing else in the command writes the name: a second `NAME=` or `NAME+=`, a bare `export`/`local`/`declare`/`readonly`/`typeset NAME`, `read … NAME`, `for NAME in`, or `unset NAME`, at the top level, in a function body, in a subshell, or in braces. `d=$(mktemp -d); f() { d=~; }; f; rm -rf "$d"` holds again.
+
+### Docs
+
+- `docs/guards.md` (Action guard) covers the moved-in block, the `cd` rule, and the literal-variable rule; `docs/commands.md` describes the `/warden test` demo as it now is.
 
 ## 0.81.0
 
