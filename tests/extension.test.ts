@@ -118,10 +118,17 @@ const toolResult = (toolName: string, input: Record<string, unknown>, output: st
   fire("tool_result", { toolName, toolCallId: "call-1", input, content: [{ type: "text", text: output }], isError: failed, details: toolName === "bash" ? { exitCode: failed ? 1 : 0 } : undefined }, ctx);
 const agentEnd = (finalText: string, ctx = context()) => fire("agent_end", { messages: [{ role: "user", content: prompt ?? "" }, { role: "assistant", content: [{ type: "text", text: finalText }], stopReason: "stop" }] }, ctx);
 const newPrompt = (text: string, ctx = context()) => { prompt = text; return fire("before_agent_start", { prompt: text }, ctx).then(() => fire("agent_start", {}, ctx)); };
-/** Fire before_agent_start with skills in systemPromptOptions and return its result. */
-const promptWithSkills = (text: string, skills: Array<{ name: string; description: string; filePath: string; baseDir: string; sourceInfo: { path: string; source: string; scope: string; origin: string }; disableModelInvocation: boolean }>, ctx = context()) => {
+/** Fire before_agent_start with skills in systemPromptOptions, let the background assessment settle, and reach the next
+ * tool boundary, which is where a passing tip is delivered. The delivered tip comes back in the hook's old message
+ * shape, so a test reads delivery the same way it reads a refusal. */
+const promptWithSkills = async (text: string, skills: Array<{ name: string; description: string; filePath: string; baseDir: string; sourceInfo: { path: string; source: string; scope: string; origin: string }; disableModelInvocation: boolean }>, ctx = context()) => {
   prompt = text;
-  return fire("before_agent_start", { prompt: text, systemPromptOptions: { cwd: temporary, skills } }, ctx);
+  const before = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience").length;
+  await fire("before_agent_start", { prompt: text, systemPromptOptions: { cwd: temporary, skills } }, ctx);
+  await settleBackground();
+  await toolCall("read", { path: "src/index.ts" }, ctx);
+  const delivered = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience");
+  return delivered.length > before ? { message: delivered.at(-1)!.message } : undefined;
 };
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
@@ -160,6 +167,8 @@ const waitFor = async (ready: () => boolean, describe: string): Promise<void> =>
 };
 /** One macrotask turn, so a fetch that just resolved can run its `.then`. */
 const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
+/** Let a background judgment answer (mock answers are immediate) before a test reads its state or trace. */
+const settleBackground = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 25));
 const grantConsent = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
 /** Consent with the rules guard on: the turn-start reminder needs a rule set to ask about. */
 const curatorConfig = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, ...STACK_BAR }));
@@ -3095,7 +3104,7 @@ test("conscience: no-tool lifecycle fixture for recommend mode", async () => {
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "before_agent_start must return a custom message in recommend mode");
+  assert.ok(result?.message, "the tip is delivered at the next tool boundary in recommend mode");
   assert.match(result!.message!.content, /impeccable/i, "the message should recommend the impeccable skill");
   assert.match(result!.message!.content, /Consider using/, "the message should suggest consideration");
 });
@@ -3119,7 +3128,7 @@ test("conscience: no-tool lifecycle fixture for load mode", async () => {
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "before_agent_start must return a custom message in load mode");
+  assert.ok(result?.message, "the loaded skill body is delivered at the next tool boundary in load mode");
   assert.ok(result!.message!.content.length > 100, "load mode should supply the full skill body");
   assert.match(result!.message!.content, /impeccable/);
 });
@@ -3144,7 +3153,7 @@ test("conscience: default threshold 1.0 traces assessment but delivers nothing",
   assert.match(traceText, /below_threshold/, "trace should note below_threshold");
 });
 
-test("conscience: lowered threshold delivers one message via hook return", async () => {
+test("conscience: a lowered threshold delivers one tip at the next tool boundary through the steer path", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
@@ -3152,10 +3161,13 @@ test("conscience: lowered threshold delivers one message via hook return", async
   const result = await promptWithSkills("design a landing page", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "should return a message from the hook");
+  assert.ok(result?.message, "the tip is delivered at the next tool boundary");
   assert.equal(result!.message!.customType, "pi-warden-conscience");
   assert.match(result!.message!.content, /impeccable/);
-  assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-conscience").length, 0, "should not use sendMessage");
+  const delivered = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience");
+  assert.equal(delivered.length, 1, "exactly one tip rides the steer path");
+  assert.equal(delivered[0]!.options?.deliverAs, "steer", "the tip goes through the steer path");
+  assert.equal(delivered[0]!.options?.triggerTurn, undefined, "a tip never starts a turn by itself");
 });
 
 test("conscience: the tip is the name, one useWhen line, and the skill file", async () => {
@@ -3179,6 +3191,27 @@ test("conscience: the tip is the name, one useWhen line, and the skill file", as
   assert.ok(!content.includes("Frontend interface design"), "the full description does not ride along");
   await rm(indexPath("global"), { force: true });
   await sessionStart();
+});
+
+test("conscience: the assessment does not hold the prompt, and a run that ends first drops the tip with a trace", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const before = answeredRequests;
+  holdNextJudge();
+  const started = Date.now();
+  const returned = await fire("before_agent_start", { prompt: "design a landing page", systemPromptOptions: { cwd: temporary, skills } });
+  const held = Date.now() - started;
+  assert.equal(returned, undefined, "nothing rides back from before_agent_start");
+  assert.ok(held < 250, `before_agent_start held the prompt ${held} ms while the judge was still thinking`);
+  releaseJudge?.();
+  await waitFor(() => answeredRequests > before, "the background conscience assessment");
+  await tick();
+  await agentEnd("");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /conscience · tip dropped \(the run ended first\)/);
+  assert.equal(sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience").length, 0, "no tip was appended");
 });
 
 test("conscience: steer budget exhausted blocks delivery", async () => {
@@ -5004,6 +5037,26 @@ test("rules at turn start: a run that ends before delivery drops the reminder an
   }
 });
 
+
+test("rules at turn start: a short continuation and a relayed child report send no request and trace the skip", async () => {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    const requestsBefore = requests.length;
+    await fire("before_agent_start", { prompt: "yes" });
+    await fire("before_agent_start", { prompt: "scout reports:\n\ndone" });
+    await tick();
+    assert.equal(requests.length, requestsBefore, "neither prompt asks Jev anything");
+    await runCommand("trace", context({ hasUI: false }));
+    const traceText = sentMessages.at(-1)!.message.content;
+    assert.match(traceText, /rules · turn start · skipped/);
+    assert.match(traceText, /skipReason: short_continuation/);
+    assert.match(traceText, /skipReason: relayed_report/);
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
 
 test("rules at turn start: the request is redacted and the table carries the rule with its path scope", async () => {
   await curatorConfig();

@@ -62,7 +62,7 @@ import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, quickRepeatNudge, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
 import type { QuickRepeat } from "./stuck.js";
 import { WasteTracker, WASTE_TIP, withWasteTip } from "./waste.js";
-import { assess, recommendationText } from "./conscience.js";
+import { assess, isRelayedReport, isShortContinuation, recommendationText } from "./conscience.js";
 import { loadSkillBody, buildLoadMessage, policyMatches, CONSCIENCE_BETA_POLICY, recordFileIdentity, clearFileIdentityCache } from "./load.js";
 import type { ConsciencePolicy } from "./load.js";
 import { buildIndexPrompt, readIndex, writeIndex, validateIndex, indexStats, indexPath, ensureIndexDir } from "./index-cmd.js";
@@ -932,6 +932,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
     pendingNotices = [];
     for (const notice of notices) record(ctx, config, notice.guard, notice.dropped, [reason, ...notice.details]);
   };
+  /** A conscience tip that passed the budget and the activation gate waits for the next tool boundary like the reminder. */
+  const queueConscienceTip = (content: string, detail: string): void => {
+    pendingNotices.push({
+      customType: `${PACKAGE_NAME}-conscience`,
+      content,
+      guard: "conscience",
+      delivered: "warden · conscience · tip delivered at the next tool boundary",
+      dropped: "warden · conscience · tip dropped (the run ended first)",
+      details: [`tip: ${detail}`, "the tip passed the budget and the activation gate; the run ended before a tool boundary"],
+    });
+  };
   const modelKey = (ctx: ExtensionContext): string | undefined => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
   const KIND_GUARD: Partial<Record<SteerKind, GuardName>> = { rules: "rules", "sensitive-path": "rules", "security-write": "security", stuck: "stuck", repeat: "stuck", prose: "prose", conscience: "conscience" };
   /**
@@ -1150,6 +1161,18 @@ export default function wardenExtension(host: ExtensionAPI): void {
    * says why in the trace, and an answer that arrives after the run ended is dropped, also with a trace line.
    */
   const curateTurnStart = (ctx: ExtensionContext, config: WardenConfig, prompt: string): void => {
+    // A prompt the conscience already skips needs no rules reminder either: a short continuation or a relayed child
+    // report carries no work of its own, so no question is sent. The reason is traced either way.
+    const gated = redact(prompt).slice(0, 2000);
+    const skipped = isShortContinuation(gated) ? "short_continuation" : isRelayedReport(gated) ? "relayed_report" : undefined;
+    if (skipped) {
+      record(ctx, config, "rules", "warden · rules · turn start · skipped", [
+        "trigger: before_agent_start",
+        `skipReason: ${skipped}`,
+        "the prompt needs no reminder; no rule question was sent",
+      ]);
+      return;
+    }
     const set = rulesGuard.store.load(ctx.cwd, config.rules);
     if (!set) return;
     // A fallback document with no rule headings is judged as one document by the rules guard; there are no rules to ask about.
@@ -1273,9 +1296,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (regretCandidates.length && !judgeFor(config)) settleRegret(config, { regretted: textRegrets(event.prompt), via: "text" });
 
     // ── Conscience: initial assessment on normal operator prompts ──
+    // The assessment runs in the background: the prompt never waits for Jev. A passing tip is queued here and is
+    // delivered at the next tool boundary through the steer path, with the same budget rule as before; a run that ends
+    // first drops it and traces why.
     beforeAgentStartFired = true;
-    if (config.enabled && config.conscience.enabled) {
+    if (config.enabled && config.conscience.enabled) void (async () => {
       const myGeneration = conscienceGeneration;
+      const myPrompt = promptEpoch;
       warnedErrorCategories = new Set();
       selectedCapability = null;
       pendingCapability = null;
@@ -1364,9 +1391,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
             { judge: judgeAdapter, judgmentsOff: judgmentsOffReason(config), config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile },
             spine,
           );
-          // Check generation after await
-          if (conscienceGeneration !== myGeneration) {
-            record(ctx, config, "conscience", "stale: generation changed during assessment", ["trigger: before_agent_start", `generation: ${myGeneration} → ${conscienceGeneration}`, `skipReason: stale`]);
+          // Check generation and run after await: a result that belongs to an ended or replaced run must not deliver.
+          if (conscienceGeneration !== myGeneration || myPrompt !== promptEpoch || !agentRunActive) {
+            record(ctx, config, "conscience", "stale: the run ended or was replaced during assessment", [
+              "trigger: before_agent_start",
+              `generation: ${myGeneration} → ${conscienceGeneration}`,
+              `skipReason: ${agentRunActive ? "stale" : "run_ended"}`,
+            ]);
             return;
           }
           // Trace entry
@@ -1429,7 +1460,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
                     instructionState = "queued";
                     const msg = buildLoadMessage(loadResult);
                     record(ctx, config, "conscience", `loaded: ${result.selected.id} (${loadResult.bytesLoaded} bytes)`, ["trigger: before_agent_start", `skipReason: none`, `delivery: instructions_supplied`]);
-                    return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msg, display: config.steerVisible } };
+                    queueConscienceTip(msg, `${result.selected.kind}:${result.selected.id}`);
+                    return;
                   } else {
                     record(ctx, config, "conscience", `load failed: ${result.selected.id}`, ["trigger: before_agent_start", `skipReason: ${loadResult.skipReason}`]);
                     // Fall through to recommend mode
@@ -1437,8 +1469,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
                 }
               }
               // Recommend mode or load fallback
-              const msgContent = recommendationText(result.selected, redactedPrompt);
-              return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msgContent, display: config.steerVisible } };
+              queueConscienceTip(recommendationText(result.selected, redactedPrompt), `${result.selected.kind}:${result.selected.id}`);
+              return;
             }
           } else if (result.selected && !budgetAvailable(config)) {
             record(ctx, config, "conscience", "selected but budget exhausted", ["trigger: before_agent_start", `skipReason: budget`]);
@@ -1454,7 +1486,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           clearTimeout(timer);
         }
       }
-    }
+    })();
 
     // ── Rules at turn start ──
     // One request before the first model call of this user turn asks which of the project's rules apply. It runs in

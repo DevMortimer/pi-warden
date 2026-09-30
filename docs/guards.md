@@ -424,6 +424,8 @@ The message is a custom message for the turn (`pi-warden-rules`) appended after 
 
 Rules are asked in file order, never scoped to a path first: the request may touch any file, and the judgment is the only thing that knows which. A rule's `paths:` scope rides in its question so the judge can rule it out.
 
+A prompt that needs no judgment sends no request: a short continuation ("yes", "continue") or a relayed child report is skipped with a traced reason, the same two prompts the conscience's local gate skips. Everything else sends one request. Relayed reports are about a child agent's work, not the project's rules; a continuation carries no work of its own.
+
 The appended message is a reminder, not a gate: it steers nothing, holds nothing, and changes no rule, threshold, or verdict. Rules that do not apply cost three lines of noise, which is the measured price of the ones that do. `/warden status` reports the rules named, the requests, the failures, and the latency percentiles for the session.
 
 ### Rules at turn start calibration (2026-09-30, first measurement)
@@ -448,6 +450,19 @@ Four question wordings were measured against the same labels (one 100-request ru
 **Cost and latency.** Reported per request, at 12 to 29 questions: p50 278 ms, p90 336 ms, p99 698 ms; 4,920 input tokens (492,029 over the 100 requests) and about $0.0002, $0.0207 for the whole measurement. Every request named here is billable and was run with a spend cap.
 
 **Limitations.** The labels are one model's reading, not the owner's, and a rule's applicability is a judgement: the disagreement behind most false positives is whether a request that only reads or plans is governed by the rules of the code area it discusses. The sample is 100 requests from one machine, and 27 of them have no applicable rule at all, so the false-alarm column rests on small numbers. Only this project's own rule list and two neighbouring projects' lists were measured; a rule set of a different shape (many path-scoped rules, one huge rule) is not covered. The three-rule cap and the 0.3 cut are the shipped defaults; `rulesAtTurnStart.threshold` moves the cut.
+
+### Turn-start delivery calibration (2026-10-01, background delivery)
+
+The rules request and the conscience assessment no longer hold the prompt: both start in `before_agent_start` and their answer is delivered at the next tool boundary through the steer path. The hold was measured with `scripts/turn-start-latency.mjs`, 100 runs per mode, the judgment answered by a local mock after 250 ms, so the number is the hold, not the network:
+
+| surface | before p50 / p90 / p99 | after p50 / p90 / p99 |
+| --- | --- | --- |
+| rules request | 253.93 / 255.74 / 257.50 ms | 0.27 / 0.41 / 1.06 ms |
+| conscience assessment | 254.67 / 256.68 / 257.16 ms | 0.31 / 0.48 / 0.77 ms |
+
+Both sit under 1 ms at p90; the target was under 20 ms. A message that arrives only after the run ended is dropped and traced: the delivery must never start a turn of its own.
+
+The rules request also skips the prompts the conscience's local gate skips. `scripts/rules-turn-replay.mjs` applies the two predicates offline to this machine's recorded sessions (1,327 sessions, 7,633 prompts): 105 short continuations (1.4%) and 785 relayed child reports (10.3%) send no request, so the rules request falls from 100 to 88.3 per 100 recorded prompts.
 
 ### Working-memory feasibility (2026-09-30, gate failed)
 
