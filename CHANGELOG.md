@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.83.0
+
 ### Changed
 
 - A `KEY=value` or `KEY: value` hit whose value is a code expression is no longer a credential, so masking no longer rewrites source code in a tool result. A call (`readKeySync(configPath`), an index (`rows[0]`), a member access with or without optional chaining (`output.secretIds`, `opts?.tokens`), a non-null assertion (`match[1]!.split(`), an arrow body (`x => y`), a template literal (`` tag`/\s+/` ``, `` `${x}` ``), and a type name with type arguments (`Record<string`) stay readable; the field case, reading a line as `const tokens = [redacted]).filter(Boolean)`, cannot happen. Token shapes (`sk-`, `ghp_`, `AKIA`, JWTs, PEM blocks, URL passwords, signed-URL parameters) still mask in code. A bracket, a parenthesis, or a word before one inside otherwise opaque characters is still a key: `DB_PASSWORD=<password>(<more>` and `API_KEY=abc[123]DEFghi789` keep their mask, as does a call whose name is plain lowercase or snake_case (`get_config_value(config_key=...`), where a parenthesized password cannot be told apart. Replayed against 1,152 recorded session logs since 2026-09-16 (95,141 tool-result text blocks, all projects): tool results that mask a value fall from 274 to 171, and 17 distinct values stop being masked, every one of them a code fragment from the list above. No value that was masked becomes readable apart from those 17, nothing that was readable becomes masked, and 27 of the 126 values still masked are token-shaped (JWTs, PEM blocks, `sk-` keys, `gh*_` tokens, an `AKIA` key).
