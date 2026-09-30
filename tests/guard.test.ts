@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, scratchPaths, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds, isVisibleCommand, volatileTempRoots, wardenHostPaths } from "../src/guard.js";
+import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, movedInTargets, realTarget, scratchCandidates, scratchPaths, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds, isVisibleCommand, volatileTempRoots, wardenHostPaths } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { actionDetails } from "../src/trace.js";
 import { actionTokens } from "../src/widget.js";
@@ -352,7 +352,7 @@ test("session scratch: a privileged rm of scratch stays destructive", async () =
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
-test("session scratch: a command that moves data in disables the session-scratch exemption", async () => {
+test("session scratch: a command that moves or links data in keeps the hold", async () => {
   const base = await scratchBase();
   try {
     const probe = join(base, "probe-abc");
@@ -361,27 +361,76 @@ test("session scratch: a command that moves data in disables the session-scratch
     const moveIns = [
       `mv ~/work ${probe}/ && rm -rf ${probe}`,
       `ln -s ~/work ${probe}/w; rm -rf ${probe}/w/`,
-      `rsync -a --remove-source-files ~/work/ ${probe}/ && rm -rf ${probe}`,
-      `mount -t nfs host:/data ${probe} && rm -rf ${probe}`,
-      `hdiutil attach disk.dmg -mountpoint ${probe} && rm -rf ${probe}`,
-      `bindfs ~/work ${probe} && rm -rf ${probe}`,
       `\\mv ~/work ${probe}/ && rm -rf ${probe}`,
       `"ln" -s ~/work ${probe}/w && rm -rf ${probe}/w/`,
       `l''n -s ~/work ${probe}/w && rm -rf ${probe}/w/`,
       `/bin/mv ~/work ${probe}/ && rm -rf ${probe}`,
+      `(cd ~ && mv work ${probe}/) && rm -rf ${probe}`,
+    ];
+    for (const command of moveIns) {
+      assert.deepEqual(rmIds(command, { scratch }), ["rm-recursive-dangerous-target"], `a command that moves data in keeps the hold: ${command}`);
+    }
+    const takes = [
+      `rsync -a --remove-source-files ~/work/ ${probe}/ && rm -rf ${probe}`,
+      `rsync -a --remove-sent-files ~/work/ ${probe}/ && rm -rf ${probe}`,
+      `tar -xf ~/work.tar -C ${probe} --remove-files && rm -rf ${probe}`,
+      `mount -t nfs host:/data ${probe} && rm -rf ${probe}`,
+      `hdiutil attach disk.dmg -mountpoint ${probe} && rm -rf ${probe}`,
+      `bindfs ~/work ${probe} && rm -rf ${probe}`,
+    ];
+    for (const command of takes) {
+      assert.deepEqual(rmIds(command, { scratch }), ["rm-recursive-dangerous-target"], `a command that takes data with it keeps the hold: ${command}`);
+    }
+    const copies = [
       `cp -R ~/work ${probe}/ && rm -rf ${probe}`,
       `cp -a ~/work ${probe}/ && rm -rf ${probe}`,
       `tar -xf ~/work.tar -C ${probe} && rm -rf ${probe}`,
       `tar xf ~/work.tar -C ${probe} && rm -rf ${probe}`,
       `git clone ~/work ${probe}/w && rm -rf ${probe}`,
       `git -C ~ clone ~/work ${probe}/w && rm -rf ${probe}`,
-      `(cd ~ && mv work ${probe}/) && rm -rf ${probe}`,
+      `git archive HEAD | tar -x -C ${probe} && rm -rf ${probe}`,
     ];
-    for (const command of moveIns) {
-      assert.deepEqual(rmIds(command, { scratch }), ["rm-temp-subtree"], `a command that moves data in disables the session record: ${command}`);
+    for (const command of copies) {
+      assert.deepEqual(rmIds(command, { scratch }), ["rm-temp-subtree"], `a copy keeps its source, so the location rule still applies: ${command}`);
     }
     assert.deepEqual(rmIds(`rm -rf ${probe}`, { scratch }), ["rm-session-scratch"], "a plain rm of recorded scratch is still released");
   } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("moved-in data: the destination of a same-command mv or ln keeps every release rule off", () => {
+  const held = [
+    `mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app`,
+    `mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app/`,
+    `mv -t /tmp/old-app ~/projects/app && rm -rf /tmp/old-app`,
+    `mv --target-directory=/tmp/old-app ~/projects/app && rm -rf /tmp/old-app`,
+    `d=$(mktemp -d) && mv ~/projects/app "$d"/ && rm -rf "$d"`,
+    `ln -s ~/projects/app /tmp/lnk && rm -rf /tmp/lnk/`,
+    `mv ~/projects/app "$UNKNOWN" && rm -rf /tmp/old-app`,
+    `mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app/sub`,
+    `mv ~/projects/app /tmp && rm -rf /tmp/old-app`,
+  ];
+  for (const command of held) {
+    assert.deepEqual(rmIds(command), ["rm-recursive-dangerous-target"], `a moved-in destination keeps the hold: ${command}`);
+  }
+  const warned = [
+    `mv /tmp/build/out.js dist/ && rm -rf /tmp/build`,
+    `mv /tmp/build/out.js dist/ && rm -rf /tmp/build/sub`,
+    `git archive HEAD | tar -x -C /tmp/snap && rm -rf /tmp/snap`,
+  ];
+  for (const command of warned) {
+    assert.deepEqual(rmIds(command), ["rm-temp-subtree"], `a destination unrelated to the target does not block it: ${command}`);
+  }
+});
+
+test("moved-in data: a destination an earlier call recorded keeps a later rm held", () => {
+  const movedIn = movedInTargets("bash", { command: "mv ~/projects/app /tmp/old-app" }, cwd, []);
+  assert.deepEqual(movedIn.map(path => realTarget(path)), [realTarget("/tmp/old-app")].filter(path => path !== undefined), "the temp destination is recorded as a real path");
+  assert.deepEqual(rmIds("rm -rf /tmp/old-app", { movedIn }), ["rm-recursive-dangerous-target"]);
+  assert.deepEqual(rmIds("rm -rf /tmp/old-app/sub", { movedIn }), ["rm-recursive-dangerous-target"], "a path inside a recorded destination");
+  assert.deepEqual(rmIds("rm -rf /tmp/old-app-other", { movedIn }), ["rm-temp-subtree"], "a sibling path is not related to it");
+  assert.deepEqual(rmIds("rm -rf /tmp/old-app"), ["rm-temp-subtree"], "without the record the location rule releases it");
+  assert.deepEqual(movedInTargets("bash", { command: "mv /tmp/a ~/projects/b" }, cwd, []), [], "a destination outside the temp roots is not recorded");
+  assert.deepEqual(movedInTargets("bash", { command: "ls -la" }, cwd, []), [], "no mover, nothing recorded");
 });
 
 test("session scratch: on linux a recorded mkdir is the only path that changes; the temp subtree still warns", async () => {

@@ -236,6 +236,8 @@ export interface EvaluateOptions {
   scratch?: ScratchRecords | undefined;
   /** Scratch roots the host declared for this session (`scratchPaths`). A recursive rm of a path strictly inside one is risky. */
   scratchPaths?: readonly string[] | undefined;
+  /** Real paths earlier calls moved or linked data into (`movedInTargets`); a recursive rm of a related path is held. */
+  movedIn?: readonly string[] | undefined;
   /**
    * Real paths of host directories (`hostPaths()`). A write or edit in one is not held by the outside-project rule;
    * every other check still applies.
@@ -338,6 +340,17 @@ function headOf(segment: string): string | undefined {
   while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || WRAPPERS.has(tokens[index]!))) index++;
   const head = tokens[index];
   return head ? head.replace(/^.*\//, "") : undefined;
+}
+
+/**
+ * The command word of a token list, after assignments and wrappers (`sudo mv …`), and where it sits. Quotes, escapes,
+ * and any path prefix are stripped, so `\mv`, `"ln"`, `l''n`, and `/bin/mv` read as the words they run.
+ */
+function commandWord(tokens: readonly string[]): { index: number; word: string } | undefined {
+  let index = 0;
+  while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || WRAPPERS.has(tokens[index]!))) index++;
+  const token = tokens[index];
+  return token === undefined ? undefined : { index, word: token.replace(/['"\\]/g, "").replace(/^.*\//, "") };
 }
 
 /** Tools whose first word names what runs: `git log` and `git status` print very different amounts. */
@@ -538,6 +551,125 @@ export function stripDataText(command: string): ScannedCommand {
   return { text, stripped };
 }
 
+// ---------------------------------------------------------------------------
+// Shell words: what a word names on the filesystem, as far as a guard can tell without running the shell. A word that
+// cannot be placed is never released, and a placeable one is classified by the path it names.
+
+/** What a shell word names: a path this guard can place, the path a `mktemp` variable holds, or nothing it can pin down. */
+type WordPath =
+  | { kind: "path"; path: string }
+  | { kind: "temp"; key: string }
+  | { kind: "unknown"; word: string };
+
+/** A word with its surrounding quotes removed. */
+const unquoteWord = (word: string): string => word.replace(/^["']|["']$/g, "");
+
+/** Whether `child` is `parent` or lies under it. */
+function underPath(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
+/**
+ * A word resolved to an absolute path: a literal path, `~`, or a relative path against `dir`. Undefined for a variable,
+ * a substitution, a glob-only word, a `..` segment, and a relative path with no directory to resolve against: those
+ * keep the hold by staying unplaceable.
+ */
+function pathWord(word: string, dir: string | undefined): string | undefined {
+  const clean = unquoteWord(word);
+  if (!clean || clean === "." || clean === ".." || clean === "./" || clean === "../" || clean === "*") return undefined;
+  if (clean.split(/[\\/]/).includes("..")) return undefined;
+  if (clean === "~") return homedir();
+  if (clean.startsWith("~/")) return resolve(homedir(), clean.slice(2));
+  if (isAbsolute(clean)) return resolve(clean);
+  if (/[$`\\]/.test(clean) || clean.startsWith("~")) return undefined;
+  return dir === undefined ? undefined : resolve(dir, clean);
+}
+
+/** An `rm` operand as the classifier reads it: a path it can place, or the word it cannot. */
+function targetWord(word: string, dir: string | undefined): WordPath {
+  const path = pathWord(word, dir);
+  return path === undefined ? { kind: "unknown", word } : { kind: "path", path };
+}
+
+/** The path a target names, or the word as written. */
+const targetText = (target: WordPath): string => (target.kind === "path" ? target.path : target.kind === "temp" ? target.key : target.word);
+
+/**
+ * The dangerous-target rule: an absolute path outside the project, or the shapes that are always dangerous (`/`, home, a
+ * bare wildcard, `.`/`..`, a home path, a variable the classifier could not place, a wildcard directly under `/`).
+ */
+function isDangerousTarget(target: WordPath, cwd: string | undefined): boolean {
+  const clean = unquoteWord(targetText(target));
+  if (clean === "/" || clean === "~" || clean === "*" || clean === "." || clean === ".." || clean.startsWith("~/") || clean.startsWith("$") || clean.startsWith("/*") || clean === "./" || clean === "../") return true;
+  if (isAbsolute(clean)) return cwd === undefined ? true : !isInside(clean, cwd);
+  return clean.split(/[\\/]/).includes("..");
+}
+
+/** A `mv` or `ln` command word: both can put existing data under a path a later `rm` deletes. */
+const MOVER_WORD = /^(?:g|bsd)?(?:mv|ln)$/;
+
+/** A `mv`/`ln` destination of one command. `dest` is undefined when it cannot be resolved, which keeps every hold. */
+interface Mover { dest: string | undefined }
+
+/** The destination a `mv` or `ln` segment writes to: the last operand, or the value of `-t`/`--target-directory`. */
+function moverDestination(segment: string, dir: string | undefined): Mover | undefined {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean).map(token => token.replace(/^[("'`]+|[\"')`]+$/g, ""));
+  const head = commandWord(tokens);
+  if (!head || !MOVER_WORD.test(head.word)) return undefined;
+  const rest = tokens.slice(head.index + 1);
+  for (let index = 0; index < rest.length; index++) {
+    const token = rest[index]!;
+    if (token === "-t" || token === "--target-directory") return { dest: pathWord(rest[index + 1] ?? "", dir) };
+    if (token.startsWith("--target-directory=")) return { dest: pathWord(token.slice("--target-directory=".length), dir) };
+  }
+  const operands = rest.filter(token => !token.startsWith("-"));
+  return { dest: operands.length ? pathWord(operands[operands.length - 1]!, dir) : undefined };
+}
+
+/**
+ * Whether two paths name the same path, or one lies inside the other, after `..` and symlinks are resolved. A path that
+ * cannot be resolved counts as related: nothing about the other one is provable then.
+ */
+function relatedPaths(a: string, b: string): boolean {
+  const realA = realTarget(a);
+  const realB = realTarget(b);
+  if (realA === undefined || realB === undefined) return true;
+  return underPath(realA, realB) || underPath(realB, realA);
+}
+
+/** Whether a `mv` or `ln` of this command wrote into the target: then nothing about it is provably disposable. */
+function movesInto(target: WordPath, moved: readonly Mover[] | undefined): boolean {
+  if (!moved?.length) return false;
+  if (target.kind !== "path") return true;
+  return moved.some(mover => mover.dest === undefined || relatedPaths(mover.dest, target.path));
+}
+
+/** Whether an earlier call moved or linked data into the target: then nothing about it is provably disposable. */
+function movedInEarlier(target: WordPath, recorded: readonly string[] | undefined): boolean {
+  if (!recorded?.length || target.kind !== "path") return false;
+  return recorded.some(path => relatedPaths(path, target.path));
+}
+
+/**
+ * Real paths this call moves or links data into, when the destination lies strictly inside a volatile temp root or a
+ * scratch root the host declared. The session records them, so a later `rm` of a path equal to, inside, or above one is
+ * never released. Read before the call runs; a destination that cannot be resolved is not recorded, because the same
+ * call keeps the hold on its own targets.
+ */
+export function movedInTargets(tool: string, input: Record<string, unknown>, cwd: string, scratchRoots: readonly string[] = []): string[] {
+  const command = tool === "bash" ? commandOf(tool, input)?.command : undefined;
+  if (!command) return [];
+  const roots = [...volatileTempRoots(), ...scratchRoots];
+  if (!roots.length) return [];
+  const found = new Set<string>();
+  for (const segment of splitShell(stripDataText(command).text)) {
+    const mover = moverDestination(segment, cwd);
+    const real = mover?.dest === undefined ? undefined : realTarget(mover.dest);
+    if (real !== undefined && roots.some(root => real !== root && underPath(real, root))) found.add(real);
+  }
+  return [...found];
+}
+
 /**
  * `rm` with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
  * risky. A quote, parenthesis, or backtick before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
@@ -548,24 +680,21 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
   if (!match) return undefined;
   const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["')`]+$/, ""));
   const flags = tokens.filter(token => token.startsWith("-"));
-  const targets = rmOperands(tokens.filter(token => !token.startsWith("-")));
   const recursive = flags.some(flag => flag === "--recursive" || (/^-[a-zA-Z]+$/.test(flag) && /[rR]/.test(flag)));
   const force = flags.some(flag => flag === "--force" || (/^-[a-zA-Z]+$/.test(flag) && flag.includes("f")));
   if (!recursive) return undefined;
-  const dangerousTarget = targets.some(target => {
-    const clean = target.replace(/^["']|["']$/g, "");
-    if (clean === "/" || clean === "~" || clean === "*" || clean === "." || clean === ".." || clean.startsWith("~/") || clean.startsWith("$") || clean.startsWith("/*") || clean === "./" || clean === "../") return true;
-    if (isAbsolute(clean)) return cwd ? !isInside(clean, cwd) : true;
-    return clean.split(/[\\/]/).includes("..");
-  });
+  const targets = rmOperands(tokens.filter(token => !token.startsWith("-"))).map(word => targetWord(word, undefined));
+  const dangerousTarget = targets.some(target => isDangerousTarget(target, cwd));
   const budget = scratchBudget();
   const exemptions = context !== undefined;
-  if (exemptions && targets.length && targets.every(target => isScratchTarget(target, scratch, context, budget))) {
+  // A command or an earlier call that moved or linked data into a target keeps it: nothing about it is provable then.
+  const clean = (target: WordPath): boolean => !movesInto(target, context?.moved) && !movedInEarlier(target, context?.recorded);
+  if (exemptions && targets.length && targets.every(target => clean(target) && isScratchTarget(target, scratch, context, budget))) {
     return { id: "rm-session-scratch", severity: "risky", label: "recursive rm of session scratch: every target is under the temp directory or a declared scratch root" };
   }
   if (dangerousTarget && targets.length) {
     const roots = exemptions ? context.tempRoots?.() ?? volatileTempRoots() : [];
-    if (roots.length && targets.every(target => isTempSubtree(target, roots))) {
+    if (roots.length && targets.every(target => clean(target) && isTempSubtree(target, roots))) {
       return { id: "rm-temp-subtree", severity: "risky", label: "recursive rm of a path under the temp directory" };
     }
     return { id: "rm-recursive-dangerous-target", severity: "destructive", label: "recursive rm on an absolute, home, variable, or parent path" };
@@ -798,6 +927,14 @@ const PRIVILEGED = /(?:^|[\s;&|("'`])(?:sudo|doas|su|pkexec|run0)(?=\s|$)/m;
  */
 const MOVES_IN = /(?:^|[\s;&|(`/])(?:(?:g|bsd)?(?:mv|ln|cp|tar)|rsync|mount|hdiutil|bindfs|git(?=\s)[^;&|\n]*\sclone)(?=[\s;&|)`]|$)/m;
 
+/**
+ * Commands that take data with them, whatever their flags: a mount, a disk-image attach, a bind mount, an `rsync` that
+ * removes its source, and a `tar` that removes the files it extracts. Unlike `MOVES_IN` they block every release rule,
+ * because what they write is not a copy: the source path no longer holds it. A plain `cp`, `tar`, `rsync`, `git clone`,
+ * or `git archive` keeps its source, so those block only the recorded session scratch.
+ */
+const MOVES_DATA_IN = /(?:^|[\s;&|(`/])(?:mount|hdiutil|bindfs)(?=[\s;&|)`]|$)|(?:^|[\s;&|(`/])(?:g|bsd)?(?:tar|rsync)\s[^;&|\n]*--remove-(?:files|source-files|sent-files)/m;
+
 /** A command with its quotes and backslashes removed, so a quoted or escaped command word reads as the word it runs. */
 const unquoted = (command: string): string => command.replace(/\$(?=['"])|['"\\]/g, "");
 
@@ -853,11 +990,16 @@ interface RmContext {
   roots?: readonly string[] | undefined;
   /** The volatile temp roots, read lazily so a command with no recursive `rm` pays nothing. */
   tempRoots?: (() => readonly string[]) | undefined;
+  /** Destinations the `mv` and `ln` segments of this command write to. */
+  moved?: readonly Mover[] | undefined;
+  /** Destinations earlier calls moved into a volatile temp root or a declared scratch root. */
+  recorded?: readonly string[] | undefined;
 }
 
-/** A target strictly inside a volatile temp root, after symlinks are resolved. A temp root itself has none. */
-function isTempSubtree(target: string, roots: readonly string[]): boolean {
-  const clean = target.replace(/^["']|["']$/g, "");
+/** A path strictly inside a volatile temp root, after symlinks are resolved. A temp root itself has none. */
+function isTempSubtree(target: WordPath, roots: readonly string[]): boolean {
+  if (target.kind !== "path") return false;
+  const clean = target.path;
   if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
   const real = realTarget(clean);
   if (real === undefined) return false;
@@ -875,18 +1017,18 @@ function mktempTarget(target: string, vars: ReadonlySet<string> | undefined): bo
 }
 
 /** A target strictly inside a scratch root the host declared, after symlinks are resolved. */
-function inScratchRoot(target: string, roots: readonly string[]): boolean {
-  if (!roots.length) return false;
-  const clean = target.replace(/^["']|["']$/g, "");
+function inScratchRoot(target: WordPath, roots: readonly string[]): boolean {
+  if (!roots.length || target.kind !== "path") return false;
+  const clean = target.path;
   if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
   const real = realTarget(clean);
-  return real !== undefined && roots.some(root => real !== root && real.startsWith(root.endsWith(sep) ? root : root + sep));
+  return real !== undefined && roots.some(root => real !== root && underPath(real, root));
 }
 
 /** Every target scratch the session recorded, a `mktemp` variable of this command, or a host-declared scratch root. */
-function isScratchTarget(target: string, scratch: ScratchRecords | undefined, context: RmContext | undefined, budget: ScratchBudget): boolean {
-  return (scratch !== undefined && isSessionScratch(target, scratch, budget))
-    || mktempTarget(target, context?.vars)
+function isScratchTarget(target: WordPath, scratch: ScratchRecords | undefined, context: RmContext | undefined, budget: ScratchBudget): boolean {
+  return (scratch !== undefined && isSessionScratch(targetText(target), scratch, budget))
+    || mktempTarget(targetText(target), context?.vars)
     || inScratchRoot(target, context?.roots ?? []);
 }
 
@@ -1471,6 +1613,8 @@ export interface PatternOptions {
   scratch?: ScratchRecords | undefined;
   /** Scratch roots the host declared for this session; a recursive rm of a path strictly inside one is risky. */
   scratchPaths?: readonly string[] | undefined;
+  /** Real paths earlier calls moved or linked data into; a recursive rm of a path equal to, inside, or above one is held. */
+  movedIn?: readonly string[] | undefined;
   /** The platform `scratchPlatform` decides for; the running one when omitted. */
   platform?: NodeJS.Platform | undefined;
 }
@@ -1548,13 +1692,18 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     const movesIn = MOVES_IN.test(unquoted(raw)) || MOVES_IN.test(unquoted(command));
     const scratch = privileged || movesIn || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
     const segments = splitShell(command);
+    // A command that mounts, attaches, binds, or syncs data in with its source removed can put existing data under a
+    // path a later `rm` deletes, and the birth-time walk cannot see it: no release rule applies at all then.
+    const blocked = privileged || MOVES_DATA_IN.test(unquoted(command)) || MOVES_DATA_IN.test(unquoted(raw));
+    // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
+    const moved = blocked ? [] : segments.map(segment => moverDestination(segment, cwd)).filter((mover): mover is Mover => mover !== undefined);
     // Read the cheap volatile temp roots only when a recursive rm needs them; the macOS /var/folders walk is lazier.
     let volatile: string[] | undefined;
     const volatileRoots = () => (volatile ??= disposableTempRoots());
-    const scratchVars = privileged ? undefined : mktempVars(segments, volatileRoots);
-    const scratchRoots = privileged ? undefined : options?.scratchPaths;
+    const scratchVars = blocked ? undefined : mktempVars(segments, volatileRoots);
+    const scratchRoots = blocked ? undefined : options?.scratchPaths;
     for (let index = 0; index < segments.length; index++) {
-      const hit = classifyRm(segments[index]!, cwd, scratch, privileged ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots });
+      const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, recorded: options?.movedIn });
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
       if (hit && !exempt.has(hit.id)) add(hit);
     }
@@ -2215,7 +2364,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   const plan = describePlan(action.plan);
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
-  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scratch: options.scratch, scratchPaths: options.scratchPaths });
+  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
   // Violation pipeline: authorize per-violation, remove authorized from level computation and Jev questions.
   const violationsByHit = hitViolations(patterns, action.tool, action.input);
   const allViolations = violationsByHit.flat();

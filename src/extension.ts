@@ -26,7 +26,7 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, isVisualCheck, needsDoneCheck, recordOutcome as recordDoneOutcome, recordUi } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, SCRATCH_PATHS_ENV, scratchPaths, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
+import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, movedInTargets, offTaskSteer, pruneScratch, scratchCandidates, SCRATCH_PATHS_ENV, scratchPaths, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
@@ -474,8 +474,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
   // Real paths the agent created under the temp directory this session, with the identity each had when recorded.
   // A recursive rm of only these is not destructive; a record whose path is gone or replaced is dropped after each call.
   const sessionScratch = new Map<string, ScratchIdentity>();
+  // Paths an earlier call moved or linked data into, under a volatile temp root or a declared scratch root. A later rm
+  // of a path equal to, inside, or above one of these is never released, whatever created it.
+  const sessionMovedIn = new Set<string>();
   // Per tool call id: when it started and the temp paths it may create that did not exist yet.
-  const scratchPending = new Map<string, { started: number; candidates: string[] }>();
+  const scratchPending = new Map<string, { started: number; candidates: string[]; moved: string[] }>();
   const wakePolicy = new WakePolicy(0);
   const runaway = new RunawayMonitor();
   // Runs stopped by the runaway guard for the current user prompt; the first one gets a recovery turn, later ones wait for the user.
@@ -1055,6 +1058,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     subagentSeen.clear();
     largeOutputSteered.clear();
     sessionScratch.clear();
+    sessionMovedIn.clear();
     scratchPending.clear();
     wakePolicy.reset();
     steerRepeats.reset();
@@ -1440,7 +1444,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
-    if (event.toolName === "bash" || event.toolName === "write") scratchPending.set(event.toolCallId, { started: Date.now(), candidates: scratchCandidates(event.toolName, event.input as Record<string, unknown>, ctx.cwd) });
+    if (event.toolName === "bash" || event.toolName === "write") scratchPending.set(event.toolCallId, { started: Date.now(), candidates: scratchCandidates(event.toolName, event.input as Record<string, unknown>, ctx.cwd), moved: event.toolName === "bash" ? movedInTargets(event.toolName, event.input as Record<string, unknown>, ctx.cwd, sessionScratchPaths) : [] });
     // ── Conscience: track tool attempts on the selected capability ──
     if (config.conscience.enabled && selectedCapability && !triggerConsumed) {
       if (selectedCapability.kind === "tool" && event.toolName === selectedCapability.id) {
@@ -1535,7 +1539,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx, isVisibleAction(event.toolName, event.input as Record<string, unknown>)), spine: taskSpine(ctx.sessionManager.getBranch()) },
-      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch, scratchPaths: sessionScratchPaths, hostPaths: sessionHostPaths },
+      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch, scratchPaths: sessionScratchPaths, movedIn: sessionMovedIn.size ? [...sessionMovedIn] : undefined, hostPaths: sessionHostPaths },
     );
     if (verdict.source === "skipped") return;
     // Arming check: if any armed rule's command regex matches this call, inject a hit into the verdict.
@@ -1831,6 +1835,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const scratch = scratchPending.get(event.toolCallId);
     if (scratch) {
       scratchPending.delete(event.toolCallId);
+      for (const path of scratch.moved) sessionMovedIn.add(path);
       for (const [path, identity] of createdScratch(event.toolName, event.input as Record<string, unknown>, text, scratch.started, scratch.candidates)) sessionScratch.set(path, identity);
     }
     pruneScratch(sessionScratch);

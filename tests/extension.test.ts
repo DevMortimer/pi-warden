@@ -1057,15 +1057,15 @@ test("session scratch: a recorded path deleted, then made again outside the agen
   assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
 
-test("session scratch: older content moved into a recorded directory loses the session-scratch exemption", async () => withScratchBase(async base => {
+test("session scratch: content moved into a recorded directory keeps a later rm held", async () => withScratchBase(async base => {
   const important = join(base, "important");
   await mkdir(important);
   const dir = join(base, "S", "x");
   await runCall("bash", { command: `mkdir -p ${dir}` }, () => mkdir(dir, { recursive: true }));
   await runCall("bash", { command: `mv ${important} ${dir}/` }, () => rename(important, join(dir, "important")));
-  const warned = await toolCall("bash", { command: `rm -rf ${dir}` });
-  assert.equal(warned?.block, undefined);
-  assert.match(notices.at(-1)!.text, /under the temp directory/);
+  const held = await toolCall("bash", { command: `rm -rf ${dir}` });
+  assert.equal(held?.block, true, "the destination an earlier call moved data into stays held");
+  assert.match(held?.reason ?? "", /recursive rm on an absolute, home, variable, or parent path/);
 }));
 
 test("session scratch: a fresh session forgets what the last one created", async () => withScratchBase(async base => {
