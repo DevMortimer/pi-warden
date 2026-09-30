@@ -26,12 +26,12 @@ import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, 
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, isVisualCheck, needsDoneCheck, recordOutcome as recordDoneOutcome, recordUi } from "./done.js";
 import type { RunEvidence } from "./done.js";
-import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, offTaskSteer, pruneScratch, scratchCandidates, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
+import { createdScratch, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, movedInTargets, offTaskSteer, pruneScratch, scratchCandidates, SCRATCH_PATHS_ENV, scratchPaths, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
 import type { ShellSkip, ShellWrite } from "./shell-writes.js";
-import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "./holds.js";
+import { formatHolds, HoldLedger, HoldLog, holdLogPath, mutatingCall, outcomeNote, regretsAt, textRegrets } from "./holds.js";
 import { initSchema, recordHold, recordOutcome, toHoldRecord, holdStats, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
@@ -91,7 +91,7 @@ import { TraceFile, judgmentsState, traceDir, traceFilePath } from "./trace-file
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, rulesTokens, SENTENCE_TEMPLATES, TOKEN_NAMES } from "./widget.js";
 import { statusWidget } from "./widget-render.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); with the context filter on (`context.filter`, off by default), the redacted text of a large tool output in chunks, with the call's command and the agent's stated plan; a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample, so Jev can say which to keep word for word. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); with the context filter on (`context.filter`, off by default), the redacted text of a large tool output in chunks, with the call's command and the agent's stated plan; a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample, so Jev can say which to keep word for word. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (a hold is kept 365 days and an allowed call 90, both configurable). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -399,6 +399,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let unsubscribeTraceFile: (() => void) | undefined;
   // Directories outside the project the host lets its agent write; set per session from PI_WARDEN_HOST_PATHS.
   let sessionHostPaths: string[] = [];
+  // Scratch roots the host declares; set per session from PI_WARDEN_SCRATCH_PATHS.
+  let sessionScratchPaths: string[] = [];
   let panel: PanelController | undefined;
   let configPanel: PanelController | undefined;
   let lastUi: PanelUi | undefined;
@@ -425,6 +427,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   }
   const traceOf = new WeakMap<CallRecord, TraceEntry>();
   let holdLog: HoldLog | undefined;
+  /** The session id of the open session; every hold row of it carries it. */
+  let activeSessionId: string | undefined;
   // Local rules verdict log for this session; a write failure is silent to the agent and shown once in the trace.
   let rulesLog: RulesLog | undefined;
   // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
@@ -472,8 +476,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
   // Real paths the agent created under the temp directory this session, with the identity each had when recorded.
   // A recursive rm of only these is not destructive; a record whose path is gone or replaced is dropped after each call.
   const sessionScratch = new Map<string, ScratchIdentity>();
+  // Paths an earlier call moved or linked data into, under a volatile temp root or a declared scratch root. A later rm
+  // of a path equal to, inside, or above one of these is never released, whatever created it.
+  const sessionMovedIn = new Set<string>();
   // Per tool call id: when it started and the temp paths it may create that did not exist yet.
-  const scratchPending = new Map<string, { started: number; candidates: string[] }>();
+  const scratchPending = new Map<string, { started: number; candidates: string[]; moved: string[] }>();
   const wakePolicy = new WakePolicy(0);
   const runaway = new RunawayMonitor();
   // Runs stopped by the runaway guard for the current user prompt; the first one gets a recovery turn, later ones wait for the user.
@@ -532,6 +539,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let shapeReported = false;
   // An exemptRules id that names neither a built-in nor one of the user's own rules is inert; said once, not per call.
   let exemptReported = false;
+  // PI_WARDEN_SCRATCH_PATHS entries that were ignored: said once per process, not once per session.
+  let scratchPathsReported = false;
   let inertReported = false;
   let unparseableReported = false;
   // Config values that were not applied as written: said once per session; /warden status repeats them.
@@ -995,7 +1004,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
     initRunning = false;
     lastCalibration = undefined;
     lastCheck = undefined;
-    await initSchema(loadConfig({ dirs }).learning.retentionDays, dirs);
+    const startupConfig = loadConfig({ dirs });
+    await initSchema(startupConfig.learning.retentionDays, dirs, startupConfig.learning.allowedRetentionDays);
     stats = freshStats();
     steerWatch.clear();
     widget.clear();
@@ -1007,6 +1017,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     holds.reset();
     regretCandidates = [];
     const sessionId = typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid);
+    activeSessionId = sessionId;
     holdLog = new HoldLog(holdLogPath(sessionId, new Date(), dirs));
     rulesLog = new RulesLog(ctx.cwd, sessionId, { path: rulesLogPath(ctx.cwd, dirs), onFailure: message => record(ctx, loadConfig({ dirs }), "rules", "rules log write failed", [message]) });
     unsubscribeTraceFile?.();
@@ -1016,6 +1027,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
     judgmentsHeadless = !ctx.hasUI;
     judgmentsNotify = text => { if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true }); };
     sessionHostPaths = wardenHostPaths(undefined, dirs);
+    const declaredScratch = scratchPaths(process.env, ctx.cwd);
+    sessionScratchPaths = declaredScratch.roots;
+    if (declaredScratch.ignored.length && !scratchPathsReported) {
+      scratchPathsReported = true;
+      const text = `warden: ${SCRATCH_PATHS_ENV} ignored ${declaredScratch.ignored.map(item => `${item.entry} (${item.reason})`).join(", ")}`;
+      if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true });
+    }
     const dir = traceDir();
     if (dir) {
       const warn = (text: string) => { if (ctx.hasUI) ctx.ui.notify(text, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: text, display: true }); };
@@ -1044,6 +1062,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     subagentSeen.clear();
     largeOutputSteered.clear();
     sessionScratch.clear();
+    sessionMovedIn.clear();
     scratchPending.clear();
     wakePolicy.reset();
     steerRepeats.reset();
@@ -1120,8 +1139,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
     pendingRunaway = undefined;
     actionGuard.turnEnd();
     rulesGuard.turnEnd();
-    // Holds the user never approved are re-plans now; last turn's allowed calls wait for the regret question.
-    noteOutcomes(config, holds.promptArrived());
+    // Holds the user never approved wait for the reply and the run it starts; last turn's allowed calls wait for the regret question.
+    holds.promptArrived();
     regretCandidates = holds.candidates();
     if (regretCandidates.length && !judgeFor(config)) settleRegret(config, { regretted: textRegrets(event.prompt), via: "text" });
 
@@ -1429,7 +1448,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
-    if (event.toolName === "bash" || event.toolName === "write") scratchPending.set(event.toolCallId, { started: Date.now(), candidates: scratchCandidates(event.toolName, event.input as Record<string, unknown>, ctx.cwd) });
+    if (event.toolName === "bash" || event.toolName === "write") scratchPending.set(event.toolCallId, { started: Date.now(), candidates: scratchCandidates(event.toolName, event.input as Record<string, unknown>, ctx.cwd), moved: event.toolName === "bash" ? movedInTargets(event.toolName, event.input as Record<string, unknown>, ctx.cwd, sessionScratchPaths) : [] });
     // ── Conscience: track tool attempts on the selected capability ──
     if (config.conscience.enabled && selectedCapability && !triggerConsumed) {
       if (selectedCapability.kind === "tool" && event.toolName === selectedCapability.id) {
@@ -1524,7 +1543,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx, isVisibleAction(event.toolName, event.input as Record<string, unknown>)), spine: taskSpine(ctx.sessionManager.getBranch()) },
-      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch, hostPaths: sessionHostPaths },
+      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: config.slop, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch, scratchPaths: sessionScratchPaths, movedIn: sessionMovedIn.size ? [...sessionMovedIn] : undefined, hostPaths: sessionHostPaths },
     );
     if (verdict.source === "skipped") return;
     // Arming check: if any armed rule's command regex matches this call, inject a hit into the verdict.
@@ -1610,6 +1629,14 @@ export default function wardenExtension(host: ExtensionAPI): void {
       if (held) recordOpts.agentReason = steerReason(deliveryVerdict, { canApprove: judge !== undefined });
       const item = holds.record(verdict, recordOpts);
       traceOf.set(item, entry);
+      // A call that changes something and is allowed to run, with a steer hold of an earlier turn still pending, is the
+      // agent's re-plan. The guard has already labelled a hold the reply released `approved`, so what is left is not
+      // that hold; a call that is held or denied does not run, so it replaces nothing. Nothing is written when no hold
+      // was waiting, which is every call of a normal turn.
+      if (!held && !verdict.approvedByUser && mutatingCall(verdict)) {
+        const replanned = holds.replanned();
+        if (replanned.length) noteOutcomes(config, replanned);
+      }
       // Record to SQLite for learning (held and judged-allowed calls).
       // The promise and map entry must exist before noteOutcomes so that an outcome
       // known at record time (e.g. dialog-approved) is not lost to the race.
@@ -1617,7 +1644,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const holdPromise = recordHold(toHoldRecord(
         { at: item.at, tool: item.tool, level: item.level, reasons: item.reasons, scores: item.scores, held },
         ctx.cwd,
-        { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: held ? steerReason(deliveryVerdict, { canApprove: judge !== undefined }) : undefined, preview },
+        { task: task ? redact(task) : task, plan: verdict.plan, contextSummary: ctxSummary, agentReason: held ? steerReason(deliveryVerdict, { canApprove: judge !== undefined }) : undefined, preview, sessionId: activeSessionId },
       ), dirs).catch(err => { console.warn("pi-warden: recordHold failed:", err); return -1; });
       learningIds.set(item.id, holdPromise);
       pruneLearningIds();
@@ -1820,6 +1847,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const scratch = scratchPending.get(event.toolCallId);
     if (scratch) {
       scratchPending.delete(event.toolCallId);
+      for (const path of scratch.moved) sessionMovedIn.add(path);
       for (const [path, identity] of createdScratch(event.toolName, event.input as Record<string, unknown>, text, scratch.started, scratch.candidates)) sessionScratch.set(path, identity);
     }
     pruneScratch(sessionScratch);
@@ -2298,6 +2326,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    // A steer hold whose reply has arrived, on a run that neither released it nor replaced it, went nowhere.
+    noteOutcomes(config, holds.runEnded());
     // Arming state survives across runs within a session (the Scenario B case: edit in one turn,
     // reconcile in the next). It is cleared on session_start and bounded by the rule's `for` window.
     // No guarded call carried the regret question this run (the agent only replied): the offline heuristic reads the prompt.
@@ -2552,7 +2582,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const ls = await holdStats(ctx.cwd, dirs);
           const lifetimeLine = ls.labeled === 0
             ? `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, not yet measurable (${ls.allowed} allowed).`
-            : `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, ${ls.labeled} labeled, ${ls.declined + ls.replanned} stood (${ls.declined + ls.replanned}/${ls.labeled}), ${ls.allowed} allowed (${ls.accepted} accepted, ${ls.regretted} regretted).`;
+            : `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, ${ls.labeled} labeled, ${ls.declined + ls.replanned} stood (${ls.declined + ls.replanned}/${ls.labeled}), ${ls.abandoned} abandoned, ${ls.allowed} allowed (${ls.accepted} accepted, ${ls.regretted} regretted).`;
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}${config.backendRefusal !== undefined || backend === undefined || backend === "typesafe" ? "" : ` (${describeBackend(backend)})`}; ${config.backendRefusal !== undefined ? `judgments are off: typesafeBackend refused: ${config.backendRefusal}` : auth?.text ?? ""}`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan (${stats.offPlanTraceOnly} trace-only), ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.proseNudges}/${stats.proseChecks} prose nudges, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors, ${stats.cooldownSkips} checks without Jev during a judge cooldown; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Steers are ${config.steerVisible ? "shown in the transcript" : "hidden from the transcript (trace panel shows them)"}. Steer budget: ${config.steerBudget === 0 ? "off" : `${config.steerBudget} per run`}.`,
@@ -2928,9 +2958,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
           // For a non-TypeSafe backend the confirmation names who answers: the label, host, and model sent.
           const backend = config.typesafeBackend;
           const destination = backend === undefined || backend === "typesafe" ? backendHost(backend) : describeBackend(backend);
-          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${destination} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
+          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /var/tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${destination} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
           const verdict = await evaluateAction(
-            { tool: "bash", input: { command: "rm -rf /tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
+            { tool: "bash", input: { command: "rm -rf /var/tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge, rules: config.rules },
           );
           const deliveryVerdict = ctx.hasUI ? verdict : agentDeliveryVerdict(verdict);

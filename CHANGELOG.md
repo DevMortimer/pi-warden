@@ -4,11 +4,65 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+
+
 ## Unreleased
+
+
 
 ### Docs
 
 - `README.md` matches `docs/guards.md`: the features table describes the off-task and should-proceed notices as trace-only (the 2026-09-30 labels found 2 of 427 calls that needed asking, so they do not support `action.shouldProceed.steer`), and the versioning section puts `action.shouldProceed.steer` next to `compaction.*`, `context.filter.*`, and `conscience.*`, outside the semver promise. The guards docs also name who labelled those 427 calls: one language model, blind to the scores and strata, on the clipped request, plan, context, and call.
+
+## 0.82.0
+
+### Added
+
+- A recursive `rm` whose target is a variable the same command assigns once before it, to a literal value with no `$`, backtick, substitution, or glob (a leading `~` is allowed), is classified by what that value names: `D=/tmp/x && rm -rf "$D"` warns as `rm-temp-subtree`, `rm -rf "$HOME/projects"` holds, and `"$D"/*` stays held as a wildcard. `$HOME` and `$TMPDIR` resolve from the session environment unless the command writes them. A variable a `mktemp` holds resolves to the directory it made, so `cd "$d" && rm -rf build` warns.
+- A relative `rm` target after `cd DIR` or `pushd DIR` in the same command resolves against `DIR` — a literal path, `~`, `$HOME`, a `mktemp` variable, or a same-command literal assignment — and is then classified as an absolute target: `cd /tmp/x && rm -rf build` warns, while `cd ~ && rm -rf projects` and `cd /Users && rm -rf someone/projects` hold. A `cd` the guard cannot read (`cd -`, `cd` alone, a substitution, an unknown variable) leaves relative targets as they were read before, and so does a command with no `cd`.
+- `PI_WARDEN_SCRATCH_PATHS`: a `:`-separated list of absolute roots the host declares as scratch. A recursive `rm` whose every target is strictly inside one warns (`rm-session-scratch`) instead of holding. A root that is `/`, the home directory, the project root, or a git working tree (it contains `.git`) is ignored, and the session names every ignored entry and its reason once. Environment only, like `PI_WARDEN_HOST_PATHS`.
+
+### Changed
+
+- A recursive `rm` of a variable a `mktemp` earlier in the same command assigned warns as `rm-session-scratch` instead of holding: `d=$(mktemp -d) && … && rm -rf "$d"`, the backtick form, and quoted assignments. A variable that was reassigned before the `rm`, a `mktemp -u`/`--dry-run`, and a template outside a temp root keep the hold.
+- A recursive `rm` whose every target is a literal absolute path strictly inside a volatile temp root (`os.tmpdir()`, `$TMPDIR`, `/tmp`, `/private/tmp`, and macOS `/var/folders/<x>/<y>/T`) warns under the new classifier id `rm-temp-subtree` (risky) instead of holding. It rests on location, not birth time, so it applies on every platform and needs no session record. A temp root itself, a wildcard directly under one (`/tmp/*`), a `..` segment, `/var/tmp`, a variable, and a command that raises privileges (`sudo`, `doas`, `su`, `pkexec`, `run0`) keep the destructive hold.
+- Because a literal path under a volatile temp root now warns by location, a command that copies or extracts data in (`cp`, a plain `tar`, a plain `rsync`, `git clone`, `git archive`) no longer keeps the hold for such a target; it still disables the session-scratch exemption, and the `rm` then reports `rm-temp-subtree`. Birth-time records still decide the hit for any other temp root. A command that moves, links, mounts, or takes data with it keeps the hold itself (see Fixed).
+- `/warden test` demonstrates its hold with `rm -rf /var/tmp/pi-warden-demo`; `/tmp` is a warning now.
+
+### Fixed
+
+- Data a command moved in no longer loses the hold. A `mv` or `ln` destination that is equal to, inside, or above an `rm` target keeps every release rule off (`mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app`, and `ln -s ~/projects/app /tmp/lnk && rm -rf /tmp/lnk/`, where the trailing slash deletes the link's target), and so do `mount`, `hdiutil`, `bindfs`, `rsync --remove-source-files`/`--remove-sent-files`, and `tar --remove-files` anywhere in the command. A `mv` or `ln` word the guard cannot read as a destination — inside a shell sink (`bash -c 'mv …'`, `xargs mv`) or at a statement position of another segment — blocks every release as well. A plain `cp`, `tar`, `rsync`, `git clone`, or `git archive` keeps its source, so such a target still warns as `rm-temp-subtree`.
+- The session records every `mv`/`ln` destination it resolved inside a volatile temp root or a declared scratch root, so a later `rm -rf /tmp/old-app` of a path equal to, inside, or above one of them holds even when the birth-time walk cannot tell.
+- A `mktemp` variable counts only when nothing else in the command writes the name: a second `NAME=` or `NAME+=`, a bare `export`/`local`/`declare`/`readonly`/`typeset NAME`, `read … NAME`, `for NAME in`, or `unset NAME`, at the top level, in a function body, in a subshell, or in braces. `d=$(mktemp -d); f() { d=~; }; f; rm -rf "$d"` holds again.
+
+- Resolving a variable is an allowlist. A literal assignment, a `mktemp` variable, `$HOME`, or `$TMPDIR` resolves only when every way the command can set a variable is a form the parser reads; `eval`, `source` or `.` as a command, `printf -v`, `read`, `mapfile`, `readarray`, `getopts`, `let`, an arithmetic `((…))`, a `${NAME=…}`/`${NAME:=…}` or `+=` assignment, a declaration builtin with an option, and a function definition anywhere in the command resolve no variable, and the targets classify as they did before the variable rules: `D=/tmp/x; printf -v D %s ~; rm -rf "$D"` and `D=/tmp/x; mapfile -t D < list; rm -rf "$D"` hold again.
+- A `cd` or `pushd` after `if`, `then`, `elif`, `else`, `do`, `while`, `until`, `!`, `{`, or `(` moves the directory the guard resolves against, so `if cd ~; then rm -rf projects; fi` and `while cd ~; do rm -rf projects; break; done` hold. `popd`, `cd -`, `eval`, `builtin cd`, `command cd`, `source`, and `.` leave the directory unknown for every later segment, and a relative recursive `rm` after one holds as `rm-recursive-dangerous-target` instead of resolving: `cd /tmp/x && eval cd ~ && rm -rf projects` and `cd ~ && pushd /tmp/x && popd && rm -rf projects` hold.
+- Classifying an `rm` target, a `cd` destination, or a `mktemp` template reads the file system only when its literal text starts with a volatile temp root (`/tmp`, `/private/tmp`, `/var/folders`, `/private/var/folders`, `os.tmpdir()`, `$TMPDIR`) or a declared scratch root. Any other path, `/home/…` and `/net/<host>/…` included, is not temp and is classified with no file-system call, so an attacker-chosen path can no longer start an automount or block the guard.
+
+### Docs
+
+- `docs/guards.md` (Action guard) covers the moved-in block, the `cd` rule, and the literal-variable rule; `docs/commands.md` describes the `/warden test` demo as it now is.
+- `docs/guards.md` (Action guard) describes the three scratch sources, the new `rm-temp-subtree` id, and the changed moves-in interaction; `docs/configuration.md` documents `PI_WARDEN_SCRATCH_PATHS` and lists `rm-temp-subtree` among the exemptable `rm` ids.
+- `docs/guards.md` (Action guard) describes the variable allowlist, the `cd` keyword and unread-change rules, and the file-system boundary.
+
+## 0.81.0
+
+### Changed
+
+- The hold database stores less per call. Every row now carries the Pi session id (it used to be empty); the task text is stored once per task, in a `hold_tasks` table keyed by its hash, instead of once per call; and a row of a call that was not held keeps the judge data and the agent's plan (the scores, the reasons, and the plan) and drops the summary and the agent reason for the call. A database written by an earlier version is migrated once at startup, inside one transaction, and the pages the migration and the prune free are reclaimed by a VACUUM that runs only when no other session holds the database; when one does, the VACUUM is skipped and the next start tries again, so no session waits for it.
+- A record of a call that was not held is pruned after `learning.allowedRetentionDays` (default 90 days); `learning.retentionDays` (default 365) still applies to holds.
+- A steer-mode hold is labelled by what happened next: `approved` (your reply released the call), `replanned` (the agent ran a different call that changes something instead), and the new `abandoned` (the run after your reply neither released nor replaced it). The old rule labelled a hold `replanned` two prompts later without looking at what the agent did. `/warden status` counts abandoned holds apart, and the precision line still reports (declined + replanned) over the labelled holds.
+
+### Fixed
+
+- A database an earlier version wrote keeps the columns that version's `INSERT` names (`task`, `input_summary`, `prediction`, `preceding_actions`, `confidence`). They are no longer rebuilt away: they stay on `holds`, always empty, so a Pi session still running the older code — and a downgrade — keeps recording holds against a migrated database instead of failing every guarded call until it restarts. The size win does not change: the task text lands once in `hold_tasks`, and the older layout's text is cleared.
+- A row of a call that was not held keeps the judge data: the scores, the reasons, and the agent's plan stay on the row, and its task text lands once in `hold_tasks` with the row pointing at it by hash. Calibration on field traffic reads all four, so only `context_summary` and the agent reason for the call are not written for it.
+- At each start, a row an older session wrote after the migration is settled the same way: its task text moves into `hold_tasks`, the older layout's text is cleared, and an allowed row loses its summary and agent reason. A new `hold_meta` table keeps the highest row id already settled, so a start looks only at the rows written after it and changes no page when there are none; a database another session holds skips the step, as it skips the prune, and the next start runs it.
+
+### Docs
+
+- `docs/configuration.md` documents `learning.allowedRetentionDays`.
+- `docs/data-handling.md` describes the slim hold database, the one-time migration, and every hold outcome.
 
 ## 0.80.1
 
