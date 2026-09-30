@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, after } from "node:test";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -453,3 +453,158 @@ test("initSchema does not run VACUUM when no rows are past the cutoff", () => {
 });
 
 
+
+// --- Retention, the session id, and the one-time migration to the slim schema ---
+
+/**
+ * A database of its own: getDb() prefers PI_WARDEN_DB over an injected directory, so the variable goes away for
+ * the call and comes back after it. Every case below would otherwise write into the shared test database.
+ */
+async function withOwnDatabase(run: (dirs: { agentDir: string; configDirName: string }, file: string) => Promise<void>): Promise<void> {
+  const saved = process.env.PI_WARDEN_DB;
+  delete process.env.PI_WARDEN_DB;
+  const dirs = { agentDir: mkdtempSync(join(testDir, "case-")), configDirName: ".pi" };
+  const file = join(dirs.agentDir, "pi-warden", "holds.db");
+  try {
+    await run(dirs, file);
+  } finally {
+    if (saved !== undefined) process.env.PI_WARDEN_DB = saved;
+    rmSync(dirs.agentDir, { recursive: true, force: true });
+  }
+}
+
+const row = (held: boolean, at: number, sessionId?: string) => ({
+  timestamp: at,
+  projectRoot: "/retention/project",
+  tool: "bash",
+  commandPreview: "npm test",
+  task: "run the tests",
+  plan: "check the suite",
+  contextSummary: "user: run the tests",
+  scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+  level: "confirm" as const,
+  held,
+  reasons: ["irreversible 0.5"],
+  agentReason: "held for the stored reason",
+  ...(sessionId ? { sessionId } : {}),
+});
+
+test("recordHold writes the session id, and the task text lands once in hold_tasks", async () => {
+  await withOwnDatabase(async (dirs, file) => {
+    await initSchema(0, dirs, 0);
+    await recordHold(row(true, Date.now(), "session-abc"), dirs);
+    await recordHold(row(true, Date.now(), "session-abc"), dirs);
+    const d = new DatabaseSync(file, { readOnly: true });
+    const held = d.prepare("SELECT session_id, task_hash, plan, scores, reasons FROM holds").all() as Array<Record<string, unknown>>;
+    assert.equal(held.length, 2);
+    assert.deepEqual(held.map(record => record.session_id), ["session-abc", "session-abc"], "every row carries the session id");
+    assert.equal(held[0]!.task_hash, held[1]!.task_hash, "one task text, one key");
+    const tasks = d.prepare("SELECT hash, text FROM hold_tasks").all() as Array<{ hash: string; text: string }>;
+    assert.equal(tasks.length, 1, "the task text is stored once");
+    assert.equal(tasks[0]!.text, "run the tests");
+    assert.equal(held[0]!.plan, "check the suite", "a held row keeps its context");
+    assert.ok(typeof held[0]!.scores === "string", "a held row keeps its scores");
+    d.close();
+  });
+});
+
+test("a row of a call that was not held keeps only what a reader uses", async () => {
+  await withOwnDatabase(async (dirs, file) => {
+    await initSchema(0, dirs, 0);
+    await recordHold(row(false, Date.now(), "session-abc"), dirs);
+    const d = new DatabaseSync(file, { readOnly: true });
+    const allowed = d.prepare("SELECT task_hash, plan, context_summary, scores, reasons, agent_reason, command_preview, held FROM holds").get() as Record<string, unknown>;
+    assert.equal(allowed.held, 0);
+    assert.equal(allowed.command_preview, "npm test", "queryHoldsForProject reads the preview on an allowed row");
+    for (const column of ["task_hash", "plan", "context_summary", "scores", "reasons", "agent_reason"]) {
+      assert.equal(allowed[column], null, `${column} is not stored for an allowed call`);
+    }
+    assert.equal((d.prepare("SELECT COUNT(*) AS total FROM hold_tasks").get() as { total: number }).total, 0, "no task text is stored for an allowed call");
+    d.close();
+  });
+});
+
+test("the prune keeps a hold for retentionDays and an allowed call for allowedRetentionDays", async () => {
+  await withOwnDatabase(async (dirs, file) => {
+    await initSchema(0, dirs, 0);
+    const now = Date.now();
+    const day = 86_400_000;
+    const keptHold = await recordHold(row(true, now - 120 * day), dirs);
+    const droppedAllowed = await recordHold(row(false, now - 120 * day), dirs);
+    const droppedHold = await recordHold(row(true, now - 400 * day), dirs);
+    const keptAllowed = await recordHold(row(false, now - day), dirs);
+    await initSchema(365, dirs, 90);
+    const d = new DatabaseSync(file, { readOnly: true });
+    const rows = d.prepare("SELECT id FROM holds ORDER BY id").all() as Array<{ id: number }>;
+    assert.deepEqual(rows.map(entry => entry.id), [keptHold, keptAllowed], `the allowed row past 90 days and the hold past 365 are gone (dropped ${droppedAllowed}, ${droppedHold})`);
+    assert.equal((d.prepare("SELECT COUNT(*) AS total FROM hold_tasks").get() as { total: number }).total, 1, "the task text of the pruned hold goes with it");
+    d.close();
+  });
+});
+
+test("an older database is rebuilt once: dead columns gone, task text moved, allowed rows slimmed", async () => {
+  await withOwnDatabase(async (dirs, file) => {
+    mkdirSync(join(dirs.agentDir, "pi-warden"), { recursive: true });
+    const old = new DatabaseSync(file);
+    old.exec(`
+      CREATE TABLE holds (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp INTEGER NOT NULL,
+        project_root TEXT NOT NULL,
+        session_id TEXT,
+        tool TEXT NOT NULL,
+        signature_hash TEXT NOT NULL,
+        command_preview TEXT,
+        task TEXT,
+        input_summary TEXT,
+        plan TEXT,
+        context_summary TEXT,
+        scores TEXT NOT NULL,
+        level TEXT NOT NULL,
+        held INTEGER NOT NULL,
+        reasons TEXT,
+        agent_reason TEXT,
+        outcome TEXT,
+        outcome_at INTEGER,
+        prediction TEXT,
+        confidence REAL,
+        preceding_actions TEXT
+      );
+      CREATE INDEX idx_holds_project_signature ON holds(project_root, signature_hash);
+    `);
+    const insert = old.prepare(`INSERT INTO holds (timestamp, project_root, tool, signature_hash, command_preview, task, input_summary, plan, context_summary, scores, level, held, reasons, agent_reason, outcome, prediction, confidence)
+      VALUES (?, '/old/project', 'bash', 'hash', 'npm test', ?, 'summary', 'plan text', 'context text', ?, 'confirm', ?, ?, 'reason text', ?, 'prediction', 0.5)`);
+    const day = 86_400_000;
+    insert.run(Date.now() - day, "the shared task text", JSON.stringify({ irreversible: 0.5 }), 1, JSON.stringify(["irreversible 0.5"]), null);
+    insert.run(Date.now() - day, "the shared task text", JSON.stringify({ irreversible: 0.5 }), 1, JSON.stringify(["irreversible 0.5"]), "approved");
+    insert.run(Date.now() - day, "the shared task text", JSON.stringify({ irreversible: 0.5 }), 0, JSON.stringify(["irreversible 0.5"]), "accepted");
+    old.close();
+
+    await initSchema(0, dirs, 0);
+
+    const d = new DatabaseSync(file, { readOnly: true });
+    const columns = (d.prepare("PRAGMA table_info(holds)").all() as Array<{ name: string }>).map(entry => entry.name);
+    assert.ok(!columns.includes("task") && !columns.includes("input_summary") && !columns.includes("prediction") && !columns.includes("confidence") && !columns.includes("preceding_actions"), `dead columns are gone, got ${columns.join(", ")}`);
+    const tasks = d.prepare("SELECT hash, text FROM hold_tasks").all() as Array<{ hash: string; text: string }>;
+    assert.equal(tasks.length, 1, "the repeated task text is stored once");
+    assert.equal(tasks[0]!.text, "the shared task text");
+    const held = d.prepare("SELECT id, task_hash, plan, scores, reasons, agent_reason, outcome FROM holds WHERE held = 1 ORDER BY id").all() as Array<Record<string, unknown>>;
+    assert.equal(held.length, 2, "no held row is lost");
+    assert.deepEqual([held[0]!.id, held[1]!.id], [1, 2], "ids are preserved");
+    assert.equal(held[0]!.task_hash, tasks[0]!.hash, "a held row points at the stored task text");
+    assert.equal(held[0]!.plan, "plan text");
+    assert.equal(held[0]!.outcome, null);
+    assert.equal(held[1]!.outcome, "approved");
+    const allowed = d.prepare("SELECT task_hash, plan, context_summary, scores, reasons, agent_reason, outcome FROM holds WHERE held = 0").get() as Record<string, unknown>;
+    assert.equal(allowed.outcome, "accepted", "an allowed row keeps its outcome");
+    for (const column of ["task_hash", "plan", "context_summary", "scores", "reasons", "agent_reason"]) assert.equal(allowed[column], null, `${column} is not stored on an allowed row`);
+    assert.ok((d.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_holds_project_signature'").get()), "the indexes are rebuilt");
+    d.close();
+
+    // The second start finds the new shape and leaves the rows alone.
+    await initSchema(0, dirs, 0);
+    const after = new DatabaseSync(file, { readOnly: true });
+    assert.equal((after.prepare("SELECT COUNT(*) AS total FROM holds").get() as { total: number }).total, 3, "a second start does not rebuild again");
+    after.close();
+  });
+});

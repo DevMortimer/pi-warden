@@ -6,7 +6,15 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- The hold database stores less per call. Every row now carries the Pi session id (it used to be empty); the task text is stored once per task, in a `hold_tasks` table keyed by its hash, instead of once per call; and a row of a call that was not held keeps only the columns a reader uses, so no task, plan, summary, scores, or reasons. A database written by an earlier version is migrated once at startup, inside one transaction, and the pages the migration and the prune free are reclaimed by a VACUUM that runs only when no other session holds the database; when one does, the VACUUM is skipped and the next start tries again, so no session waits for it.
+- A record of a call that was not held is pruned after `learning.allowedRetentionDays` (default 90 days); `learning.retentionDays` (default 365) still applies to holds.
+
+### Docs
+
+- `docs/configuration.md` documents `learning.allowedRetentionDays`.
+- `docs/data-handling.md` describes the slim hold database and the one-time migration.
 
 ## 0.80.0
 
