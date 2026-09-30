@@ -1006,18 +1006,23 @@ test("session scratch: a written file's new parent under /tmp is scratch", async
 
 test("session scratch: one target never created keeps the whole rm held", async () => withScratchBase(async base => {
   const probe = join(base, "probe-abc");
-  await mkdir(join(base, "other"));
+  const other = join("/var/tmp", `pi-warden-other-${base.split("/").pop()!}`);
+  await mkdir(other);
   await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
-  const held = await toolCall("bash", { command: `rm -rf ${probe} ${join(base, "other")}` });
-  assert.equal(held?.block, true);
-  assert.match(held?.reason ?? "", /recursive rm on an absolute, home, variable, or parent path/);
+  try {
+    const held = await toolCall("bash", { command: `rm -rf ${probe} ${other}` });
+    assert.equal(held?.block, true);
+    assert.match(held?.reason ?? "", /recursive rm on an absolute, home, variable, or parent path/);
+  } finally { await rm(other, { recursive: true, force: true }); }
 }));
 
 test("session scratch: mkdir -p of a directory that already existed records nothing", async () => withScratchBase(async base => {
   const existing = join(base, "existing");
   await mkdir(existing);
   await runCall("bash", { command: `mkdir -p ${existing}` }, async () => {});
-  assert.equal((await toolCall("bash", { command: `rm -rf ${existing}` }))?.block, true);
+  const warned = await toolCall("bash", { command: `rm -rf ${existing}` });
+  assert.equal(warned?.block, undefined, "an existing directory is not session scratch; the temp subtree warns");
+  assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
 
 test("session scratch: a symlink under /tmp pointing outside the temp directory stays held", async () => withScratchBase(async base => {
@@ -1037,34 +1042,62 @@ test("session scratch: a temp directory printed by a command counts only when th
   const made = join(base, "made");
   await runCall("bash", { command: "npm test" }, () => mkdir(made), `fixture at ${made}\nreused ${before}\n`);
   assert.equal(await toolCall("bash", { command: `rm -rf ${made}` }), undefined, "created during the command");
-  assert.equal((await toolCall("bash", { command: `rm -rf ${before}` }))?.block, true, "existed before the command");
+  const before2 = await toolCall("bash", { command: `rm -rf ${before}` });
+  assert.equal(before2?.block, undefined, "existed before the command: the temp subtree warns, not session scratch");
+  assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
 
-test("session scratch: a recorded path deleted, then made again outside the agent, stays held", async () => withScratchBase(async base => {
+test("session scratch: a recorded path deleted, then made again outside the agent, loses the session-scratch exemption", async () => withScratchBase(async base => {
   const probe = join(base, "probe-abc");
   await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
   await runCall("bash", { command: `rm -rf ${probe}` }, () => rm(probe, { recursive: true }));
   await mkdir(probe);
-  assert.equal((await toolCall("bash", { command: `rm -rf ${probe}` }))?.block, true);
+  const again = await toolCall("bash", { command: `rm -rf ${probe}` });
+  assert.equal(again?.block, undefined, "the record is gone, so the temp subtree warns");
+  assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
 
-test("session scratch: older content moved into a recorded directory stays held", async () => withScratchBase(async base => {
+test("session scratch: older content moved into a recorded directory loses the session-scratch exemption", async () => withScratchBase(async base => {
   const important = join(base, "important");
   await mkdir(important);
   const dir = join(base, "S", "x");
   await runCall("bash", { command: `mkdir -p ${dir}` }, () => mkdir(dir, { recursive: true }));
   await runCall("bash", { command: `mv ${important} ${dir}/` }, () => rename(important, join(dir, "important")));
-  const held = await toolCall("bash", { command: `rm -rf ${dir}` });
-  assert.equal(held?.block, true);
-  assert.match(held?.reason ?? "", /recursive rm on an absolute, home, variable, or parent path/);
+  const warned = await toolCall("bash", { command: `rm -rf ${dir}` });
+  assert.equal(warned?.block, undefined);
+  assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
 
 test("session scratch: a fresh session forgets what the last one created", async () => withScratchBase(async base => {
   const probe = join(base, "probe-abc");
   await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
   await sessionStart();
-  assert.equal((await toolCall("bash", { command: `rm -rf ${probe}` }))?.block, true);
+  const afterRestart = await toolCall("bash", { command: `rm -rf ${probe}` });
+  assert.equal(afterRestart?.block, undefined, "the record is gone after a restart, so the temp subtree warns");
+  assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
+
+test("declared scratch paths: PI_WARDEN_SCRATCH_PATHS releases a path inside a declared root and reports an ignored entry once", async () => {
+  const base = await mkdtemp("/var/tmp/pi-warden-declared-");
+  const saved = process.env.PI_WARDEN_SCRATCH_PATHS;
+  process.env.PI_WARDEN_SCRATCH_PATHS = `${base}:/`;
+  try {
+    await writeFile(configPath(), JSON.stringify({ notices: true, rules: { enabled: false }, ...STACK_BAR }));
+    await sessionStart();
+    const ignored = () => notices.filter(notice => /PI_WARDEN_SCRATCH_PATHS ignored/.test(notice.text)).length;
+    assert.equal(ignored(), 1, "the ignored entry is named once");
+    await sessionStart();
+    assert.equal(ignored(), 1, "and not again in a later session");
+    const inner = join(base, "work");
+    await mkdir(inner);
+    const warned = await toolCall("bash", { command: `rm -rf ${inner}` });
+    assert.equal(warned?.block, undefined, "a path inside the declared root is not held");
+    assert.match(notices.at(-1)!.text, /session scratch/);
+  } finally {
+    if (saved === undefined) delete process.env.PI_WARDEN_SCRATCH_PATHS; else process.env.PI_WARDEN_SCRATCH_PATHS = saved;
+    await rm(base, { recursive: true, force: true });
+  }
+});
 
 test("per-call warning notices are off by default; trace-only off-task stays silent and notices: true restores UI warnings", async () => {
   await writeFile(configPath(), JSON.stringify({  typesafe: true, rules: { enabled: false }, ...STACK_BAR }));
@@ -2402,7 +2435,7 @@ test("/warden status, enable, disable, and test report and persist consent", asy
   assert.match(notices.at(-1)!.text, /Mode set to confirm/);
   await runCommand("test");
   assert.match(confirms.at(-1)!.title, /\(demo\)/);
-  assert.match(confirms.at(-1)!.message, /rm -rf \/tmp\/pi-warden-demo[\s\S]*nothing runs either way/);
+  assert.match(confirms.at(-1)!.message, /rm -rf \/var\/tmp\/pi-warden-demo[\s\S]*nothing runs either way/);
   assert.match(notices.at(-1)!.text, /Demo: you chose Yes/);
   await runCommand("mode steer");
   await runCommand("mode");

@@ -6,7 +6,20 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- `PI_WARDEN_SCRATCH_PATHS`: a `:`-separated list of absolute roots the host declares as scratch. A recursive `rm` whose every target is strictly inside one warns (`rm-session-scratch`) instead of holding. A root that is `/`, the home directory, the project root, or a git working tree (it contains `.git`) is ignored, and the session names every ignored entry and its reason once. Environment only, like `PI_WARDEN_HOST_PATHS`.
+
+### Changed
+
+- A recursive `rm` of a variable a `mktemp` earlier in the same command assigned warns as `rm-session-scratch` instead of holding: `d=$(mktemp -d) && … && rm -rf "$d"`, the backtick form, and quoted assignments. A variable that was reassigned before the `rm`, a `mktemp -u`/`--dry-run`, and a template outside a temp root keep the hold.
+- A recursive `rm` whose every target is a literal absolute path strictly inside a volatile temp root (`os.tmpdir()`, `$TMPDIR`, `/tmp`, `/private/tmp`, and macOS `/var/folders/<x>/<y>/T`) warns under the new classifier id `rm-temp-subtree` (risky) instead of holding. It rests on location, not birth time, so it applies on every platform and needs no session record. A temp root itself, a wildcard directly under one (`/tmp/*`), a `..` segment, `/var/tmp`, a variable, and a command that raises privileges (`sudo`, `doas`, `su`, `pkexec`, `run0`) keep the destructive hold.
+- Because a literal path under a volatile temp root now warns by location, a command that names `mv`, `ln`, `cp`, `tar`, `rsync`, `mount`, `hdiutil`, `bindfs`, or `git … clone` no longer keeps the hold for such a target; it still disables the session-scratch exemption, and the `rm` then reports `rm-temp-subtree`. Birth-time records still decide the hit for any other temp root.
+- `/warden test` demonstrates its hold with `rm -rf /var/tmp/pi-warden-demo`; `/tmp` is a warning now.
+
+### Docs
+
+- `docs/guards.md` (Action guard) describes the three scratch sources, the new `rm-temp-subtree` id, and the changed moves-in interaction; `docs/configuration.md` documents `PI_WARDEN_SCRATCH_PATHS` and lists `rm-temp-subtree` among the exemptable `rm` ids.
 
 ## 0.80.0
 

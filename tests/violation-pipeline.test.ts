@@ -67,7 +67,7 @@ test("file-scope authorization requires every complete path, not a shared basena
 
 test("violation questions use instance keys and real answers control escalation", async () => {
   const judge = fakeJudge({ violation_0: 0.99 });
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "rm -rf /tmp/test" }, cwd, task: "delete test" }, { config: defaultConfig().action, judge });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "rm -rf /var/tmp/test" }, cwd, task: "delete test" }, { config: defaultConfig().action, judge });
   assert.ok(judge.requests[0]!.questions.violation_0);
   assert.equal(verdict.extra?.violation_0, 0.99);
   assert.equal(verdict.level, "deny");
@@ -200,7 +200,7 @@ test("(h) judge failure in evidence mode falls back to floor for built-in hits",
 
 test("(i) built-in ID coverage: every SHELL_RULES, rm classifier, and sensitive-path id is in BUILT_IN_IDS", () => {
   const shellIds = SHELL_RULES.map(r => r.id);
-  const rmIds = ["rm-recursive", "rm-rf", "rm-recursive-dangerous-target"];
+  const rmIds = ["rm-recursive", "rm-rf", "rm-recursive-dangerous-target", "rm-temp-subtree", "rm-session-scratch"];
   const allBuiltin = [...shellIds, ...rmIds, "sensitive-path"];
   for (const id of allBuiltin) {
     assert.ok(BUILT_IN_IDS.has(id), `${id} must be in BUILT_IN_IDS`);
