@@ -61,6 +61,12 @@ The conscience coach assesses whether the agent is missing a useful skill or too
 
 **Modes:** `recommend` (name a skill, ask the agent to load it) and `load` (supply the skill body from disk). Default `recommend`; `load` requires global consent and a trusted project.
 
+**Candidates:** never Pi's core tools (`bash`, `read`, `edit`, `write`, and the rest of the core set in `CORE_PI_TOOLS`), a tool whose name or index entry says it deletes, drops, or destroys, a tool the session already called, a skill file the session already read, or a tool the model cannot call by that name in this session.
+
+**Local gate:** before any request, the prompt itself is checked: a short continuation ("yes", "go", "1. …"), a relayed child report, and a task spine already assessed in this session each stop the pass with a traced `skipReason` and no request. What survives is ranked locally (BM25 over the index fields `lead`, `useWhen`, `examples`, against the request and the task spine); only the top `conscience.localTopK` (default 6) reaches Jev, and under `conscience.localFloor` (default 0.5) nothing is sent at all.
+
+**Tip text:** a recommendation carries the name, one `useWhen` line, and for a skill the file to read. The full tool description never rides along.
+
 **How it works:** On each normal operator prompt, `before_agent_start` evaluates eligible skill and tool candidates via Jev. A selection passing the measured thresholds produces at most one custom message through the steer budget. Turn-end re-assessment triggers on tool failures. One reminder fires at `agent_end` if the capability remains unresolved and the run did not end with a final text reply.
 
 **Index:** `/warden index` builds a local capability index. Entries carry `lead`, `useWhen`, `examples`, and `role` instead of bare names and descriptions. The conscience uses index entries when the source hash matches; bare descriptions are the fallback. The per-candidate question judges the request, not the topic; a message that reports status without asking for anything is `no_gap`.

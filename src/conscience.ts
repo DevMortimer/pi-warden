@@ -538,6 +538,39 @@ export function gatePrompt(args: {
   return { ranked: ranked.slice(0, topK), spineKey: key };
 }
 
+/* ─── Tip text ──────────────────────────────────────────────────────── */
+
+/**
+ * The one line of the tip: the useWhen line sharing the most terms with the request, else the first line.
+ * No full tool description: that is 400 characters the agent already has.
+ */
+export function tipLine(candidate: Candidate, prompt: string): string | undefined {
+  const useWhen = candidate.indexEntry?.useWhen ?? [];
+  if (useWhen.length > 0) {
+    const query = new Set(tokenize(prompt));
+    let best = useWhen[0]!;
+    let bestScore = -1;
+    for (const line of useWhen) {
+      const score = tokenize(line).reduce((count, term) => count + (query.has(term) ? 1 : 0), 0);
+      if (score > bestScore) { best = line; bestScore = score; }
+    }
+    return best.trim();
+  }
+  const firstLine = candidate.description.split("\n").map(s => s.trim()).filter(Boolean)[0];
+  if (!firstLine) return undefined;
+  const sentence = firstLine.split(/(?<=[.!?])\s/)[0] ?? firstLine;
+  return sentence.trim();
+}
+
+/** One tip: the name, one line of when it helps, and for a skill the file to read. */
+export function recommendationText(candidate: Candidate, prompt: string, lead = "Consider"): string {
+  const what = candidate.kind === "skill" ? "skill" : "tool";
+  const line = tipLine(candidate, prompt);
+  const head = line ? `${lead} using the "${candidate.id}" ${what}: ${line}` : `${lead} using the "${candidate.id}" ${what}`;
+  const file = candidate.kind === "skill" ? candidate.skill?.filePath : undefined;
+  return file ? `${head}. Read: ${file}` : head;
+}
+
 /* ─── Description cap ───────────────────────────────────────────────── */
 
 /** Cap a candidate description to MAX_DESC_BYTES UTF-8. Returns the candidate with overflow flag. */

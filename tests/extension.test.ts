@@ -3064,6 +3064,29 @@ test("conscience: lowered threshold delivers one message via hook return", async
   assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-conscience").length, 0, "should not use sendMessage");
 });
 
+test("conscience: the tip is the name, one useWhen line, and the skill file", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "Frontend interface design, polish, and UX")];
+  await mkdir(join(temporary, "agent", "pi-warden", "index"), { recursive: true });
+  await writeFile(indexPath("global"), JSON.stringify({
+    formatVersion: 1, builtAt: "2026-09-30", model: "test",
+    entries: [{ kind: "skill", name: "impeccable", scope: "global", sourceHash: "missing", role: "conversation", lead: "Frontend polish for interfaces", useWhen: ["the UI looks off and needs polish"], notWhen: [], inputs: "", examples: [], thin: false }],
+  }));
+  await sessionStart();
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
+    message?: { content: string };
+  } | undefined;
+  assert.ok(result?.message, "the tip is delivered");
+  const content = result!.message!.content;
+  assert.match(content, /^Consider using the "impeccable" skill: the UI looks off and needs polish/);
+  assert.match(content, /Read: \/skills\/impeccable\/SKILL\.md$/);
+  assert.ok(!content.includes("Frontend interface design"), "the full description does not ride along");
+  await rm(indexPath("global"), { force: true });
+  await sessionStart();
+});
+
 test("conscience: steer budget exhausted blocks delivery", async () => {
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
