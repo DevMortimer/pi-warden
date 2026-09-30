@@ -383,7 +383,7 @@ Rules that apply to this request:
 
 The message names each rule's heading and the first line of its text, taken from [`examples/pi-warden.md`](../examples/pi-warden.md).
 
-The message is Pi's own custom message for the turn (`pi-warden-rules`), so it lands after your message and moves nothing earlier in the context: a warm prompt cache stays valid and no earlier message is edited. When no rule passes, or the judgment is off, fails, or takes longer than `CURATOR_TIMEOUT_MS` (2000 ms, or `timeoutMs` when that is lower), nothing is appended and the trace says why. At most 31 rules are asked, the same cap as the guard's own request; the ones past it stay out and the trace names the count. A fallback document with no rule headings has no per-rule questions and appends nothing.
+The message is Pi's own custom message for the turn (`pi-warden-rules`), so it lands after your message and moves nothing earlier in the context: a warm prompt cache stays valid and no earlier message is edited. When no rule passes, or the judgment is off, fails, or takes longer than two seconds (`timeoutMs` when that is lower), nothing is appended and the trace says why. At most 31 rules are asked, the same cap as the guard's own request; the ones past it stay out and the trace names the count. A fallback document with no rule headings has no per-rule questions and appends nothing.
 
 Rules are asked in file order, never scoped to a path first: the request may touch any file, and the judgment is the only thing that knows which. A rule's `paths:` scope rides in its question so the judge can rule it out.
 
