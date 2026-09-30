@@ -436,7 +436,7 @@ export interface ConscienceConfig {
   recommendThreshold: number;
   /** P(advance) from the disposition question must reach this before a candidate is considered. Default 0.70. */
   advanceThreshold: number;
-  /** Candidates the local ranker keeps for Jev (1..256); the rest never reach a request. Default 6, chosen on the 2026-09-22 replay. */
+  /** Candidates the local ranker keeps for Jev (1..256); the rest never reach a request. Default 31, the most one request holds; the labelled replay keeps 8 of 9 good picks at 31 and fewer at 12 or 20. */
   localTopK: number;
   /** Local BM25 floor against the request and the task spine; below it the conscience sends no request. Default 0.5. */
   localFloor: number;
@@ -564,7 +564,7 @@ export function defaultConfig(): WardenConfig {
       // Beta policy thresholds (measured 2026-09-22); disabled by default, conscience.enabled is the switch.
       recommendThreshold: 0.80,
       advanceThreshold: 0.70,
-      localTopK: 6,
+      localTopK: 31,
       localFloor: 0.5,
     },
     prefs: { enabled: true, inject: true },

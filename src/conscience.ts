@@ -447,9 +447,9 @@ export interface RankedCandidate {
  * BM25 (k1 1.2, b 0.75) over the candidate documents, queried with the request and the task spine.
  * Purely local: no request, no model. Ties break skill before tool, then by name, so the order is stable.
  */
-export function rankCandidates(prompt: string, spine: TaskSpine | undefined, candidates: readonly Candidate[]): RankedCandidate[] {
+export function rankCandidates(prompt: string, spine: TaskSpine | undefined, candidates: readonly Candidate[], context?: string | undefined): RankedCandidate[] {
   if (candidates.length === 0) return [];
-  const query = new Set(tokenize([prompt, spine?.goal ?? "", ...(spine?.history ?? [])].join(" ")));
+  const query = new Set(tokenize([prompt, context ?? "", spine?.goal ?? "", ...(spine?.history ?? [])].join(" ")));
   const docTokens = candidates.map(c => tokenize(candidateDoc(c)));
   const total = docTokens.length;
   const avgLength = docTokens.reduce((sum, tokens) => sum + tokens.length, 0) / total || 1;
@@ -479,7 +479,7 @@ export function rankCandidates(prompt: string, spine: TaskSpine | undefined, can
 }
 
 /** A reply that continues an in-flight task and cannot need a new capability. */
-const CONTINUATION_RE = /^(?:y|n|yes|no|ok|okay|sure|nope|yep|yup|go|proceed|continue|done|thanks|thank you|please|do it|ship it|lgtm|agreed|ack|right|fine|exactly|sounds good|please do|go ahead|approved|merged|push|hi|hey)[.!?]*$/i;
+const CONTINUATION_RE = /^(?:y|n|yes|no|ok|okay|sure|nope|yep|yup|go|thanks|thank you|please|do it|ship it|lgtm|agreed|ack|right|fine|exactly|sounds good|please do|go ahead|approved|hi|hey)[.!?]*$/i;
 /** One answer picked from a list: "1. …" or "b. …". */
 const CHOICE_RE = /^(?:\d{1,2}|[a-z])\s*[.)]\s*\S/i;
 /** A prompt that opens with a report relayed from a child agent, not a request of its own. */
@@ -520,21 +520,22 @@ export interface GateOutcome {
  */
 export function gatePrompt(args: {
   prompt: string;
+  context?: string | undefined;
   spine?: TaskSpine | undefined;
   candidates: readonly Candidate[];
   config: ConscienceConfig;
   assessedSpines?: Set<string> | undefined;
 }): GateOutcome {
-  const { prompt, spine, candidates, config, assessedSpines } = args;
+  const { prompt, context, spine, candidates, config, assessedSpines } = args;
   if (isShortContinuation(prompt)) return { skipReason: "short_continuation" };
   if (isRelayedReport(prompt)) return { skipReason: "relayed_report" };
   const key = spineKeyOf(prompt, spine);
   if (assessedSpines?.has(key)) return { skipReason: "spine_assessed" };
-  const ranked = rankCandidates(prompt, spine, candidates);
+  const ranked = rankCandidates(prompt, spine, candidates, context);
   const top = ranked[0];
   const floor = config.localFloor ?? 0;
   if (!top || top.score < floor) return { skipReason: "local_floor" };
-  const topK = Math.max(1, Math.trunc(config.localTopK ?? 6));
+  const topK = Math.max(1, Math.trunc(config.localTopK ?? 31));
   return { ranked: ranked.slice(0, topK), spineKey: key };
 }
 
@@ -700,7 +701,7 @@ export async function assess(
 
   // Local gate: skip prompts that cannot need a new capability, then rank and keep the top-k.
   // Everything below happens before the first network call, so the prompt never waits on it.
-  const gate = gatePrompt({ prompt, spine, candidates, config, assessedSpines: deps.assessedSpines });
+  const gate = gatePrompt({ prompt, context: recentContext, spine, candidates, config, assessedSpines: deps.assessedSpines });
   if (gate.skipReason || !gate.ranked) {
     const elapsedMs = (deps.now?.() ?? Date.now()) - start;
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs, requestCount: 0, skipReason: gate.skipReason ?? "local_floor" };

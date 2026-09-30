@@ -29,7 +29,7 @@ import { createInterface } from 'node:readline';
 import { createTypeSafe, DEFAULT_USD_PER_MTOK } from 'pi-typesafe';
 import { auc, calibrate, defaultThresholds, formatCalibration, metricsAt } from 'pi-typesafe/calibrate';
 import { loadSkillsFromDir } from '@earendil-works/pi-coding-agent';
-import { assess, eligibleCandidates, questionHash } from '../dist/conscience.js';
+import { assess, eligibleCandidates, gatePrompt, questionHash } from '../dist/conscience.js';
 import { redact } from '../dist/redact.js';
 import { defaultConfig } from '../dist/config.js';
 
@@ -590,6 +590,39 @@ async function run() {
     }
   }
   // toolCatalog remains undefined when no index; pool uses per-session catalogs in that case
+
+  // Offline gate report: how often the local gate sends no request, by reason. No judge, no spend.
+  if (flag('gate-report')) {
+    const counts = new Map();
+    const bump = key => counts.set(key, (counts.get(key) ?? 0) + 1);
+    let sends = 0;
+    let requestsAvoided = 0;
+    const activeSkills = skills.filter(s => !s.disableModelInvocation).map(s => s.name);
+    for (const file of new Set(turns.map(t => t.file))) {
+      const assessedSpines = new Set();
+      for (const turn of turns.filter(t => t.file === file)) {
+        const supplied = turn.skillExpansions;
+        const { candidates } = eligibleCandidates(skills, toolCatalog ?? [], fakeConfig(), activeSkills, supplied, indexes?.globalIndex, indexes?.projectIndex, process.platform, { calledTools: new Set(turn.sessionTools ?? []), readFiles: new Set(turn.sessionReads ?? []) });
+        if (candidates.length === 0) { bump('no_match'); continue; }
+        const outcome = gatePrompt({ prompt: clip(redact(turn.prompt), 2000), candidates, config: fakeConfig(), assessedSpines });
+        if (outcome.skipReason) { bump(outcome.skipReason); continue; }
+        if (outcome.spineKey) assessedSpines.add(outcome.spineKey);
+        sends++;
+        // What the old code would have spent on this prompt: one request per 31 candidates of each kind.
+        const kinds = new Set(candidates.map(c => c.kind));
+        for (const kind of kinds) requestsAvoided += Math.ceil(candidates.filter(c => c.kind === kind).length / 31);
+      }
+    }
+    const total = turns.length;
+    console.log(`\n# Local gate over ${total} recorded prompts (offline, no requests)`);
+    for (const [reason, n] of [...counts.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${reason.padEnd(20)} ${String(n).padStart(5)}  (${(n / total * 100).toFixed(1)}%)`);
+    }
+    console.log(`  ${'sends a request'.padEnd(20)} ${String(sends).padStart(5)}  (${(sends / total * 100).toFixed(1)}%)`);
+    console.log(`  no-request share: ${(((total - sends) / total) * 100).toFixed(1)}%`);
+    console.log(`  requests: old shape ${requestsAvoided} → new shape ${sends} (${((1 - sends / Math.max(1, requestsAvoided)) * 100).toFixed(0)}% fewer)`);
+    return;
+  }
 
   const doneKeys = new Set(existing.map(r => r.key));
   const pending = activeTurns.filter(t => !doneKeys.has(`${t.session}#${t.index}`));

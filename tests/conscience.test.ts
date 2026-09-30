@@ -476,6 +476,7 @@ test("isShortContinuation accepts replies and rejects real requests", () => {
   assert.equal(isShortContinuation("go."), true);
   assert.equal(isShortContinuation("1. ship the fix"), true);
   assert.equal(isShortContinuation("b. wait for the build"), true);
+  assert.equal(isShortContinuation("Continue"), false, "a prompt that continues the task can still need a capability");
   assert.equal(isShortContinuation("add a test for the retry path"), false);
   assert.equal(isShortContinuation("yes, and also update the changelog while you are there"), false);
   assert.equal(isShortContinuation(""), false);
