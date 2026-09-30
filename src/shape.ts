@@ -56,8 +56,6 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
     // A missing section turns the turn-start reminder off: it is new, so nothing it says was expected.
     rulesAtTurnStart: section("rulesAtTurnStart", { ...off, threshold: 1 }),
-    // A section that is off and stays off, whatever the file says: the feature did not ship.
-    workingMemory: section("workingMemory", { ...off, threshold: 0, coldAfterSeconds: Number.MAX_SAFE_INTEGER, minAgeCalls: Number.MAX_SAFE_INTEGER }),
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
@@ -132,9 +130,6 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   // The turn-start reminder was added after the rules section; an older config module leaves it undefined and the reminder stays off.
   if (typeof config.rulesAtTurnStart?.threshold !== "number") config.rulesAtTurnStart = { ...off, threshold: 1 };
   if (typeof config.rulesAtTurnStart.enabled !== "boolean") config.rulesAtTurnStart = { ...config.rulesAtTurnStart, enabled: false };
-  // An older config module has no working-memory section; the feature is off either way.
-  if (typeof config.workingMemory?.threshold !== "number") config.workingMemory = { ...off, threshold: 0, coldAfterSeconds: Number.MAX_SAFE_INTEGER, minAgeCalls: Number.MAX_SAFE_INTEGER };
-  if (typeof config.workingMemory.enabled !== "boolean") config.workingMemory = { ...config.workingMemory, enabled: false };
   // The command rules were added inside the action section later than the section itself; an older config module leaves them undefined.
   if (!Array.isArray(config.action.commandRules)) config.action = { ...config.action, commandRules: [] };
   if (!Array.isArray(config.action.commandDenyRules)) config.action = { ...config.action, commandDenyRules: [] };

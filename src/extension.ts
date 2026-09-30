@@ -903,6 +903,35 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (delivery.triggerTurn) wardenContinuation = true;
     return true;
   };
+  /**
+   * A notice a background judgment made ready for the next tool boundary. `before_agent_start` never waits for Jev, so
+   * an answer that arrives while its run is active waits here and is appended through the steer path at the next tool
+   * boundary, after the newest message; a run that ends first drops it and traces why. The turn-start rules reminder is
+   * budget-exempt: it is one message per user prompt, and the per-run budget counts the guards' own notices.
+   */
+  interface PendingNotice { customType: string; content: string; guard: GuardName; delivered: string; dropped: string; details: string[] }
+  let pendingNotices: PendingNotice[] = [];
+  /** True from a new prompt's `before_agent_start` until its `agent_end`; a notice that arrives later is dropped. */
+  let agentRunActive = false;
+  /** Incremented per user prompt; a background answer from an older prompt never reaches the next run. */
+  let promptEpoch = 0;
+  /** The steer path without the budget: queue the notice so it rides the request the next tool result needs. */
+  const deliverPendingNotices = (ctx: ExtensionContext, config: WardenConfig): void => {
+    if (!pendingNotices.length) return;
+    const notices = pendingNotices;
+    pendingNotices = [];
+    for (const notice of notices) {
+      pi.sendMessage({ customType: notice.customType, content: notice.content, display: config.steerVisible }, { deliverAs: "steer" });
+      record(ctx, config, notice.guard, notice.delivered, notice.details);
+    }
+  };
+  /** A run that ended before a queued notice reached a tool boundary appends nothing; the trace says which one and why. */
+  const dropPendingNotices = (ctx: ExtensionContext, config: WardenConfig, reason: string): void => {
+    if (!pendingNotices.length) return;
+    const notices = pendingNotices;
+    pendingNotices = [];
+    for (const notice of notices) record(ctx, config, notice.guard, notice.dropped, [reason, ...notice.details]);
+  };
   const modelKey = (ctx: ExtensionContext): string | undefined => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
   const KIND_GUARD: Partial<Record<SteerKind, GuardName>> = { rules: "rules", "sensitive-path": "rules", "security-write": "security", stuck: "stuck", repeat: "stuck", prose: "prose", conscience: "conscience" };
   /**
@@ -1058,6 +1087,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
     ledger.reset();
     curator.reset();
+    pendingNotices = [];
+    agentRunActive = false;
+    promptEpoch++;
     compactions.runs = 0; compactions.replaced = 0; compactions.fallbacks = {}; compactions.last = undefined;
     seenText.clear();
     savingEntry = undefined;
@@ -1112,12 +1144,14 @@ export default function wardenExtension(host: ExtensionAPI): void {
 
   /**
    * The turn-start rules reminder: one Jev request asks one noul per rule whether it applies to the new request, and
-   * the rules that pass the threshold ride back as one short message. Never throws and never edits an earlier
-   * message; a judgment that is off, fails, or times out appends nothing and says why in the trace.
+   * the rules that pass the threshold are queued for the next tool boundary. The prompt does not wait for the answer:
+   * the request starts here and returns, and `deliverPendingNotices` appends the message while the run is streaming.
+   * Never throws and never edits an earlier message; a judgment that is off, fails, or times out appends nothing and
+   * says why in the trace, and an answer that arrives after the run ended is dropped, also with a trace line.
    */
-  const curateTurnStart = async (ctx: ExtensionContext, config: WardenConfig, prompt: string): Promise<string | undefined> => {
+  const curateTurnStart = (ctx: ExtensionContext, config: WardenConfig, prompt: string): void => {
     const set = rulesGuard.store.load(ctx.cwd, config.rules);
-    if (!set) return undefined;
+    if (!set) return;
     // A fallback document with no rule headings is judged as one document by the rules guard; there are no rules to ask about.
     if (!set.rules.length) {
       record(ctx, config, "rules", "warden · rules · turn start · no rule headings", [
@@ -1125,7 +1159,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
         `sources: ${set.sources.join(", ")}`,
         set.proseOnly ? "no rule-shaped sections in the document" : "the document is judged as one aggregate by the rules guard",
       ]);
-      return undefined;
+      return;
     }
     const judge = judgeFor(config);
     if (!judge) {
@@ -1135,34 +1169,65 @@ export default function wardenExtension(host: ExtensionAPI): void {
         `skipReason: ${judgmentsOffReason(config) ?? "cooldown"}`,
         "nothing was appended",
       ]);
-      return undefined;
+      return;
     }
     const rules = curatedRuleList(set.rules);
+    const myPrompt = promptEpoch;
     const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
     const request = buildCuratorRequest(prompt, taskSpine(branch, prompt), rules);
     const started = Date.now();
-    const answer = await ask(judge, request, { timeoutMs: Math.min(config.timeoutMs, CURATOR_TIMEOUT_MS), ...(ctx.signal ? { signal: ctx.signal } : {}) });
-    const elapsedMs = Date.now() - started;
-    if (!answer.ok) {
-      curator.failed();
-      record(ctx, config, "rules", "warden · rules · turn start · nothing appended", [
-        "trigger: before_agent_start",
-        `error: ${answer.error}`,
-        `asked ${rules.length} rule${rules.length === 1 ? "" : "s"} in ${elapsedMs} ms`,
-      ]);
-      return undefined;
-    }
-    const scores = ruleScores(answer.answers as Record<string, unknown>, rules);
-    const selected = curatedRules(rules, scores, config.rulesAtTurnStart.threshold);
-    curator.sent(elapsedMs);
-    curator.added(selected.length);
-    record(ctx, config, "rules", `warden · rules · turn start · ${selected.length ? `${selected.length} rule${selected.length === 1 ? "" : "s"} named` : "none apply"}`, [
-      "trigger: before_agent_start",
-      `asked ${rules.length} of ${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}${set.alwaysDropped ? ` (${set.alwaysDropped} past the request cap)` : ""} in ${elapsedMs} ms`,
-      ...(selected.length ? [`named: ${selected.map(rule => `${rule.id} ${(scores[rules.indexOf(rule)] ?? 0).toFixed(2)}`).join(", ")}`] : [`no rule passed the ${config.rulesAtTurnStart.threshold} threshold`]),
-      `sources: ${set.sources.join(", ")}`,
-    ]);
-    return selected.length ? formatCuratedRules(selected) : undefined;
+    void ask(judge, request, { timeoutMs: Math.min(config.timeoutMs, CURATOR_TIMEOUT_MS), ...(ctx.signal ? { signal: ctx.signal } : {}) })
+      .then(answer => {
+        const elapsedMs = Date.now() - started;
+        // The run this request belonged to has ended: nothing may be appended after it (a delivery must never start a turn).
+        if (myPrompt !== promptEpoch || !agentRunActive) {
+          curator.sent(elapsedMs);
+          record(ctx, config, "rules", "warden · rules · turn start · dropped", [
+            "trigger: before_agent_start",
+            "the run ended before the answer arrived; nothing was appended",
+            `asked ${rules.length} rule${rules.length === 1 ? "" : "s"} in ${elapsedMs} ms`,
+          ]);
+          return;
+        }
+        if (!answer.ok) {
+          curator.failed();
+          record(ctx, config, "rules", "warden · rules · turn start · nothing appended", [
+            "trigger: before_agent_start",
+            `error: ${answer.error}`,
+            `asked ${rules.length} rule${rules.length === 1 ? "" : "s"} in ${elapsedMs} ms`,
+          ]);
+          return;
+        }
+        const scores = ruleScores(answer.answers as Record<string, unknown>, rules);
+        const selected = curatedRules(rules, scores, config.rulesAtTurnStart.threshold);
+        curator.sent(elapsedMs);
+        curator.added(selected.length);
+        const details = [
+          "trigger: before_agent_start",
+          `asked ${rules.length} of ${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}${set.alwaysDropped ? ` (${set.alwaysDropped} past the request cap)` : ""} in ${elapsedMs} ms`,
+          ...(selected.length ? [`named: ${selected.map(rule => `${rule.id} ${(scores[rules.indexOf(rule)] ?? 0).toFixed(2)}`).join(", ")}`] : [`no rule passed the ${config.rulesAtTurnStart.threshold} threshold`]),
+          `sources: ${set.sources.join(", ")}`,
+        ];
+        if (!selected.length) {
+          record(ctx, config, "rules", "warden · rules · turn start · none apply", details);
+          return;
+        }
+        pendingNotices.push({
+          customType: CURATOR_TYPE,
+          content: formatCuratedRules(selected),
+          guard: "rules",
+          delivered: `warden · rules · turn start · ${selected.length} rule${selected.length === 1 ? "" : "s"} delivered at the next tool boundary`,
+          dropped: "warden · rules · turn start · dropped (the run ended first)",
+          details,
+        });
+      })
+      .catch(error => {
+        curator.failed();
+        record(ctx, config, "rules", "warden · rules · turn start · nothing appended", [
+          "trigger: before_agent_start",
+          `error: ${error instanceof Error ? error.message : String(error)}`,
+        ]);
+      });
   };
 
   // A new user prompt starts a new attempt history, a new steer budget, and a new restatement window; answering the
@@ -1171,6 +1236,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
     noticeUi = ctx.hasUI ? ctx.ui : undefined;
     const config = configFor(ctx);
+    // This prompt owns the run: a background judgment from an older prompt can no longer reach it, and the notices it
+    // queues are deliverable until `agent_end`.
+    promptEpoch++;
+    agentRunActive = true;
     attempts = new AttemptWindow(config.stuck.window);
     // ── Call waste: the session tip ──
     // The tip is appended to the prompt, so every other part of the prompt stays where it was and the host records the
@@ -1390,14 +1459,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
 
     // ── Rules at turn start ──
-    // One request before the first model call of this user turn asks which of the project's rules apply, and the
-    // ones that do ride back as one short custom message after the newest user message (Pi appends it), so nothing
-    // earlier in the context moves and a warm prompt cache stays valid. The request comes after the conscience block
-    // so a conscience message that owns the turn is not replaced. Nothing here throws; a failure appends nothing.
-    if (config.enabled && config.rules.enabled && config.rulesAtTurnStart.enabled) {
-      const curated = await curateTurnStart(ctx, config, event.prompt);
-      if (curated) return { message: { customType: CURATOR_TYPE, content: curated, display: config.steerVisible } };
-    }
+    // One request before the first model call of this user turn asks which of the project's rules apply. It runs in
+    // the background, so the prompt never waits for Jev; the answer is delivered at the next tool boundary through
+    // the steer path, appended after the newest message, so nothing earlier in the context moves and a warm prompt
+    // cache stays valid. An answer that arrives after the run ended is dropped and traced. Nothing here throws.
+    if (config.enabled && config.rules.enabled && config.rulesAtTurnStart.enabled) curateTurnStart(ctx, config, event.prompt);
   });
 
   // Each assistant message is judged on its own; Pi does not forward the stream's own "start" event, so this is the reset.
@@ -1517,6 +1583,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    // The next tool boundary is where a background turn-start notice lands: queued while the run streams, it rides the
+    // request this call's result needs, appended after the newest message.
+    deliverPendingNotices(ctx, config);
     if (event.toolName === "bash" || event.toolName === "write") scratchPending.set(event.toolCallId, { started: Date.now(), candidates: scratchCandidates(event.toolName, event.input as Record<string, unknown>, ctx.cwd), moved: event.toolName === "bash" ? movedInTargets(event.toolName, event.input as Record<string, unknown>, ctx.cwd, sessionScratchPaths) : [] });
     // ── Conscience: track tool attempts on the selected capability ──
     if (config.conscience.enabled && selectedCapability && !triggerConsumed) {
@@ -1902,6 +1971,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("tool_result", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    // The answer may have arrived while this call was running; deliver it together with this result.
+    deliverPendingNotices(ctx, config);
     // High-confidence credential values are masked before any other rewrite, so neither the model nor a stored copy
     // sees them. Detection below still reads the original text, so the banner names what was masked. Masking is local
     // and sends nothing, so it runs with the security guard off; only the user's `security.maskOutput` stops it.
@@ -2394,6 +2465,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
 
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
+    // The run is over: a notice that never reached a tool boundary may not be appended now, because a delivery must
+    // never start a turn of its own. It is dropped and traced.
+    agentRunActive = false;
+    dropPendingNotices(ctx, config, "the run ended before the notice reached a tool boundary");
     if (!config.enabled) return;
     // A steer hold whose reply has arrived, on a run that neither released it nor replaced it, went nowhere.
     noteOutcomes(config, holds.runEnded());
@@ -2659,7 +2734,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
             `${formatMuted(steerStats.muted(), config.steers)}${stats.steersMuted ? ` This session: ${stats.steersMuted} steer${stats.steersMuted === 1 ? "" : "s"} kept in the trace only.` : ""}`,
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action, trace-only: ${config.action.intentTraceOnly}); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatCurator(curator.snapshot()),
-            "Working memory: off in this version (the feasibility gate failed; see docs/guards.md).",
             formatLedger(ledger.snapshot()),
             formatCompaction(config.compaction.enabled, compactions),
             ...(config.context.filter.enabled || ledger.snapshot().filter.requests > 0 || Object.keys(ledger.snapshot().filter.fallbacks).length > 0 ? [formatFilterLedger(ledger.snapshot())] : []),

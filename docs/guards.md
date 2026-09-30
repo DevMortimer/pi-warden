@@ -373,7 +373,7 @@ The scores separate widely: turn violations run 0.83 to 1.00 and their compliant
 
 ## Rules at turn start
 
-Before the first model call of a new user message, pi-warden asks which of the project's rules apply to that request: one `noul` per rule (`applies_<n>`), in one request, carrying the request (1500 redacted characters), the task spine, and the rule set with each rule's heading, text (300 characters), and `paths:` scope. The rules over `rulesAtTurnStart.threshold` (0.3) come back as one short custom message appended after the newest user message, strongest first, at most three:
+Before the first model call of a new user message, pi-warden starts one background request asking which of the project's rules apply to that request: one `noul` per rule (`applies_<n>`), carrying the request (1500 redacted characters), the task spine, and the rule set with each rule's heading, text (300 characters), and `paths:` scope. The prompt does not wait for the answer. When it arrives during the run, the rules over `rulesAtTurnStart.threshold` (0.3) are delivered at the next tool boundary through the steer path — a custom message appended after the newest message, strongest first, at most three — and the delivery never starts a turn by itself:
 
 ```
 Rules that apply to this request:
@@ -383,7 +383,7 @@ Rules that apply to this request:
 
 The message names each rule's heading and the first line of its text, taken from [`examples/pi-warden.md`](../examples/pi-warden.md).
 
-The message is Pi's own custom message for the turn (`pi-warden-rules`), so it lands after your message and moves nothing earlier in the context: a warm prompt cache stays valid and no earlier message is edited. When no rule passes, or the judgment is off, fails, or takes longer than two seconds (`timeoutMs` when that is lower), nothing is appended and the trace says why. At most 31 rules are asked, the same cap as the guard's own request; the ones past it stay out and the trace names the count. A fallback document with no rule headings has no per-rule questions and appends nothing.
+The message is a custom message for the turn (`pi-warden-rules`) appended after the newest message, so it moves nothing earlier in the context: a warm prompt cache stays valid and no earlier message is edited. When no rule passes, or the judgment is off, fails, or takes longer than two seconds (`timeoutMs` when that is lower), nothing is appended and the trace says why; so does a run that ends before the answer arrives, because a delivery must never start a turn of its own. At most 31 rules are asked, the same cap as the guard's own request; the ones past it stay out and the trace names the count. A fallback document with no rule headings has no per-rule questions and appends nothing.
 
 Rules are asked in file order, never scoped to a path first: the request may touch any file, and the judgment is the only thing that knows which. A rule's `paths:` scope rides in its question so the judge can rule it out.
 
@@ -427,7 +427,7 @@ The label asks what the agent did next, over the ten model calls that follow the
 
 Net is the characters the dropped results would have been re-read for over the rest of their session, minus one re-read of each miss. **The gate was a threshold that drops at least 30% of candidates with at most 10% misses; none passes.** The 0.2 cut is the closest at 23.5% dropped and 12.8% missed. The failure has a shape: results of 12,000 characters and over were needed in 10 of 12 cases, and every one of them that a 0.3 cut dropped was a miss, because a large result holds so many rare tokens that two of them reappear in almost any later call. Big results carry most of the at-stake characters, so the judgment is weakest exactly where the saving is largest. Results under 2,000 characters judge better (0.3: 66.0% dropped, 7.8% missed) but hold 2.1 M of the 62.7 M character-calls in the sample. 20,779 call-reads were at stake over the sample, a median of 64 later calls per result.
 
-Because the gate failed, the pruning is not built. `workingMemory` ships in the config, `enabled` is `false`, and it stays false whatever the file says: a config that asks for it gets a warning naming this measurement. The keys are there so the surface does not move if the judgment improves. The same feasibility numbers say the turn-start rules reminder is worth its request where the pruning was not: at its 0.3 cut it names no rule on 20 of 100 requests, against a miss that costs the agent a re-read of a whole tool result.
+Because the gate failed, the pruning is not built and no config key ships for it: every documented key is a promise kept through 1.x, so a switch with no feature behind it is not documented at all. The same feasibility numbers say the turn-start rules reminder is worth its request where the pruning was not: at its 0.3 cut it names no rule on 20 of 100 requests, against a miss that costs the agent a re-read of a whole tool result.
 
 ## Slop
 

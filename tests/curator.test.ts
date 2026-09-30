@@ -10,9 +10,8 @@ const shipped = defaultConfig();
 
 const rule = (id: string, name: string, body: string, paths: string[] = []): Rule => ({ id, name, body, paths });
 
-test("the shipped defaults: the reminder is on at the measured cut, and working memory is off", () => {
+test("the shipped defaults: the reminder is on at the measured cut", () => {
   assert.deepEqual(shipped.rulesAtTurnStart, { enabled: true, threshold: 0.3 });
-  assert.equal(shipped.workingMemory.enabled, false, "the feasibility gate failed; the switch cannot turn it on");
 });
 
 test("the rule list carries the heading, the first line, the text, and the path scope, in file order", () => {
