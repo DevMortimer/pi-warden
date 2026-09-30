@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.85.0
+
 ### Added
 
 - `action.ask` (default on): code decides before the request whether Jev can change anything the agent sees for this call. It asks for a git history or remote write, a delete or a move, a write through a redirect, `tee`, or `sed -i`, a database client, a network write, a publish, a deploy, an infrastructure command, a `gh` write, `ssh`/`scp`/`rsync`, a build or package target that deploys, publishes, or installs, a call nested in a `for`, `do`, or substitution, an interpreter script that names such a shape, and every `write` and `edit`. Every other call is decided by the offline pattern pass and the floor, and the trace says `not asked` with the reason.
