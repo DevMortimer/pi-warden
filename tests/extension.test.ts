@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
@@ -1501,6 +1502,17 @@ test("a steer hold the reply neither releases nor replaces is abandoned at the e
   await new Promise(resolve => setTimeout(resolve, 100));
   const rows = await queryHoldsForProject(temporary, { held: true });
   assert.ok(rows.some(row => row.outcome === "abandoned"), `the row in the hold log carries the label; rows: ${JSON.stringify(rows)}`);
+});
+
+test("every hold row the session writes carries its session id", async () => {
+  prompt = "fix the bug";
+  assert.equal((await toolCall("bash", { command: "git push --force origin main" }))?.block, true);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const db = new DatabaseSync(process.env.PI_WARDEN_DB!);
+  const newest = db.prepare("SELECT session_id, held FROM holds ORDER BY id DESC LIMIT 1").get() as { session_id: string | null; held: number };
+  db.close();
+  assert.equal(newest.held, 1, "the newest row is this session's hold");
+  assert.ok(newest.session_id, "the row carries the session id the host reported");
 });
 
 test("hold outcome known at record time is persisted to SQLite via the promise (ordering fix)", async () => {
