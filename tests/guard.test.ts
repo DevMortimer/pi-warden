@@ -426,6 +426,31 @@ test("literal variables: a target resolves to the value the command gave it", ()
   }
 });
 
+test("literal variables: an unread assignment form in the command keeps every variable unresolved", () => {
+  const held = [
+    `D=/tmp/x; printf -v D %s ~; rm -rf "$D"`,
+    `D=/tmp/x; mapfile -t D < list; rm -rf "$D"`,
+    `D=/tmp/x; readarray -t D < list; rm -rf "$D"`,
+    `D=/tmp/x; read D; rm -rf "$D"`,
+    `D=/tmp/x; eval D=~; rm -rf "$D"`,
+    `D=/tmp/x; . ./env.sh; rm -rf "$D"`,
+    `D=/tmp/x; source ./env.sh; rm -rf "$D"`,
+    `D=/tmp/x; getopts d D; rm -rf "$D"`,
+    `D=/tmp/x; let D=0; rm -rf "$D"`,
+    `D=/tmp/x; ((D=0)); rm -rf "$D"`,
+    `D=/tmp/x; : \${D=~/projects}; rm -rf "$D"`,
+    `D=/tmp/x; D+=x; rm -rf "$D"`,
+    `D=/tmp/x; declare -n D=HOME; rm -rf "$D"`,
+    `D=/tmp/x; local -a D; rm -rf "$D"`,
+    `D=/tmp/x; f() { D=~; }; rm -rf "$D"`,
+    `D=/tmp/x; function f { D=~; }; rm -rf "$D"`,
+  ];
+  for (const command of held) assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd)), command);
+  for (const command of [`D=/tmp/x; E=/tmp/y; rm -rf "$D"`, `D=/tmp/x; printf %s ~; rm -rf "$D"`, `D=/tmp/x; git clone -q . "$D"; rm -rf "$D"`]) {
+    assert.deepEqual(rmIds(command), ["rm-temp-subtree"], `a command with no unread form still resolves: ${command}`);
+  }
+});
+
 test("effective directory: a relative rm target after a cd resolves against it", () => {
   assert.deepEqual(rmIds("cd /tmp/x && rm -rf build"), ["rm-temp-subtree"], "a relative target after a cd into a temp root");
   assert.deepEqual(rmIds("cd /tmp/x; pushd sub && rm -rf build"), ["rm-temp-subtree"], "pushd moves the directory too");

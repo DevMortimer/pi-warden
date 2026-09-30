@@ -324,6 +324,8 @@ function splitShell(command: string): string[] {
 // command (sh, eval, bash -c, command substitution) keeps every byte in scope, because the payload is executed.
 
 const WRAPPERS = new Set(["sudo", "nohup", "time", "env", "command", "builtin", "exec", "nice", "timeout", "doas"]);
+/** Shell keywords a statement can carry before the command it guards (`if cd ~; then …`). */
+const STATEMENT_WORDS = new Set(["if", "then", "elif", "else", "do", "while", "until", "!", "{", "("]);
 const SHELL_SINKS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "xargs", "su"]);
 /** Commands whose quoted arguments are text they print, search, or record. */
 const DATA_HEADS = new Set(["echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ugrep", "jq", "cat", "tee", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "less", "more", "test", "["]);
@@ -1158,6 +1160,45 @@ function variableWrites(command: string): Map<string, number> {
   return writes;
 }
 
+/** The first command word of a segment, after leading shell keywords, assignments, and wrappers (`if cd ~`, `FOO=1 sudo mv`). */
+function statementHead(segment: string): { word: string; rest: string[]; skipped: string[] } | undefined {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean).map(token => token.replace(/^[("'`]+|[\"')`]+$/g, "")).filter(Boolean);
+  let index = 0;
+  while (index < tokens.length && (STATEMENT_WORDS.has(tokens[index]!) || WRAPPERS.has(tokens[index]!) || /^[A-Za-z_]\w*=/.test(tokens[index]!))) index++;
+  const token = tokens[index];
+  if (token === undefined) return undefined;
+  return { word: token.replace(/['"\\]/g, "").replace(/^.*\//, ""), rest: tokens.slice(index + 1), skipped: tokens.slice(0, index) };
+}
+
+/** Command words that can set a variable in a way the assignment parser does not read: they run text, read input,
+ *  iterate options, or evaluate arithmetic. */
+const SINK_COMMANDS = new Set(["eval", "source", ".", "read", "mapfile", "readarray", "getopts", "let"]);
+
+/** Declaration builtins: with an option (`declare -n D=…`, `local -a D`) the assignment form is not the one the parser reads. */
+const DECLARATION_COMMANDS = new Set(["declare", "local", "typeset", "readonly", "export"]);
+
+/**
+ * Whether the command can set a variable by a form the assignment parser does not read. Resolving a variable is an
+ * allowlist: only the forms `commandVars` reads count, so a single unread form — `eval`, `source` or `.` as a command,
+ * `printf -v`, `read`, `mapfile`, `readarray`, `getopts`, `let`, an arithmetic `((…))`, a `${NAME=…}`/`${NAME:=…}` or
+ * `+=` assignment, a declaration builtin with an option, or a function definition — keeps every variable in the command
+ * unread, and its targets classify as they did before any variable rule existed.
+ */
+function unreadVariableSink(command: string): boolean {
+  const text = unquoted(command);
+  if (/\(\(/.test(text) || /\$\{[A-Za-z_]\w*:?=/.test(text) || /\+=/.test(text)) return true;
+  if (/(?:^|[\s;&|({])(?:function\s+)?[A-Za-z_]\w*\s*\(\s*\)/.test(text)) return true;
+  if (/(?:^|[\s;&|({])function\s+[A-Za-z_]\w*/.test(text)) return true;
+  for (const segment of splitShell(command)) {
+    const head = statementHead(segment);
+    if (head === undefined) continue;
+    if (SINK_COMMANDS.has(head.word)) return true;
+    if (DECLARATION_COMMANDS.has(head.word) && head.rest[0]?.startsWith("-")) return true;
+    if (head.word === "printf" && head.rest.slice(0, 3).some(arg => /^-[A-Za-z]*v/.test(arg))) return true;
+  }
+  return false;
+}
+
 /** The value a literal assignment gives: quoted or bare, with no `$`, backtick, substitution, or glob. `~` is allowed. */
 function literalValue(value: string): string | undefined {
   const clean = value.trim().replace(/^(["'])([\s\S]*)\1$/, "$2").trim();
@@ -1818,7 +1859,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     // Read the cheap volatile temp roots only when a recursive rm needs them; the macOS /var/folders walk is lazier.
     let volatile: string[] | undefined;
     const volatileRoots = () => (volatile ??= disposableTempRoots());
-    const scratchVars = blocked ? undefined : commandVars(segments, volatileRoots, variableWrites(command));
+    const scratchVars = blocked || unreadVariableSink(command) ? undefined : commandVars(segments, volatileRoots, variableWrites(command));
     const scratchRoots = blocked ? undefined : options?.scratchPaths;
     // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
     // A mover word the per-segment parse cannot read (`bash -c 'mv a b'`, `xargs ln -s a b`) keeps every hold as well.
