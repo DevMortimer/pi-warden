@@ -8,7 +8,7 @@
  * and never invalidates a warm prompt cache. Nothing here throws: a failed or missing judgment appends nothing.
  *
  * A new Jev question ships with a measurement: the numbers behind the threshold and the append limit are in
- * `docs/guards.md` (Calibration); the sample and labels are the author's own, labelled by a model.
+ * `docs/guards.md` (Rules at turn start); the sample is the owner's own sessions and a model labelled it.
  */
 import { noul } from "pi-typesafe";
 import type { Questions } from "pi-typesafe";
@@ -51,12 +51,12 @@ export function ruleFirstLine(body: string): string {
   return "";
 }
 
+const slice = (text: string, limit: number): string => (text.length > limit ? `${text.slice(0, limit)}…` : text);
+
 /** The rules the turn-start question carries: the rule set in file order, capped like the guard's own request. */
 export function curatedRuleList(rules: readonly Rule[], limit = CURATOR_RULE_LIMIT): CuratedRule[] {
   return rules.slice(0, limit).map(rule => ({ id: rule.id, name: rule.name, first: ruleFirstLine(rule.body), text: slice(rule.body.replace(/\s+/g, " ").trim(), CURATOR_RULE_CHARS), paths: rule.paths }));
 }
-
-const slice = (text: string, limit: number): string => (text.length > limit ? `${text.slice(0, limit)}…` : text);
 
 /**
  * One `noul` per rule: does this rule apply to what the new request asks for? The rule's heading, its first line, and
