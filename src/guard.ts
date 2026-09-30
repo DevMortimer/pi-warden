@@ -17,7 +17,6 @@ import { resolveRulesFile } from "./rules-file.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
 import { actionAskGate } from "./ask-gate.js";
-import { VerdictCache, cacheKey } from "./verdict-cache.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
 export type Level = "allow" | "warn" | "confirm" | "deny";
@@ -203,8 +202,6 @@ export interface Verdict {
   largeOutputFamily?: string;
   /** Answers to the caller's own `questions`: P(yes) for a noul, the picked option for a choice, the level for a score. */
   extra?: Record<string, number | string>;
-  /** True when an identical call in this session was judged inside the reuse window and its verdict is reused. */
-  cached?: boolean;
   /** True when the ask gate left the call offline: the pattern pass and the floor decided it, no request went out. */
   notAsked?: string;
   /** Safe TypeSafe error message when the judge could not answer. */
@@ -240,13 +237,6 @@ export interface EvaluateOptions {
    * request, so the recorded signal keeps coming after they left the main request. 0 disables it. Omit to ask none.
    */
   traceSample?: number | undefined;
-  /**
-   * Verdict reuse for repeated calls in one session. The same instance must be handed to every call of that session.
-   * Omit to judge every call.
-   */
-  cache?: VerdictCache<Verdict> | undefined;
-  /** Clock for the reuse window; defaults to `Date.now`. A replay drives it from the recorded call time. */
-  now?: (() => number) | undefined;
   /**
    * Extra questions over the same state (`task`, `context`, `plan`, `action`), answered in `verdict.extra` and never acted on.
    * How a candidate question is measured on recorded sessions before it earns an acting rule (scripts/calibrate-action.mjs).
@@ -2564,25 +2554,22 @@ export function describePlan(plan: string | undefined): string | undefined {
   return text ? truncate(redact(text), PLAN_LIMIT) : undefined;
 }
 
-export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; spine?: TaskSpine | undefined; largeOutput?: boolean; lean?: boolean; traceOnly?: boolean } = {}) {
+export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; spine?: TaskSpine | undefined; largeOutput?: boolean; traceOnly?: boolean } = {}) {
   const writesContent = (summary.tool === "write" || summary.tool === "edit" || summary.writes !== undefined) && hasContent(summary);
   const wantSlop = extras.slop && writesContent;
   const previous = (extras.previousActions ?? []).slice(-PREVIOUS_ACTIONS_LIMIT).map(action => ({ ...action, ...(action.command !== undefined ? { command: truncate(action.command, PREVIOUS_COMMAND_LIMIT) } : {}) }));
   const plan = describePlan(extras.plan);
-  // The lean request drops every field and question whose answer no delivered outcome reads: `context` and the
-  // off-task/scope/should-proceed questions are trace-only, so they ride the sampled `traceOnly` request instead.
-  const lean = extras.lean === true;
   const traceOnly = extras.traceOnly === true;
   const violationQuestions = extras.violations?.length ? violationJudgmentQuestions(extras.violations) : {};
-  // The acting questions: the ones a delivered outcome reads. `off_task` and `scope` only feed the off-task branch,
-  // which is trace-only, so they ride the sampled `traceOnly` request; `should_proceed` is trace-only by default.
-  const baseQuestions = lean ? { irreversible: questions.irreversible, mutates: questions.mutates } : { ...questions, ...shouldProceedQuestion };
+  // The acting request carries only what a delivered outcome reads: no earlier messages (`context`) and none of the
+  // off-task/scope/should-proceed questions, which are trace-only and ride the sampled `traceOnly` request instead.
+  const baseQuestions = { irreversible: questions.irreversible, mutates: questions.mutates };
   return {
     state: {
       task: task?.trim() ? truncate(redact(task.trim()), TASK_LIMIT) : "(no user request recorded in this session)",
       action: summary as unknown as Record<string, string | number | boolean>,
       // Clipped per message already; `recentTaskContext` bounds the count.
-      context: lean && !traceOnly ? [] : (extras.context ?? []).slice(-8).map(message => ({ role: message.role, text: truncate(redact(message.text), 750) })),
+      context: traceOnly ? (extras.context ?? []).slice(-8).map(message => ({ role: message.role, text: truncate(redact(message.text), 750) })) : [],
       // The spine's `task` is deliberately not repeated here: state.task above already carries it, unchanged for approval.
       // The spine arrives already clipped (SPINE_CAP in shape.ts); these per-field limits guard paths that build it elsewhere.
       ...(extras.spine ? { spine: {
@@ -2730,25 +2717,16 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   // Resolve the rules file once per call for the Jev request state. With the rules guard off, no rules content leaves
   // the machine at all: no question names the field, so an absent one costs nothing. The config decides which files
   // count, so the content sent here is the content the guard judges with.
-  // Reuse the verdict of an identical call in the same session inside the window. A hold is never stored, so this can
-  // only answer with an allow or a warn; every hold and every approval is asked again.
-  const reuseKey = options.cache && config.cacheMinutes > 0 ? cacheKey(action.cwd, action.tool, action.input) : undefined;
-  const askedAt = options.now?.() ?? Date.now();
-  if (reuseKey) {
-    const reused = options.cache!.get(reuseKey, askedAt);
-    if (reused) return withPlan({ ...reused, cached: true });
-  }
   const resolved = options.rules?.enabled === false ? null : resolveRulesFile(action.cwd, options.rules);
-  const leanRequest = config.leanRequest !== false;
   const floorHits = builtInHits.length ? builtInHits.join("; ") : "none";
-  // The lean request: no `context`, no off-task/scope/should-proceed questions. The rules content is only read by the
-  // per-violation questions, so it rides the request only while a violation is open; `leanRequest: false` keeps it on
-  // every request, as it was before the cut.
-  const stateRules = !leanRequest || remainingViolations.length ? resolved?.content : undefined;
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, lean: leanRequest, context: leanRequest ? undefined : action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false });
+  // The acting request carries only what a delivered outcome reads: no `context`, no off-task/scope/should-proceed
+  // questions. The rules content is only read by the per-violation questions, so it rides the request only while a
+  // violation is open.
+  const stateRules = remainingViolations.length ? resolved?.content : undefined;
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false });
   // One call in twenty also asks the trace-only questions, in a second request that goes out beside the first, so the
   // recorded off-task/scope signal keeps coming without touching what the agent sees.
-  const traceAnswer = leanRequest && traceSampled(options.traceSample)
+  const traceAnswer = traceSampled(options.traceSample)
     ? ask(judge, buildRequest(summary, action.task, { traceOnly: true, context: action.context, plan, rules: resolved?.content, rulesSource: resolved?.source, floorHits, spine: action.spine }), { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) })
     : undefined;
   const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
@@ -2955,7 +2933,6 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       else if (typeof answer?.score === "number") verdict.extra[id] = answer.score;
     }
   }
-  if (reuseKey) options.cache!.set(reuseKey, askedAt, verdict);
   // The sampled trace-only answers are annotations: they land in the judgment and in the hold record, after every
   // delivered outcome is decided, so the recorded off-task and scope signal keeps coming without changing a level.
   if (traceAnswer) {

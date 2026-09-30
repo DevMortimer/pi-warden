@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Action-guard replay: rebuilds the action requests that real Pi sessions produced and measures the ask gate, the lean
- * request, and the verdict cache against them.
+ * Action-guard replay: rebuilds the action requests that real Pi sessions produced and measures the ask gate and the
+ * acting request against them.
  *
  * Inputs are local session logs (full tool inputs), the trace files (per-guard counts), the holds database (which calls
  * the agent saw Jev change), and the pi-typesafe usage ledger (requests and input tokens per day). Nothing is sent
@@ -11,13 +11,12 @@
  * must stay outside the repository.
  *
  * Usage:
- *   node scripts/action-replay.mjs [--since 2026-09-25] [--until 2026-09-30T22:24] [--out DIR] [--json]
- *   node scripts/action-replay.mjs --sample 200 --judge [--out DIR]        # billable: compares lean with full
+ *   node scripts/action-replay.mjs --trace DIR [--since 2026-09-25] [--until 2026-09-30T22:24] [--out DIR] [--json]
  *
  * Environment:
  *   PI_SESSIONS_DIR  Session logs (default: ~/.pi/agent/sessions).
  *   PI_WARDEN_DB     Holds database (default: ~/.pi/agent/pi-warden/holds.db).
- *   PI_WARDEN_TRACE_DIR  Trace files (default: ~/.pi/agent/carvel/extension-data/warden/traces).
+ *   PI_WARDEN_TRACE_DIR  Trace files; `--trace DIR` wins. One of the two is required.
  *
  * Build first: the replay runs the guard from dist/.
  */
@@ -27,7 +26,6 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { usagePath } from "pi-typesafe";
 import { actionAskGate, buildRequest, commandOf, defaultConfig, describeAction, evaluateAction, resolveRulesFile, stripDataText } from "../dist/index.js";
-import { VerdictCache, cacheKey } from "../dist/verdict-cache.js";
 
 const args = process.argv.slice(2);
 const flag = (name, fallback) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback; };
@@ -36,11 +34,15 @@ const since = new Date(flag("--since", "2026-09-25"));
 const until = flag("--until") ? new Date(flag("--until")) : new Date();
 const sessionsRoot = resolve(flag("--sessions", join(homedir(), ".pi", "agent", "sessions")));
 const dbPath = resolve(flag("--db", process.env.PI_WARDEN_DB ?? join(homedir(), ".pi", "agent", "pi-warden", "holds.db")));
-const traceRoot = process.env.PI_WARDEN_TRACE_DIR ?? join(homedir(), ".pi", "agent", "carvel", "extension-data", "warden", "traces");
+const traceDir = flag("--trace", process.env.PI_WARDEN_TRACE_DIR);
+if (!traceDir) {
+  console.error("usage: node scripts/action-replay.mjs --trace DIR [--since DATE] [--until DATE] [--out DIR] [--json]");
+  console.error("Set --trace DIR or PI_WARDEN_TRACE_DIR to the directory of pi-warden trace files; there is no default.");
+  process.exit(1);
+}
+const traceRoot = resolve(traceDir);
 const out = flag("--out");
 const wantJson = has("--json");
-const sampleSize = Number(flag("--sample", "0"));
-const useJudge = has("--judge");
 const action = defaultConfig().action;
 const TOOLS = new Set(action.tools);
 
@@ -177,7 +179,6 @@ const afterByTool = new Map();
 const whyCounts = new Map();
 const asksByReason = new Map();
 const gateNanos = [];
-const cacheNanos = [];
 /** Median and p99 of a nanosecond sample, in microseconds. */
 function percentiles(sample) {
   const sorted = [...sample].sort((a, b) => a - b);
@@ -190,7 +191,7 @@ let askedAfter = 0;
 let fullChars = 0;
 let leanChars = 0;
 let samples = 0;
-const cacheStats = { asks: 0, hits: 0, sampled: 0 };
+let sampledCalls = 0;
 const detail = [];
 let measured = 0;
 let sizeSamples = 0;
@@ -201,27 +202,19 @@ let sampledRequests = 0;
 let totalCharsBefore = 0;
 let totalCharsAfter = 0;
 
-/** One verdict cache per session, driven by the recorded call time so the reuse window is measured as it ran. */
-const sessions = new Map();
-function sessionState(id) {
-  if (!sessions.has(id)) sessions.set(id, { cache: new VerdictCache(action.cacheMinutes * 60_000), clock: 0 });
-  return sessions.get(id);
-}
-const BEFORE = { ...action, ask: { enabled: false }, cacheMinutes: 0, traceSample: 0 };
+const BEFORE = { ...action, ask: { enabled: false }, traceSample: 0 };
 
 for (const call of calls) {
   const d = day(call.at);
   if (!perDay.has(d)) perDay.set(d, { calls: 0, judged: 0, readOnly: 0, askedBefore: 0, askedAfter: 0 });
   const row = perDay.get(d);
   row.calls++;
-  const state = sessionState(call.session);
-  state.clock = call.at.getTime();
   const input = { tool: call.tool, input: call.input, cwd: call.cwd, task: call.task, context: call.context, plan: call.plan };
   const before = [];
-  const beforeVerdict = await evaluateAction(input, { config: BEFORE, judge: stubJudge(before), now: () => state.clock });
+  const beforeVerdict = await evaluateAction(input, { config: BEFORE, judge: stubJudge(before) });
   let gateWhy;
   const after = [];
-  const afterVerdict = await evaluateAction(input, { config: action, judge: stubJudge(after), cache: state.cache, now: () => state.clock, traceSample: action.traceSample });
+  const afterVerdict = await evaluateAction(input, { config: action, judge: stubJudge(after), traceSample: action.traceSample });
   if (beforeVerdict.source === "read-only" || beforeVerdict.source === "skipped") { readOnly++; row.readOnly++; continue; }
   row.judged++;
   const askedBefore = before.length > 0;
@@ -258,18 +251,11 @@ for (const call of calls) {
     const decision = actionAskGate(call.tool, call.input, view?.shell ? stripDataText(view.command).text : undefined, call.cwd);
     const t1 = process.hrtime.bigint();
     gateNanos.push(Number(t1 - t0));
-    const t2 = process.hrtime.bigint();
-    const key = cacheKey(call.cwd, call.tool, call.input);
-    if (key) state.cache.get(key, state.clock);
-    const t3 = process.hrtime.bigint();
-    cacheNanos.push(Number(t3 - t2));
     count(asksByReason, `${decision.ask ? "ask" : "skip"}: ${decision.why}`);
     gateWhy = decision.why;
   }
-  if (afterVerdict.cached) cacheStats.hits++;
-  if (askedNow) cacheStats.asks++;
-  if (after.length > 1) cacheStats.sampled++;
-  if (out && detail.length < 40000) detail.push({ at: call.at.toISOString(), tool: call.tool, ask: askedNow, why: gateWhy, before: askedBefore, level: beforeVerdict.level, cached: afterVerdict.cached === true, beforeChars: askedBefore ? JSON.stringify(mainRequest(before)).length : 0, afterChars: askedNow ? JSON.stringify(mainRequest(after)).length : 0, call: call.tool === "bash" ? String(call.input.command ?? "").slice(0, 4000) : String(call.input.path ?? "") });
+  if (after.length > 1) sampledCalls++;
+  if (out && detail.length < 40000) detail.push({ at: call.at.toISOString(), tool: call.tool, ask: askedNow, why: gateWhy, before: askedBefore, level: beforeVerdict.level, beforeChars: askedBefore ? JSON.stringify(mainRequest(before)).length : 0, afterChars: askedNow ? JSON.stringify(mainRequest(after)).length : 0, call: call.tool === "bash" ? String(call.input.command ?? "").slice(0, 4000) : String(call.input.path ?? "") });
 }
 
 // --- Phase 2: which calls the agent saw Jev change, and whether the gate still asks ----------------------
@@ -353,12 +339,11 @@ const aggregate = {
   requestCharsAverageLean: askedAfter ? Math.round(leanCharsTotal / askedAfter) : 0,
   rulesSentAfter,
   requestChars: Object.fromEntries([...fieldChars].map(([name, total]) => [name, { average: Math.round(total / Math.max(1, sizeSamples)), share: fullCharsSum ? +(total / fullCharsSum).toFixed(3) : 0 }])),
-  cache: { asked: cacheStats.asks, hits: cacheStats.hits, hitRate: cacheStats.asks ? cacheStats.hits / cacheStats.asks : 0 },
-  sampledCalls: cacheStats.sampled,
+  sampledCalls,
   outcomes: { delivered: delivered.length, resolvedToFullCommand: resolvedFull, byTool: deliveredByTool, missed: missed.length, recall, missedList: missed },
   askReasons: Object.fromEntries([...whyCounts].sort((a, b) => b[1] - a[1])),
   gateReasons: Object.fromEntries([...asksByReason].sort((a, b) => b[1] - a[1])),
-  latency: { gate: percentiles(gateNanos), cache: percentiles(cacheNanos) },
+  latency: { gate: percentiles(gateNanos) },
   perDay: Object.fromEntries([...perDay].sort()),
   guardRequestsPerDay: Object.fromEntries([...guardDays].sort().map(([d, guards]) => [d, Object.fromEntries([...guards].sort((a, b) => b[1] - a[1]))])),
   ledger,
@@ -378,7 +363,7 @@ console.log(`requests: ${wouldAskBefore} before, ${askedAfter} after the gate ($
 console.log(`request size: ${aggregate.requestCharsAverage} chars before, ${aggregate.requestCharsAverageLean} after; rules sent on ${rulesSentAfter} of ${askedAfter} acting requests`);
 console.log(`request text: ${aggregate.spend.charsBefore} chars before, ${aggregate.spend.charsAfter} chars after (ratio ${aggregate.spend.ratio})`);
 console.log("state and question share (before):", aggregate.requestChars);
-console.log(`cache: ${cacheStats.hits}/${cacheStats.asks} hits (${(aggregate.cache.hitRate * 100).toFixed(1)}%); ${cacheStats.sampled} calls also asked the trace-only questions`);
+console.log(`${sampledCalls} calls also asked the trace-only questions`);
 console.log(`outcomes the agent saw: ${delivered.length}; gate asks ${delivered.length - missed.length}; recall ${(recall * 100).toFixed(2)}%`);
 console.log("by tool:", deliveredByTool);
 if (missed.length) console.log("missed:", JSON.stringify(missed.slice(0, 40), null, 2));
@@ -387,56 +372,3 @@ console.log("added latency:", aggregate.latency);
 console.log("per day:", aggregate.perDay);
 console.log("guards:", aggregate.guardRequestsPerDay);
 console.log("ledger:", ledger);
-
-// --- Phase 4 (billable): the lean request against the full one on a fixed sample -------------------------
-if (useJudge && sampleSize > 0) {
-  const { ask } = await import("pi-typesafe");
-  const { createTypeSafe } = await import("pi-typesafe");
-  const judge = createTypeSafe({ maxRequests: sampleSize * 4 + 20, timeoutMs: 20000 });
-  const pick = [];
-  const step = Math.max(1, Math.floor(calls.length / sampleSize));
-  for (let index = 0; index < calls.length && pick.length < sampleSize; index += step) {
-    const call = calls[index];
-    const probe = [];
-    await evaluateAction({ tool: call.tool, input: call.input, cwd: call.cwd, task: call.task }, { config: { ...action, ask: { enabled: false } }, judge: stubJudge(probe), rules: undefined });
-    if (probe.length) pick.push(call);
-  }
-  console.log(`billable comparison on ${pick.length} bash calls`);
-  const rows = [];
-  for (const call of pick) {
-    const summary = describeAction(call.tool, call.input, call.cwd);
-    const full = buildRequest(summary, call.task, { context: call.context, plan: call.plan, rules: undefined, floorHits: "none", slop: false, security: false });
-    const lean = buildRequest(summary, call.task, { context: undefined, plan: call.plan, rules: undefined, floorHits: "none", slop: false, security: false, lean: true });
-    const a = await ask(judge, full, { timeoutMs: 20000 });
-    const b = await ask(judge, lean, { timeoutMs: 20000 });
-    const t = await ask(judge, buildRequest(summary, call.task, { traceOnly: true, context: call.context, plan: call.plan, rules: undefined, floorHits: "none" }), { timeoutMs: 20000 });
-    if (!a.ok || !b.ok) { console.log("request failed", a.ok ? b.error : a.error); continue; }
-    const scoreOf = answer => answer.answers?.irreversible?.noul;
-    rows.push({ tool: call.tool, full: scoreOf(a), lean: scoreOf(b), fullTokens: a.usage?.input_tokens, leanTokens: b.usage?.input_tokens, traceTokens: t.ok ? t.usage?.input_tokens : undefined });
-  }
-  const diffs = rows.filter(row => typeof row.full === "number" && typeof row.lean === "number").map(row => Math.abs(row.full - row.lean)).sort((a, b) => a - b);
-  const median = diffs.length ? diffs[Math.floor(diffs.length / 2)] : 0;
-  const tokens = rows.filter(row => row.fullTokens && row.leanTokens);
-  const byTool = {};
-  for (const tool of new Set(rows.map(row => row.tool))) {
-    const group = rows.filter(row => row.tool === tool && row.fullTokens && row.leanTokens);
-    byTool[tool] = { n: group.length, fullTokens: group.length ? Math.round(group.reduce((a, row) => a + row.fullTokens, 0) / group.length) : 0, leanTokens: group.length ? Math.round(group.reduce((a, row) => a + row.leanTokens, 0) / group.length) : 0 };
-  }
-  const report = {
-    compared: rows.length,
-    medianAbsoluteDifference: median,
-    meanAbsoluteDifference: diffs.length ? +(diffs.reduce((a, b) => a + b, 0) / diffs.length).toFixed(4) : 0,
-    maxAbsoluteDifference: diffs.at(-1) ?? 0,
-    crossedHalf: rows.filter(row => (row.full < 0.5) !== (row.lean < 0.5)).length,
-    crossedPointNine: rows.filter(row => (row.full < 0.9) !== (row.lean < 0.9)).length,
-    fullTokensAverage: tokens.length ? Math.round(tokens.reduce((a, row) => a + row.fullTokens, 0) / tokens.length) : 0,
-    leanTokensAverage: tokens.length ? Math.round(tokens.reduce((a, row) => a + row.leanTokens, 0) / tokens.length) : 0,
-    traceTokensAverage: tokens.filter(row => row.traceTokens).length ? Math.round(tokens.reduce((a, row) => a + (row.traceTokens ?? 0), 0) / tokens.filter(row => row.traceTokens).length) : 0,
-    tokenRatio: tokens.length ? +((tokens.reduce((a, row) => a + row.leanTokens, 0)) / (tokens.reduce((a, row) => a + row.fullTokens, 0))).toFixed(3) : 0,
-    requests: { before: wouldAskBefore, afterActing: askedAfter, afterSampled: sampledRequests },
-    byTool,
-    estimatedTokenRatio: tokens.length ? +(((askedAfter * (tokens.reduce((a, row) => a + row.leanTokens, 0) / tokens.length)) + (sampledRequests * (tokens.filter(row => row.traceTokens).reduce((a, row) => a + (row.traceTokens ?? 0), 0) / Math.max(1, tokens.filter(row => row.traceTokens).length)))) / (wouldAskBefore * (tokens.reduce((a, row) => a + row.fullTokens, 0) / tokens.length))).toFixed(3) : 0,
-  };
-  if (out) writeFileSync(join(out, "lean-compare.json"), `${JSON.stringify({ report, rows }, null, 2)}\n`);
-  console.log("lean comparison:", report);
-}

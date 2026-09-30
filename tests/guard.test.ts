@@ -941,11 +941,10 @@ test("evaluateAction sends named state fields and the base questions; `visible` 
   const j = judge(0.2, 0.1);
   await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests and fix failures" }, { config: judgedAction(), judge: j });
   const request = j.calls[0] as { state: Record<string, unknown>; questions: Record<string, { type: string }> };
-  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "visible"]);
+  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "mutates", "visible"]);
   await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "x" }, cwd, task: "t" }, { config: judgedAction(), judge: j });
   assert.ok(!("visible" in (j.calls[1] as { questions: object }).questions), "a write is never visible outside the working tree");
   assert.equal(request.questions.irreversible?.type, "noul");
-  assert.equal(request.questions.scope?.type, "choice");
   assert.equal(request.state.task, "Run the tests and fix failures");
   assert.deepEqual(request.state.action, { tool: "bash", command: "npm test" });
 });
@@ -1184,7 +1183,7 @@ test("slop questions join the write/edit request only, score per symptom, and ne
   const config = { ...defaultConfig(), action: judgedAction() };
   const j = withSlop(0.1, 0.1, { stub: 0.95, hedging: 0.8, comments: 0.2 });
   const write = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "// TODO implement\nexport function a() { return null as any; }" }, cwd, task: "implement a()" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
+  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
   assert.equal(write.level, "allow", "slop never blocks");
   assert.deepEqual(write.slop, { stub: 0.95, comments: 0.2, dead: 0.05, hedging: 0.8 });
   assert.deepEqual(write.slopSymptoms, ["stub", "hedging"], "strongest first");
@@ -1192,7 +1191,7 @@ test("slop questions join the write/edit request only, score per symptom, and ne
   assert.match(formatVerdict(write), /slop: stub 0\.95, hedging 0\.80/);
 
   const bash = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "visible"], "no slop questions for bash");
+  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "mutates", "visible"], "no slop questions for bash");
   assert.equal(bash.slop, undefined);
 
   const clean = await evaluateAction({ tool: "edit", input: { path: join(cwd, "a.ts"), edits: [{ oldText: "a", newText: "b" }] }, cwd, task: "rename" }, { config: config.action, judge: withSlop(0.1, 0.1, {}), slop: config.slop });
@@ -1264,7 +1263,7 @@ test("the regret question rides the request with last turn's allowed calls; a lo
   assert.equal(verdict.level, "allow", "regret labels earlier calls; it never changes this verdict");
   assert.equal(verdict.judgment?.regretted, 0.9);
   assert.equal(verdict.judgment?.regretTarget, "a2");
-  assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "regret_target", "regretted", "scope", "should_proceed", "visible"]);
+  assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "regret_target", "regretted", "visible"]);
 });
 
 test("the agent's plan travels with the request and is judged for intent mismatch; an empty plan asks nothing", async () => {
@@ -1658,28 +1657,32 @@ test("pathRules: inertPathRules detects access:write with only write tools and r
   assert.equal(inertPathRules(notInert, ["bash", "write", "edit"]).length, 0, "access:read with write tools is not inert");
 });
 
-// The active rules file rides every judged action request. The rules guard's own switch decides whether it leaves at all.
-test("rules.enabled false keeps the rules file out of the action request; true and omitted send it as before", async () => {
+// The active rules file rides a judged action request only while a violation is open on the call, because only the
+// per-violation questions name it. The rules guard's own switch still decides whether it leaves at all.
+test("the rules content rides the action request only while a violation is open, and stays home with the guard off", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-warden-rules-off-"));
   await writeFile(join(project, "pi-warden.md"), "# Rules\n\n- Never commit secrets.\n");
   const config = judgedAction();
-  const action = { tool: "bash", input: { command: "npm test" }, cwd: project, task: "run the tests" };
-  const state = async (rules?: { enabled: boolean }) => {
+  const state = async (command: string, rules?: { enabled: boolean }) => {
     const spy = judge(0.1, 0.1);
-    await evaluateAction(action, { config, judge: spy, ...(rules ? { rules } : {}) });
+    await evaluateAction({ tool: "bash", input: { command }, cwd: project, task: "run the tests" }, { config, judge: spy, ...(rules ? { rules } : {}) });
     return (spy.calls[0] as { state: Record<string, unknown> }).state;
   };
 
-  const off = await state({ enabled: false });
+  const plain = await state("npm test", { enabled: true });
+  assert.equal("rules" in plain, false, "no open violation: the rules content does not ride the request");
+  assert.equal("rulesSource" in plain, false);
+
+  const held = await state("rm -rf build", { enabled: true });
+  assert.match(held.rules as string, /Never commit secrets/, "a violation names the rules, so the content rides the request");
+  assert.equal(held.rulesSource, "pi-warden.md");
+
+  const off = await state("rm -rf build", { enabled: false });
   assert.equal("rules" in off, false, "no rules content is sent when the rules guard is off");
   assert.equal("rulesSource" in off, false, "and no rulesSource names the file it came from");
 
-  const on = await state({ enabled: true });
-  assert.match(on.rules as string, /Never commit secrets/, "the rules content is sent when the rules guard is on");
-  assert.equal(on.rulesSource, "pi-warden.md");
-
-  const unset = await state();
-  assert.equal(unset.rules, on.rules, "a library caller that passes no rules config keeps the earlier behaviour");
+  const unset = await state("rm -rf build");
+  assert.equal(unset.rules, held.rules, "a library caller that passes no rules config keeps the earlier behaviour");
   assert.equal(unset.rulesSource, "pi-warden.md");
 
   await rm(project, { recursive: true, force: true });

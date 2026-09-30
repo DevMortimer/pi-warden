@@ -28,9 +28,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "intentTraceOnly": "all",
     "shouldProceed": { "threshold": 0.6, "steer": false },
     "ask": { "enabled": true },
-    "cacheMinutes": 10,
     "traceSample": 0.05,
-    "leanRequest": true,
     "feedbackLog": true,
     "floor": "evidence",
     "commandRules": [],
@@ -98,9 +96,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `action.shouldProceed` | `{ threshold, steer }`. Scores at or below `threshold` (default 0.6) are trace-only by default until calibrated; they never hold a call. `hold` is the deprecated name of `threshold`: it is still read through 1.x, and `threshold` wins when both are set. |
 | `action.shouldProceed.steer` | Default `false`. Set `true` to restore the steer that asks the agent to pause and seek user approval. |
 | `action.ask` | `{ enabled }`, default `true`. Whether a call whose answer cannot change what the agent sees is decided offline instead of by a request. On the recorded action traffic from 2026-09-25 to 2026-09-30 it asks 14,326 of 28,036 judged calls (48.9% fewer requests) and still asks 96.7% of the calls whose answer changed what the agent saw. The offline pattern pass and the floor always run. |
-| `action.leanRequest` | Default `true`. The acting request carries only the state and the questions a delivered outcome reads: no earlier messages, no off-task/scope/should-proceed questions, and the rules content only while a violation is open. `false` restores the larger request. Measured on 171 sampled calls: 2,288 to 1,327 input tokens, with no call crossing the 0.5 or 0.9 irreversible threshold. |
-| `action.traceSample` | `0` to `1`, default `0.05`: one judged call in twenty also asks the trace-only questions (off-task, scope, should-proceed) in a second request, so the recorded signal keeps coming. Their answers never change a level. |
-| `action.cacheMinutes` | Minutes an identical call (same project, tool, and command; a write or edit also keys on its content hash) reuses the last verdict in the same session. Default `10`; `0` disables reuse. A hold, a deny, and an approved retry are never reused. |
+| `action.traceSample` | `0` to `1`, default `0.05`: one judged call in twenty also asks the trace-only questions (off-task, scope, should-proceed) in a second request, so the recorded signal keeps coming. Their answers never change a level and never reach the acting request. |
 | `action.feedbackLog` | Write each judged call and its outcome to `~/.pi/agent/pi-warden/holds/`; never the command. |
 | `action.floor` | `"evidence"` (default): when a judge answers, built-in pattern hits are evidence in the request, not level-setters. `"level"`: the floor sets the level before the judge, as it did pre-0.31. User-declared rules keep their declared action in both modes. User file only; project files cannot change it. |
 | `action.commandRules` | User-defined command rules: `{ id, pattern, severity: "warn" \| "confirm" \| "deny", action?, message?, caseSensitive? }`. `block` is the same as `deny`. A missing `severity` is `warn`; any other value is never downgraded: the rule applies at `confirm` and a config warning names the rule, the value, and the valid values. Patterns match the data-text-stripped command, so heredoc bodies and commit messages do not fire them. `confirm` defaults to `action: "dialog"` (a prompt for you, in every mode); `action: "hold"` restores steer semantics. Patterns are JavaScript regexes matched against full commands, so a pattern with nested quantifiers can be slow on long commands — a pathological one is self-inflicted. User rule ids must not reuse a built-in id (see `EXEMPTABLE_IDS` in `src/guard.ts`); a collision silently drops the user rule. User file only. |

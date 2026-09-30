@@ -9,9 +9,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Added
 
 - `action.ask` (default on): code decides before the request whether Jev can change anything the agent sees for this call. It asks for a git history or remote write, a delete or a move, a write through a redirect, `tee`, or `sed -i`, a database client, a network write, a publish, a deploy, an infrastructure command, a `gh` write, `ssh`/`scp`/`rsync`, a build or package target that deploys, publishes, or installs, a call nested in a `for`, `do`, or substitution, an interpreter script that names such a shape, and every `write` and `edit`. Every other call is decided by the offline pattern pass and the floor, and the trace says `not asked` with the reason.
-- `action.leanRequest` (default on): the acting request carries only the state and the questions a delivered outcome reads. The earlier messages, the off-task, scope, and should-proceed questions, and the rules content on a call with no open violation all leave it.
 - `action.traceSample` (default 0.05): one judged call in twenty still asks the off-task, scope, and should-proceed questions in a second request, so the recorded signal keeps coming. Their answers reach the trace and the hold record and never change a level.
-- `action.cacheMinutes` (default 10): an identical call (same project, tool, and command; a write or edit also keys on its content hash) reuses the last verdict inside the window, so a repeat costs no request. A hold, a deny, and an approved retry are never reused.
 
 ### Changed
 

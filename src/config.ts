@@ -47,12 +47,8 @@ export interface ActionGuardConfig {
   failOpen: boolean;
   /** Whether a call whose answer cannot change what the agent sees is decided offline. On by default; the pattern pass and the floor always run. */
   ask: { enabled: boolean };
-  /** Minutes a verdict is reused for an identical call in the same session. 0 disables reuse; a hold is never reused. */
-  cacheMinutes: number;
   /** Fraction of judged calls that also asks the trace-only questions (off-task, scope, should-proceed) in a second request, so the recorded signal keeps coming. 0 disables it. */
   traceSample: number;
-  /** Drop from the acting request the fields and questions no delivered outcome reads (context, off-task, scope, should-proceed). `false` restores the larger request. */
-  leanRequest: boolean;
   /** Per-request TypeSafe timeout. The call is judged as an error after this. */
   timeoutMs: number;
   irreversible: Threshold;
@@ -523,9 +519,7 @@ export function defaultConfig(): WardenConfig {
       tools: [...COMMAND_TOOLS, "write", "edit"],
       failOpen: true,
       ask: { enabled: true },
-      cacheMinutes: 10,
       traceSample: 0.05,
-      leanRequest: true,
       timeoutMs: 5000,
       // 0.9 holds: below it the judge is wrong one call in two to one in seven, and the 0.7 to 0.9 band held no call the user regretted.
       irreversible: { warn: 0.5, confirm: 0.9 },
@@ -630,11 +624,6 @@ function boolean(value: unknown, fallback: boolean): boolean {
 
 function positiveInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : fallback;
-}
-
-/** A non-negative number, zero included: 0 is the "off" value for the reuse window. */
-function nonNegativeNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 export function isMode(value: unknown): value is WardenMode {
@@ -848,9 +837,7 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     tools,
     failOpen,
     ask: { enabled: project ? projectSwitch("action.ask.enabled", rawAsk.enabled, base.ask.enabled, warnings) : boolean(rawAsk.enabled, base.ask.enabled) },
-    cacheMinutes: nonNegativeNumber(raw.cacheMinutes, base.cacheMinutes),
     traceSample: probability(raw.traceSample, base.traceSample),
-    leanRequest: boolean(raw.leanRequest, base.leanRequest),
     timeoutMs,
     irreversible,
     offTask: offTaskThreshold(raw.offTask, base.offTask),

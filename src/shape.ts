@@ -48,7 +48,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     steerVisible: source.steerVisible ?? false,
     notices: source.notices ?? false,
     steerBudget: typeof source.steerBudget === "number" && source.steerBudget >= 0 ? source.steerBudget : 3,
-    action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, cacheMinutes: 0, traceSample: 0, leanRequest: false, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "all", shouldProceed: { threshold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
+    action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, traceSample: 0, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "all", shouldProceed: { threshold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
@@ -111,12 +111,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };
   // The ask gate was added inside the action section later than the section itself; an older config module leaves it undefined and the gate stays on.
   if (typeof config.action.ask !== "object" || config.action.ask === null || typeof config.action.ask.enabled !== "boolean") config.action = { ...config.action, ask: { enabled: true } };
-  // Verdict reuse was added inside the action section later than the section itself; an older config module leaves it undefined and the 10-minute window applies.
-  if (typeof config.action.cacheMinutes !== "number") config.action = { ...config.action, cacheMinutes: 10 };
   // The trace-only sample was added inside the action section later than the section itself; an older config module leaves it undefined and one call in twenty is sampled.
   if (typeof config.action.traceSample !== "number") config.action = { ...config.action, traceSample: 0.05 };
-  // The lean request was added inside the action section later than the section itself; an older config module leaves it undefined and the lean request applies.
-  if (typeof config.action.leanRequest !== "boolean") config.action = { ...config.action, leanRequest: true };
   // The allowed-call retention was added inside the learning section later than the section itself; an older config module leaves it undefined and the 90-day default applies.
   if (typeof config.learning.allowedRetentionDays !== "number") config.learning = { ...config.learning, allowedRetentionDays: 90 };
   if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.9 };

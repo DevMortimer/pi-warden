@@ -6,8 +6,7 @@ import { after, before, test } from "node:test";
 import { actionAskGate, gateCommand } from "../src/ask-gate.js";
 import { defaultConfig } from "../src/config.js";
 import { evaluateAction, traceOnlyQuestions, stripDataText } from "../src/guard.js";
-import type { Judge, Verdict } from "../src/guard.js";
-import { VerdictCache, cacheKey } from "../src/verdict-cache.js";
+import type { Judge } from "../src/guard.js";
 
 let cwd: string;
 before(async () => {
@@ -97,21 +96,15 @@ test("ask gate: a hidden call still runs the pattern floor and records that no r
 
 test("the acting request carries only what a delivered outcome reads: no context, no trace-only questions", async () => {
   const j = judgeOf();
-  const before = await evaluateAction({ tool: "bash", input: { command: "git push origin main" }, cwd, task: "push it", context: [{ role: "user", text: "an earlier turn" }] }, { config: { ...config(), ask: { enabled: false }, leanRequest: false }, judge: j, rules: { enabled: true } });
-  const full = j.calls.at(-1)!;
-  assert.ok(full.state.context, "the wider request carries context");
-  assert.ok(full.questions.scope && full.questions.off_task && full.questions.should_proceed, "and the trace-only questions");
-  assert.ok(full.state.rules, "and the rules content");
-
-  const after = await evaluateAction({ tool: "bash", input: { command: "git push origin main" }, cwd, task: "push it", context: [{ role: "user", text: "an earlier turn" }] }, { config: config(), judge: j, rules: { enabled: true } });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push origin main" }, cwd, task: "push it", context: [{ role: "user", text: "an earlier turn" }] }, { config: config(), judge: j, rules: { enabled: true } });
   const lean = j.calls.at(-1)!;
-  assert.deepEqual(lean.state.context, [], "the lean request sends no context");
+  assert.deepEqual(lean.state.context, [], "the acting request sends no context");
   assert.equal(lean.questions.scope, undefined);
   assert.equal(lean.questions.off_task, undefined);
   assert.equal(lean.questions.should_proceed, undefined);
   assert.equal(lean.state.rules, undefined, "rules ride the request only while a violation is open");
   assert.ok(lean.questions.irreversible && lean.questions.mutates && lean.questions.visible, "the acting questions stay");
-  assert.equal(after.level, before.level);
+  assert.equal(verdict.level, "allow");
 });
 
 test("a sampled call also asks the trace-only questions, and their answers never set the level", async () => {
@@ -125,36 +118,4 @@ test("a sampled call also asks the trace-only questions, and their answers never
   assert.equal(first.offTaskTraceOnly, undefined);
   assert.equal(first.judgment?.offTask, 0.1, "the sampled answer lands in the judgment for the trace");
   assert.equal(first.judgment?.scope, "expected_step");
-});
-
-test("verdict reuse: an identical call in the window is answered from the cache, and a hold never is", () => {
-  const cache = new VerdictCache<{ level: string; approvedByUser?: boolean }>(600_000);
-  const key = cacheKey(cwd, "bash", { command: "git status" })!;
-  assert.ok(key);
-  cache.set(key, 1_000, { level: "allow" });
-  assert.equal(cache.get(key, 1_000 + 599_000)?.level, "allow", "inside the window");
-  assert.equal(cache.get(key, 1_000 + 600_000), undefined, "the window has passed");
-  cache.set(key, 1_000, { level: "confirm" });
-  assert.equal(cache.get(key, 1_000), undefined, "a hold is never reused");
-  cache.set(key, 1_000, { level: "warn", approvedByUser: true });
-  assert.equal(cache.get(key, 1_000), undefined, "an approved retry is never reused");
-  const other = cacheKey(cwd, "bash", { command: "git status --short" })!;
-  assert.notEqual(other, key, "a different command is a different key");
-  assert.ok(cacheKey(cwd, "write", { path: "a.ts", content: "one" }) !== cacheKey(cwd, "write", { path: "a.ts", content: "two" }), "write content is part of the key");
-});
-
-test("verdict reuse: a repeated call inside the window sends one request", async () => {
-  const cache = new VerdictCache<Verdict>(600_000);
-  const j = judgeOf();
-  const call = { tool: "bash", input: { command: "gh pr create --title x" }, cwd, task: "open a pull request" };
-  let clock = 1_000_000;
-  const first = await evaluateAction(call, { config: config(), judge: j, cache, now: () => clock });
-  clock += 60_000;
-  const second = await evaluateAction(call, { config: config(), judge: j, cache, now: () => clock });
-  assert.equal(j.calls.length, 1, "the repeat reuses the verdict");
-  assert.equal(second.cached, true);
-  assert.equal(second.level, first.level);
-  clock += 600_000;
-  await evaluateAction(call, { config: config(), judge: j, cache, now: () => clock });
-  assert.equal(j.calls.length, 2, "outside the window the call is judged again");
 });
