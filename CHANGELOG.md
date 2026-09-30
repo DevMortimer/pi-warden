@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.81.0
+
 ### Added
 
 - `PI_WARDEN_SCRATCH_PATHS`: a `:`-separated list of absolute roots the host declares as scratch. A recursive `rm` whose every target is strictly inside one warns (`rm-session-scratch`) instead of holding. A root that is `/`, the home directory, the project root, or a git working tree (it contains `.git`) is ignored, and the session names every ignored entry and its reason once. Environment only, like `PI_WARDEN_HOST_PATHS`.
