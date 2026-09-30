@@ -57,9 +57,9 @@ Every guard and feature, its default, and its status. Defaults are `defaultConfi
 | Jev judgments | Sends redacted samples to Jev for the judged checks below | Off until `/warden enable` | Stable |
 | [Action guard](docs/guards.md#action-guard) | Checks each command, write, and edit before it runs: offline patterns plus one Jev request | On | Stable |
 | ↳ Irreversible hold | Holds a call Jev scores 0.9 or more as irreversible; 0.5 to 0.9 warns | On | Stable |
-| ↳ Off-task steer | Warns at 0.6 and steers the agent back to your request at 0.85; never holds | On | Stable |
+| ↳ Off-task notice | Notes in the trace when a call looks unrelated to your request; never steers or holds | On, trace only | Stable |
 | ↳ Intent-mismatch steer | Tells the agent when a call differs from its stated plan; the score stays in the trace | Off: trace only. `action.intentTraceOnly: "invisible"` | Stable |
-| ↳ Should-proceed steer | Asks the agent to pause and ask you; the score stays in the trace | Off: trace only. `action.shouldProceed.steer: true` | Stable |
+| ↳ Should-proceed notice | Notes in the trace when the judge would ask you first. `action.shouldProceed.steer: true` also tells the agent; the 2026-09-30 labels do not support it (2 of 427 calls needed asking) | Off: trace only | Beta |
 | ↳ Your command, path, and arming rules | Warn, hold, or deny commands and paths you name | On, none set | Stable |
 | ↳ Large-output warning | Tells the agent to filter a command that will print far more than it needs | On | Stable |
 | [Rules](docs/guards.md#rules) | Judges every write and edit against the rules in your `pi-warden.md` | On | Stable |
@@ -131,7 +131,7 @@ Secrets and unshown paths are stripped before anything leaves your machine. The 
 
 ## Versioning
 
-From 1.0, pi-warden follows semver for: the documented config keys and their defaults (except `compaction.*`, `context.filter.*`, and `conscience.*`, which are experimental or beta); the `/warden` commands and their arguments; the `warden_remember`, `warden_loops`, and `warden_recall` tools; the documented `PI_WARDEN_*` environment variables; the widget template tokens; and the exports named in [docs/extension-authors.md](docs/extension-authors.md). The trace file format, the files in pi-warden's data folder, session message types, and every other export are internal and may change in any release.
+From 1.0, pi-warden follows semver for: the documented config keys and their defaults (except `compaction.*`, `context.filter.*`, `conscience.*`, and `action.shouldProceed.steer`, which are experimental or beta); the `/warden` commands and their arguments; the `warden_remember`, `warden_loops`, and `warden_recall` tools; the documented `PI_WARDEN_*` environment variables; the widget template tokens; and the exports named in [docs/extension-authors.md](docs/extension-authors.md). The trace file format, the files in pi-warden's data folder, session message types, and every other export are internal and may change in any release.
 
 ## Docs
 

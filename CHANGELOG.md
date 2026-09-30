@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Docs
+
+- `README.md` matches `docs/guards.md`: the features table describes the off-task and should-proceed notices as trace-only (the 2026-09-30 labels found 2 of 427 calls that needed asking, so they do not support `action.shouldProceed.steer`), and the versioning section puts `action.shouldProceed.steer` next to `compaction.*`, `context.filter.*`, and `conscience.*`, outside the semver promise. The guards docs also name who labelled those 427 calls: one language model, blind to the scores and strata, on the clipped request, plan, context, and call.
 
 ## 0.80.1
 
