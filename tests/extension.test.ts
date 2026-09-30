@@ -2904,7 +2904,7 @@ const writeConscienceConfig = (overrides: Record<string, unknown> = {}) =>
     typesafe: true, notices: false,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
-    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0, ...overrides },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0, localTopK: 64, localFloor: 0, ...overrides },
     ...STACK_BAR,
   }));
 
@@ -2952,7 +2952,7 @@ test("conscience: default threshold 1.0 traces assessment but delivers nothing",
     typesafe: true, notices: false,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
-    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0, localTopK: 64, localFloor: 0 },
     ...STACK_BAR,
   }));
   const skills = [conscienceSkill("impeccable", "UI design")];
@@ -2981,6 +2981,29 @@ test("conscience: lowered threshold delivers one message via hook return", async
   assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-conscience").length, 0, "should not use sendMessage");
 });
 
+test("conscience: the tip is the name, one useWhen line, and the skill file", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "Frontend interface design, polish, and UX")];
+  await mkdir(join(temporary, "agent", "pi-warden", "index"), { recursive: true });
+  await writeFile(indexPath("global"), JSON.stringify({
+    formatVersion: 1, builtAt: "2026-09-30", model: "test",
+    entries: [{ kind: "skill", name: "impeccable", scope: "global", sourceHash: "missing", role: "conversation", lead: "Frontend polish for interfaces", useWhen: ["the UI looks off and needs polish"], notWhen: [], inputs: "", examples: [], thin: false }],
+  }));
+  await sessionStart();
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
+    message?: { content: string };
+  } | undefined;
+  assert.ok(result?.message, "the tip is delivered");
+  const content = result!.message!.content;
+  assert.match(content, /^Consider using the "impeccable" skill: the UI looks off and needs polish/);
+  assert.match(content, /Read: \/skills\/impeccable\/SKILL\.md$/);
+  assert.ok(!content.includes("Frontend interface design"), "the full description does not ride along");
+  await rm(indexPath("global"), { force: true });
+  await sessionStart();
+});
+
 test("conscience: steer budget exhausted blocks delivery", async () => {
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
@@ -2989,7 +3012,7 @@ test("conscience: steer budget exhausted blocks delivery", async () => {
     typesafe: true, notices: false, steerBudget: 0,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
-    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0 },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0, localTopK: 64, localFloor: 0 },
     ...STACK_BAR,
   }));
   const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
@@ -3518,7 +3541,7 @@ test("conscience: path rule confirm blocks load via loadSkillBody", async () => 
   const { loadSkillBody } = await import("../src/load.js");
   const skillPath = await writeSkillFile("gated-skill", "---\nname: gated-skill\ndescription: Gated\n---\n\nBody.");
   const skill = { name: "gated-skill", description: "Gated", filePath: skillPath, baseDir: join(temporary, ".pi", "skills", "gated-skill"), sourceInfo: { path: skillPath, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
-  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, skipTools: [] as string[], timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, skipTools: [] as string[], timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0, localTopK: 64, localFloor: 0 };
   const pathRules = [{ id: "block-skills", paths: ["**/skills/**"], access: "none" as const, tools: ["read"], action: "confirm" as const }];
   const result = loadSkillBody(skill as any, loadConfig, { pathRules, exemptRules: [], loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, catalogName: "gated-skill", catalogDescription: "Gated", userInvoked: false, contextWindow: 200000, hasImages: false });
   assert.equal(result.skipReason, "load_denied", `expected load_denied, got ${result.skipReason}`);
@@ -3530,7 +3553,7 @@ test("conscience: cumulative maxLoadedBytes limits loads via loadSkillBody", asy
   const { loadSkillBody } = await import("../src/load.js");
   const sp1 = await writeSkillFile("skill-a", "---\nname: skill-a\ndescription: A\n---\n\nBody A.");
   const skill = { name: "skill-a", description: "A", filePath: sp1, baseDir: join(temporary, ".pi", "skills", "skill-a"), sourceInfo: { path: sp1, source: "local", scope: "user" as const, origin: "top-level" as const }, disableModelInvocation: false };
-  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, skipTools: [] as string[], timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 100, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0 };
+  const loadConfig = { enabled: true, skills: { mode: "load" as const, exclude: [] as string[] }, tools: { enabled: false, exclude: [] as string[] }, skipTools: [] as string[], timeoutMs: 1500, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 100, recommendThreshold: 1.0, advanceThreshold: 0.70, loadThreshold: 1.0, localTopK: 64, localFloor: 0 };
   const r1 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 0, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });
   assert.ok(r1.body, "first load should succeed");
   const r2 = loadSkillBody(skill as any, loadConfig, { loadedBytes: 90, remainingMs: 5000, consentGiven: true, projectTrusted: true, exemptRules: [], catalogName: "skill-a", catalogDescription: "A", userInvoked: false, contextWindow: 200000, hasImages: false });

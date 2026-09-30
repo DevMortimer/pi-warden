@@ -4,7 +4,7 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
-## 0.83.0
+## Unreleased
 
 ### Added
 
@@ -17,6 +17,33 @@ How to keep this current: add the entry in the same pull request as the change, 
 - The gate still asks 96.7% of the calls whose answer changed what the agent saw in that window (327 of 338). The 11 it leaves offline were all `warn`-level, none was held, and the highest irreversible score among them was 0.57, under the 0.9 hold.
 - `off_task`, `scope`, and `scopeConfidence` are optional on a judgment and absent from the acting request's answers; a verdict with no off-task answer reads as "no evidence", never as a warning.
 - The offline pattern pass and the floor decide a call the gate leaves unasked exactly as they decide one whose request failed: built-in hits warn or hold as they would with `floor: "level"`, so no current hold weakens.
+
+## 0.84.0
+
+### Added
+
+- `conscience.localTopK` (default 31, the most one request holds) and `conscience.localFloor` (default 0.5): the local rank decides how many candidates reach Jev, and a prompt with no candidate above the floor gets no request at all.
+
+### Changed
+
+- The conscience never offers Pi's core tools, a tool whose name or index entry says it deletes, drops, or destroys, a tool the session already called, a skill file the session already read, or a tool the model cannot call by that name in this session.
+- A local gate runs before any request. Short continuations, relayed child reports, and a task spine already assessed in this session are skipped with a traced reason; the rest are ranked locally against the request and the task spine, and only the top candidates go to Jev.
+- A recommendation tip is the name, one `useWhen` line, and for a skill the file to read, instead of the whole tool description.
+
+## 0.83.0
+
+### Changed
+
+- A `KEY=value` or `KEY: value` hit whose value is a code expression is no longer a credential, so masking no longer rewrites source code in a tool result. A call (`readKeySync(configPath`), an index (`rows[0]`), a member access with or without optional chaining (`output.secretIds`, `opts?.tokens`), a non-null assertion (`match[1]!.split(`), an arrow body (`x => y`), a template literal (`` tag`/\s+/` ``, `` `${x}` ``), and a type name with type arguments (`Record<string`) stay readable; the field case, reading a line as `const tokens = [redacted]).filter(Boolean)`, cannot happen. Token shapes (`sk-`, `ghp_`, `AKIA`, JWTs, PEM blocks, URL passwords, signed-URL parameters) still mask in code. A bracket, a parenthesis, or a word before one inside otherwise opaque characters is still a key: `DB_PASSWORD=<password>(<more>` and `API_KEY=abc[123]DEFghi789` keep their mask, as does a call whose name is plain lowercase or snake_case (`get_config_value(config_key=...`), where a parenthesized password cannot be told apart. Replayed against 1,152 recorded session logs since 2026-09-16 (95,141 tool-result text blocks, all projects): tool results that mask a value fall from 274 to 171, and 17 distinct values stop being masked, every one of them a code fragment from the list above. No value that was masked becomes readable apart from those 17, nothing that was readable becomes masked, and 27 of the 126 values still masked are token-shaped (JWTs, PEM blocks, `sk-` keys, `gh*_` tokens, an `AKIA` key).
+- A value that is a stand-in is still traced, not announced, unchanged; only the code-expression class moved from "masked and announced" to "not a credential".
+
+### Fixed
+
+- Credential detection no longer backtracks exponentially, so a tool result can no longer freeze the guard. The code-identifier alternatives in `looksLikeSecretValue` (`src/redact.ts`) wrote a repeated group whose character class could eat the capital that the next iteration needed, so a credential-key assignment carrying a long mixed-case value (about 85 characters of mixed case and digits, as a signed-URL signature produces) took minutes of CPU time: one recorded session result hung the offline replay until the pattern was rewritten. Every pattern in that check is now linear, and the replay's masking cost is unchanged — per masked tool result the median falls from 0.10 ms to 0.08 ms (the p99 rises from 0.99 ms to 1.67 ms, because the remaining results are a smaller set with a larger share of the expensive ones), and across all text blocks the mean is 0.028 ms before and after.
+
+### Docs
+
+- `docs/guards.md` (Security) and `docs/configuration.md` (`security.maskOutput`) name the code expressions that are not credentials. `scripts/credential-replay.mjs` replays session logs against a chosen build (`--files`, `--lib`, `--skip`) and reports the masks a change removes (`--compare`), with the removed values written to a file outside the repository.
 
 ## 0.82.0
 
