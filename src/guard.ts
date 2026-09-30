@@ -234,6 +234,10 @@ export interface EvaluateOptions {
   questions?: Questions | undefined;
   /** Real paths the agent created under the temp directory in this session (`PatternOptions.scratch`). */
   scratch?: ScratchRecords | undefined;
+  /** Scratch roots the host declared for this session (`scratchPaths`). A recursive rm of a path strictly inside one is risky. */
+  scratchPaths?: readonly string[] | undefined;
+  /** Real paths earlier calls moved or linked data into (`movedInTargets`); a recursive rm of a related path is held. */
+  movedIn?: readonly string[] | undefined;
   /**
    * Real paths of host directories (`hostPaths()`). A write or edit in one is not held by the outside-project rule;
    * every other check still applies.
@@ -320,6 +324,8 @@ function splitShell(command: string): string[] {
 // command (sh, eval, bash -c, command substitution) keeps every byte in scope, because the payload is executed.
 
 const WRAPPERS = new Set(["sudo", "nohup", "time", "env", "command", "builtin", "exec", "nice", "timeout", "doas"]);
+/** Shell keywords a statement can carry before the command it guards (`if cd ~; then …`). */
+const STATEMENT_WORDS = new Set(["if", "then", "elif", "else", "do", "while", "until", "!", "{", "("]);
 const SHELL_SINKS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "xargs", "su"]);
 /** Commands whose quoted arguments are text they print, search, or record. */
 const DATA_HEADS = new Set(["echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ugrep", "jq", "cat", "tee", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "less", "more", "test", "["]);
@@ -336,6 +342,17 @@ function headOf(segment: string): string | undefined {
   while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || WRAPPERS.has(tokens[index]!))) index++;
   const head = tokens[index];
   return head ? head.replace(/^.*\//, "") : undefined;
+}
+
+/**
+ * The command word of a token list, after assignments and wrappers (`sudo mv …`), and where it sits. Quotes, escapes,
+ * and any path prefix are stripped, so `\mv`, `"ln"`, `l''n`, and `/bin/mv` read as the words they run.
+ */
+function commandWord(tokens: readonly string[]): { index: number; word: string } | undefined {
+  let index = 0;
+  while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || WRAPPERS.has(tokens[index]!))) index++;
+  const token = tokens[index];
+  return token === undefined ? undefined : { index, word: token.replace(/['"\\]/g, "").replace(/^.*\//, "") };
 }
 
 /** Tools whose first word names what runs: `git log` and `git status` print very different amounts. */
@@ -536,30 +553,255 @@ export function stripDataText(command: string): ScannedCommand {
   return { text, stripped };
 }
 
+// ---------------------------------------------------------------------------
+// Shell words: what a word names on the filesystem, as far as a guard can tell without running the shell. A word that
+// cannot be placed is never released, and a placeable one is classified by the path it names.
+
+/** What a shell word names: a path this guard can place, the path a `mktemp` variable holds, or nothing it can pin down. */
+type WordPath =
+  | { kind: "path"; path: string }
+  | { kind: "temp"; key: string }
+  | { kind: "unknown"; word: string };
+
+/** The directory a relative path resolves against: a real path, a `mktemp` variable's path, or one this guard cannot read. */
+type DirPath = { kind: "path"; path: string } | { kind: "temp"; key: string } | { kind: "unknown" };
+
+/** The shell's own working directory, as a `DirPath`. */
+const cwdPath = (cwd: string | undefined): DirPath => (cwd === undefined ? { kind: "unknown" } : { kind: "path", path: cwd });
+
+/** A word with its surrounding quotes removed. */
+const unquoteWord = (word: string): string => word.replace(/^["']|["']$/g, "");
+
+/** Whether `child` is `parent` or lies under it. */
+function underPath(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
 /**
- * rm with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
- * risky. A quote, parenthesis, or backtick before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
+ * A word resolved to the path it names: a literal path, `~`, a relative path against `dir`, a value a variable of the
+ * same command holds, or the path a `mktemp` variable made. Undefined for a substitution, a glob-only word, a `..`
+ * segment, a variable the command does not fix, and a relative word with no directory: those keep the hold.
  */
-function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords): PatternHit | undefined {
+function resolveWord(word: string, dir: DirPath | undefined, vars: VarValues | undefined): WordPath {
+  const clean = unquoteWord(word);
+  if (!clean || clean === "." || clean === ".." || clean === "./" || clean === "../" || clean === "*") return { kind: "unknown", word };
+  if (clean.split(/[\\/]/).includes("..")) return { kind: "unknown", word };
+  // Quotes around the variable itself or around a part of the path are not part of the name: `"$D"/after`, `$D/'after'`.
+  const variable = /^\$\{?([A-Za-z_]\w*)\}?(\/.*)?$/.exec(clean.replace(/["']/g, ""));
+  if (variable) {
+    const name = variable[1]!;
+    const rest = variable[2] ?? "";
+    if (vars?.mktemp.has(name)) return { kind: "temp", key: name + rest };
+    const value = vars?.literal.get(name);
+    if (value === undefined) return { kind: "unknown", word };
+    return place(value + rest, dir, word);
+  }
+  return place(clean, dir, word);
+}
+
+/** A path text placed: `~`, an absolute path, a path relative to `dir`, or one under a `mktemp` variable's directory. */
+function place(text: string, dir: DirPath | undefined, word: string): WordPath {
+  if (text === "~") return { kind: "path", path: homedir() };
+  if (text.startsWith("~/")) return { kind: "path", path: resolve(homedir(), text.slice(2)) };
+  if (text.startsWith("~") || /[$`\\]/.test(text)) return { kind: "unknown", word };
+  if (isAbsolute(text)) return { kind: "path", path: resolve(text) };
+  if (dir === undefined || dir.kind === "unknown") return { kind: "unknown", word };
+  if (dir.kind === "temp") return { kind: "temp", key: `${dir.key}/${text}` };
+  return { kind: "path", path: resolve(dir.path, text) };
+}
+
+/** An `rm` operand as the classifier reads it: a path it can place, or the word it cannot. */
+const targetWord = (word: string, dir: DirPath | undefined, vars: VarValues | undefined): WordPath => resolveWord(word, dir, vars);
+
+/** The concrete path a word names, or undefined when it cannot be pinned down. */
+function placedWord(word: string, dir: DirPath | undefined, vars: VarValues | undefined): string | undefined {
+  const resolved = resolveWord(word, dir, vars);
+  return resolved.kind === "path" ? resolved.path : undefined;
+}
+
+/** The path a target names, or the word as written. */
+const targetText = (target: WordPath): string => (target.kind === "path" ? target.path : target.kind === "temp" ? target.key : target.word);
+
+/**
+ * The dangerous-target rule: an absolute path outside the project, or the shapes that are always dangerous (`/`, home, a
+ * bare wildcard, `.`/`..`, a home path, a variable the classifier could not place, a wildcard directly under `/`).
+ */
+function isDangerousTarget(target: WordPath, cwd: string | undefined): boolean {
+  // A variable a `mktemp` made holds a path outside the project, and the guard cannot see which: dangerous as before.
+  if (target.kind === "temp") return true;
+  const clean = unquoteWord(targetText(target));
+  if (clean === "/" || clean === "~" || clean === "*" || clean === "." || clean === ".." || clean.startsWith("~/") || clean.startsWith("$") || clean.startsWith("/*") || clean === "./" || clean === "../") return true;
+  if (isAbsolute(clean)) return cwd === undefined ? true : !isInside(clean, cwd);
+  return clean.split(/[\\/]/).includes("..");
+}
+
+/** A `mv` or `ln` command word: both can put existing data under a path a later `rm` deletes. */
+const MOVER_WORD = /^(?:g|bsd)?(?:mv|ln)$/;
+
+/** A `mv` or `ln` command word anywhere in a command, quoted and escaped spellings included, as `MOVES_IN` reads them. */
+const ANY_MOVER = /(?:^|[\s;&|(`])(?:g|bsd)?(?:mv|ln)(?=[\s;&|)`]|$)/;
+
+/** A `mv` or `ln` at the start of a statement: after `;`, `&&`, `|`, `{`, `(`, or a newline, or at the segment start. */
+const STATEMENT_MOVER = /(?:^|[\n;&|({])\s*(?:g|bsd)?(?:mv|ln)(?=[\s;&|)`}]|$)/;
+
+/**
+ * A `mv` or `ln` word this guard could not read as a destination: one inside a shell-sink segment (`bash -c 'mv …'`,
+ * `xargs mv`, `eval "ln …"`), or at a statement position of a segment whose head is something else
+ * (`f() { mv a b; }`). Such a command moves data it does not name, so nothing it deletes is provably disposable.
+ */
+function unreadMover(segments: readonly string[]): boolean {
+  return segments.some(segment => {
+    const head = commandWord(segment.trim().split(/\s+/).filter(Boolean))?.word;
+    if (head !== undefined && MOVER_WORD.test(head)) return false;
+    const text = segment.replace(/['"\\]/g, "");
+    return head !== undefined && SHELL_SINKS.has(head) ? ANY_MOVER.test(text) : STATEMENT_MOVER.test(text);
+  });
+}
+
+/** A `mv`/`ln` destination of one command. `dest` is undefined when it cannot be resolved, which keeps every hold. */
+interface Mover { dest: string | undefined }
+
+/** The destination a `mv` or `ln` segment writes to: the last operand, or the value of `-t`/`--target-directory`. */
+function moverDestination(segment: string, dir: DirPath | undefined, vars: VarValues | undefined): Mover | undefined {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean).map(token => token.replace(/^[("'`]+|[\"')`]+$/g, ""));
+  const head = commandWord(tokens);
+  if (!head || !MOVER_WORD.test(head.word)) return undefined;
+  const rest = tokens.slice(head.index + 1);
+  for (let index = 0; index < rest.length; index++) {
+    const token = rest[index]!;
+    if (token === "-t" || token === "--target-directory") return { dest: placedWord(rest[index + 1] ?? "", dir, vars) };
+    if (token.startsWith("--target-directory=")) return { dest: placedWord(token.slice("--target-directory=".length), dir, vars) };
+  }
+  const operands = rest.filter(token => !token.startsWith("-"));
+  return { dest: operands.length ? placedWord(operands[operands.length - 1]!, dir, vars) : undefined };
+}
+
+/**
+ * A `cd` or `pushd` segment: the directory it moves to, and whether it is a change the guard does not read (`popd`,
+ * `cd -`, `eval`, `builtin cd`, `command cd`, `source`, `.`). Undefined when the segment moves nothing.
+ */
+function cdDirectory(segment: string, base: DirPath, vars: VarValues | undefined): { dir: DirPath; changed?: boolean } | undefined {
+  const head = statementHead(segment);
+  if (head === undefined) return undefined;
+  if (head.word === "popd" || head.word === "eval" || head.word === "source" || head.word === ".") return { dir: { kind: "unknown" }, changed: true };
+  if (head.word !== "cd" && head.word !== "pushd") return undefined;
+  if (head.skipped.some(token => token === "builtin" || token === "command")) return { dir: { kind: "unknown" }, changed: true };
+  const operands = head.rest;
+  // `cd -` swaps the last directory, a change this guard does not follow; `cd` alone goes home and `cd a b` is not a
+  // directory it reads, so those keep today's reading for relative targets.
+  if (operands.length === 1 && operands[0] === "-") return { dir: { kind: "unknown" }, changed: true };
+  const dirs = operands.filter(token => !token.startsWith("-"));
+  if (dirs.length !== 1) return { dir: { kind: "unknown" } };
+  const moved = resolveWord(dirs[0]!, base, vars);
+  if (moved.kind === "path") return { dir: { kind: "path", path: moved.path } };
+  return { dir: moved.kind === "temp" ? { kind: "temp", key: moved.key } : { kind: "unknown" } };
+}
+
+/**
+ * The directory each segment resolves relative paths against, after every `cd` or `pushd` before it, and whether a
+ * directory change the guard does not read stands before it. Until one moves it the entry is undefined, so a relative
+ * target keeps today's reading; a `cd` this guard cannot read makes it unknown.
+ */
+function effectiveDirs(segments: readonly string[], cwd: string | undefined, vars?: readonly VarValues[] | undefined): { dirs: (DirPath | undefined)[]; changed: boolean[] } {
+  const dirs: (DirPath | undefined)[] = [];
+  const changed: boolean[] = [];
+  let dir: DirPath | undefined;
+  let unread = false;
+  for (let index = 0; index < segments.length; index++) {
+    dirs.push(dir);
+    changed.push(unread);
+    const moved = cdDirectory(segments[index]!, dir ?? cwdPath(cwd), vars?.[index]);
+    if (moved !== undefined) { dir = moved.dir; unread = moved.changed === true; }
+  }
+  return { dirs, changed };
+}
+
+/**
+ * Whether two paths name the same path, or one lies inside the other. Only a path that could be temp is resolved
+ * through the file system; a non-temp path compares as written, so a target outside the temp roots never starts an
+ * automount or a network lookup. A temp path that cannot be resolved counts as related: nothing about the other one is
+ * provable then.
+ */
+function relatedPaths(a: string, b: string): boolean {
+  const tempA = tempCandidate(a);
+  const tempB = tempCandidate(b);
+  if (!tempA && !tempB) {
+    const textA = resolve(a);
+    const textB = resolve(b);
+    return underPath(textA, textB) || underPath(textB, textA);
+  }
+  const realA = tempA ? realTarget(a) : resolve(a);
+  const realB = tempB ? realTarget(b) : resolve(b);
+  if (realA === undefined || realB === undefined) return true;
+  return underPath(realA, realB) || underPath(realB, realA);
+}
+
+/** Whether a `mv` or `ln` of this command wrote into the target: then nothing about it is provably disposable. */
+function movesInto(target: WordPath, moved: readonly Mover[] | undefined): boolean {
+  if (!moved?.length) return false;
+  if (target.kind !== "path") return true;
+  return moved.some(mover => mover.dest === undefined || relatedPaths(mover.dest, target.path));
+}
+
+/** Whether an earlier call moved or linked data into the target: then nothing about it is provably disposable. */
+function movedInEarlier(target: WordPath, recorded: readonly string[] | undefined): boolean {
+  if (!recorded?.length || target.kind !== "path") return false;
+  return recorded.some(path => relatedPaths(path, target.path));
+}
+
+/**
+ * Real paths this call moves or links data into, when the destination lies strictly inside a volatile temp root or a
+ * scratch root the host declared. The session records them, so a later `rm` of a path equal to, inside, or above one is
+ * never released. Read before the call runs; a destination that cannot be resolved is not recorded, because the same
+ * call keeps the hold on its own targets.
+ */
+export function movedInTargets(tool: string, input: Record<string, unknown>, cwd: string, scratchRoots: readonly string[] = []): string[] {
+  const command = tool === "bash" ? commandOf(tool, input)?.command : undefined;
+  if (!command) return [];
+  const roots = [...volatileTempRoots(), ...scratchRoots];
+  if (!roots.length) return [];
+  const segments = splitShell(stripDataText(command).text);
+  const { dirs } = effectiveDirs(segments, cwd);
+  const found = new Set<string>();
+  for (let index = 0; index < segments.length; index++) {
+    const mover = moverDestination(segments[index]!, dirs[index] ?? cwdPath(cwd), undefined);
+    const real = mover?.dest === undefined ? undefined : realTarget(mover.dest);
+    if (real !== undefined && roots.some(root => real !== root && underPath(real, root))) found.add(real);
+  }
+  return [...found];
+}
+
+/**
+ * `rm` with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
+ * risky. A quote, parenthesis, or backtick before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
+ * Scratch the command or session provably made (`context`) and paths strictly inside a volatile temp root warn instead.
+ */
+function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, context?: RmContext): PatternHit | undefined {
   const match = /(?:^|[\s"'(`])rm\s+(.*)$/.exec(segment);
   if (!match) return undefined;
   const tokens = match[1]!.split(/\s+/).filter(Boolean).map(token => token.replace(/["')`]+$/, ""));
   const flags = tokens.filter(token => token.startsWith("-"));
-  const targets = tokens.filter(token => !token.startsWith("-"));
   const recursive = flags.some(flag => flag === "--recursive" || (/^-[a-zA-Z]+$/.test(flag) && /[rR]/.test(flag)));
   const force = flags.some(flag => flag === "--force" || (/^-[a-zA-Z]+$/.test(flag) && flag.includes("f")));
   if (!recursive) return undefined;
-  const dangerousTarget = targets.some(target => {
-    const clean = target.replace(/^["']|["']$/g, "");
-    if (clean === "/" || clean === "~" || clean === "*" || clean === "." || clean === ".." || clean.startsWith("~/") || clean.startsWith("$") || clean.startsWith("/*") || clean === "./" || clean === "../") return true;
-    if (isAbsolute(clean)) return cwd ? !isInside(clean, cwd) : true;
-    return clean.split(/[\\/]/).includes("..");
-  });
+  const targets = rmOperands(tokens.filter(token => !token.startsWith("-"))).map(word => targetWord(word, context?.dir, context?.vars));
+  // A directory change the guard does not read (`popd`, `eval`, `cd -`, …) leaves every later relative target unread:
+  // it may name anything, so it is dangerous rather than merely risky.
+  const dangerousTarget = targets.some(target => isDangerousTarget(target, cwd) || (context?.dirChanged === true && target.kind === "unknown"));
   const budget = scratchBudget();
-  if (dangerousTarget && scratch?.size && targets.length && targets.every(target => isSessionScratch(target, scratch, budget))) {
-    return { id: "rm-session-scratch", severity: "risky", label: "recursive rm of session scratch: every target is under the temp directory and was created in this session" };
+  const exemptions = context !== undefined;
+  // A command or an earlier call that moved or linked data into a target keeps it: nothing about it is provable then.
+  const clean = (target: WordPath): boolean => !context?.unreadMover && !movesInto(target, context?.moved) && !movedInEarlier(target, context?.recorded);
+  if (exemptions && targets.length && targets.every(target => clean(target) && isScratchTarget(target, scratch, context, budget))) {
+    return { id: "rm-session-scratch", severity: "risky", label: "recursive rm of session scratch: every target is under the temp directory or a declared scratch root" };
   }
-  if (dangerousTarget) return { id: "rm-recursive-dangerous-target", severity: "destructive", label: "recursive rm on an absolute, home, variable, or parent path" };
+  if (dangerousTarget && targets.length) {
+    const roots = exemptions ? context.tempRoots?.() ?? volatileTempRoots() : [];
+    if (roots.length && targets.every(target => clean(target) && isTempSubtree(target, roots))) {
+      return { id: "rm-temp-subtree", severity: "risky", label: "recursive rm of a path under the temp directory" };
+    }
+    return { id: "rm-recursive-dangerous-target", severity: "destructive", label: "recursive rm on an absolute, home, variable, or parent path" };
+  }
   if (force) return { id: "rm-rf", severity: "risky", label: "rm -rf on a project path" };
   return { id: "rm-recursive", severity: "risky", label: "recursive rm" };
 }
@@ -567,6 +809,21 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords): Pa
 function isInside(target: string, cwd: string): boolean {
   const rel = relative(resolve(cwd), resolve(target));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** The `rm` operands that are not a redirection (`> out`, `2>/dev/null`, `>>log`): those are not files rm deletes. */
+function rmOperands(operands: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (let index = 0; index < operands.length; index++) {
+    const word = operands[index]!;
+    const redirect = REDIRECT_WORD.exec(word);
+    if (redirect) {
+      if (redirect[0] === word) index++; // the operator alone takes the next word as its target
+      continue;
+    }
+    kept.push(word);
+  }
+  return kept;
 }
 
 // ---------------------------------------------------------------------------
@@ -692,8 +949,92 @@ function inHostPath(target: string, roots: readonly string[]): boolean {
 }
 
 /** The temp root a real path lies strictly under; a temp root itself has none. */
-export function tempRootOf(real: string, roots = tempRoots()): string | undefined {
+export function tempRootOf(real: string, roots: readonly string[] = tempRoots()): string | undefined {
   return roots.find(root => real !== root && real.startsWith(root.endsWith(sep) ? root : root + sep));
+}
+
+/** Literal path texts a classifiable path may start with and still be temp, before any resolution. */
+function tempTextRoots(): string[] {
+  const roots = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
+  for (const root of [tmpdir(), process.env.TMPDIR]) if (root && isAbsolute(root) && dirname(root) !== root) roots.push(root.replace(/\/+$/, ""));
+  return roots;
+}
+
+/**
+ * Whether a literal path text could name a temp path or a declared scratch root. The classifier reads the file system
+ * (realpath, stat, readdir) only for these; any other path is not temp, so a target, a `cd` destination, or a `mktemp`
+ * template outside them classifies without touching the file system.
+ */
+function tempCandidate(text: string, roots: readonly string[] = []): boolean {
+  return [...tempTextRoots(), ...roots].some(root => root !== "" && underPath(text, root));
+}
+
+/** Directory names at `path`, or none when it cannot be read. */
+function entriesOf(path: string): string[] {
+  try { return readdirSync(path); } catch { return []; }
+}
+
+/** The real path of `path`, or undefined when it does not exist or cannot be resolved. */
+function realPathOf(path: string): string | undefined {
+  try { return realpathSync(path); } catch { return undefined; }
+}
+
+/**
+ * The volatile temp roots: `os.tmpdir()`, `$TMPDIR`, `/tmp`, `/private/tmp`, and every macOS `/var/folders/<x>/<y>/T`,
+ * as real paths. `/var/tmp` is never one: it survives a reboot, so its contents are not treated as disposable.
+ */
+export function volatileTempRoots(): string[] {
+  const roots = new Set<string>(disposableTempRoots());
+  for (const root of macFolderRoots()) roots.add(root);
+  return [...roots];
+}
+
+/** The volatile roots that need no directory walk: `os.tmpdir()`, `$TMPDIR`, `/tmp`, `/private/tmp`, never `/var/tmp`. */
+function disposableTempRoots(): string[] {
+  return tempRoots().filter(root => dirname(root) !== root && root !== "/var/tmp" && root !== "/private/var/tmp");
+}
+
+/** Every macOS `/var/folders/<x>/<y>/T` that exists, as a real path. Read only for a target outside `os.tmpdir()`. */
+function macFolderRoots(): string[] {
+  const roots = new Set<string>();
+  for (const base of ["/private/var/folders", "/var/folders"]) {
+    for (const level of entriesOf(base)) {
+      for (const inner of entriesOf(join(base, level))) {
+        const temp = realPathOf(join(base, level, inner, "T"));
+        if (temp) roots.add(temp);
+      }
+    }
+  }
+  return [...roots];
+}
+
+/**
+ * Scratch roots a host declares for this session, from `PI_WARDEN_SCRATCH_PATHS` only (a `:`-separated list). A root is
+ * used when it is an absolute path that is not a filesystem root, the home directory, the project root, or a git working
+ * tree; every rejected entry is returned with its reason, so the session can say once why it had no effect. Each accepted
+ * root appears as its real path and as the entry wrote it, so a target that reaches it through a symlinked prefix
+ * (`/var/tmp` for `/private/var/tmp`) is still checked against it.
+ */
+export const SCRATCH_PATHS_ENV = "PI_WARDEN_SCRATCH_PATHS";
+
+export interface IgnoredScratchRoot { entry: string; reason: string }
+
+export function scratchPaths(env: NodeJS.ProcessEnv = process.env, cwd?: string, home: string = homedir()): { roots: string[]; ignored: IgnoredScratchRoot[] } {
+  const roots: string[] = [];
+  const ignored: IgnoredScratchRoot[] = [];
+  const homeReal = realTarget(home);
+  const projectReal = cwd === undefined ? undefined : realTarget(cwd);
+  for (const entry of (env[SCRATCH_PATHS_ENV] ?? "").split(":")) {
+    if (!entry) continue;
+    if (!isAbsolute(entry)) { ignored.push({ entry, reason: "not an absolute path" }); continue; }
+    const real = realTarget(entry);
+    if (!real || dirname(real) === real) { ignored.push({ entry, reason: "is the filesystem root or cannot be resolved" }); continue; }
+    if (homeReal !== undefined && real === homeReal) { ignored.push({ entry, reason: "is the home directory" }); continue; }
+    if (projectReal !== undefined && real === projectReal) { ignored.push({ entry, reason: "is the project root" }); continue; }
+    if (existsSync(join(real, ".git"))) { ignored.push({ entry, reason: "is a git working tree" }); continue; }
+    roots.push(real, entry);
+  }
+  return { roots: [...new Set(roots)], ignored };
 }
 
 /** A privilege-raising command word anywhere in a command. */
@@ -706,6 +1047,14 @@ const PRIVILEGED = /(?:^|[\s;&|("'`])(?:sudo|doas|su|pkexec|run0)(?=\s|$)/m;
  * `cp` or `tar` counts, whatever its flags. Read on `unquoted` text, so `\mv`, `"ln"`, and `l''n` count too.
  */
 const MOVES_IN = /(?:^|[\s;&|(`/])(?:(?:g|bsd)?(?:mv|ln|cp|tar)|rsync|mount|hdiutil|bindfs|git(?=\s)[^;&|\n]*\sclone)(?=[\s;&|)`]|$)/m;
+
+/**
+ * Commands that take data with them, whatever their flags: a mount, a disk-image attach, a bind mount, an `rsync` that
+ * removes its source, and a `tar` that removes the files it extracts. Unlike `MOVES_IN` they block every release rule,
+ * because what they write is not a copy: the source path no longer holds it. A plain `cp`, `tar`, `rsync`, `git clone`,
+ * or `git archive` keeps its source, so those block only the recorded session scratch.
+ */
+const MOVES_DATA_IN = /(?:^|[\s;&|(`/])(?:mount|hdiutil|bindfs)(?=[\s;&|)`]|$)|(?:^|[\s;&|(`/])(?:g|bsd)?(?:tar|rsync)\s[^;&|\n]*--remove-(?:files|source-files|sent-files)/m;
 
 /** A command with its quotes and backslashes removed, so a quoted or escaped command word reads as the word it runs. */
 const unquoted = (command: string): string => command.replace(/\$(?=['"])|['"\\]/g, "");
@@ -744,6 +1093,7 @@ export function bornAfter(path: string, born: number, budget: ScratchBudget = sc
 function isSessionScratch(target: string, scratch: ScratchRecords, budget: ScratchBudget): boolean {
   const clean = target.replace(/^["']|["']$/g, "");
   if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
+  if (!tempCandidate(clean)) return false;
   const real = realTarget(clean);
   const root = real === undefined ? undefined : tempRootOf(real);
   if (!real || !root) return false;
@@ -752,6 +1102,197 @@ function isSessionScratch(target: string, scratch: ScratchRecords, budget: Scrat
     if (recorded) return sameIdentity(scratchIdentity(path), recorded) && bornAfter(real, recorded.birthtimeMs, budget);
   }
   return false;
+}
+
+/** Command-scoped context `classifyRm` uses to release scratch: `mktemp` variables, declared roots, and volatile temp roots. */
+interface RmContext {
+  /** The values the variables of this command hold at this segment (`commandVars`). */
+  vars?: VarValues | undefined;
+  /** Scratch roots the host declared for this session (`scratchPaths`). */
+  roots?: readonly string[] | undefined;
+  /** The volatile temp roots, read lazily so a command with no recursive `rm` pays nothing. */
+  tempRoots?: (() => readonly string[]) | undefined;
+  /** Destinations the `mv` and `ln` segments of this command write to. */
+  moved?: readonly Mover[] | undefined;
+  /** A `mv` or `ln` word in this command that could not be read as a destination: no release then. */
+  unreadMover?: boolean | undefined;
+  /** Destinations earlier calls moved into a volatile temp root or a declared scratch root. */
+  recorded?: readonly string[] | undefined;
+  /** The directory a relative target resolves against, after a `cd` or `pushd` earlier in the same command. */
+  dir?: DirPath | undefined;
+  /** Whether a directory change the guard does not read (`popd`, `eval`, `cd -`, …) stands before this segment. */
+  dirChanged?: boolean | undefined;
+}
+
+/** A path strictly inside a volatile temp root, after symlinks are resolved. A temp root itself has none. */
+function isTempSubtree(target: WordPath, roots: readonly string[]): boolean {
+  if (target.kind !== "path") return false;
+  const clean = target.path;
+  if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
+  if (!tempCandidate(clean, roots)) return false;
+  const real = realTarget(clean);
+  if (real === undefined) return false;
+  if (tempRootOf(real, roots) !== undefined) return true;
+  // A macOS per-user temp directory other than this session's `os.tmpdir()`; the walk is only paid for these.
+  return /(?:^|\/)var\/folders\//.test(real) && tempRootOf(real, macFolderRoots()) !== undefined;
+}
+
+/** A target strictly inside a scratch root the host declared, after symlinks are resolved. */
+function inScratchRoot(target: WordPath, roots: readonly string[]): boolean {
+  if (!roots.length || target.kind !== "path") return false;
+  const clean = target.path;
+  if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
+  if (!tempCandidate(clean, roots)) return false;
+  const real = realTarget(clean);
+  return real !== undefined && roots.some(root => real !== root && underPath(real, root));
+}
+
+/** Every target scratch the session recorded, a path a `mktemp` variable of this command holds, or a declared root. */
+function isScratchTarget(target: WordPath, scratch: ScratchRecords | undefined, context: RmContext | undefined, budget: ScratchBudget): boolean {
+  return target.kind === "temp"
+    || (scratch !== undefined && isSessionScratch(targetText(target), scratch, budget))
+    || inScratchRoot(target, context?.roots ?? []);
+}
+
+/** The `mktemp` arguments an assignment runs, or undefined when the assignment produces anything else. */
+function mktempArgs(value: string): string | undefined {
+  const inner = value.trim().replace(/^(["'])([\s\S]*)\1$/, "$2").trim();
+  const sub = /^\$\(\s*mktemp\b([\s\S]*?)\)$/.exec(inner);
+  if (sub) return sub[1]!;
+  const ticked = /^`mktemp\b([\s\S]*?)`$/.exec(inner);
+  return ticked ? ticked[1]! : undefined;
+}
+
+/**
+ * Whether these `mktemp` arguments create under a temp root: no `-u`/`--dry-run`, and every template names the temp
+ * directory (an operand of `-t`/`-p`/`--tmpdir`) or is an absolute path under a volatile temp root.
+ */
+function mktempMakesTemp(args: string, roots: readonly string[]): boolean {
+  if (/(?:^|\s)(?:-[a-zA-Z]*u[a-zA-Z]*|--dry-run)(?=\s|$)/.test(args)) return false;
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  let tmpdirOperand = false;
+  for (const token of tokens) {
+    if (tmpdirOperand) { tmpdirOperand = false; continue; }
+    if (token === "-t" || token === "-p" || token === "--tmpdir") { tmpdirOperand = true; continue; }
+    if (token.startsWith("--tmpdir=")) {
+      const text = token.slice("--tmpdir=".length);
+      if (!tempCandidate(text, roots)) return false;
+      const real = realTarget(text);
+      if (!real || tempRootOf(real, roots) === undefined) return false;
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    if (!tempCandidate(token, roots)) return false;
+    const real = realTarget(token);
+    if (!real || tempRootOf(real, roots) === undefined) return false;
+  }
+  return true;
+}
+
+/** One assignment at the head of a segment: an optional declaration keyword, a name, and a value. */
+const MKTEMP_SEGMENT = /^(?:export\s+|local\s+|declare\s+|typeset\s+|readonly\s+)?([A-Za-z_]\w*)=([\s\S]*)$/;
+
+/**
+ * Every name the command writes, with how many places write it: `NAME=` and `NAME+=` (with or without a declaration
+ * keyword), a bare `export`/`local`/`declare`/`readonly`/`typeset NAME`, `read NAME`, `for NAME in`, and `unset NAME`.
+ * Read on the whole command, so a function body, a subshell, or braces count, where the text is taken literally.
+ */
+function variableWrites(command: string): Map<string, number> {
+  const writes = new Map<string, number>();
+  const add = (name: string) => writes.set(name, (writes.get(name) ?? 0) + 1);
+  for (const match of command.matchAll(/(?:^|[\s;&|({])(?:export\s+|local\s+|declare\s+|readonly\s+|typeset\s+)?([A-Za-z_]\w*)\+?=/g)) add(match[1]!);
+  for (const match of command.matchAll(/(?:^|[\s;&|({])(?:export|local|declare|readonly|typeset)\s+(?:-[a-zA-Z]+\s+)*([A-Za-z_]\w*)(?!\s*=)/g)) add(match[1]!);
+  for (const match of command.matchAll(/\bfor\s+([A-Za-z_]\w*)\s+in\b/g)) add(match[1]!);
+  for (const match of command.matchAll(/(?:^|[\s;&|({])(?:read|unset)\s+([^;&|\n]*)/g)) {
+    for (const word of match[1]!.split(/\s+/)) if (/^[A-Za-z_]\w*$/.test(word)) add(word);
+  }
+  return writes;
+}
+
+/** The first command word of a segment, after leading shell keywords, assignments, and wrappers (`if cd ~`, `FOO=1 sudo mv`). */
+function statementHead(segment: string): { word: string; rest: string[]; skipped: string[] } | undefined {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean).map(token => token.replace(/^[("'`]+|[\"')`]+$/g, "")).filter(Boolean);
+  let index = 0;
+  while (index < tokens.length && (STATEMENT_WORDS.has(tokens[index]!) || WRAPPERS.has(tokens[index]!) || /^[A-Za-z_]\w*=/.test(tokens[index]!))) index++;
+  const token = tokens[index];
+  if (token === undefined) return undefined;
+  return { word: token.replace(/['"\\]/g, "").replace(/^.*\//, ""), rest: tokens.slice(index + 1), skipped: tokens.slice(0, index) };
+}
+
+/** Command words that can set a variable in a way the assignment parser does not read: they run text, read input,
+ *  iterate options, or evaluate arithmetic. */
+const SINK_COMMANDS = new Set(["eval", "source", ".", "read", "mapfile", "readarray", "getopts", "let"]);
+
+/** Declaration builtins: with an option (`declare -n D=…`, `local -a D`) the assignment form is not the one the parser reads. */
+const DECLARATION_COMMANDS = new Set(["declare", "local", "typeset", "readonly", "export"]);
+
+/**
+ * Whether the command can set a variable by a form the assignment parser does not read. Resolving a variable is an
+ * allowlist: only the forms `commandVars` reads count, so a single unread form — `eval`, `source` or `.` as a command,
+ * `printf -v`, `read`, `mapfile`, `readarray`, `getopts`, `let`, an arithmetic `((…))`, a `${NAME=…}`/`${NAME:=…}` or
+ * `+=` assignment, a declaration builtin with an option, or a function definition — keeps every variable in the command
+ * unread, and its targets classify as they did before any variable rule existed.
+ */
+function unreadVariableSink(command: string): boolean {
+  const text = unquoted(command);
+  if (/\(\(/.test(text) || /\$\{[A-Za-z_]\w*:?=/.test(text) || /\+=/.test(text)) return true;
+  if (/(?:^|[\s;&|({])(?:function\s+)?[A-Za-z_]\w*\s*\(\s*\)/.test(text)) return true;
+  if (/(?:^|[\s;&|({])function\s+[A-Za-z_]\w*/.test(text)) return true;
+  for (const segment of splitShell(command)) {
+    const head = statementHead(segment);
+    if (head === undefined) continue;
+    if (SINK_COMMANDS.has(head.word)) return true;
+    if (DECLARATION_COMMANDS.has(head.word) && head.rest[0]?.startsWith("-")) return true;
+    if (head.word === "printf" && head.rest.slice(0, 3).some(arg => /^-[A-Za-z]*v/.test(arg))) return true;
+  }
+  return false;
+}
+
+/** The value a literal assignment gives: quoted or bare, with no `$`, backtick, substitution, or glob. `~` is allowed. */
+function literalValue(value: string): string | undefined {
+  const clean = value.trim().replace(/^(["'])([\s\S]*)\1$/, "$2").trim();
+  if (!clean || /[$`*?[\]{}]/.test(clean)) return undefined;
+  return clean;
+}
+
+/** The variable values one command may read: `mktemp` variables, single literal assignments, and `$HOME`/`$TMPDIR`. */
+interface VarValues {
+  /** Variables a `mktemp` earlier in the command assigned and nothing else wrote. */
+  mktemp: ReadonlySet<string>;
+  /** Variables a single literal assignment earlier in the command gave a value this guard can read. */
+  literal: ReadonlyMap<string, string>;
+}
+
+/** Names whose value comes from the session environment when the command never writes them. */
+const ENV_VARS = ["HOME", "TMPDIR"] as const;
+
+/**
+ * For every segment index, the variables an earlier segment of the same command gave a value this guard can read: a
+ * `mktemp` path, a single literal assignment, and `$HOME`/`$TMPDIR` from the session environment. A name the command
+ * writes anywhere else — a function body, a subshell, a `read`, a `for`, an `unset` — is never one of them.
+ */
+function commandVars(segments: readonly string[], tempRoots: () => readonly string[], writes: ReadonlyMap<string, number>, env: NodeJS.ProcessEnv = process.env): VarValues[] {
+  const snapshots: VarValues[] = [];
+  const mktemp = new Set<string>();
+  const literal = new Map<string, string>();
+  for (const name of ENV_VARS) {
+    const value = env[name];
+    if (value && !writes.has(name)) literal.set(name, value);
+  }
+  for (const segment of segments) {
+    snapshots.push({ mktemp: new Set(mktemp), literal: new Map(literal) });
+    const assign = MKTEMP_SEGMENT.exec(segment.trim());
+    if (!assign) continue;
+    const name = assign[1]!;
+    mktemp.delete(name);
+    literal.delete(name);
+    if (writes.get(name) !== 1) continue;
+    const args = mktempArgs(assign[2]!);
+    if (args !== undefined && mktempMakesTemp(args, tempRoots())) { mktemp.add(name); continue; }
+    const value = literalValue(assign[2]!);
+    if (value !== undefined) literal.set(name, value);
+  }
+  return snapshots;
 }
 
 /** `mkdir` targets in a command that are literal absolute paths; flags and relative operands are skipped. */
@@ -780,6 +1321,7 @@ export function scratchCandidates(tool: string, input: Record<string, unknown>, 
   const roots = tempRoots();
   const missing = new Set<string>();
   for (const path of paths) {
+    if (!tempCandidate(path, roots)) continue;
     const real = realTarget(path);
     const root = real === undefined ? undefined : tempRootOf(real, roots);
     if (!real || !root) continue;
@@ -1280,6 +1822,10 @@ export interface PatternOptions {
   pathRules?: readonly PathRule[];
   /** Real paths the agent created under the temp directory in this session; a recursive rm of only these is not destructive. */
   scratch?: ScratchRecords | undefined;
+  /** Scratch roots the host declared for this session; a recursive rm of a path strictly inside one is risky. */
+  scratchPaths?: readonly string[] | undefined;
+  /** Real paths earlier calls moved or linked data into; a recursive rm of a path equal to, inside, or above one is held. */
+  movedIn?: readonly string[] | undefined;
   /** The platform `scratchPlatform` decides for; the running one when omitted. */
   platform?: NodeJS.Platform | undefined;
 }
@@ -1292,6 +1838,7 @@ export const EXEMPTABLE_IDS: readonly string[] = [
   "rm-recursive",
   "rm-rf",
   "rm-recursive-dangerous-target",
+  "rm-temp-subtree",
   "rm-session-scratch",
   "sql-delete-local",
   "sql-hosted",
@@ -1351,11 +1898,26 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     applySqlTargets(raw, hits, exempt);
     applyGitState(raw, hits, cwd);
     // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else,
-    // and one that moves, links, copies, or extracts data can fill a path after the birth-time walk: no scratch.
+    // and one that moves, links, copies, or extracts data can fill a path after the birth-time walk: no recorded scratch.
+    const privileged = PRIVILEGED.test(command);
     const movesIn = MOVES_IN.test(unquoted(raw)) || MOVES_IN.test(unquoted(command));
-    const scratch = PRIVILEGED.test(command) || movesIn || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
-    for (const segment of splitShell(command)) {
-      const hit = classifyRm(segment, cwd, scratch);
+    const scratch = privileged || movesIn || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
+    const segments = splitShell(command);
+    // A command that mounts, attaches, binds, or syncs data in with its source removed can put existing data under a
+    // path a later `rm` deletes, and the birth-time walk cannot see it: no release rule applies at all then.
+    const blocked = privileged || MOVES_DATA_IN.test(unquoted(command)) || MOVES_DATA_IN.test(unquoted(raw));
+    // Read the cheap volatile temp roots only when a recursive rm needs them; the macOS /var/folders walk is lazier.
+    let volatile: string[] | undefined;
+    const volatileRoots = () => (volatile ??= disposableTempRoots());
+    const scratchVars = blocked || unreadVariableSink(command) ? undefined : commandVars(segments, volatileRoots, variableWrites(command));
+    const scratchRoots = blocked ? undefined : options?.scratchPaths;
+    // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
+    // A mover word the per-segment parse cannot read (`bash -c 'mv a b'`, `xargs ln -s a b`) keeps every hold as well.
+    const { dirs, changed } = effectiveDirs(segments, cwd, scratchVars);
+    const moved = blocked ? [] : segments.map((segment, index) => moverDestination(segment, dirs[index] ?? cwdPath(cwd), scratchVars?.[index])).filter((mover): mover is Mover => mover !== undefined);
+    const unread = blocked ? false : unreadMover(segments);
+    for (let index = 0; index < segments.length; index++) {
+      const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, unreadMover: unread, recorded: options?.movedIn, dir: dirs[index], dirChanged: changed[index] });
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
       if (hit && !exempt.has(hit.id)) add(hit);
     }
@@ -2016,7 +2578,7 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   const plan = describePlan(action.plan);
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
-  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scratch: options.scratch });
+  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
   // Violation pipeline: authorize per-violation, remove authorized from level computation and Jev questions.
   const violationsByHit = hitViolations(patterns, action.tool, action.input);
   const allViolations = violationsByHit.flat();
@@ -2396,6 +2958,7 @@ const ACTION_VERBS: Record<string, string[]> = {
   "rm-recursive": ["delete", "remove", "clean", "tidy", "purge"],
   "rm-rf": ["delete", "remove", "clean", "tidy", "purge"],
   "rm-recursive-dangerous-target": ["delete", "remove", "clean", "tidy", "purge"],
+  "rm-temp-subtree": ["delete", "remove", "clean", "tidy", "purge"],
   "rm-session-scratch": ["delete", "remove", "clean", "tidy", "purge"],
   "find-delete": ["delete", "remove", "clean", "tidy", "purge"],
   "git-rm": ["delete", "remove", "clean", "tidy", "purge"],
@@ -2517,7 +3080,7 @@ export function isAuthEligible(severity: Severity): boolean {
   return true;
 }
 
-const RM_FAMILY_IDS = new Set(["rm", "rm-recursive", "rm-rf", "rm-recursive-dangerous-target", "rm-session-scratch", "find-delete"]); const RM_COMMAND_RE = /(?:^|[\s"'(])rm\s+(.*)$/i;
+const RM_FAMILY_IDS = new Set(["rm", "rm-recursive", "rm-rf", "rm-recursive-dangerous-target", "rm-temp-subtree", "rm-session-scratch", "find-delete"]); const RM_COMMAND_RE = /(?:^|[\s"'(])rm\s+(.*)$/i;
 
 /** Shell words with quotes and backslash escapes resolved; `raw` keeps the source text. Undefined on an unclosed quote. */
 function shellWords(text: string): { word: string; raw: string }[] | undefined {
