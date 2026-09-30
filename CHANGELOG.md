@@ -6,7 +6,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- `scripts/steer-calibration.mjs`: the blind-label steer measurement (draw the sample from a copy of the hold log, score the labels, gate the slices). `scripts/steer-ask-probe.mjs` measures a candidate question on the same labels, one request per call.
+- `should_ask` in `scripts/action-candidates.mjs`: a reworded should-proceed question that asks whether any visible instruction covers the call. Recorded as a candidate only (never acted on); its measurement is blocked on the TypeSafe account balance.
+
+### Docs
+
+- The off-task and should-proceed steers are documented as trace-only, with what `action.offTask.warn`, `action.offTask.steer`, `action.shouldProceed.threshold` and `action.shouldProceed.steer` really change, and the 2026-09-30 blind-label measurement (no slice passes the ship gate) in `docs/guards.md` and `docs/configuration.md`.
 
 ## 0.80.0
 
