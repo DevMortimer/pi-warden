@@ -73,12 +73,12 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
     // An older config module collects no warnings.
     warnings: Array.isArray(source.warnings) ? source.warnings : [],
-    conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70 }),
+    conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, localTopK: 31, localFloor: 0.5 }),
   };
   // A missing/invalid runtime section falls back to disabled conscience, no loads, and the existing update warning.
   if (typeof config.conscience !== "object" || config.conscience === null) {
     missing.push("conscience");
-    config.conscience = { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70 };
+    config.conscience = { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, localTopK: 31, localFloor: 0.5 };
   }
   if (typeof config.conscience.skills !== "object" || config.conscience.skills === null) {
     config.conscience = { ...config.conscience, skills: { mode: "recommend", exclude: [] } };

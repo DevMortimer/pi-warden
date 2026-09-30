@@ -62,7 +62,7 @@ import { formatRunaway, RunawayMonitor, runawayNudge } from "./runaway.js";
 import { AttemptWindow, evaluateStuck, formatStuck, makeAttempt, quickRepeatNudge, resultFailed, stuckDiff, stuckNudge } from "./stuck.js";
 import type { QuickRepeat } from "./stuck.js";
 import { WasteTracker, WASTE_TIP, withWasteTip } from "./waste.js";
-import { assess } from "./conscience.js";
+import { assess, recommendationText } from "./conscience.js";
 import { loadSkillBody, buildLoadMessage, policyMatches, CONSCIENCE_BETA_POLICY, recordFileIdentity, clearFileIdentityCache } from "./load.js";
 import type { ConsciencePolicy } from "./load.js";
 import { buildIndexPrompt, readIndex, writeIndex, validateIndex, indexStats, indexPath, ensureIndexDir } from "./index-cmd.js";
@@ -1437,9 +1437,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
                 }
               }
               // Recommend mode or load fallback
-              const msgContent = result.selected.kind === "skill"
-                ? `Consider using the \"${result.selected.id}\" skill: ${result.selected.description}`
-                : `Consider using the \"${result.selected.id}\" tool: ${result.selected.description}`;
+              const msgContent = recommendationText(result.selected, redactedPrompt);
               return { message: { customType: `${PACKAGE_NAME}-conscience`, content: msgContent, display: config.steerVisible } };
             }
           } else if (result.selected && !budgetAvailable(config)) {
@@ -2528,9 +2526,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           reminderSent = true;
           nudgesThisPrompt++;
           spendBudgetUnit();
-          const msg = result.selected.kind === "skill"
-            ? `Reminder: consider using the \"${result.selected.id}\" skill. ${result.selected.description}`
-            : `Reminder: consider using the \"${result.selected.id}\" tool. ${result.selected.description}`;
+          const msg = `Reminder: ${recommendationText(result.selected, redactedPrompt, "consider")}`;
           if (steer(config, "conscience", msg, { deliverAs: "followUp" })) watchSteer(ctx, config, ["conscience"], { capability: { kind: result.selected.kind === "skill" ? "skill" : "tool", id: result.selected.id } });
         }
       } catch (err) { const cat = err instanceof Error ? (/(timeout|timed out)/i.test(err.message) ? "timeout" : /(auth|key|credential|401|403)/i.test(err.message) ? "auth" : /(network|fetch|connect)/i.test(err.message) ? "network" : "other") : "other"; if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
