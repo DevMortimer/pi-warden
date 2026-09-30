@@ -632,6 +632,11 @@ function positiveInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
+/** A non-negative number, zero included: 0 is the "off" value for the reuse window. */
+function nonNegativeNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
 export function isMode(value: unknown): value is WardenMode {
   return value === "steer" || value === "confirm" || value === "advise";
 }

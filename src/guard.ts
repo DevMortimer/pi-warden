@@ -2812,6 +2812,9 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     offTaskTraceOnlyReasonIndex = reasons.length;
     reasons.push(reason);
   };
+  // With the off-task questions on the sampled trace-only request, both `scope` and `offTask` are absent here and this
+  // chain is inert: no branch matches and the fallback compares "no evidence" against the thresholds. The sampled
+  // answer is written into the judgment after the delivery logic, so it never sets a level.
   if (judgment.scope === "expected_step") {
     // Scope says the call is a required step; the off-task score is noise. Do not warn.
   } else if (judgment.scope === "unrelated") {
@@ -2950,6 +2953,22 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
       if (typeof answer?.noul === "number") verdict.extra[id] = answer.noul;
       else if (typeof answer?.choice === "string") verdict.extra[id] = answer.choice;
       else if (typeof answer?.score === "number") verdict.extra[id] = answer.score;
+    }
+  }
+  if (reuseKey) options.cache!.set(reuseKey, askedAt, verdict);
+  // The sampled trace-only answers are annotations: they land in the judgment and in the hold record, after every
+  // delivered outcome is decided, so the recorded off-task and scope signal keeps coming without changing a level.
+  if (traceAnswer) {
+    const trace = await traceAnswer;
+    if (trace.ok) {
+      const sampled = trace.answers as Partial<Record<"off_task" | "should_proceed", { noul?: number }>> & { scope?: { choice?: string; confidence?: number } };
+      if (typeof sampled.off_task?.noul === "number") judgment.offTask = sampled.off_task.noul;
+      const sampledScope = sampled.scope?.choice;
+      if (sampledScope === "expected_step" || sampledScope === "plausible_side_step" || sampledScope === "unrelated" || sampledScope === "unclear") {
+        judgment.scope = sampledScope;
+        judgment.scopeConfidence = sampled.scope?.confidence ?? 0;
+      }
+      if (typeof sampled.should_proceed?.noul === "number") judgment.shouldProceed = sampled.should_proceed.noul;
     }
   }
   if (options.slop?.enabled && SLOP_SYMPTOMS.every(symptom => typeof answers[`slop_${symptom}`]?.noul === "number")) {

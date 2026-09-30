@@ -1,6 +1,7 @@
 import type { ActionGuardConfig, LargeOutputConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { evaluateAction, textApproves } from "./guard.js";
 import type { EvaluateOptions, PreviousAction, ScratchRecords, TaskMessage, Verdict } from "./guard.js";
+import { VerdictCache } from "./verdict-cache.js";
 import type { TaskSpine } from "./shape.js";
 import type { Judge } from "pi-typesafe";
 
@@ -61,11 +62,25 @@ interface Prejudged { key: string; verdict: Promise<Verdict>; used: boolean }
  * - **Sibling prejudging.** Calls of one assistant message are judged as soon as the first of them is inspected, so their
  *   requests go out together. A judgment is used once and only for the input it was made for; an earlier hook may have
  *   changed the call's input, and a stale judgment is discarded, not reused. Prejudgments do not outlive their turn.
+ * - **Verdict reuse.** An exact repeat of the same project, tool, and command in this session reuses the last verdict
+ *   inside a short window. A hold is never stored, so a repeat is only ever answered with an allow or a warn.
  */
 export class ActionGuard {
   private readonly prejudged = new Map<string, Prejudged>();
   private lastHoldPrompt: string | undefined;
   private holdPending = false;
+  private verdicts: VerdictCache<Verdict> | undefined;
+  private verdictsTtl = -1;
+
+  /** The session's verdict cache, sized by the config in force. A changed window starts a fresh cache. */
+  private reuse(config: ActionGuardConfig): VerdictCache<Verdict> {
+    const ttl = Math.max(0, config.cacheMinutes ?? 0) * 60_000;
+    if (!this.verdicts || this.verdictsTtl !== ttl) {
+      this.verdicts = new VerdictCache<Verdict>(ttl);
+      this.verdictsTtl = ttl;
+    }
+    return this.verdicts;
+  }
 
   /** Judges one call. The verdict's `approvedByUser` means a pending hold was released by the user's reply. */
   async inspect(call: ToolCallRef, conversation: Conversation, options: InspectOptions): Promise<Verdict> {
@@ -74,7 +89,7 @@ export class ActionGuard {
     const retryAfterHold = this.holdPending && this.lastHoldPrompt !== task;
     const judgeCall = (tool: string, input: Record<string, unknown>, previousActions?: readonly PreviousAction[]) => evaluateAction(
       { tool, input, cwd: options.cwd, task, context: conversation.context, plan: conversation.plan, spine: conversation.spine },
-      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, largeOutput: options.largeOutput, rules: options.rules, retryAfterHold, previousActions, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn, hostPaths: options.hostPaths },
+      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, largeOutput: options.largeOutput, rules: options.rules, retryAfterHold, previousActions, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn, hostPaths: options.hostPaths, traceSample: options.config.traceSample, cache: retryAfterHold ? undefined : this.reuse(options.config) },
     );
     // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
     if (options.judge && !retryAfterHold) {
@@ -114,5 +129,7 @@ export class ActionGuard {
     this.prejudged.clear();
     this.lastHoldPrompt = undefined;
     this.holdPending = false;
+    this.verdicts = undefined;
+    this.verdictsTtl = -1;
   }
 }
