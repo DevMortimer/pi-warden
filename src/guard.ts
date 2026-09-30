@@ -1068,19 +1068,38 @@ function mktempMakesTemp(args: string, roots: readonly string[]): boolean {
 const MKTEMP_SEGMENT = /^(?:export\s+|local\s+|declare\s+|typeset\s+|readonly\s+)?([A-Za-z_]\w*)=([\s\S]*)$/;
 
 /**
- * For every segment index, the variables an earlier segment of the same command assigned from a `mktemp` and did not
- * reassign since. An `rm` in a later segment of that command may then delete the path they hold.
+ * Every name the command writes, with how many places write it: `NAME=` and `NAME+=` (with or without a declaration
+ * keyword), a bare `export`/`local`/`declare`/`readonly`/`typeset NAME`, `read NAME`, `for NAME in`, and `unset NAME`.
+ * Read on the whole command, so a function body, a subshell, or braces count, where the text is taken literally.
  */
-function mktempVars(segments: readonly string[], tempRoots: () => readonly string[]): Set<string>[] {
+function variableWrites(command: string): Map<string, number> {
+  const writes = new Map<string, number>();
+  const add = (name: string) => writes.set(name, (writes.get(name) ?? 0) + 1);
+  for (const match of command.matchAll(/(?:^|[\s;&|({])(?:export\s+|local\s+|declare\s+|readonly\s+|typeset\s+)?([A-Za-z_]\w*)\+?=/g)) add(match[1]!);
+  for (const match of command.matchAll(/(?:^|[\s;&|({])(?:export|local|declare|readonly|typeset)\s+(?:-[a-zA-Z]+\s+)*([A-Za-z_]\w*)(?!\s*=)/g)) add(match[1]!);
+  for (const match of command.matchAll(/\bfor\s+([A-Za-z_]\w*)\s+in\b/g)) add(match[1]!);
+  for (const match of command.matchAll(/(?:^|[\s;&|({])(?:read|unset)\s+([^;&|\n]*)/g)) {
+    for (const word of match[1]!.split(/\s+/)) if (/^[A-Za-z_]\w*$/.test(word)) add(word);
+  }
+  return writes;
+}
+
+/**
+ * For every segment index, the variables an earlier segment of the same command assigned from a `mktemp` and did not
+ * reassign since. An `rm` in a later segment of that command may then delete the path they hold. A name the command
+ * writes anywhere else — a function body, a subshell, a `read`, a `for`, an `unset` — is never one of them.
+ */
+function mktempVars(segments: readonly string[], tempRoots: () => readonly string[], writes: ReadonlyMap<string, number>): Set<string>[] {
   const snapshots: Set<string>[] = [];
   const current = new Set<string>();
   for (const segment of segments) {
     snapshots.push(new Set(current));
     const assign = MKTEMP_SEGMENT.exec(segment.trim());
     if (!assign) continue;
+    const name = assign[1]!;
     const args = mktempArgs(assign[2]!);
-    if (args !== undefined && mktempMakesTemp(args, tempRoots())) current.add(assign[1]!);
-    else current.delete(assign[1]!);
+    if (args !== undefined && writes.get(name) === 1 && mktempMakesTemp(args, tempRoots())) current.add(name);
+    else current.delete(name);
   }
   return snapshots;
 }
@@ -1700,7 +1719,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     // Read the cheap volatile temp roots only when a recursive rm needs them; the macOS /var/folders walk is lazier.
     let volatile: string[] | undefined;
     const volatileRoots = () => (volatile ??= disposableTempRoots());
-    const scratchVars = blocked ? undefined : mktempVars(segments, volatileRoots);
+    const scratchVars = blocked ? undefined : mktempVars(segments, volatileRoots, variableWrites(command));
     const scratchRoots = blocked ? undefined : options?.scratchPaths;
     for (let index = 0; index < segments.length; index++) {
       const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, recorded: options?.movedIn });

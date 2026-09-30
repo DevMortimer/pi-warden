@@ -489,10 +489,20 @@ test("same-command mktemp: a recursive rm of the variable it made warns as sessi
     "D=`mktemp -d`; rm -rf \"$D/sub\"",
     `export d="$(mktemp -d)"; rm -rf "$d"`,
     `d=$(mktemp -d); echo hi; rm -rf "$d/"`,
+    `d=$(mktemp -d) && export PATH="$PATH:$d/bin" && rm -rf "$d"`,
   ];
   for (const command of released) assert.deepEqual(rmIds(command), ["rm-session-scratch"], command);
   const held = [
     `d=$(mktemp -d); d=/other; rm -rf "$d"`,
+    `d=$(mktemp -d); f() { d=~; }; f; rm -rf "$d"`,
+    `d=$(mktemp -d); (d=/other); rm -rf "$d"`,
+    `d=$(mktemp -d); { d=/other; }; rm -rf "$d"`,
+    `d=$(mktemp -d); read -r d; rm -rf "$d"`,
+    `d=$(mktemp -d); for d in a b; do :; done; rm -rf "$d"`,
+    `d=$(mktemp -d); unset d; rm -rf "$d"`,
+    `d=$(mktemp -d); local d; rm -rf "$d"`,
+    `d=$(mktemp -d); export d; rm -rf "$d"`,
+    `d=$(mktemp -d); d+=x; rm -rf "$d"`,
     `d=$(mktemp -u); rm -rf "$d"`,
     `d=$(mktemp --dry-run -d); rm -rf "$d"`,
     `d=$(mktemp -d /Users/anon/workbench/outside); rm -rf "$d"`,
