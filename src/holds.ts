@@ -12,16 +12,18 @@ import type { ActionSummary, Level, PreviousAction, ScopeLabel, Verdict } from "
  *
  * - **approved**: the user's reply released the hold (steer mode) or the confirm dialog allowed it. False positive.
  * - **declined**: the confirm dialog refused it. True positive.
- * - **replanned**: the user replied, the following turn ended, and nobody approved the call. True positive.
+ * - **replanned**: after the user replied, the agent ran a different call that changes something instead. True positive.
+ * - **abandoned**: the run after the user's reply ended with neither: the hold was never released and nothing else ran. An unknown outcome: it is
+ *   counted in neither the numerator nor the denominator, because nobody showed what the hold was worth.
  * - **regretted**: the user's next message tells the agent to stop, undo, or not do an allowed call. False negative.
  * - **accepted**: the user's next message was checked and does not regret the allowed calls of the last turn.
  *
- * Approval, decline, and re-plan are code only. Regret is one question that rides the first action request under the
+ * Approval, decline, re-plan, and abandon are code only. Regret is one question that rides the first action request under the
  * new prompt (no extra request); offline a stop-word heuristic stands in. Calls the guard skipped as read-only are not
  * recorded: they could never have been held. Records are redacted for the log: tool, pattern ids, scores, level,
  * outcome, never the command or path. The in-memory summary serves the regret question and stays in memory.
  */
-export type CallOutcome = "pending" | "approved" | "declined" | "replanned" | "regretted" | "accepted";
+export type CallOutcome = "pending" | "approved" | "declined" | "replanned" | "abandoned" | "regretted" | "accepted";
 export type OutcomeVia = "retry" | "dialog" | "next prompt" | "jev" | "text" | "deny";
 
 export interface CallScores {
@@ -65,12 +67,14 @@ export interface HoldSnapshot {
   approved: number;
   declined: number;
   replanned: number;
+  /** Holds whose run after the reply ended with neither a release nor another mutating call. */
+  abandoned: number;
   /** Holds without a label yet: the user has not replied, or the turn after the reply is still running. */
   awaiting: number;
   allowed: number;
   regretted: number;
   accepted: number;
-  /** Labelled holds: approved + declined + replanned. */
+  /** Labelled holds: approved + declined + replanned. The precision denominator. */
   labels: number;
   /** (declined + replanned) / labels; undefined without labels. */
   precision: number | undefined;
@@ -90,6 +94,18 @@ interface Untracked {
 }
 
 const REGRET_THRESHOLD = 0.7;
+
+/** Tools that change a file whatever the judge says; used to read a following call as a re-plan. */
+const MUTATING_TOOLS = new Set(["write", "edit", "edit_lines", "apply_patch", "multiedit"]);
+
+/**
+ * Whether a call can change something: a tool that writes a file, or one Jev scored as mutating. The
+ * `replanned` label reads it: a mutating call after the user's reply means the agent went another way.
+ */
+export function mutatingCall(verdict: Verdict): boolean {
+  if (MUTATING_TOOLS.has(verdict.summary.tool)) return true;
+  return (verdict.judgment?.mutates ?? 0) >= 0.5;
+}
 
 function scoresOf(verdict: Verdict): CallScores | undefined {
   const { judgment } = verdict;
@@ -148,17 +164,39 @@ export class HoldLedger {
   }
 
   /**
-   * A new user prompt. Every pending record has seen one more prompt. A hold still pending after the prompt that could
-   * have approved it (the reply) and the turn that followed is a re-plan: the agent found another way or the user said no.
+   * A call that changes something ran after the user replied: the agent went another way instead of running the held
+   * call, which is a re-plan. The released hold is already labelled `approved` by then (the action guard sets
+   * `approvedByUser` on it), so a hold still pending here was not the one the reply released.
    */
-  promptArrived(at = Date.now()): CallRecord[] {
-    const changed: CallRecord[] = [];
-    for (const item of this.tracked) {
-      if (item.record.outcome !== "pending") continue;
-      item.prompts++;
-      if (item.record.held && item.prompts >= 2) changed.push(this.label(item, "replanned", "next prompt", at));
-    }
-    return changed;
+  replanned(at = Date.now()): CallRecord[] {
+    return this.pendingSteerHolds()
+      .filter(item => item.prompts >= 1)
+      .map(item => this.label(item, "replanned", "next prompt", at));
+  }
+
+  /**
+   * A new user prompt. Every pending record has seen one more prompt. A hold is settled by the reply and the run it
+   * starts: `approved` when that run retries it, `replanned` when it runs something else that changes something, and
+   * `abandoned` at the end of that run when it does neither.
+   */
+  promptArrived(): void {
+    for (const item of this.tracked) if (item.record.outcome === "pending") item.prompts++;
+  }
+
+  /**
+   * The run ended. A steer hold whose reply has arrived and whose run ended without a release or a re-plan is
+   * `abandoned`: nothing came of it. A hold from the run that just ended waits, because the reply that can release it
+   * has not arrived yet.
+   */
+  runEnded(at = Date.now()): CallRecord[] {
+    return this.pendingSteerHolds()
+      .filter(item => item.prompts >= 1)
+      .map(item => this.label(item, "abandoned", "next prompt", at));
+  }
+
+  /** Holds of steer mode still waiting for the user's reply and the call that settles them. */
+  private pendingSteerHolds(): Tracked[] {
+    return this.tracked.filter(item => item.record.held && item.record.outcome === "pending" && item.record.mode === "steer");
   }
 
   /** Allowed calls of the turn the user just replied to, oldest first: the calls the reply could regret. */
@@ -227,7 +265,8 @@ export class HoldLedger {
     const replanned = count(holds, "replanned");
     const labels = approved + declined + replanned;
     return {
-      holds: holds.length, approved, declined, replanned, awaiting: count(holds, "pending"),
+      holds: holds.length, approved, declined, replanned, abandoned: count(holds, "abandoned"),
+      awaiting: count(holds, "pending"),
       allowed: allowed.length, regretted: count(allowed, "regretted"), accepted: count(allowed, "accepted"),
       labels, precision: labels ? (declined + replanned) / labels : undefined,
     };
@@ -272,7 +311,8 @@ export function outcomeNote(record: CallRecord): string {
     case "declined": return record.outcomeVia === "deny"
       ? "outcome: blocked by a deny rule; the call never ran"
       : "outcome: declined by the user in the confirm dialog; the hold stood";
-    case "replanned": return "outcome: never approved after the user replied; the agent re-planned, the hold stood";
+    case "replanned": return "outcome: never approved after the user replied and replaced by another call that changes something; the hold stood";
+    case "abandoned": return "outcome: the run after the user replied neither released the hold nor replaced it; nothing came of it";
     case "regretted": return `outcome: the user's next message regrets this call${record.regret !== undefined ? ` (${record.regret.toFixed(2)})` : ""}; it should have been held`;
     case "accepted": return `outcome: the user's next message does not regret this call${record.regret !== undefined ? ` (${record.regret.toFixed(2)})` : ""}`;
     default: return "outcome: pending";
@@ -283,7 +323,7 @@ export function outcomeNote(record: CallRecord): string {
 export function formatHolds(snapshot: HoldSnapshot, logPath?: string): string {
   if (snapshot.holds === 0 && snapshot.allowed === 0) return "Holds: no guarded call judged yet this session.";
   const parts = [`${snapshot.holds} hold${snapshot.holds === 1 ? "" : "s"}`];
-  if (snapshot.holds) parts.push(`${snapshot.approved} approved by you, ${snapshot.declined} declined, ${snapshot.replanned} re-planned, ${snapshot.awaiting} awaiting your reply`);
+  if (snapshot.holds) parts.push(`${snapshot.approved} approved by you, ${snapshot.declined} declined, ${snapshot.replanned} re-planned, ${snapshot.abandoned} abandoned, ${snapshot.awaiting} awaiting your reply`);
   parts.push(snapshot.precision === undefined ? "precision not yet measurable" : `precision ${Math.round(snapshot.precision * 100)}% over ${snapshot.labels} label${snapshot.labels === 1 ? "" : "s"}`);
   parts.push(`${snapshot.allowed} allowed (${snapshot.regretted} regretted by you, ${snapshot.accepted} accepted)`);
   return `Holds: ${parts.join("; ")}.${logPath ? ` Log: ${logPath}.` : ""}`;

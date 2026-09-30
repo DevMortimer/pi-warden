@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import type { Verdict } from "../src/guard.js";
-import { formatHolds, HoldLedger, HoldLog, holdLogPath, outcomeNote, regretsAt, textRegrets } from "../src/holds.js";
+import { formatHolds, HoldLedger, HoldLog, holdLogPath, mutatingCall, outcomeNote, regretsAt, textRegrets } from "../src/holds.js";
 
 const verdict = (overrides: Partial<Verdict> & { command?: string; path?: string } = {}): Verdict => {
   const { command, path, ...rest } = overrides;
@@ -50,22 +50,61 @@ test("a hold released by the user's reply is a false positive; the pending hold 
   assert.match(outcomeNote(bash), /released on retry.*false positive/);
 });
 
-test("a hold nobody approves is a re-plan after the reply and the turn that follows it", () => {
+test("a steer hold the reply neither releases nor replaces is abandoned when the run ends", () => {
   const ledger = new HoldLedger();
   const hold = ledger.record(verdict(), { held: true, mode: "steer", at: 1 });
-  assert.deepEqual(ledger.promptArrived(2), [], "the user has only just replied; the retry can still be approved");
+  assert.deepEqual(ledger.runEnded(2), [], "the run that held the call ends before the user can reply; the reply is what releases it");
   assert.equal(hold.outcome, "pending");
   assert.equal(ledger.snapshot().awaiting, 1);
-  const changed = ledger.promptArrived(3);
+  ledger.promptArrived();
+  assert.equal(hold.outcome, "pending", "the reply alone decides nothing");
+  const changed = ledger.runEnded(3);
   assert.deepEqual(changed.map(record => record.id), [hold.id]);
+  assert.equal(hold.outcome, "abandoned");
+  assert.equal(hold.outcomeVia, "next prompt");
+  assert.equal(hold.outcomeAt, 3);
+  assert.deepEqual(ledger.runEnded(4), [], "labels land once");
+  const snapshot = ledger.snapshot();
+  assert.equal(snapshot.abandoned, 1);
+  assert.equal(snapshot.awaiting, 0);
+  assert.equal(snapshot.labels, 0, "abandoned is not in the precision denominator");
+  assert.equal(snapshot.precision, undefined, "nothing was measured as a true or false positive");
+  assert.match(outcomeNote(hold), /nothing came of it/);
+  assert.match(formatHolds(snapshot), /1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 abandoned, 0 awaiting your reply/);
+});
+
+test("a steer hold becomes a re-plan once the reply has arrived and a mutating call arrives instead", () => {
+  const ledger = new HoldLedger();
+  const hold = ledger.record(verdict({ command: "rm -rf build" }), { held: true, mode: "steer", at: 1 });
+  assert.deepEqual(ledger.replanned(2), [], "the hold's own run is not a re-plan: the user has not replied yet");
+  ledger.promptArrived();
+  assert.deepEqual(ledger.replanned(3).map(record => record.id), [hold.id]);
   assert.equal(hold.outcome, "replanned");
   assert.equal(hold.outcomeVia, "next prompt");
-  assert.deepEqual(ledger.promptArrived(4), [], "labels land once");
+  assert.deepEqual(ledger.runEnded(4), [], "a labelled hold is not labelled again");
   const snapshot = ledger.snapshot();
   assert.equal(snapshot.replanned, 1);
-  assert.equal(snapshot.awaiting, 0);
+  assert.equal(snapshot.abandoned, 0);
   assert.equal(snapshot.precision, 1);
   assert.equal(snapshot.labels, 1);
+  assert.match(outcomeNote(hold), /replaced by another call that changes something/);
+});
+
+test("only a steer hold waits for the reply; the dialog decides a confirm-mode hold at once", () => {
+  const ledger = new HoldLedger();
+  const hold = ledger.record(verdict(), { held: true, mode: "confirm", at: 1 });
+  ledger.promptArrived();
+  assert.deepEqual(ledger.runEnded(2), [], "confirm mode labels the hold through the dialog, not through the run end");
+  assert.equal(hold.outcome, "pending");
+});
+
+test("mutatingCall reads the write family and Jev's mutates score", () => {
+  assert.equal(mutatingCall(verdict({ summary: { tool: "write", path: "a.ts" } })), true, "a write changes a file whatever Jev says");
+  const noJudgment = verdict({ summary: { tool: "bash" } });
+  delete noJudgment.judgment;
+  assert.equal(mutatingCall(noJudgment), false, "a bash call with no judgment is not read as mutating");
+  assert.equal(mutatingCall(verdict({ command: "ls", judgment: { irreversible: 0.1, offTask: 0.1, scope: "expected_step", scopeConfidence: 0.8, mutates: 0.8, model: "jev-test", elapsedMs: 5 } })), true);
+  assert.equal(mutatingCall(verdict({ command: "ls", judgment: { irreversible: 0.1, offTask: 0.1, scope: "expected_step", scopeConfidence: 0.8, mutates: 0.2, model: "jev-test", elapsedMs: 5 } })), false);
 });
 
 test("dialog decisions label the hold at once", () => {
@@ -139,7 +178,7 @@ test("formatHolds reports counts and precision, or says there is nothing yet", (
   ledger.record(verdict(), { held: true, mode: "confirm", outcome: "declined", via: "dialog" });
   ledger.record(verdict(), { held: true, mode: "confirm", outcome: "approved", via: "dialog" });
   const line = formatHolds(ledger.snapshot(), "/tmp/holds.jsonl");
-  assert.match(line, /3 holds; 1 approved by you, 1 declined, 0 re-planned, 1 awaiting your reply; precision 50% over 2 labels; 1 allowed/);
+  assert.match(line, /3 holds; 1 approved by you, 1 declined, 0 re-planned, 0 abandoned, 1 awaiting your reply; precision 50% over 2 labels; 1 allowed/);
   assert.match(line, /Log: \/tmp\/holds\.jsonl\.$/);
 });
 
@@ -198,7 +237,7 @@ test("reset clears every record, including the rules verdicts, so a new session 
   assert.equal(ledger.snapshot().holds, 1);
   ledger.reset();
   assert.deepEqual(ledger.records(), [], "records from the previous session are gone, not just the tracked ones");
-  assert.deepEqual(ledger.snapshot(), { holds: 0, approved: 0, declined: 0, replanned: 0, awaiting: 0, allowed: 0, regretted: 0, accepted: 0, labels: 0, precision: undefined });
+  assert.deepEqual(ledger.snapshot(), { holds: 0, approved: 0, declined: 0, replanned: 0, abandoned: 0, awaiting: 0, allowed: 0, regretted: 0, accepted: 0, labels: 0, precision: undefined });
   // The id counter restarts, so the new session's first record is a1 again and matches the regret target ids.
   assert.equal(ledger.recordRules({ source: "typesafe", findings: [] }).id, 1);
 });

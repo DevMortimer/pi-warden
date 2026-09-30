@@ -8,6 +8,24 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.81.0
+
+### Changed
+
+- The hold database stores less per call. Every row now carries the Pi session id (it used to be empty); the task text is stored once per task, in a `hold_tasks` table keyed by its hash, instead of once per call; and a row of a call that was not held keeps the judge data and the agent's plan (the scores, the reasons, and the plan) and drops the summary and the agent reason for the call. A database written by an earlier version is migrated once at startup, inside one transaction, and the pages the migration and the prune free are reclaimed by a VACUUM that runs only when no other session holds the database; when one does, the VACUUM is skipped and the next start tries again, so no session waits for it.
+- A record of a call that was not held is pruned after `learning.allowedRetentionDays` (default 90 days); `learning.retentionDays` (default 365) still applies to holds.
+- A steer-mode hold is labelled by what happened next: `approved` (your reply released the call), `replanned` (the agent ran a different call that changes something instead), and the new `abandoned` (the run after your reply neither released nor replaced it). The old rule labelled a hold `replanned` two prompts later without looking at what the agent did. `/warden status` counts abandoned holds apart, and the precision line still reports (declined + replanned) over the labelled holds.
+
+### Fixed
+
+- A database an earlier version wrote keeps the columns that version's `INSERT` names (`task`, `input_summary`, `prediction`, `preceding_actions`, `confidence`). They are no longer rebuilt away: they stay on `holds`, always empty, so a Pi session still running the older code — and a downgrade — keeps recording holds against a migrated database instead of failing every guarded call until it restarts. The size win does not change: the task text lands once in `hold_tasks`, and the older layout's text is cleared.
+- A row of a call that was not held keeps the judge data: the scores, the reasons, and the agent's plan stay on the row, and its task text lands once in `hold_tasks` with the row pointing at it by hash. Calibration on field traffic reads all four, so only `context_summary` and the agent reason for the call are not written for it.
+- At each start, a row an older session wrote after the migration is settled the same way: its task text moves into `hold_tasks`, the older layout's text is cleared, and an allowed row loses its summary and agent reason. A new `hold_meta` table keeps the highest row id already settled, so a start looks only at the rows written after it and changes no page when there are none; a database another session holds skips the step, as it skips the prune, and the next start runs it.
+
+### Docs
+
+- `docs/configuration.md` documents `learning.allowedRetentionDays`.
+- `docs/data-handling.md` describes the slim hold database, the one-time migration, and every hold outcome.
 ## 0.80.0
 
 ### Changed

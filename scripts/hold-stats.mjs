@@ -60,14 +60,14 @@ function precision(stats) {
 const rows = db.prepare("SELECT project_root, held, outcome, timestamp FROM holds").all();
 
 const projects = new Map();
-let total = { held: 0, labeled: 0, approved: 0, declined: 0, replanned: 0, allowed: 0, regretted: 0, accepted: 0, oldest: Infinity, newest: -Infinity };
+let total = { held: 0, labeled: 0, approved: 0, declined: 0, replanned: 0, abandoned: 0, allowed: 0, regretted: 0, accepted: 0, oldest: Infinity, newest: -Infinity };
 
 for (const row of rows) {
   const root = row.project_root;
   if (excluded(root)) continue;
 
   if (!projects.has(root)) {
-    projects.set(root, { held: 0, labeled: 0, approved: 0, declined: 0, replanned: 0, allowed: 0, regretted: 0, accepted: 0, oldest: Infinity, newest: -Infinity });
+    projects.set(root, { held: 0, labeled: 0, approved: 0, declined: 0, replanned: 0, abandoned: 0, allowed: 0, regretted: 0, accepted: 0, oldest: Infinity, newest: -Infinity });
   }
   const p = projects.get(root);
 
@@ -77,6 +77,7 @@ for (const row of rows) {
     if (row.outcome === "approved") { p.approved++; total.approved++; }
     if (row.outcome === "declined") { p.declined++; total.declined++; }
     if (row.outcome === "replanned") { p.replanned++; total.replanned++; }
+    if (row.outcome === "abandoned") { p.abandoned++; total.abandoned++; }
     if (["approved", "declined", "replanned"].includes(row.outcome)) { p.labeled++; total.labeled++; }
   } else {
     p.allowed++;
@@ -107,6 +108,7 @@ function formatRow(name, s) {
     labeled: s.labeled,
     precision: precStr,
     approved_retry: s.approved,
+    abandoned: s.abandoned,
     allowed: s.allowed,
     accepted: s.accepted,
     regretted: s.regretted,
@@ -135,11 +137,11 @@ if (JSON_MODE) {
   for (const [root, s] of sorted) {
     const p = formatRow(redactPath(root), s);
     console.log(`  ${p.project}`);
-    console.log(`    held: ${p.held}  labeled: ${p.labeled}  precision: ${p.precision}  approved on retry: ${p.approved_retry}  allowed: ${p.allowed} (${p.accepted} accepted, ${p.regretted} regretted)  range: ${p.date_range}`);
+    console.log(`    held: ${p.held}  labeled: ${p.labeled}  precision: ${p.precision}  approved on retry: ${p.approved_retry}  abandoned: ${p.abandoned}  allowed: ${p.allowed} (${p.accepted} accepted, ${p.regretted} regretted)  range: ${p.date_range}`);
   }
 
   console.log("");
   const tp = formatRow("(total)", total);
   console.log(`  TOTAL`);
-  console.log(`    held: ${tp.held}  labeled: ${tp.labeled}  precision: ${tp.precision}  approved on retry: ${tp.approved_retry}  allowed: ${tp.allowed} (${tp.accepted} accepted, ${tp.regretted} regretted)  range: ${tp.date_range}`);
+  console.log(`    held: ${tp.held}  labeled: ${tp.labeled}  precision: ${tp.precision}  approved on retry: ${tp.approved_retry}  abandoned: ${tp.abandoned}  allowed: ${tp.allowed} (${tp.accepted} accepted, ${tp.regretted} regretted)  range: ${tp.date_range}`);
 }

@@ -139,6 +139,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `widget.barMode` | `"live"` (default): the status line shows only the latest event, as one sentence. `"stack"`: one line per guard with the templates below, folded as described in [Status line and trace sidebar](#status-line-and-trace-sidebar). |
 | `learning.patternAnalysis` | Analyze hold patterns and generate recommendations. |
 | `learning.retentionDays` | Days to keep hold records in SQLite before pruning. Records older than this are deleted on startup. `0` disables pruning. Default: `365`. |
+| `learning.allowedRetentionDays` | Days to keep the records of calls that were not held. They repeat the turn's task text and are the bulk of the file, so they are pruned sooner than a hold. `0` disables this pruning. Default: `90`. |
 | `conscience.enabled` | Master switch for the conscience coach. Default `false` — the coach ships as **beta**: off until you flip this one switch. |
 | `conscience.skills.mode` | `"off"` (no skill selection), `"recommend"` (name a skill and ask the agent to load it), or `"load"` (supply instructions directly from disk). Default `"recommend"`. `load` requires global consent, a trusted project, and reads the skill file bounded by `maxSkillBytes` and `maxLoadedBytes`. A project cannot upgrade from `recommend` to `load` when the user permits only `recommend`. |
 | `conscience.skills.exclude` | Case-sensitive skill names to exclude; `*` is the only wildcard. Default `[]`. |
