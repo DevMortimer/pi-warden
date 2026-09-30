@@ -393,6 +393,8 @@ export interface LearningConfig {
   patternAnalysis: boolean;
   /** Days to keep hold records in SQLite before pruning. 0 disables pruning. */
   retentionDays: number;
+  /** Days to keep records of calls that were not held; they repeat their task text across a turn and are the bulk of the file. 0 disables this pruning. */
+  allowedRetentionDays: number;
 }
 
 export type ConscienceSkillMode = "off" | "recommend" | "load";
@@ -548,7 +550,7 @@ export function defaultConfig(): WardenConfig {
     notices: false,
     steerBudget: 3,
     steers: { adaptive: true, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 },
-    learning: { patternAnalysis: true, retentionDays: 365 },
+    learning: { patternAnalysis: true, retentionDays: 365, allowedRetentionDays: 90 },
     conscience: {
       enabled: false,
       skills: { mode: "recommend", exclude: [] },
@@ -1125,6 +1127,7 @@ function applyLearning(base: LearningConfig, raw: unknown): LearningConfig {
     patternAnalysis: boolean(raw.patternAnalysis, base.patternAnalysis),
     // 0 keeps every record: no pruning.
     retentionDays: typeof raw.retentionDays === "number" && Number.isSafeInteger(raw.retentionDays) && raw.retentionDays >= 0 ? raw.retentionDays : base.retentionDays,
+    allowedRetentionDays: typeof raw.allowedRetentionDays === "number" && Number.isSafeInteger(raw.allowedRetentionDays) && raw.allowedRetentionDays >= 0 ? raw.allowedRetentionDays : base.allowedRetentionDays,
   };
 }
 

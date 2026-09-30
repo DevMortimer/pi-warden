@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
@@ -118,14 +119,25 @@ const promptWithSkills = (text: string, skills: Array<{ name: string; descriptio
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
 /**
+ * When the current test began. Every record a test reads was written after it. The fake session manager has no
+ * `getSessionId`, so every session of this file falls back to the process id and writes the same log path; a write
+ * still in flight from an earlier session can land after this one's, and a read that only counts lines could see it.
+ */
+let testStartedAt = 0;
+/**
  * The hold log and the trace file are written without blocking the hook; a test that reads one waits for the expected
  * number of lines. Every record ends in a newline, so text after the last one is an append still in progress.
  */
 const readLog = async (path: string, lines: number, settled = true): Promise<Record<string, unknown>[]> => {
+  const writtenAt = (record: Record<string, unknown>): number => {
+    const at = record.at;
+    return typeof at === "number" ? at : typeof at === "string" ? Date.parse(at) : Number.NaN;
+  };
   for (let attempt = 0; attempt < 200; attempt++) {
     const text = await readFile(path, "utf8").catch(() => "");
     const parsed = text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
-    if (parsed.length === lines && (!settled || parsed.every(record => record.outcome !== "pending"))) return parsed;
+    const ours = parsed.length > 0 && parsed.every(record => writtenAt(record) >= testStartedAt);
+    if (parsed.length === lines && ours && (!settled || parsed.every(record => record.outcome !== "pending"))) return parsed;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error(`log at ${path} did not reach ${lines} labelled lines`);
@@ -202,6 +214,7 @@ before(async () => {
 });
 
 beforeEach(async () => {
+  testStartedAt = Date.now();
   notices.length = 0; widgets.length = 0; confirms.length = 0;
   confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; hangNetwork = false; failStatus = undefined; prompt = "Run the test suite";
   keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0; requestUrls.length = 0; requestAuth.length = 0;
@@ -1006,18 +1019,23 @@ test("session scratch: a written file's new parent under /tmp is scratch", async
 
 test("session scratch: one target never created keeps the whole rm held", async () => withScratchBase(async base => {
   const probe = join(base, "probe-abc");
-  await mkdir(join(base, "other"));
+  const other = join("/var/tmp", `pi-warden-other-${base.split("/").pop()!}`);
+  await mkdir(other);
   await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
-  const held = await toolCall("bash", { command: `rm -rf ${probe} ${join(base, "other")}` });
-  assert.equal(held?.block, true);
-  assert.match(held?.reason ?? "", /recursive rm on an absolute, home, variable, or parent path/);
+  try {
+    const held = await toolCall("bash", { command: `rm -rf ${probe} ${other}` });
+    assert.equal(held?.block, true);
+    assert.match(held?.reason ?? "", /recursive rm on an absolute, home, variable, or parent path/);
+  } finally { await rm(other, { recursive: true, force: true }); }
 }));
 
 test("session scratch: mkdir -p of a directory that already existed records nothing", async () => withScratchBase(async base => {
   const existing = join(base, "existing");
   await mkdir(existing);
   await runCall("bash", { command: `mkdir -p ${existing}` }, async () => {});
-  assert.equal((await toolCall("bash", { command: `rm -rf ${existing}` }))?.block, true);
+  const warned = await toolCall("bash", { command: `rm -rf ${existing}` });
+  assert.equal(warned?.block, undefined, "an existing directory is not session scratch; the temp subtree warns");
+  assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
 
 test("session scratch: a symlink under /tmp pointing outside the temp directory stays held", async () => withScratchBase(async base => {
@@ -1037,25 +1055,29 @@ test("session scratch: a temp directory printed by a command counts only when th
   const made = join(base, "made");
   await runCall("bash", { command: "npm test" }, () => mkdir(made), `fixture at ${made}\nreused ${before}\n`);
   assert.equal(await toolCall("bash", { command: `rm -rf ${made}` }), undefined, "created during the command");
-  assert.equal((await toolCall("bash", { command: `rm -rf ${before}` }))?.block, true, "existed before the command");
+  const before2 = await toolCall("bash", { command: `rm -rf ${before}` });
+  assert.equal(before2?.block, undefined, "existed before the command: the temp subtree warns, not session scratch");
+  assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
 
-test("session scratch: a recorded path deleted, then made again outside the agent, stays held", async () => withScratchBase(async base => {
+test("session scratch: a recorded path deleted, then made again outside the agent, loses the session-scratch exemption", async () => withScratchBase(async base => {
   const probe = join(base, "probe-abc");
   await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
   await runCall("bash", { command: `rm -rf ${probe}` }, () => rm(probe, { recursive: true }));
   await mkdir(probe);
-  assert.equal((await toolCall("bash", { command: `rm -rf ${probe}` }))?.block, true);
+  const again = await toolCall("bash", { command: `rm -rf ${probe}` });
+  assert.equal(again?.block, undefined, "the record is gone, so the temp subtree warns");
+  assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
 
-test("session scratch: older content moved into a recorded directory stays held", async () => withScratchBase(async base => {
+test("session scratch: content moved into a recorded directory keeps a later rm held", async () => withScratchBase(async base => {
   const important = join(base, "important");
   await mkdir(important);
   const dir = join(base, "S", "x");
   await runCall("bash", { command: `mkdir -p ${dir}` }, () => mkdir(dir, { recursive: true }));
   await runCall("bash", { command: `mv ${important} ${dir}/` }, () => rename(important, join(dir, "important")));
   const held = await toolCall("bash", { command: `rm -rf ${dir}` });
-  assert.equal(held?.block, true);
+  assert.equal(held?.block, true, "the destination an earlier call moved data into stays held");
   assert.match(held?.reason ?? "", /recursive rm on an absolute, home, variable, or parent path/);
 }));
 
@@ -1063,8 +1085,32 @@ test("session scratch: a fresh session forgets what the last one created", async
   const probe = join(base, "probe-abc");
   await runCall("bash", { command: `mkdir -p ${probe}` }, () => mkdir(probe));
   await sessionStart();
-  assert.equal((await toolCall("bash", { command: `rm -rf ${probe}` }))?.block, true);
+  const afterRestart = await toolCall("bash", { command: `rm -rf ${probe}` });
+  assert.equal(afterRestart?.block, undefined, "the record is gone after a restart, so the temp subtree warns");
+  assert.match(notices.at(-1)!.text, /under the temp directory/);
 }));
+
+test("declared scratch paths: PI_WARDEN_SCRATCH_PATHS releases a path inside a declared root and reports an ignored entry once", async () => {
+  const base = await mkdtemp("/var/tmp/pi-warden-declared-");
+  const saved = process.env.PI_WARDEN_SCRATCH_PATHS;
+  process.env.PI_WARDEN_SCRATCH_PATHS = `${base}:/`;
+  try {
+    await writeFile(configPath(), JSON.stringify({ notices: true, rules: { enabled: false }, ...STACK_BAR }));
+    await sessionStart();
+    const ignored = () => notices.filter(notice => /PI_WARDEN_SCRATCH_PATHS ignored/.test(notice.text)).length;
+    assert.equal(ignored(), 1, "the ignored entry is named once");
+    await sessionStart();
+    assert.equal(ignored(), 1, "and not again in a later session");
+    const inner = join(base, "work");
+    await mkdir(inner);
+    const warned = await toolCall("bash", { command: `rm -rf ${inner}` });
+    assert.equal(warned?.block, undefined, "a path inside the declared root is not held");
+    assert.match(notices.at(-1)!.text, /session scratch/);
+  } finally {
+    if (saved === undefined) delete process.env.PI_WARDEN_SCRATCH_PATHS; else process.env.PI_WARDEN_SCRATCH_PATHS = saved;
+    await rm(base, { recursive: true, force: true });
+  }
+});
 
 test("per-call warning notices are off by default; trace-only off-task stays silent and notices: true restores UI warnings", async () => {
   await writeFile(configPath(), JSON.stringify({  typesafe: true, rules: { enabled: false }, ...STACK_BAR }));
@@ -1428,26 +1474,26 @@ test("hold feedback offline: approval, re-plan, and a stop reply label the calls
   prompt = "fix the bug";
   assert.equal((await toolCall("bash", { command: "git push --force origin main" }))?.block, true);
   await runCommand("status");
-  assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 awaiting your reply; precision not yet measurable; 0 allowed/);
+  assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 0 abandoned, 1 awaiting your reply; precision not yet measurable; 0 allowed/);
   await newPrompt("yes, go ahead");
   assert.equal(await toolCall("bash", { command: "git push --force origin main" }), undefined, "the reply releases the hold");
   await runCommand("status");
   const line = notices.at(-1)!.text.match(/Holds: (.*?)\. Log: (.+?\.jsonl)\./);
   assert.ok(line, notices.at(-1)!.text);
-  assert.equal(line[1], "1 hold; 1 approved by you, 0 declined, 0 re-planned, 0 awaiting your reply; precision 0% over 1 label; 1 allowed (0 regretted by you, 0 accepted)");
+  assert.equal(line[1], "1 hold; 1 approved by you, 0 declined, 0 re-planned, 0 abandoned, 0 awaiting your reply; precision 0% over 1 label; 1 allowed (0 regretted by you, 0 accepted)");
   const logPath = line[2]!;
   assert.ok(logPath.startsWith(join(temporary, "agent", "pi-warden", "holds")), logPath);
   await runCommand("trace", context({ hasUI: false }));
   assert.match(sentMessages.at(-1)!.message.content, /outcome: approved by the user \(released on retry\); the hold was a false positive/, "the hold's trace entry carries its outcome");
 
-  // A hold nobody approves: the user redirects, the agent does something else, and the prompt after that lands the label.
+  // A hold nobody approves: the user redirects, and the agent does something else that changes something.
   await newPrompt("fix the bug");
   assert.equal((await toolCall("bash", { command: "git reset --hard HEAD~3" }))?.block, true);
-  await newPrompt("leave it, run the tests instead");
-  assert.equal(await toolCall("bash", { command: "npm test" }), undefined);
+  await newPrompt("leave it, write the note instead");
+  assert.equal(await toolCall("write", { path: "notes.md", content: "left it alone" }), undefined);
   await newPrompt("thanks, now update the docs");
   await runCommand("status");
-  assert.match(notices.at(-1)!.text, /Holds: 2 holds; 1 approved by you, 0 declined, 1 re-planned, 0 awaiting your reply; precision 50% over 2 labels; 2 allowed \(0 regretted by you, 2 accepted\)/);
+  assert.match(notices.at(-1)!.text, /Holds: 2 holds; 1 approved by you, 0 declined, 1 re-planned, 0 abandoned, 0 awaiting your reply; precision 50% over 2 labels; 2 allowed \(0 regretted by you, 2 accepted\)/);
 
   // An allowed call the next message regrets: offline, the stop-word heuristic labels it.
   assert.equal(await toolCall("bash", { command: "rm -rf dist" }), undefined);
@@ -1474,9 +1520,32 @@ test("hold feedback offline: approval, re-plan, and a stop reply label the calls
   prompt = "fix the bug";
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
   await runCommand("status");
-  assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 awaiting your reply; precision not yet measurable; 0 allowed \(0 regretted by you, 0 accepted\)\. Lifetime here:.*\. Rules:/);
+  assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 0 abandoned, 1 awaiting your reply; precision not yet measurable; 0 allowed \(0 regretted by you, 0 accepted\)\. Lifetime here:.*\. Rules:/);
   assert.ok(!notices.at(-1)!.text.includes("Log:"));
   await assert.rejects(readFile(logPath), "nothing is written with feedbackLog off");
+});
+
+test("a steer hold the reply neither releases nor replaces is abandoned at the end of the run, in the row and the status line", async () => {
+  prompt = "fix the bug";
+  assert.equal((await toolCall("bash", { command: "git reset --hard HEAD~3" }))?.block, true);
+  await newPrompt("no, leave it alone");
+  await agentEnd("Left it alone.");
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /Holds: 1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 abandoned, 0 awaiting your reply/);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const rows = await queryHoldsForProject(temporary, { held: true });
+  assert.ok(rows.some(row => row.outcome === "abandoned"), `the row in the hold log carries the label; rows: ${JSON.stringify(rows)}`);
+});
+
+test("every hold row the session writes carries its session id", async () => {
+  prompt = "fix the bug";
+  assert.equal((await toolCall("bash", { command: "git push --force origin main" }))?.block, true);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const db = new DatabaseSync(process.env.PI_WARDEN_DB!);
+  const newest = db.prepare("SELECT session_id, held FROM holds ORDER BY id DESC LIMIT 1").get() as { session_id: string | null; held: number };
+  db.close();
+  assert.equal(newest.held, 1, "the newest row is this session's hold");
+  assert.ok(newest.session_id, "the row carries the session id the host reported");
 });
 
 test("hold outcome known at record time is persisted to SQLite via the promise (ordering fix)", async () => {
@@ -1538,7 +1607,7 @@ test("hold feedback in confirm mode: the dialog's answer labels the hold at once
   confirmResult = true;
   assert.equal(await toolCall("bash", { command: "git push --force" }), undefined);
   await runCommand("status");
-  assert.match(notices.at(-1)!.text, /Holds: 2 holds; 1 approved by you, 1 declined, 0 re-planned, 0 awaiting your reply; precision 50% over 2 labels/);
+  assert.match(notices.at(-1)!.text, /Holds: 2 holds; 1 approved by you, 1 declined, 0 re-planned, 0 abandoned, 0 awaiting your reply; precision 50% over 2 labels/);
   await runCommand("trace", context({ hasUI: false }));
   assert.match(sentMessages.at(-1)!.message.content, /outcome: declined by the user in the confirm dialog; the hold stood/);
   assert.match(sentMessages.at(-1)!.message.content, /outcome: approved by the user \(confirm dialog\); the hold was a false positive/);
@@ -2402,7 +2471,7 @@ test("/warden status, enable, disable, and test report and persist consent", asy
   assert.match(notices.at(-1)!.text, /Mode set to confirm/);
   await runCommand("test");
   assert.match(confirms.at(-1)!.title, /\(demo\)/);
-  assert.match(confirms.at(-1)!.message, /rm -rf \/tmp\/pi-warden-demo[\s\S]*nothing runs either way/);
+  assert.match(confirms.at(-1)!.message, /rm -rf \/var\/tmp\/pi-warden-demo[\s\S]*nothing runs either way/);
   assert.match(notices.at(-1)!.text, /Demo: you chose Yes/);
   await runCommand("mode steer");
   await runCommand("mode");

@@ -65,7 +65,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     steers: section("steers", { adaptive: false, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 }),
     // A missing section turns the notes off: the guard is new, so nothing it says was expected.
     waste: section("waste", { ...off, tip: false, every: 20, sleep: false, paging: false, search: false, recheck: false }),
-    learning: section("learning", { patternAnalysis: true, retentionDays: 365 }),
+    learning: section("learning", { patternAnalysis: true, retentionDays: 365, allowedRetentionDays: 90 }),
     prefs: section("prefs", { enabled: false, inject: false }),
     // A missing section keeps Pi's own compaction summary, as before the section existed.
     compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
@@ -109,6 +109,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.widget.panelWidth !== "string" && typeof config.widget.panelWidth !== "number") config.widget = { ...config.widget, panelWidth: "40%" };
   // The feedback log flag was added inside the action section later than the section itself; an older config module leaves it undefined and the log stays on.
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };
+  // The allowed-call retention was added inside the learning section later than the section itself; an older config module leaves it undefined and the 90-day default applies.
+  if (typeof config.learning.allowedRetentionDays !== "number") config.learning = { ...config.learning, allowedRetentionDays: 90 };
   if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.9 };
   if (typeof config.action.visibleMismatch !== "number") config.action = { ...config.action, visibleMismatch: 0.8 };
   if (config.action.intentTraceOnly !== "invisible" && config.action.intentTraceOnly !== "all" && config.action.intentTraceOnly !== "none") config.action = { ...config.action, intentTraceOnly: "all" };
