@@ -16,6 +16,8 @@ import type { HostDirs } from "./host-dirs.js";
 import { resolveRulesFile } from "./rules-file.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
+import { actionAskGate } from "./ask-gate.js";
+import { VerdictCache, cacheKey } from "./verdict-cache.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
 export type Level = "allow" | "warn" | "confirm" | "deny";
@@ -199,6 +201,10 @@ export interface Verdict {
   largeOutputFamily?: string;
   /** Answers to the caller's own `questions`: P(yes) for a noul, the picked option for a choice, the level for a score. */
   extra?: Record<string, number | string>;
+  /** True when an identical call in this session was judged inside the reuse window and its verdict is reused. */
+  cached?: boolean;
+  /** True when the ask gate left the call offline: the pattern pass and the floor decided it, no request went out. */
+  notAsked?: string;
   /** Safe TypeSafe error message when the judge could not answer. */
   error?: string;
   errorCode?: IntegrationErrorCode;
@@ -2657,33 +2663,68 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   if (!judge) return withPlan({ level, source: "pattern", summary, patterns, reasons });
 
+  // Re-apply the floor from the built-in hits as if `floor: "level"`. Used when no judge decides: the gate leaves the
+  // call offline, or the request failed and failOpen is on. The floor is the same in both cases, so it stays the same
+  // read whether a request went out or not.
+  const applyFloor = (): void => {
+    if (hasBuiltInDestructive || outsideProjectExisting) level = higher(level, "confirm");
+    else if (hasBuiltInOther || hasDeferredSensitive || hasOutsideProject) level = higher(level, "warn");
+  };
+
+  // Ask gate: a call that cannot change anything the agent sees is decided by the pattern pass and the floor alone.
+  if (config.ask?.enabled !== false) {
+    const decision = actionAskGate(action.tool, action.input, view?.shell ? stripDataText(view.command).text : undefined, action.cwd);
+    if (!decision.ask) {
+      applyFloor();
+      return withPlan({ level, source: "pattern", summary, patterns, reasons, notAsked: decision.why });
+    }
+  }
+
   // Resolve the rules file once per call for the Jev request state. With the rules guard off, no rules content leaves
   // the machine at all: no question names the field, so an absent one costs nothing. The config decides which files
   // count, so the content sent here is the content the guard judges with.
+  // Reuse the verdict of an identical call in the same session inside the window. A hold is never stored, so this can
+  // only answer with an allow or a warn; every hold and every approval is asked again.
+  const reuseKey = options.cache && config.cacheMinutes > 0 ? cacheKey(action.cwd, action.tool, action.input) : undefined;
+  const askedAt = options.now?.() ?? Date.now();
+  if (reuseKey) {
+    const reused = options.cache!.get(reuseKey, askedAt);
+    if (reused) return withPlan({ ...reused, cached: true });
+  }
   const resolved = options.rules?.enabled === false ? null : resolveRulesFile(action.cwd, options.rules);
+  const leanRequest = config.leanRequest !== false;
   const floorHits = builtInHits.length ? builtInHits.join("; ") : "none";
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: resolved?.content, rulesSource: resolved?.source, violations: remainingViolations, floorHits, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false });
+  // The lean request: no `context`, no off-task/scope/should-proceed questions. The rules content is only read by the
+  // per-violation questions, so it rides the request only while a violation is open; `leanRequest: false` keeps it on
+  // every request, as it was before the cut.
+  const stateRules = !leanRequest || remainingViolations.length ? resolved?.content : undefined;
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, lean: leanRequest, context: leanRequest ? undefined : action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false });
+  // One call in twenty also asks the trace-only questions, in a second request that goes out beside the first, so the
+  // recorded off-task/scope signal keeps coming without touching what the agent sees.
+  const traceAnswer = leanRequest && traceSampled(options.traceSample)
+    ? ask(judge, buildRequest(summary, action.task, { traceOnly: true, context: action.context, plan, rules: resolved?.content, rulesSource: resolved?.source, floorHits, spine: action.spine }), { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) })
+    : undefined;
   const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {
     if (!config.failOpen) {
       level = higher(level, "confirm");
       reasons.push("TypeSafe unavailable and failOpen is false");
-    } else if (evidenceMode && (hasBuiltInDestructive || hasBuiltInOther || hasDeferredSensitive || hasOutsideProject)) {
+    } else if (evidenceMode) {
       // Judge failed in evidence mode: re-apply the floor from built-in hits as if level mode.
-      if (hasBuiltInDestructive || outsideProjectExisting) level = higher(level, "confirm");
-      else if (hasBuiltInOther || hasDeferredSensitive || hasOutsideProject) level = higher(level, "warn");
+      applyFloor();
       reasons.push("TypeSafe unavailable; built-in patterns decide");
     } else {
       reasons.push("TypeSafe unavailable; allowed by failOpen");
     }
     return withPlan({ level, source: "error", summary, patterns, reasons, error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) });
   }
-  const answers = result.answers as typeof result.answers & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk" | "regretted" | "intent_mismatch" | "visible" | "large_output", { type: string; noul?: number }>> & { regret_target?: { type: string; choice?: string } };
+  // The request type is assembled at runtime, so the answer shape is read loosely here: the acting questions are named
+  // explicitly, and everything else is looked up with a guard at the point of use.
+  const answers = result.answers as unknown as { irreversible: { noul: number }; mutates?: { noul?: number } } & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk" | "regretted" | "intent_mismatch" | "visible" | "large_output" | "off_task" | "should_proceed", { type: string; noul?: number }>> & { regret_target?: { type: string; choice?: string }; scope?: { type: string; choice?: ScopeLabel; confidence?: number } };
   const judgment: Judgment = {
     irreversible: answers.irreversible.noul,
-    offTask: answers.off_task.noul,
-    scope: answers.scope.choice,
-    scopeConfidence: answers.scope.confidence,
+    ...(typeof answers.off_task?.noul === "number" ? { offTask: answers.off_task.noul } : {}),
+    ...(typeof answers.scope?.choice === "string" ? { scope: answers.scope.choice, scopeConfidence: answers.scope.confidence } : {}),
     model: result.model,
     elapsedMs: result.elapsedMs,
   };

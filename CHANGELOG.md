@@ -4,6 +4,22 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## Unreleased
+
+### Added
+
+- `action.ask` (default on): code decides before the request whether Jev can change anything the agent sees for this call. It asks for a git history or remote write, a delete or a move, a write through a redirect, `tee`, or `sed -i`, a database client, a network write, a publish, a deploy, an infrastructure command, a `gh` write, `ssh`/`scp`/`rsync`, a build or package target that deploys, publishes, or installs, a call nested in a `for`, `do`, or substitution, an interpreter script that names such a shape, and every `write` and `edit`. Every other call is decided by the offline pattern pass and the floor, and the trace says `not asked` with the reason.
+- `action.leanRequest` (default on): the acting request carries only the state and the questions a delivered outcome reads. The earlier messages, the off-task, scope, and should-proceed questions, and the rules content on a call with no open violation all leave it.
+- `action.traceSample` (default 0.05): one judged call in twenty still asks the off-task, scope, and should-proceed questions in a second request, so the recorded signal keeps coming. Their answers reach the trace and the hold record and never change a level.
+- `action.cacheMinutes` (default 10): an identical call (same project, tool, and command; a write or edit also keys on its content hash) reuses the last verdict inside the window, so a repeat costs no request. A hold, a deny, and an approved retry are never reused.
+
+### Changed
+
+- The action guard's Jev spend falls on recorded traffic: on the calls pi-warden judged from 2026-09-25 to 2026-09-30, the acting requests fall 51.1% (28,036 to 13,627 plus 717 sampled) and the input tokens per request fall about 42% (measured against the API on 171 sampled calls, 2,288 to 1,327). Together, about 68% fewer input tokens on the action path.
+- The gate still asks 96.7% of the calls whose answer changed what the agent saw in that window (327 of 338). The 11 it leaves offline were all `warn`-level, none was held, and the highest irreversible score among them was 0.57, under the 0.9 hold.
+- `off_task`, `scope`, and `scopeConfidence` are optional on a judgment and absent from the acting request's answers; a verdict with no off-task answer reads as "no evidence", never as a warning.
+- The offline pattern pass and the floor decide a call the gate leaves unasked exactly as they decide one whose request failed: built-in hits warn or hold as they would with `floor: "level"`, so no current hold weakens.
+
 ## 0.82.0
 
 ### Added

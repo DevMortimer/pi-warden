@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultConfig } from "../src/config.js";
 import { evaluateAction, matchPatterns, sqlTarget } from "../src/guard.js";
+import { judgedAction } from "./judged-action.js";
 
 const HOSTED = "postgresql://postgres.ref:pw@aws-0-us-east-1.pooler.supabase.com:6543/postgres";
 
 const hitsOf = (command: string) => matchPatterns("bash", { command }).map(hit => [hit.id, hit.severity]);
 /** The offline level: no judge, so the pattern floor decides. */
-const levelOf = async (command: string) => (await evaluateAction({ tool: "bash", input: { command }, cwd: process.cwd() }, { config: defaultConfig().action })).level;
+const levelOf = async (command: string) => (await evaluateAction({ tool: "bash", input: { command }, cwd: process.cwd() }, { config: judgedAction() })).level;
 
 test("sqlTarget reads loopback, hosted, and unknown targets", () => {
   assert.equal(sqlTarget("psql -h 127.0.0.1 -U postgres -c 'SELECT 1'"), "loopback");

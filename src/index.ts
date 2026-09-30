@@ -38,6 +38,8 @@ export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardCo
 export { defaultHostDirs } from "./host-dirs.js";
 export type { HostDirs } from "./host-dirs.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
+export { actionAskGate, gateCommand } from "./ask-gate.js";
+export type { AskDecision } from "./ask-gate.js";
 export type { CommandView } from "./tools.js";
 export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, runawayTokens, rulesTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, SENTENCE_TEMPLATES, pickSentenceTemplate, TOKEN_NAMES } from "./widget.js";
 export type { WidgetConfig, WidgetPlacement, WidgetBarMode, Tokens } from "./widget.js";

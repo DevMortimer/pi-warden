@@ -57,6 +57,47 @@ User-declared rules keep their action in both evidence and level modes.
 
 **Hold feedback.** What you do next labels each judgment, so hold precision is measured on your sessions rather than assumed. A hold your reply releases (or the confirm dialog allows) was a false positive; a hold you decline, or that nobody approves after you replied and the next turn ended, stood. An allowed call your next message tells the agent to stop, undo, or revert was a miss: one `regretted` question rides the first action request after your reply, with the redacted summaries of last turn's allowed calls (a locator names the one when there are several); offline, a stop-word heuristic stands in. `/warden status` shows the counts and the precision, the trace entry of each call gets its outcome, and every judged call is written with its scores and outcome to an owner-only per-session file under `~/.pi/agent/pi-warden/holds/` (tool, pattern ids, scores, level, mode, outcome; never the command). `"action": { "feedbackLog": false }` keeps the counts and skips the file.
 
+### What reaches Jev (2026-09-30, 0.83.0)
+
+The action request left every judged call on the machine. Most of those answers could not change what the agent saw, so
+three things now decide whether a call is worth a request, and what that request carries.
+
+**Ask gate (`action.ask`).** Code decides before the request whether Jev can change anything the agent sees. It asks when
+the call can be irreversible or visible: a git history or remote write, a delete or a move, a write through a shell
+redirect or `tee` or `sed -i`, a database client, a network write, a publish, a deploy, or an infrastructure command, a
+`gh` write, `ssh`/`scp`/`rsync`, a build or package target that deploys, publishes, or installs, a call nested in a
+`for`, `do`, or substitution, an interpreter script that names such a shape, and every `write` and `edit`. Every other
+call is decided offline: the pattern pass and the floor still run, the trace says `not asked: <reason>`, and no request
+leaves the machine. The gate errs toward asking: a missed ask loses a real warning, an extra ask only costs money.
+
+On the recorded action traffic from 2026-09-25 to 2026-09-30 (33,795 calls, 28,036 of them judged), the gate asks
+14,326: 48.9% fewer requests. Of the 338 calls whose answer changed what the agent saw in that window (an irreversible
+warn or hold, or an intent-mismatch steer on a visible action), it still asks 327: 96.7%. All 11 it leaves offline were
+`warn`-level, none was held, and the highest irreversible score among them was 0.57, well under the 0.9 hold.
+
+**Lean request (`action.leanRequest`).** The acting request carries only what a delivered outcome reads: the task, the
+action summary, the agent's plan, the spine, last turn's allowed calls, the floor hits, and the questions whose answers
+act (`irreversible`, `mutates`, `visible`, `intent_mismatch`, `large_output`, plus slop, security, approval, regret, and
+the per-violation questions when they apply). The earlier messages left it: no acting question reads them. The resolved
+rules content rides the request only while a violation is open, because only the per-violation questions name it. On 171
+sampled calls the acting request falls from 2,288 to 1,327 input tokens (measured against the API), with a median
+absolute shift of 0.00 in the `irreversible` answer and no call crossing 0.5 or 0.9.
+
+**Trace sample (`action.traceSample`).** The off-task, scope, and should-proceed questions are recorded but never acted
+on: off-task holds nothing and its steer is trace-only, and should-proceed is trace-only by default. They left the
+acting request and ride a second request on one call in twenty, whose answers are written into the trace and the hold
+record and never change a level.
+
+**Verdict reuse (`action.cacheMinutes`).** An exact repeat of the same project, tool, and command in the same session
+reuses the last verdict for ten minutes; a write or edit also keys on the content hash. A hold, a deny, and an approved
+retry are never stored, so every decision the agent acted on is asked again. On the recorded traffic the window answers
+0.1% of the acting requests: exact repeats inside one session and ten minutes are rare, but each one that lands is a
+request not spent.
+
+Together, on that window, the acting requests fall 51.1% and the input tokens per request fall about 42%, for an
+estimated **68% cut in input tokens** on the action path. The added cost is code only: the gate costs a median of 19
+microseconds per call and the reuse lookup half a microsecond.
+
 ### Why Jev and not a second LLM call
 
 Agents pick the next command well and notice badly when that command is out of proportion to the request. A pattern list catches `rm -rf /`; it cannot tell `db:reset` after "reset the database" from `db:reset` after "add a column". A generative model can, but a second LLM call per tool call is slow and expensive. Jev is a System One model: it returns calibrated probabilities to fixed questions in about a quarter of a second, for a fraction of a cent, which is cheap enough to sit in front of every guarded call. Three rules follow from that: in evidence mode the judge decides the level while built-in patterns provide context, in level mode patterns set the floor and Jev can only raise it, the agent's plan can add a nudge but never remove a hold, and the LLM is never asked to judge itself.

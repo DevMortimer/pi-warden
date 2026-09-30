@@ -4,6 +4,7 @@ import { ActionGuard } from "../src/action-guard.js";
 import type { Conversation, InspectOptions, ToolCallRef } from "../src/action-guard.js";
 import { defaultConfig } from "../src/config.js";
 import type { Judge } from "pi-typesafe";
+import { judgedAction } from "./judged-action.js";
 
 interface Request { state: { action: { command?: string; path?: string } }; questions: Record<string, unknown> }
 interface Answers { irreversible: number; offTask?: number; scope?: string; mutates?: number; approved?: number; shouldProceed?: number }
@@ -40,7 +41,7 @@ function stubJudge(): Judge & { requests: Request[]; next: Answers; release: () 
 }
 
 const bash = (id: string, command: string): ToolCallRef => ({ id, tool: "bash", input: { command } });
-const options = (judge?: Judge): InspectOptions => ({ config: defaultConfig().action, cwd: process.cwd(), judge });
+const options = (judge?: Judge): InspectOptions => ({ config: judgedAction(), cwd: process.cwd(), judge });
 const under = (task: string, siblings?: ToolCallRef[]): Conversation => ({ task, siblings });
 const askedApproval = (judge: { requests: Request[] }) => "approved" in judge.requests.at(-1)!.questions;
 

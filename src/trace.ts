@@ -72,11 +72,13 @@ export function actionDetails(verdict: Verdict, extra: { mode?: string; told?: s
   if (verdict.plan !== undefined) lines.push(`plan: ${clip(verdict.plan.replace(/\s+/g, " "), 300)}`);
   if (verdict.patterns.length) lines.push(`patterns: ${verdict.patterns.map(hit => `${hit.id} (${hit.severity})`).join(", ")}`);
   if (judgment) {
-    lines.push(`jev: irreversible ${percent(judgment.irreversible)} · off-task ${percent(judgment.offTask)} · ${judgment.scope.replace(/_/g, " ")} (${percent(judgment.scopeConfidence)})${judgment.approved !== undefined ? ` · approved ${percent(judgment.approved)}` : ""}${judgment.mutates !== undefined ? ` · mutates ${percent(judgment.mutates)}` : ""}${judgment.visible !== undefined ? ` · visible ${percent(judgment.visible)}` : ""}${judgment.largeOutput !== undefined ? ` · large-output ${percent(judgment.largeOutput)}` : ""}${judgment.intentMismatch !== undefined ? ` · intent mismatch ${percent(judgment.intentMismatch)}` : ""}${judgment.regretted !== undefined ? ` · regret of last turn ${percent(judgment.regretted)}` : ""} · ${judgment.model} · ${judgment.elapsedMs} ms`);
+    lines.push(`jev: irreversible ${percent(judgment.irreversible)}${judgment.offTask === undefined ? "" : ` · off-task ${percent(judgment.offTask)}`}${judgment.scope === undefined ? "" : ` · ${judgment.scope.replace(/_/g, " ")} (${percent(judgment.scopeConfidence ?? 0)})`}${judgment.approved !== undefined ? ` · approved ${percent(judgment.approved)}` : ""}${judgment.mutates !== undefined ? ` · mutates ${percent(judgment.mutates)}` : ""}${judgment.visible !== undefined ? ` · visible ${percent(judgment.visible)}` : ""}${judgment.largeOutput !== undefined ? ` · large-output ${percent(judgment.largeOutput)}` : ""}${judgment.intentMismatch !== undefined ? ` · intent mismatch ${percent(judgment.intentMismatch)}` : ""}${judgment.regretted !== undefined ? ` · regret of last turn ${percent(judgment.regretted)}` : ""} · ${judgment.model} · ${judgment.elapsedMs} ms`);
   }
   if (judgment?.securityRisk !== undefined) lines.push(`security risk: ${percent(judgment.securityRisk)}`);
   if (verdict.slop) lines.push(`slop: stub ${percent(verdict.slop.stub)} · comments ${percent(verdict.slop.comments)} · dead ${percent(verdict.slop.dead)} · hedging ${percent(verdict.slop.hedging)}${verdict.slopReasons?.length ? ` → ${verdict.slopReasons.join("; ")}` : ""}`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
+  if (verdict.cached) lines.push("reused the verdict of an identical call in this session");
+  if (verdict.notAsked) lines.push(`not asked: ${verdict.notAsked}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
   if (extra.mode && verdict.level === "confirm") lines.push(`mode: ${extra.mode}`);
   if (extra.told) lines.push(`agent told: ${clip(extra.told, 400)}`);

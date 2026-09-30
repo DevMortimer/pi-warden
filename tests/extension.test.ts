@@ -143,7 +143,17 @@ const readLog = async (path: string, lines: number, settled = true): Promise<Rec
   throw new Error(`log at ${path} did not reach ${lines} labelled lines`);
 };
 const STACK_BAR = { widget: { barMode: "stack" } };
-const grantConsent = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
+/**
+ * The pre-cut action behaviour: every call judged, the full request, no verdict reuse. The shipped defaults turn the ask
+ * gate, the lean request, and the reuse window on; `tests/action-cut.test.ts` covers those on their own.
+ */
+const FULL_ACTION = { ask: { enabled: false }, cacheMinutes: 0, traceSample: 0, leanRequest: false };
+/** Writes the user config from JSON, with the pre-cut action section unless the test sets its own. */
+const writeConfig = (json: string) => {
+  const config = JSON.parse(json) as { action?: Record<string, unknown> };
+  return writeFile(configPath(), JSON.stringify({ ...config, action: { ...FULL_ACTION, ...(config.action ?? {}) } }));
+};
+const grantConsent = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
 
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), "pi-warden-ext-"));
@@ -246,7 +256,7 @@ test("PI_WARDEN_DB is set and not under the real home directory", () => {
 
 test("should-proceed defaults to trace-only for interactive and headless agents", async () => {
   for (const hasUI of [true, false]) {
-    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, ...STACK_BAR }));
     await sessionStart(context({ hasUI }));
     sentMessages.length = 0;
     nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.9, should_proceed: 0.3 };
@@ -259,7 +269,7 @@ test("should-proceed defaults to trace-only for interactive and headless agents"
 
 test("should-proceed opt-in steers reach interactive and headless agents without holding or duplicate delivery", async () => {
   for (const hasUI of [true, false]) {
-    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, shouldProceed: { steer: true } }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, shouldProceed: { steer: true } }, ...STACK_BAR }));
     await sessionStart(context({ hasUI }));
     sentMessages.length = 0;
     notices.length = 0;
@@ -275,7 +285,7 @@ test("action rules context is disclosed, rides the request with the rules guard 
   const rulesFile = join(temporary, "AGENTS.md");
   await writeFile(rulesFile, "# Local policy\nUse the project logger.\n");
   try {
-    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
     await toolCall("bash", { command: "npm test" });
     const on = requests.find(request => "irreversible" in request.questions);
     assert.match(String(on?.state.rules), /project logger/);
@@ -305,7 +315,7 @@ test("a bound rules.files entry keeps the first-run notice away from the fallbac
   await writeFile(local, "# Local rule\nLocal body.\n");
   const seen = notices.length;
   try {
-    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true, files: [global, "warden-local-rules.md"] }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true, files: [global, "warden-local-rules.md"] }, ...STACK_BAR }));
     await sessionStart();
     await toolCall("bash", { command: "npm test" });
     assert.deepEqual(notices.slice(seen).filter(notice => /fallback rules|No rules file detected/.test(notice.text)), [], "the configured files are the rules in force, so there is nothing to notice");
@@ -319,7 +329,7 @@ test("a bound rules.files entry keeps the first-run notice away from the fallbac
     // the same session does name the fallback document.
     await rm(global, { force: true });
     await rm(local, { force: true });
-    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
     await sessionStart();
     await toolCall("bash", { command: "npm test" });
     assert.match(notices.at(-1)!.text, /Using AGENTS\.md as active fallback rules/);
@@ -328,6 +338,7 @@ test("a bound rules.files entry keeps the first-run notice away from the fallbac
 
 test("scope keeps recent task context after a side comment without turning history into approval", async () => {
   await grantConsent();
+  await sessionStart();
   const ctx = context({ sessionManager: {
     getBranch: () => [
       { type: "message", message: { role: "user", content: "Implement tool-output security and compression. TOKEN=synthetic-secret" } },
@@ -385,7 +396,7 @@ test("legacy and malformed config files remain safe at agent_end and status", as
   await mkdir(join(temporary, ".pi"), { recursive: true });
   try {
     for (const slop of [{ enabled: true, placeholder: 0.7 }, { prose: null }, null, false]) {
-      await writeFile(configPath(), JSON.stringify({  typesafe: true, slop , ...STACK_BAR }));
+      await writeConfig(JSON.stringify({  typesafe: true, slop , ...STACK_BAR }));
       await writeFile(projectPath, JSON.stringify({ slop }));
       await agentEnd("Verified the change with the test suite. ".repeat(8));
       await runCommand("status");
@@ -424,7 +435,7 @@ test("a credential notice rides the tool result: banner in the content, a trace 
 });
 
 test("tail compression stores exact full output and preserves done-check evidence", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
   nextAnswers = { retention: "errors_and_summary" };
   const full = "progress complete 😀\n".repeat(2000) + "ERROR: exact failure\nexit code 1";
   const result = await toolResult("bash", { command: "npm test" }, full, true) as { content: Array<{ type: string; text: string }> };
@@ -520,7 +531,7 @@ test("secret warnings work offline; disabled output guards and failed requests p
   assert.match(other.content[0]!.text, /do not echo or commit/);
   // Talk about credentials is not a credential.
   assert.equal(await toolResult("read", { path: "src/output.ts" }, "export interface OutputVerdict {\n  secret: boolean;\n  token: string;\n}\nconst savedKey = process.env.TYPESAFE_API_KEY;", false), undefined);
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, security: { enabled: false }, context: { enabled: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, security: { enabled: false }, context: { enabled: false } , ...STACK_BAR }));
   const guardOff = await toolResult("read", {}, "TOKEN=ghp_Qk7mZ2pR9vT4xL8nW3sY6bD1cF5hJ0aM", false) as { content: Array<{ text: string }> };
   assert.equal(guardOff.content[0]!.text, "TOKEN=[redacted]", "masked with the security guard off, and no banner");
   await grantConsent();
@@ -556,7 +567,7 @@ test("source code that names secretIds is untouched by masking", async () => {
 });
 
 test("security.maskOutput false leaves the result text unchanged and keeps the generic banner", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: false, security: { maskOutput: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: false, security: { maskOutput: false }, ...STACK_BAR }));
   const key = projectKey();
   const result = await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, key, false) as { content: Array<{ text: string }> };
   assert.ok(result.content[0]!.text.includes(key), "the value is shown as before");
@@ -580,14 +591,14 @@ test("URL passwords, Authorization and Bearer values are masked, so their notice
 
 // A project file can no longer turn security off (it may only make it stricter), so the user file does it here.
 test("the user file with security.enabled false still masks a real-shaped key in a tool result", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: false, security: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: false, security: { enabled: false }, ...STACK_BAR }));
   const key = projectKey();
   const result = await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, `${key}\n`, false) as { content: Array<{ text: string }> };
   assert.equal(result.content[0]!.text, "[redacted]\n", "masked, and no banner: the banner follows security.enabled");
 });
 
 test("the user file with security.maskOutput false turns masking off even with the security guard off", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: false, security: { enabled: false, maskOutput: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: false, security: { enabled: false, maskOutput: false }, ...STACK_BAR }));
   const key = projectKey();
   assert.equal(await toolResult("bash", { command: "printenv OPENAI_API_KEY" }, key, false), undefined, "content unchanged");
 });
@@ -627,7 +638,7 @@ test("fixture-shaped credentials from a test file are traced once and never stee
 });
 
 test("status counts steers per guard, so a noisy guard has a name", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   try {
     await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
@@ -654,7 +665,7 @@ test("status counts steers per guard, so a noisy guard has a name", async () => 
 });
 
 test("rules past the cap: one notice per session names the rules file and the first dropped rule", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   try {
     await writeFile(rulesFile, Array.from({ length: 40 }, (_, index) => `# Rule ${index + 1}\nBody ${index + 1}.`).join("\n\n"));
@@ -676,7 +687,7 @@ test("rules past the cap: one notice per session names the rules file and the fi
 });
 
 test("rules past the cap: a write with notices off does not use up the once-per-session notice", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   try {
     await writeFile(rulesFile, Array.from({ length: 40 }, (_, index) => `# Rule ${index + 1}\nBody ${index + 1}.`).join("\n\n"));
@@ -685,7 +696,7 @@ test("rules past the cap: a write with notices off does not use up the once-per-
     const capped = (text: string) => /not judged, past the 31-question cap/.test(text);
     await toolCall("write", { path: join(temporary, "src", "quiet.ts"), content: "export const quiet = 1;" });
     assert.equal(notices.filter(notice => capped(notice.text)).length, 0, "no notice with notices off");
-    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
     await toolCall("write", { path: join(temporary, "src", "loud.ts"), content: "export const loud = 2;" });
     const shown = notices.filter(notice => capped(notice.text));
     assert.equal(shown.length, 1, "the first shown notice comes on the later write");
@@ -747,7 +758,7 @@ test("subagent reports: silent append by default, one batched wake for a report 
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /subagent triage/);
   assert.match(notices.at(-1)!.text, /1\/4 subagent reports woken/);
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, subagent: { cooldownMs: 0 } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, subagent: { cooldownMs: 0 } , ...STACK_BAR }));
   await settled(branch(entry("e5", "subagent-notify", failure.replace("explorer", "builder"))));
   assert.equal(requests.length, 3);
   const batched = sentMessages.filter(sent => sent.message.customType === "pi-warden-steer");
@@ -761,7 +772,7 @@ test("subagent reports: silent append by default, one batched wake for a report 
   nextAnswers = { wake: 0.2 };
   await settled(branch(entry("e6", "subagent-notify", failure)));
   assert.equal(sentMessages.length, 0, "a below-threshold report does not interrupt the user");
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, subagent: { enabled: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, subagent: { enabled: false } , ...STACK_BAR }));
   await settled(branch(entry("e7", "subagent-notify", failure)));
   assert.equal(requests.length, 4, "no triage request with the section off");
   assert.equal(sentMessages.length, 0);
@@ -777,7 +788,7 @@ test("security weaknesses in written content share the action request and produc
 });
 
 test("the context saver keeps a ledger: candidates, compressions, token-turns, recalls, and a status line", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
   nextAnswers = { retention: "summary_only" };
   const full = "progress complete\n".repeat(2000);
   const result = await toolResult("bash", { command: "npm test" }, full, false) as { content: Array<{ text: string }> };
@@ -799,7 +810,7 @@ test("the context saver keeps a ledger: candidates, compressions, token-turns, r
 });
 
 test("a saving made under one prompt keeps counting token-turns under the next prompt", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
   nextAnswers = { retention: "summary_only" };
   const result = await toolResult("bash", { command: "npm test" }, "progress complete\n".repeat(2000), false) as { content: Array<{ text: string }> };
   const path = result.content[0]!.text.match(/Full output: (.+)/)![1]!;
@@ -815,7 +826,7 @@ test("a saving made under one prompt keeps counting token-turns under the next p
 });
 
 test("the trace records a non-zero token-turns ledger line after a compression and a finished turn", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
   nextAnswers = { retention: "summary_only" };
   const result = await toolResult("bash", { command: "npm test" }, "progress complete\n".repeat(2000), false) as { content: Array<{ text: string }> };
   const path = result.content[0]!.text.match(/Full output: (.+)/)![1]!;
@@ -831,7 +842,7 @@ test("the trace records a non-zero token-turns ledger line after a compression a
 });
 
 test("an identical repeated result becomes a duplicate note with a stored copy, without a Jev request", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
   nextAnswers = { retention: "all" };
   const full = "unique line " + "x".repeat(3000) + "\nERROR: kept once\n";
   assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "the first result stays");
@@ -867,7 +878,7 @@ const relayContext = () => context({ sessionManager: { getBranch: () => [
 ] } });
 
 test("a report repeated in a new message or tool result becomes one pointer line; the stored copy holds the full text", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeMessages: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeMessages: true }, ...STACK_BAR }));
   nextAnswers = { retention: "all" };
   const ctx = relayContext();
   const incoming = `Turn 4, with earlier turns:\n${relayReport}\n${relayTail}`;
@@ -905,7 +916,7 @@ test("a report repeated in a new message or tool result becomes one pointer line
 });
 
 test("messages stay whole by default while tool results are cut", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
   nextAnswers = { retention: "all" };
   const ctx = relayContext();
   const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
@@ -917,7 +928,7 @@ test("messages stay whole by default while tool results are cut", async () => {
 });
 
 test("context.dedupeRuns false keeps repeated runs in messages and tool results, even with dedupeMessages on", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeRuns: false, dedupeMessages: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { dedupeRuns: false, dedupeMessages: true }, ...STACK_BAR }));
   nextAnswers = { retention: "all" };
   const ctx = relayContext();
   const incoming = `Turn 4\n${relayReport}\n${relayTail}`;
@@ -926,7 +937,7 @@ test("context.dedupeRuns false keeps repeated runs in messages and tool results,
 });
 
 test("recall kinds: a scoped search keeps the saving, a whole-file read is counted as such", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, stuck: { enabled: false }, context: { recallTool: "grep" } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, stuck: { enabled: false }, context: { recallTool: "grep" } , ...STACK_BAR }));
   nextAnswers = { retention: "summary_only" };
   const first = await toolResult("bash", { command: "npm test" }, "progress complete\n".repeat(2000), false) as { content: Array<{ text: string }> };
   const path = first.content[0]!.text.match(/Full output: (.+)/)![1]!;
@@ -948,7 +959,7 @@ test("read-only tools and read-only shell commands pass without network or dialo
 });
 
 test("without consent, only pattern checks run: risky warns, destructive is held with a steer reason", async () => {
-  await writeFile(configPath(), JSON.stringify({  notices: true, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  notices: true, rules: { enabled: false }, ...STACK_BAR }));
   assert.equal(await toolCall("bash", { command: "rm -rf dist" }), undefined);
   assert.equal(networkCalls, 0);
   assert.equal(notices.length, 2);
@@ -972,7 +983,7 @@ test("without consent, only pattern checks run: risky warns, destructive is held
  * `run`. `process.platform` reads as darwin meanwhile, where the scratch exemption applies, so the cases run the same on any host.
  */
 const withScratchBase = async (run: (base: string) => Promise<void>) => {
-  await writeFile(configPath(), JSON.stringify({ notices: true, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ notices: true, rules: { enabled: false }, ...STACK_BAR }));
   const base = await mkdtemp("/tmp/pi-warden-scratch-");
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
@@ -1095,7 +1106,7 @@ test("declared scratch paths: PI_WARDEN_SCRATCH_PATHS releases a path inside a d
   const saved = process.env.PI_WARDEN_SCRATCH_PATHS;
   process.env.PI_WARDEN_SCRATCH_PATHS = `${base}:/`;
   try {
-    await writeFile(configPath(), JSON.stringify({ notices: true, rules: { enabled: false }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ notices: true, rules: { enabled: false }, ...STACK_BAR }));
     await sessionStart();
     const ignored = () => notices.filter(notice => /PI_WARDEN_SCRATCH_PATHS ignored/.test(notice.text)).length;
     assert.equal(ignored(), 1, "the ignored entry is named once");
@@ -1113,14 +1124,14 @@ test("declared scratch paths: PI_WARDEN_SCRATCH_PATHS releases a path inside a d
 });
 
 test("per-call warning notices are off by default; trace-only off-task stays silent and notices: true restores UI warnings", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, rules: { enabled: false }, ...STACK_BAR }));
   nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated" };
   assert.equal(await toolCall("write", { path: join(temporary, "poem.txt"), content: "roses" }), undefined);
   assert.equal(notices.length, 0, "no yellow warning in the transcript by default");
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+write · .*off task$/, "the widget still shows the event, as a warn chip");
   assert.equal(sentMessages.length, 0, "the trace-only finding is not delivered to the agent");
 
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("write", { path: join(temporary, "poem2.txt"), content: "daisies" });
   assert.ok(notices.some(notice => /warden · write: /.test(notice.text)), "notices: true restores the warnings");
   assert.equal(sentMessages.length, 0, "a user-facing notice does not make the trace-only reason model-visible");
@@ -1179,7 +1190,7 @@ test("trace-only plausible side step does not leak through the headless generic 
 });
 
 test("trace-only off-task is silent headless and leaves the steer budget for a real warning", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, steerBudget: 1, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, steerBudget: 1, ...STACK_BAR }));
   prompt = "Fix the login redirect";
   const headless = context({ hasUI: false });
 
@@ -1204,7 +1215,7 @@ test("trace-only off-task is silent headless and leaves the steer budget for a r
 });
 
 test("trace-only off-task removes only its structured reason from mixed headless warnings", async () => {
-  await writeFile(configPath(), JSON.stringify({
+  await writeConfig(JSON.stringify({
     typesafe: true,
     action: { commandRules: [{ id: "audit-note", pattern: "\\bnpm\\s+run\\s+audit\\b", severity: "warn", message: "review the off-task audit before release" }] },
     ...STACK_BAR,
@@ -1234,7 +1245,7 @@ test("trace-only off-task removes only its structured reason from mixed headless
 });
 
 test("headless /warden test filters trace-only off-task delivery but keeps the full trace", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, ...STACK_BAR }));
   const headless = context({ hasUI: false });
   nextAnswers = { irreversible: 0.95, off_task: 0.95, scope: "unrelated", mutates: 0.95 };
 
@@ -1259,7 +1270,7 @@ test("headless /warden test filters trace-only off-task delivery but keeps the f
 });
 
 test("trace-only off-task does not soften an independent confirm decision", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, mode: "confirm", notices: true, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, mode: "confirm", notices: true, ...STACK_BAR }));
   confirmResult = false;
   nextAnswers = { irreversible: 0.95, off_task: 0.95, scope: "unrelated", mutates: 0.95 };
 
@@ -1372,7 +1383,7 @@ test("intentTraceOnly: every mismatch is trace-only by default; \"invisible\" st
   ] } });
   const intentSteers = () => sentMessages.filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content));
   const run = async (intentTraceOnly: string | undefined, command: string, visible = 0.2) => {
-    await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, ...(intentTraceOnly ? { intentTraceOnly } : {}) }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, ...(intentTraceOnly ? { intentTraceOnly } : {}) }, ...STACK_BAR }));
     await sessionStart(context({ hasUI: false }));
     sentMessages.length = 0;
     nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, visible, intent_mismatch: 0.91, should_proceed: 1.0 };
@@ -1410,7 +1421,7 @@ test("adaptive steers: an intent-mismatch steer the model does not follow become
     { type: "message", message: { role: "user", content: prompt } },
     assistantEntry({ type: "text", text: plan }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command } }),
   ] } });
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, intentTraceOnly: "invisible" }, steers: { minSteers: 2, recheckEvery: 4, probeEvery: 2 }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, intentTraceOnly: "invisible" }, steers: { minSteers: 2, recheckEvery: 4, probeEvery: 2 }, ...STACK_BAR }));
   const intentSteers = () => sentMessages.filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content)).length;
   /** One mismatching push; the agent's next two messages carry on without a course change. Returns whether the steer was sent. */
   const run = async (id: string) => {
@@ -1434,7 +1445,7 @@ test("adaptive steers: an intent-mismatch steer the model does not follow become
   assert.match(sentMessages.at(-1)!.message.content, /Reset intent-mismatch for test\/a/);
   assert.equal(await run("a"), 1, "after unmute the steer is sent again");
   await runCommand("unmute intent-mismatch test/b", context({ hasUI: false }));
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, steers: { adaptive: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, steers: { adaptive: false }, ...STACK_BAR }));
   await runCommand("unmute intent-mismatch", context({ hasUI: false, ...model("a") }));
 });
 
@@ -1514,7 +1525,7 @@ test("hold feedback offline: approval, re-plan, and a stop reply label the calls
   assert.equal(networkCalls, 0);
 
   // The log can be turned off; the counts stay.
-  await writeFile(configPath(), JSON.stringify({  action: { feedbackLog: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  action: { feedbackLog: false } , ...STACK_BAR }));
   await sessionStart();
   await rm(logPath, { force: true });
   prompt = "fix the bug";
@@ -1552,7 +1563,7 @@ test("hold outcome known at record time is persisted to SQLite via the promise (
   // The confirm-dialog path sets outcome at record time via track(true, "approved", "dialog").
   // Before the ordering fix, noteOutcomes ran before learningIds.set, so the label was lost.
   await initSchema(0);
-  await writeFile(configPath(), JSON.stringify({ mode: "confirm", notices: true, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ mode: "confirm", notices: true, rules: { enabled: false }, ...STACK_BAR }));
   await sessionStart();
   prompt = "deploy the change";
   confirmResult = false;
@@ -1601,7 +1612,7 @@ test("hold feedback with Jev: the regret question rides the first action request
 });
 
 test("hold feedback in confirm mode: the dialog's answer labels the hold at once", async () => {
-  await writeFile(configPath(), JSON.stringify({  mode: "confirm" , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  mode: "confirm" , ...STACK_BAR }));
   confirmResult = false;
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
   confirmResult = true;
@@ -1614,7 +1625,7 @@ test("hold feedback in confirm mode: the dialog's answer labels the hold at once
 });
 
 test("the Action guard is wired to the session: the prompt is the task, siblings come from the branch, session_start resets", async () => {
-  await writeFile(configPath(), JSON.stringify({ ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ ...STACK_BAR }));
   // Holds, approval, and sibling prejudging are tested at the guard's interface in tests/action-guard.test.ts.
   prompt = "fix the bug";
   assert.equal((await toolCall("bash", { command: "git push --force" }))?.block, true);
@@ -1644,7 +1655,7 @@ test("the Action guard is wired to the session: the prompt is the task, siblings
 });
 
 test("mode confirm shows a dialog; mode advise only reports; PI_WARDEN_MODE overrides the file", async () => {
-  await writeFile(configPath(), JSON.stringify({  mode: "confirm", notices: true , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  mode: "confirm", notices: true , ...STACK_BAR }));
   const allowed = await toolCall("bash", { command: "git push --force origin main" });
   assert.equal(allowed, undefined);
   assert.equal(confirms.length, 1);
@@ -1727,14 +1738,14 @@ test("slop symptoms steer the agent after the write without holding it; steers a
   assert.equal(sentMessages.length, 3);
   assert.match(sentMessages[2]!.message.content, /\(3th time this session\)[\s\S]*standing rule/);
 
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, steerVisible: true, steerBudget: 0 , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, steerVisible: true, steerBudget: 0 , ...STACK_BAR }));
   await toolCall("write", { path: join(temporary, "src", "d.ts"), content: "export const d = () => null; // TODO" });
   assert.equal((sentMessages[3]!.message as { display?: boolean }).display, true);
 });
 
 for (const barMode of ["live", "stack"]) {
   test(`${barMode} widget records action, rules, action in recency order and shows tokenless rules`, async () => {
-    await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, widget: { barMode } }));
+    await writeConfig(JSON.stringify({ typesafe: true, rules: { enabled: true }, widget: { barMode } }));
     const rulesFile = join(temporary, "pi-warden.md");
     try {
       await writeFile(rulesFile, "# No console statements\nCode must not contain console.log.\n");
@@ -1756,7 +1767,7 @@ for (const barMode of ["live", "stack"]) {
 }
 
 test("rules: a write in a project with pi-warden.md gets its own request beside the action request; violations steer in one message with slop; fallbacks and sensitive paths", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   const readme = join(temporary, "README.md");
   try {
@@ -1838,7 +1849,7 @@ test("rules: a write in a project with pi-warden.md gets its own request beside 
 });
 
 test("rules: a heredoc or echo write in bash is judged as a write before the call; a skipped form leaves a trace note", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   try {
     await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
@@ -1874,7 +1885,7 @@ test("rules: a heredoc or echo write in bash is judged as a write before the cal
 });
 
 test("rules: appends to one file in one bash call are one rules request; past five files the rest are skipped", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   try {
     await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
@@ -1901,7 +1912,7 @@ test("rules: appends to one file in one bash call are one rules request; past fi
 });
 
 test("a held write gets no rules or slop steer; the approved retry is judged again and gets its own", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   try {
     await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
@@ -1927,7 +1938,7 @@ test("a held write gets no rules or slop steer; the approved retry is judged aga
 });
 
 test("a confirm-dialog write gets its rules and slop steer only after the user allows it", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, mode: "confirm", rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, mode: "confirm", rules: { enabled: true }, ...STACK_BAR }));
   const rulesFile = join(temporary, "pi-warden.md");
   try {
     await writeFile(rulesFile, "# No console statements\nCode must not contain `console.log`.\n");
@@ -1972,7 +1983,7 @@ test("prose: the final reply is scored against the audience and the agent is nud
   await agentEnd("Short.");
   assert.equal(requests.filter(request => "wordy" in request.questions).length, 3, "replies under minChars are not judged");
 
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, slop: { prose: { audience: "plain" } } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, slop: { prose: { audience: "plain" } } , ...STACK_BAR }));
   await newPrompt("status?");
   nextAnswers = { wordy: 0.1, cliches: 0.1, jargon: 0.95 };
   await agentEnd("The webhook handler lacked HMAC verification so the ORM upsert raced the mutex. ".repeat(3));
@@ -1980,7 +1991,7 @@ test("prose: the final reply is scored against the audience and the agent is nud
 });
 
 test("stuck detection: exact repeats are caught offline, varied failures ask Jev, and the agent is nudged once per cool-down", async () => {
-  await writeFile(configPath(), JSON.stringify({  notices: true , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  notices: true , ...STACK_BAR }));
   await newPrompt("make the tests pass");
   await toolResult("bash", { command: "npm test" }, "1 failing", true);
   assert.equal(sentMessages.length, 0);
@@ -2023,7 +2034,7 @@ test("stuck detection: exact repeats are caught offline, varied failures ask Jev
 });
 
 test("quick repeat steers respect the per-run steer budget and the repeatSteer switch", async () => {
-  await writeFile(configPath(), JSON.stringify({ steerBudget: 1, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ steerBudget: 1, ...STACK_BAR }));
   await newPrompt("look at the files");
   await toolResult("read", { path: "/tmp/a.png" }, "ENOENT: no such file or directory", true);
   await toolResult("read", { path: "/tmp/a.png" }, "ENOENT: no such file or directory", true);
@@ -2033,7 +2044,7 @@ test("quick repeat steers respect the per-run steer budget and the repeatSteer s
   assert.equal(sentMessages.length, 1, "the second quick repeat is over the budget: recorded only");
   assert.match(sentMessages[0]!.message.content, /already ran `read \/tmp\/a\.png`/);
 
-  await writeFile(configPath(), JSON.stringify({ stuck: { repeatSteer: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ stuck: { repeatSteer: false }, ...STACK_BAR }));
   await newPrompt("again");
   await toolResult("read", { path: "/tmp/a.png" }, "ENOENT: no such file or directory", true);
   await toolResult("read", { path: "/tmp/a.png" }, "ENOENT: no such file or directory", true);
@@ -2101,7 +2112,7 @@ test("runaway guard: a reply that repeats its block is aborted mid-stream, recov
   assert.match(widgets.at(-1)!.at(-1)!, /^STOPPED, RECOVERING\s+runaway\s+thinking · \d+× repeated/);
   await fire("agent_end", { messages: [], stopReason: "aborted" }, ctx);
   abortsBefore = 4;
-  await writeFile(configPath(), JSON.stringify({  runaway: { recover: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  runaway: { recover: false } , ...STACK_BAR }));
   await newPrompt("merge again", ctx);
   await streamReply(loop.repeat(30));
   assert.equal(aborts.length, 5);
@@ -2109,7 +2120,7 @@ test("runaway guard: a reply that repeats its block is aborted mid-stream, recov
   await fire("agent_end", { messages: [] }, ctx);
   assert.deepEqual(sentMessages.at(-1)!.options, { triggerTurn: false });
   abortsBefore = 5;
-  await writeFile(configPath(), JSON.stringify({  runaway: { enabled: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  runaway: { enabled: false } , ...STACK_BAR }));
   await newPrompt("merge once more", ctx);
   await streamReply(loop.repeat(30));
   assert.equal(aborts.length, 5, "disabled: the stream is left alone");
@@ -2130,13 +2141,13 @@ test("desktop notifications: a hold, a confirm dialog, and a runaway stop each c
     return (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean);
   };
   // Off by default: a hold with a command configured but no `enabled: true` reaches nobody.
-  await writeFile(configPath(), JSON.stringify({  notify: { command, cooldownMs: 0 } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  notify: { command, cooldownMs: 0 } , ...STACK_BAR }));
   await sessionStart();
   await newPrompt("clean up");
   assert.equal((await toolCall("bash", forcePush))?.block, true);
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal((await lines(1)).length, 0, "notifications are opt-in");
-  await writeFile(configPath(), JSON.stringify({  notify: { enabled: true, command, cooldownMs: 0 } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  notify: { enabled: true, command, cooldownMs: 0 } , ...STACK_BAR }));
   await sessionStart();
   await newPrompt("clean up");
   const held = await toolCall("bash", forcePush);
@@ -2167,7 +2178,7 @@ test("desktop notifications: a hold, a confirm dialog, and a runaway stop each c
   assert.match(rows[2]!, /Runaway stopped: the same text block repeated \d+ times\. The agent gets one recovery turn\./);
 
   // Cooldown: sibling holds in one turn produce one notification.
-  await writeFile(configPath(), JSON.stringify({  notify: { enabled: true, command, cooldownMs: 60_000 } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  notify: { enabled: true, command, cooldownMs: 60_000 } , ...STACK_BAR }));
   await sessionStart();
   await newPrompt("clean up again");
   await toolCall("bash", forcePush);
@@ -2180,7 +2191,7 @@ test("desktop notifications: a hold, a confirm dialog, and a runaway stop each c
   await sessionStart();
   await newPrompt("headless", context({ hasUI: false }));
   await toolCall("bash", forcePush, context({ hasUI: false }));
-  await writeFile(configPath(), JSON.stringify({  notify: { enabled: false, command } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  notify: { enabled: false, command } , ...STACK_BAR }));
   await sessionStart();
   await newPrompt("quiet");
   await toolCall("bash", forcePush);
@@ -2188,7 +2199,7 @@ test("desktop notifications: a hold, a confirm dialog, and a runaway stop each c
   await mkdir(join(temporary, ".pi"), { recursive: true });
   try {
     const tagged = (tag: string) => [process.execPath, "-e", "require('node:fs').appendFileSync(process.argv[1], process.argv[2] + '\\n')", log, tag];
-    await writeFile(configPath(), JSON.stringify({  notify: { enabled: true, cooldownMs: 0, command: tagged("USER") } , ...STACK_BAR }));
+    await writeConfig(JSON.stringify({  notify: { enabled: true, cooldownMs: 0, command: tagged("USER") } , ...STACK_BAR }));
     await writeFile(projectPath, JSON.stringify({ notify: { command: tagged("PROJECT"), enabled: true } }));
     await sessionStart();
     await newPrompt("project");
@@ -2367,7 +2378,7 @@ test("done-check: non-UI changes, and uiProof off, behave as before", async () =
   await agentEnd("Fixed; tests pass.");
   assert.equal(networkCalls, 0, "a passing check covers a non-UI change");
 
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, done: { uiProof: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, done: { uiProof: false }, ...STACK_BAR }));
   await newPrompt("make the header sticky");
   await toolResult("edit", { path: "web/app.css", edits: [] }, "ok", false);
   await toolResult("bash", { command: "npm test" }, "31 passing", false);
@@ -2400,7 +2411,7 @@ test("TypeSafe failures fail open with a warning and never leak the upstream bod
 });
 
 test("regression: a budget error from an end-of-turn guard stops every later request, not only the action guard's", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, maxRequests: 1 , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, maxRequests: 1 , ...STACK_BAR }));
   await newPrompt("explain the bug");
   assert.equal(await toolCall("bash", { command: "npm test" }), undefined);
   assert.equal(networkCalls, 1, "the single allowed request goes to the action guard");
@@ -2418,6 +2429,8 @@ test("regression: a budget error from an end-of-turn guard stops every later req
 });
 
 test("PI_WARDEN_ENABLED=1 grants consent for headless runs", async () => {
+  await writeConfig(JSON.stringify({ typesafe: false, rules: { enabled: false }, ...STACK_BAR }));
+  await sessionStart();
   process.env.PI_WARDEN_ENABLED = "1";
   try {
     nextAnswers = { irreversible: 0.9, off_task: 0.1, scope: "expected_step" };
@@ -2549,8 +2562,11 @@ test("/warden enable without a key asks for one after consent, verifies it, stor
     assert.ok(notices.every(notice => !notice.text.includes("ts_live_key")), "the key is never echoed");
 
     nextAnswers = { irreversible: 0.2, off_task: 0.1, scope: "expected_step" };
-    await toolCall("bash", { command: "npm test" });
-    assert.equal(networkCalls, 1, "the stored key powers judgments in the same session");
+    // A command the ask gate sends to the judge: the session config is the one `/warden enable` just wrote.
+    // A command the ask gate sends to the judge. The session config is the one `/warden enable` just wrote, so the
+    // sampled trace-only request may ride along beside the acting one.
+    await toolCall("bash", { command: "git push origin main" });
+    assert.ok(networkCalls >= 1, "the stored key powers judgments in the same session");
 
     await runCommand("status");
     assert.match(notices.at(-1)!.text, /consented via \/warden enable; TypeSafe key: \/typesafe login \(verified/);
@@ -2608,7 +2624,7 @@ test("/warden rules check names the rules that need attention, and sends nothing
   const project = join(temporary, "rules-check");
   await mkdir(project, { recursive: true });
   await writeFile(join(project, "pi-warden.md"), ["# No console statements", "Code must not contain `console.log`. Use the logger.", "", "# No duplicate logic", "Do not duplicate logic that exists elsewhere in the codebase."].join("\n"));
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const ctx = context({ cwd: project });
 
   // Answers default to the first criterion and a low noul, so both rules come back fine.
@@ -2658,7 +2674,7 @@ test("/warden rules audit confirms before sending, writes the markdown copy, and
   await writeFile(join(project, "pi-warden.md"), "# No console statements\nCode must not contain `console.log`.\n");
   await writeFile(join(project, "src", "a.ts"), "export const a = 1;\n");
   await writeFile(join(project, "src", "b.ts"), "export const b = 2;\n");
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const ctx = context({ cwd: project });
 
   confirmResult = false;
@@ -2694,7 +2710,7 @@ test("/warden bench measures with a built-in sample and sends nothing without a 
   const project = join(temporary, "rules-bench");
   await mkdir(join(project, "src"), { recursive: true });
   await writeFile(join(project, "pi-warden.md"), "# No console statements\nCode must not contain `console.log`.\n");
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const ctx = context({ cwd: project });
 
   await runCommand("bench --runs 3", ctx);
@@ -2828,7 +2844,7 @@ test("/warden trace opens the panel with a UI and prints the trace without one; 
 });
 
 test("widget templates come from config and unknown or empty tokens drop their segment", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, widget: { barMode: "stack", action: "{time} {tool} → {level} · irr {irreversible} · pat {patterns} · {nonsense}", placement: "belowEditor", panelWidth: 60 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, widget: { barMode: "stack", action: "{time} {tool} → {level} · irr {irreversible} · pat {patterns} · {nonsense}", placement: "belowEditor", panelWidth: 60 } }));
   nextAnswers = { irreversible: 0.33, off_task: 0.1, scope: "expected_step" };
   await toolCall("bash", { command: "npm test" });
   assert.equal(widgetPlacement, "belowEditor");
@@ -2838,13 +2854,13 @@ test("widget templates come from config and unknown or empty tokens drop their s
   openPanels.at(-1)!.handleInput("q");
   await new Promise(resolve => setTimeout(resolve, 0));
 
-  await writeFile(configPath(), JSON.stringify({ widget: { enabled: false, barMode: "stack" } }));
+  await writeConfig(JSON.stringify({ widget: { enabled: false, barMode: "stack" } }));
   await toolCall("bash", { command: "rm -rf dist" });
   assert.equal(widgets.at(-1), undefined, "widget disabled clears the line");
 });
 
 test("the live bar wraps its sentence to the pane width", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, widget: { barMode: "live" } }));
+  await writeConfig(JSON.stringify({ typesafe: true, widget: { barMode: "live" } }));
   nextAnswers = { irreversible: 0.33, off_task: 0.1, scope: "expected_step" };
   await toolCall("bash", { command: "npm test" });
   const lines = widgetComponent!.render(67);
@@ -2866,7 +2882,7 @@ test("each unseen credential banners its result and traces, and neither costs a 
 });
 
 test("the per-run steer budget records further non-critical notices instead of delivering them", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, steerBudget: 1, rules: { sensitivePaths: { "tests/secrets/**": "never commit fixtures", "tests/private/**": "keep private" } } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, steerBudget: 1, rules: { sensitivePaths: { "tests/secrets/**": "never commit fixtures", "tests/private/**": "keep private" } } , ...STACK_BAR }));
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   await toolCall("edit", { path: "tests/secrets/a.ts", edits: [{ oldText: "old", newText: "new" }] });
   assert.equal(sentMessages.length, 1, "the first notice of the run is delivered");
@@ -2884,7 +2900,7 @@ test("the per-run steer budget records further non-critical notices instead of d
 });
 
 test("critical guards deliver past the spent steer budget", async () => {
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, steerBudget: 1, rules: { sensitivePaths: { "tests/secrets/**": "never commit fixtures" } } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, steerBudget: 1, rules: { sensitivePaths: { "tests/secrets/**": "never commit fixtures" } } , ...STACK_BAR }));
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   await toolCall("edit", { path: "tests/secrets/a.ts", edits: [{ oldText: "old", newText: "new" }] });
   assert.equal(sentMessages.length, 1, "the budget is spent by the sensitive-path note");
@@ -2913,7 +2929,7 @@ test("a final reply that restates this run's earlier reply is counted, not steer
 });
 
 test("user command rules: a confirm rule with action dialog prompts the user regardless of mode", async () => {
-  await writeFile(configPath(), JSON.stringify({  mode: "steer", notices: true, action: { commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm", action: "dialog", message: "kubectl delete can remove cluster resources" }] } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  mode: "steer", notices: true, action: { commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm", action: "dialog", message: "kubectl delete can remove cluster resources" }] } , ...STACK_BAR }));
   const allowed = await toolCall("bash", { command: "kubectl delete pod foo -n prod" });
   assert.equal(allowed, undefined, "the user approved the dialog");
   assert.equal(confirms.length, 1, "the dialog fired despite steer mode");
@@ -2928,7 +2944,7 @@ test("user command rules: a confirm rule with action dialog prompts the user reg
 });
 
 test("user command rules: a dialog rule prompts even in advise mode, where nothing else holds", async () => {
-  await writeFile(configPath(), JSON.stringify({  mode: "advise", notices: true, action: { commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm", action: "dialog" }] } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  mode: "advise", notices: true, action: { commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm", action: "dialog" }] } , ...STACK_BAR }));
   confirmResult = false;
   const declined = await toolCall("bash", { command: "kubectl delete pod foo -n prod" });
   assert.equal(declined?.block, true, "the dialog fired in advise mode and the user declined");
@@ -2942,7 +2958,7 @@ test("user command rules: a dialog rule prompts even in advise mode, where nothi
 });
 
 test("user command rules: an unknown severity holds for the user, and its config warning shows once per session and in /warden status", async () => {
-  await writeFile(configPath(), JSON.stringify({ action: { commandRules: [{ id: "prod-deploy", pattern: "\\bdeploy\\s+prod\\b", severity: "blok" }] }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ action: { commandRules: [{ id: "prod-deploy", pattern: "\\bdeploy\\s+prod\\b", severity: "blok" }] }, ...STACK_BAR }));
   await sessionStart();
   const warning = /^warden: config warnings: command rule "prod-deploy": severity "blok" is not one of warn, confirm, deny, block; the rule applies at confirm$/;
   assert.deepEqual(notices.filter(notice => warning.test(notice.text)).map(notice => notice.level), ["warning"], "said once at session start");
@@ -2962,7 +2978,7 @@ test("user command rules: an unknown severity holds for the user, and its config
 test("user command rules: a deny rule blocks without a dialog and without a TypeSafe request", async () => {
   // Consent is granted and the judge would be consulted for any non-deny verdict; deny must bypass it entirely.
   await grantConsent();
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, action: { commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b", message: "talosctl reset is never allowed" }] } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, action: { commandDenyRules: [{ id: "never-reset", pattern: "\\btalosctl\\s+reset\\b", message: "talosctl reset is never allowed" }] } , ...STACK_BAR }));
   const blocked = await toolCall("bash", { command: "talosctl reset --nodes talos1" });
   assert.equal(blocked?.block, true);
   assert.match(blocked?.reason ?? "", /talosctl reset is never allowed/);
@@ -2970,7 +2986,7 @@ test("user command rules: a deny rule blocks without a dialog and without a Type
   assert.equal(confirms.length, 0, "deny never prompts");
   assert.equal(networkCalls, 0, "deny never consults the judge, even with consent granted");
   // The same command with the deny rule absent reaches the judge, proving the zero above is deny's doing.
-  await writeFile(configPath(), JSON.stringify({  typesafe: true, action: { commandDenyRules: [] } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  typesafe: true, action: { commandDenyRules: [] } , ...STACK_BAR }));
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   const judged = await toolCall("bash", { command: "talosctl upgrade --nodes talos1" });
   assert.equal(judged, undefined);
@@ -2978,7 +2994,7 @@ test("user command rules: a deny rule blocks without a dialog and without a Type
 });
 
 test("user command rules: a warn rule warns without holding; exemptRules silences a built-in", async () => {
-  await writeFile(configPath(), JSON.stringify({  notices: true, action: { commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" }], exemptRules: ["infra-destroy"] } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  notices: true, action: { commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" }], exemptRules: ["infra-destroy"] } , ...STACK_BAR }));
   const warn = await toolCall("bash", { command: "git push origin feature" });
   assert.equal(warn, undefined, "a warn never holds");
   assert.match(notices.at(-1)!.text, /git-push-any/);
@@ -2988,7 +3004,7 @@ test("user command rules: a warn rule warns without holding; exemptRules silence
 });
 
 test("user command rules: a confirm rule without action defaults to dialog for user rules", async () => {
-  await writeFile(configPath(), JSON.stringify({  action: { commandRules: [{ id: "flux-suspend", pattern: "\\bflux\\s+suspend\\b", severity: "confirm" }] } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  action: { commandRules: [{ id: "flux-suspend", pattern: "\\bflux\\s+suspend\\b", severity: "confirm" }] } , ...STACK_BAR }));
   const allowed = await toolCall("bash", { command: "flux suspend kustomization apps" });
   assert.equal(allowed, undefined);
   assert.equal(confirms.length, 1, "default action for a user confirm rule is dialog");
@@ -2996,7 +3012,7 @@ test("user command rules: a confirm rule without action defaults to dialog for u
 });
 
 test("user command rules: a confirm rule with action hold steers instead of prompting, in every mode", async () => {
-  await writeFile(configPath(), JSON.stringify({  action: { commandRules: [{ id: "flux-suspend", pattern: "\\bflux\\s+suspend\\b", severity: "confirm", action: "hold" }] } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  action: { commandRules: [{ id: "flux-suspend", pattern: "\\bflux\\s+suspend\\b", severity: "confirm", action: "hold" }] } , ...STACK_BAR }));
   const held = await toolCall("bash", { command: "flux suspend kustomization apps" });
   assert.equal(held?.block, true, "hold restores steer semantics: no dialog, the agent is told and asked to re-plan");
   assert.equal(confirms.length, 0, "action hold never prompts");
@@ -3004,7 +3020,7 @@ test("user command rules: a confirm rule with action hold steers instead of prom
 });
 
 test("user command rules: severity deny on a commandRule blocks like a commandDenyRule", async () => {
-  await writeFile(configPath(), JSON.stringify({  action: { commandRules: [{ id: "never-helm-uninstall", pattern: "\\bhelm\\s+uninstall\\b", severity: "deny" }] } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({  action: { commandRules: [{ id: "never-helm-uninstall", pattern: "\\bhelm\\s+uninstall\\b", severity: "deny" }] } , ...STACK_BAR }));
   const blocked = await toolCall("bash", { command: "helm uninstall traefik -n kube-system" });
   assert.equal(blocked?.block, true);
   assert.match(blocked?.reason ?? "", /not allowed to run/);
@@ -3014,7 +3030,7 @@ test("user command rules: severity deny on a commandRule blocks like a commandDe
 test("pathRules: a confirm rule prompts the user, a block rule blocks, and notes only steer the agent", async () => {
   // "read" is not in the default action.tools (read tools are skipped for latency), so a read-scoped path rule
   // requires opting the read tool into inspection.
-  await writeFile(configPath(), JSON.stringify({ notices: true, action: { tools: ["bash", "write", "edit", "read"], pathRules: [
+  await writeConfig(JSON.stringify({ notices: true, action: { tools: ["bash", "write", "edit", "read"], pathRules: [
     { id: "repo-readonly", paths: ["deploy.yaml"], access: "read", tools: ["write", "edit"], action: "confirm", message: "deploys change cluster state" },
     { id: "audit-log", paths: ["audit/app.log"], access: "write", tools: ["read"], action: "block" },
   ] } }));
@@ -3052,7 +3068,7 @@ const conscienceSkill = (name: string, description: string) => ({
 });
 
 const writeConscienceConfig = (overrides: Record<string, unknown> = {}) =>
-  writeFile(configPath(), JSON.stringify({
+  writeConfig(JSON.stringify({
     typesafe: true, notices: false,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
@@ -3100,7 +3116,7 @@ test("conscience: no-tool lifecycle fixture for load mode", async () => {
 });
 
 test("conscience: default threshold 1.0 traces assessment but delivers nothing", async () => {
-  await writeFile(configPath(), JSON.stringify({
+  await writeConfig(JSON.stringify({
     typesafe: true, notices: false,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
@@ -3137,7 +3153,7 @@ test("conscience: steer budget exhausted blocks delivery", async () => {
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
   sentMessages.length = 0;
-  await writeFile(configPath(), JSON.stringify({
+  await writeConfig(JSON.stringify({
     typesafe: true, notices: false, steerBudget: 0,
     rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
     action: { feedbackLog: false },
@@ -3793,7 +3809,7 @@ test("conscience: warden steer does not invalidate conscience assessment", async
 });
 
 test("stuck-loop diff: third identical failure is not larger than the duplicate note", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
   await newPrompt("Run the test suite");
   const full = "FAIL tests/a.test.ts\n  Expected true, got false\n" + "x".repeat(20_000);
   assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "first result stays");
@@ -3806,7 +3822,7 @@ test("stuck-loop diff: third identical failure is not larger than the duplicate 
 });
 
 test("stuck-loop diff: three failures with differing outputs carry a diff note", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 5000, tailLimit: 1000 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 5000, tailLimit: 1000 } }));
   await newPrompt("Run the test suite");
   nextAnswers = { same_strategy: 0.9, approach_change: 0.1, progress: 0.1, irreversible: 0.1, off_task: 0.1 };
   const pad = Array.from({ length: 50 }, (_, i) => `context-line-${String(i).padStart(2, "0")}: ` + "y".repeat(30)).join("\n");
@@ -3823,7 +3839,7 @@ test("stuck-loop diff: three failures with differing outputs carry a diff note",
 });
 
 test("stuck-loop diff: three byte-identical failures do not grow the result", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
   await newPrompt("Run the test suite");
   const full = "FAIL tests/a.test.ts\n  Expected true, got false\n" + "x".repeat(20_000);
   assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "first stays");
@@ -3836,7 +3852,7 @@ test("stuck-loop diff: three byte-identical failures do not grow the result", as
 });
 
 test("stuck-loop diff: three identical successes are not replaced", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
   await newPrompt("Run the test suite");
   const full = "all 42 tests passed\n";
   assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "first stays");
@@ -3845,7 +3861,7 @@ test("stuck-loop diff: three identical successes are not replaced", async () => 
 });
 
 test("stuck-loop diff: two failures then a success leave the success unchanged", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
   await newPrompt("Run the test suite");
   const fail = "FAIL tests/a.test.ts\n  Expected true, got false";
   const ok = "all 42 tests passed";
@@ -3855,7 +3871,7 @@ test("stuck-loop diff: two failures then a success leave the success unchanged",
 });
 
 test("stuck-loop diff: stuck.enabled: false prevents any replacement", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false } }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false } }));
   await newPrompt("Run the test suite");
   const full = "FAIL tests/a.test.ts\n  Expected true, got false" + "x".repeat(5000);
   assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "stays");
@@ -3882,13 +3898,13 @@ const beforeCompact = (signal = new AbortController().signal) => ({
 });
 
 test("session_before_compact: off by default, Pi's summary runs and nothing is sent", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, ...STACK_BAR }));
   assert.equal(await fire("session_before_compact", beforeCompact()), undefined);
   assert.equal(networkCalls, 0);
 });
 
 test("session_before_compact: enabled, kept output replaces Pi's summary with Pi's cut point unchanged", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, compaction: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, compaction: { enabled: true }, ...STACK_BAR }));
   nextAnswers = { u1: 0.9, u2: 0.2 };
   const result = await fire("session_before_compact", beforeCompact()) as { compaction: { summary: string; firstKeptEntryId: string; tokensBefore: number } };
   assert.equal(result.compaction.firstKeptEntryId, "entry-42");
@@ -3904,10 +3920,10 @@ test("session_before_compact: enabled, kept output replaces Pi's summary with Pi
 });
 
 test("session_before_compact: no consent, a skipped provider, a judge failure, or an abort return nothing and never cancel", async () => {
-  await writeFile(configPath(), JSON.stringify({ compaction: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ compaction: { enabled: true }, ...STACK_BAR }));
   assert.equal(await fire("session_before_compact", beforeCompact()), undefined);
   assert.equal(networkCalls, 0, "no consent: nothing is sent");
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, compaction: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, compaction: { enabled: true }, ...STACK_BAR }));
   assert.equal(await fire("session_before_compact", beforeCompact(), context({ model: { provider: "claude-bridge", id: "m" } })), undefined);
   assert.equal(networkCalls, 0, "a provider in skipProviders keeps its own compaction");
   failNetwork = true;
@@ -3922,7 +3938,7 @@ test("session_before_compact: no consent, a skipped provider, a judge failure, o
 });
 
 test("session_before_compact: inside the request reserve Pi's summary runs, nothing is sent, and judgments stay on", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, maxRequests: 50, compaction: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, maxRequests: 50, compaction: { enabled: true }, ...STACK_BAR }));
   assert.equal(await fire("session_before_compact", beforeCompact()), undefined);
   assert.equal(networkCalls, 0, "one request would leave 49 of 50");
   assert.ok(!notices.some(notice => /Pattern checks continue without TypeSafe/.test(notice.text)), "the budget is not marked as spent");
@@ -3933,7 +3949,7 @@ test("session_before_compact: inside the request reserve Pi's summary runs, noth
 });
 
 test("session_compact: appendix includes saved output, failed check, and held action", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
   sentMessages.length = 0;
   nextAnswers = { retention: "summary_only" };
   const full = "progress complete\n".repeat(2000);
@@ -3962,7 +3978,7 @@ test("session_compact: appendix includes saved output, failed check, and held ac
 });
 
 test("session_compact: failed attempts and the verification state survive compaction", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, ...STACK_BAR }));
   sentMessages.length = 0;
   await newPrompt("Fix the build");
   await toolResult("bash", { command: "npm run build" }, "src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.", true);
@@ -3981,7 +3997,7 @@ test("session_compact: failed attempts and the verification state survive compac
 });
 
 test("session_compact: compactAppendix: false sends nothing", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, context: { compactAppendix: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, context: { compactAppendix: false }, ...STACK_BAR }));
   sentMessages.length = 0;
   const compactHandlers = extension.handlers.get("session_compact") ?? [];
   assert.equal(compactHandlers.length, 1);
@@ -3990,7 +4006,7 @@ test("session_compact: compactAppendix: false sends nothing", async () => {
 });
 
 test("session_compact: empty session sends nothing", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, ...STACK_BAR }));
   sentMessages.length = 0;
   const emptyBranch = context({ sessionManager: { getBranch: () => [] } });
   const compactHandlers = extension.handlers.get("session_compact") ?? [];
@@ -4000,7 +4016,7 @@ test("session_compact: empty session sends nothing", async () => {
 });
 
 test("session_compact: two compactions send two messages, each from the memory at that time", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
   sentMessages.length = 0;
   nextAnswers = { retention: "summary_only" };
   // First compaction: one saved output.
@@ -4169,7 +4185,7 @@ test("no trace file is written when PI_WARDEN_TRACE_DIR is unset or relative", a
 
 // Judge cooldown: a dead backend costs one notice, not one timeout per action.
 const cooldownConfig = (judge: { cooldownMs?: number; failuresBeforeCooldown?: number } = {}) =>
-  writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, timeoutMs: 50, judge, ...STACK_BAR }));
+  writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, timeoutMs: 50, judge, ...STACK_BAR }));
 const paused = () => notices.filter(notice => /judgments paused/.test(notice.text));
 const resumed = () => notices.filter(notice => /judgments resumed/.test(notice.text));
 /** Moves the clock the cooldown reads forward, so a window ends without a real wait and a slow runner cannot end it early. */
@@ -4292,7 +4308,7 @@ const rejectKey = async () => {
 const judgmentsOff = () => notices.filter(notice => notice.text.includes("Jev judgments are off")).map(notice => notice.text);
 
 test("judgments off: each reason is said once per session with its fix, and working judgments say nothing", async () => {
-  await writeFile(configPath(), JSON.stringify({ rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("bash", { command: "npm test" });
   await toolCall("bash", { command: "npm run lint" });
   assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (no consent). Run /warden enable."], "once per session, not per call");
@@ -4328,7 +4344,7 @@ test("judgments off: each reason is said once per session with its fix, and work
 });
 
 test("judgments off: no key on OpenRouter names only its variable, since /typesafe login stores no OpenRouter key", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: "openrouter", rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: "openrouter", rules: { enabled: false }, ...STACK_BAR }));
   const savedOpenRouter = process.env.OPENROUTER_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
   try {
@@ -4343,7 +4359,7 @@ test("judgments off: no key on OpenRouter names only its variable, since /typesa
 const gateway = { label: "Acme judge gateway", host: "https://gw.acme.example", path: "/judge/v1/decide", keyEnv: "ACME_JUDGE_KEY", defaultModel: "jev-1.13" };
 
 test("the commandcode backend sends judgments to its own host, path, and model", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: "commandcode", rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: "commandcode", rules: { enabled: false }, ...STACK_BAR }));
   const saved = process.env.COMMANDCODE_API_KEY;
   process.env.COMMANDCODE_API_KEY = "cc-fake-test-key-000";
   try {
@@ -4358,7 +4374,7 @@ test("the commandcode backend sends judgments to its own host, path, and model",
 });
 
 test("a caller-supplied endpoint object reaches createTypeSafe unchanged and answers from its own host, model, and key", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
   process.env.ACME_JUDGE_KEY = "acme-fake-test-key-000";
   try {
     await toolCall("bash", { command: "npm test" });
@@ -4373,7 +4389,7 @@ test("a caller-supplied endpoint object reaches createTypeSafe unchanged and ans
 });
 
 test("judgments off: an unknown typesafeBackend name is refused with the message, in the notice and in /warden status", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: "azure", rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: "azure", rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("bash", { command: "npm test" });
   await toolCall("bash", { command: "npm run lint" });
   assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend \"azure\". Valid backends: typesafe, openrouter, commandcode.)"], "said once, carrying pi-typesafe's refusal message");
@@ -4384,7 +4400,7 @@ test("judgments off: an unknown typesafeBackend name is refused with the message
 });
 
 test("judgments off: an endpoint object pi-typesafe refuses is refused with the message and never creates a client", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: { label: "Acme judge gateway", host: "http://gw.acme.example", keyEnv: "ACME_JUDGE_KEY" }, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: { label: "Acme judge gateway", host: "http://gw.acme.example", keyEnv: "ACME_JUDGE_KEY" }, rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("bash", { command: "npm test" });
   assert.equal(judgmentsOff().length, 1);
   assert.match(judgmentsOff()[0]!, /^warden: Jev judgments are off \(typesafeBackend refused: Backend host must be an absolute https/);
@@ -4393,7 +4409,7 @@ test("judgments off: an endpoint object pi-typesafe refuses is refused with the 
 });
 
 test("a custom backend's label, host, and model are named in /warden status, the /warden enable dialog, and the /warden test confirmation", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
   process.env.ACME_JUDGE_KEY = "acme-fake-test-key-000";
   try {
     await runCommand("status");
@@ -4411,7 +4427,7 @@ test("a custom backend's label, host, and model are named in /warden status, the
 });
 
 test("judgments off: no key on a custom endpoint names its own key variable and no login", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
   delete process.env.ACME_JUDGE_KEY;
   await toolCall("bash", { command: "npm test" });
   assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (no key for Acme judge gateway). Set ACME_JUDGE_KEY."]);
@@ -4437,7 +4453,7 @@ test("judgments off: a rejected key saved by /typesafe login is named as that ke
 });
 
 test("judgments off: a headless session gets one status message instead of a UI notice", async () => {
-  await writeFile(configPath(), JSON.stringify({ rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ rules: { enabled: false }, ...STACK_BAR }));
   const headless = context({ hasUI: false });
   await sessionStart(headless);
   sentMessages.length = 0;
@@ -4453,7 +4469,7 @@ test("judgments off: a headless session gets one status message instead of a UI 
 });
 
 test("judgments off: the budget keeps its own notice and adds no second message", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, maxRequests: 1, rules: { enabled: false }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, maxRequests: 1, rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("bash", { command: "npm test" });
   await toolCall("bash", { command: "npm run lint" });
   await toolCall("bash", { command: "npm run build" });
@@ -4495,7 +4511,7 @@ test("conscience: a rejected key traces key_rejected, and missing consent still 
   assert.ok(!traceText.includes("no_consent"));
 
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
-  await writeFile(configPath(), JSON.stringify({ conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] } }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] } }, ...STACK_BAR }));
   await sessionStart();
   sentMessages.length = 0;
   await promptWithSkills("design a landing page", skills);
@@ -4600,7 +4616,7 @@ test("prefs.inject is on by default: one quoted context message at session start
     sentMessages.length = 0;
     await sessionStart(context({ sessionManager: resumed }));
     assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0);
-    await writeFile(configPath(), JSON.stringify({ prefs: { inject: false }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ prefs: { inject: false }, ...STACK_BAR }));
     await sessionStart(context({ sessionManager: sessions.manager }));
     assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-prefs").length, 0, "inject: false sends nothing");
     assert.equal(networkCalls, 0);
@@ -4673,7 +4689,7 @@ test("enabled: false or prefs.enabled: false reads no session file, even with in
   const sessions = await prefsSessions(t);
   try {
     for (const config of [{ enabled: false, prefs: { inject: true } }, { prefs: { enabled: false, inject: true } }]) {
-      await writeFile(configPath(), JSON.stringify({ ...config, ...STACK_BAR }));
+      await writeConfig(JSON.stringify({ ...config, ...STACK_BAR }));
       const ctx = context({ sessionManager: sessions.manager });
       sentMessages.length = 0;
       notices.length = 0;
@@ -4796,7 +4812,7 @@ test("warden_loops: a loop of session A is invisible in session B and in another
 });
 
 test("the compaction appendix carries the open loops, and warden_recall prints its failed, verification, and saved sections", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, ...STACK_BAR }));
   const ctx = loopsContext("session-compact");
   try {
     await sessionStart(ctx);
@@ -4831,7 +4847,7 @@ test("waste: the session tip is off by default and is appended to the prompt onc
   await runCommand("trace", context({ hasUI: false }));
   assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 0, "a tip that was never offered is not traced");
 
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, waste: { tip: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, waste: { tip: true }, ...STACK_BAR }));
   await sessionStart();
   const options: { cwd: string; skills: unknown[]; appendSystemPrompt?: string } = { cwd: temporary, skills: [] };
   await fire("before_agent_start", { prompt: "read the file", systemPromptOptions: options });
@@ -4922,7 +4938,7 @@ test("/warden rules calibrate: the confirm dialog shows the requests and the red
   await gitCommit(project, { "src/app.ts": "const a = 1;\npassword: hunter2secret\n" }, "first");
   await gitCommit(project, { "src/app.ts": "const a = 2;\npassword: hunter2secret2\n" }, "second");
   await gitCommit(project, { "ignored.log": "log\n" }, "third");
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
 
   confirmResult = false;
   await runCommand("rules calibrate --commits 5 --max 10", context({ cwd: project }));
@@ -4941,7 +4957,7 @@ test("/warden rules calibrate: --yes sends with no dialog, respects the cap, and
   await gitCommit(project, { "src/app.ts": "const a = 1;\n" }, "first");
   await gitCommit(project, { "src/app.ts": "const a = 2;\n" }, "second");
   await gitCommit(project, { "src/other.ts": "const b = 3;\n" }, "third");
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
 
   sentMessages.length = 0;
   await runCommand("rules calibrate --commits 5 --max 2 --yes", context({ cwd: project, hasUI: false }));
@@ -4963,7 +4979,7 @@ test("/warden rules calibrate: --yes sends with no dialog, respects the cap, and
 
 test("/warden rules tune: with nothing flagged it says so and sends the agent nothing", async () => {
   const project = await rulesProject("rules-tune", ["# No console statements", "Code must not contain `console.log`. Use the logger."]);
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   sentUserMessages.length = 0;
   await runCommand("rules tune", context({ cwd: project }));
   assert.equal(sentUserMessages.length, 0, "nothing flagged means no prompt");
@@ -4975,7 +4991,7 @@ test("/warden rules tune: a rule flagged by rules check sends one rewrite prompt
     "# No console statements", "Code must not contain `console.log`. Use the logger.", "",
     "# No duplicate logic", "Do not duplicate logic that exists elsewhere in the codebase.",
   ]);
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, ...STACK_BAR }));
   const ctx = context({ cwd: project });
   nextAnswers = { "judgeable_no-duplicate-logic": "too_vague" };
   await runCommand("rules check", ctx);
@@ -5013,7 +5029,7 @@ const turnRepo = async (rules: string): Promise<string> => {
   git("commit", "-q", "-m", "seed");
   return dir;
 };
-const turnConfig = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: false, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, ...STACK_BAR }));
+const turnConfig = () => writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, ...STACK_BAR }));
 const steersOnly = () => sentMessages.filter(message => message.message.customType === "pi-warden-steer");
 
 /**
@@ -5181,7 +5197,7 @@ test("context filter: off by default, the generic excerpt is used and no filter 
 });
 
 test("context filter: on, the passages that pass the threshold replace the excerpt, with the footer, ledger, trace, and recall counts", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, context: { filter: { enabled: true } }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, context: { filter: { enabled: true } }, ...STACK_BAR }));
   await sessionStart();
   const full = filterLog();
   // The failing line sits in the 3rd 2000-character chunk; the fake judge rates only that one as useful.
@@ -5210,7 +5226,7 @@ test("context filter: on, the passages that pass the threshold replace the excer
 });
 
 test("context filter: no passing chunk falls back to the excerpt; retention all and duplicates never reach it", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, context: { filter: { enabled: true } }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, context: { filter: { enabled: true } }, ...STACK_BAR }));
   await sessionStart();
   nextAnswers = { retention: "errors_and_summary", format: "other" };
   const full = filterLog();
@@ -5234,7 +5250,7 @@ test("context filter: no passing chunk falls back to the excerpt; retention all 
 });
 
 test("context filter: a failed judge keeps the excerpt and counts the fallback", async () => {
-  await writeFile(configPath(), JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, security: { enabled: false }, context: { filter: { enabled: true, timeoutMs: 200 } }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, security: { enabled: false }, context: { filter: { enabled: true, timeoutMs: 200 } }, ...STACK_BAR }));
   await sessionStart();
   nextAnswers = { retention: "errors_and_summary", format: "other", c3: 3 };
   // The output check answers; every later request fails upstream.
