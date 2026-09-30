@@ -1,11 +1,14 @@
 /**
- * The turn-start curator: before the first model call of a new user message, one small Jev request asks which of the
- * project's rules apply to that request, and the ones that do ride back as one short message after it. The rules file
- * is judged offline by the rules guard otherwise; this is the one place the whole rule set is read against the request
- * itself, which is what makes a rule that governs the turn's work visible before the first tool call.
+ * The turn-start curator: before the first model call of a new user message, one small Jev request starts asking which
+ * of the project's rules apply to that request. It runs in the background, so the prompt never waits for it; when the
+ * answer arrives during the run, the rules that apply are delivered at the next tool boundary through the steer path as
+ * one short message appended after the newest message. The rules file is judged offline by the rules guard otherwise;
+ * this is the one place the whole rule set is read against the request itself, which is what makes a rule that governs
+ * the turn's work visible while the turn is still running.
  *
- * The message is appended by `before_agent_start`, after the newest user message, so it never edits an earlier message
- * and never invalidates a warm prompt cache. Nothing here throws: a failed or missing judgment appends nothing.
+ * The delivery appends after the newest message, so it never edits an earlier message and never invalidates a warm
+ * prompt cache, and it never starts a turn of its own. Nothing here throws: a failed, skipped, late, or missing
+ * judgment appends nothing and says why in the trace.
  *
  * A new Jev question ships with a measurement: the numbers behind the threshold and the append limit are in
  * `docs/guards.md` (Rules at turn start); the sample is the owner's own sessions and a model labelled it.
@@ -26,7 +29,7 @@ export const CURATOR_RULE_CHARS = 300;
 export const CURATOR_APPEND_LIMIT = 3;
 /** Rules asked about per turn at most: the same cap the guard's own request uses. */
 export const CURATOR_RULE_LIMIT = MAX_RULES;
-/** The turn start waits this long for the judgment at most, shorter than the general `timeoutMs`; past it nothing is appended. */
+/** The background request is abandoned after this long, shorter than the general `timeoutMs`; past it the judgment is dropped and nothing is appended. */
 export const CURATOR_TIMEOUT_MS = 2000;
 
 /** One rule as the turn-start question carries it. */

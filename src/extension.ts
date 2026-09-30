@@ -1486,7 +1486,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
           clearTimeout(timer);
         }
       }
-    })();
+    })().catch(error => {
+      // Anything thrown before the assessment's own try (a broken branch read, a redaction failure, a tool catalog that
+      // will not list) must not become an unhandled rejection: Node ends the Pi process on one. Fail open with the same
+      // trace line as a judge error.
+      const category = classifyJudgeError(error);
+      if (!warnedErrorCategories.has(category)) {
+        warnedErrorCategories.add(category);
+        console.warn(`pi-warden: conscience ${category}`);
+      }
+      record(ctx, config, "conscience", `error: ${category}`, ["trigger: before_agent_start", `skipReason: error`]);
+    });
 
     // ── Rules at turn start ──
     // One request before the first model call of this user turn asks which of the project's rules apply. It runs in

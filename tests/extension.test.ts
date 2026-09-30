@@ -3214,6 +3214,30 @@ test("conscience: the assessment does not hold the prompt, and a run that ends f
   assert.equal(sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience").length, 0, "no tip was appended");
 });
 
+test("conscience: a throw before the assessment's try is caught and traced, not an unhandled rejection", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await runCommand("trace", context({ hasUI: false }));
+    const errorsBefore = (sentMessages.at(-1)!.message.content.match(/error: other/g) ?? []).length;
+    // A branch read that throws is inside the background task but before its own try block.
+    const ctx = context({ sessionManager: { getBranch: () => { throw new Error("branch read failed"); } } });
+    await fire("before_agent_start", { prompt: "design a landing page", systemPromptOptions: { cwd: temporary, skills } }, ctx);
+    await settleBackground();
+    await tick();
+    assert.deepEqual(unhandled, [], "the background task must not reject unhandled");
+    await runCommand("trace", context({ hasUI: false }));
+    const traceText = sentMessages.at(-1)!.message.content;
+    assert.match(traceText, /skipReason: error/, "the failure is traced");
+    assert.equal((traceText.match(/error: other/g) ?? []).length, errorsBefore + 1, "exactly one trace line for the failure");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("conscience: steer budget exhausted blocks delivery", async () => {
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
