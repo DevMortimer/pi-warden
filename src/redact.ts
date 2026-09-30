@@ -67,9 +67,9 @@ const ASSIGNMENTS: RegExp[] = [
  * (`match[1]!.split(`), an arrow body (`x => y`), a template literal (`` `x${y}` ``, `` tag`/\s+/` ``), or a type name
  * with type arguments (`Record<string`, `Map<string, Token>`).
  *
- * The name of a call or an index must read as code: camelCase, PascalCase, or a dotted path. `secret=Pa9ss(9xyz` and
- * `API_KEY=abc[123]DEF` stay credentials, because a bracket or a parenthesis between otherwise opaque characters is a
- * key, not an expression.
+ * The name of a call or an index must read as code: camelCase, PascalCase, or a dotted path. A value such as
+ * `Pa9ss(9xyz` or `abc[123]DEF` stays a credential, because a bracket or a parenthesis between otherwise opaque
+ * characters is a key, not an expression; `tests/credential-shapes.test.ts` carries both in their assignment form.
  *
  * Every pattern here is linear. A repeated group must not overlap the character class that starts the next
  * iteration: an earlier version wrote the name alternatives as `[a-z]+(?:[A-Z][\w$]*)+`, whose `[\w$]*` could eat the
