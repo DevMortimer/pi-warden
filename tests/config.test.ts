@@ -503,6 +503,15 @@ test("learning.retentionDays 0 keeps every record, as documented; invalid values
   }
 });
 
+test("learning.allowedRetentionDays defaults to 90 and takes 0 or a positive whole number", () => {
+  assert.equal(defaultConfig().learning.allowedRetentionDays, 90);
+  assert.equal(applyUserOverrides(defaultConfig(), { learning: { allowedRetentionDays: 0 } }).learning.allowedRetentionDays, 0);
+  assert.equal(applyUserOverrides(defaultConfig(), { learning: { allowedRetentionDays: 30 } }).learning.allowedRetentionDays, 30);
+  for (const junk of [-1, 1.5, "0", null]) {
+    assert.equal(applyUserOverrides(defaultConfig(), { learning: { allowedRetentionDays: junk } }).learning.allowedRetentionDays, 90, JSON.stringify(junk));
+  }
+});
+
 test("action.shouldProceed.hold, the deprecated name of threshold, still sets it through 1.x", () => {
   assert.equal(applyUserOverrides(defaultConfig(), { action: { shouldProceed: { hold: 0.3 } } }).action.shouldProceed.threshold, 0.3);
   assert.equal(applyProjectOverrides(defaultConfig(), { action: { shouldProceed: { hold: 0.4 } } }).action.shouldProceed.threshold, 0.4);
@@ -521,7 +530,7 @@ test("a config file that still sets the removed keys loads cleanly", async () =>
   }));
   try {
     const config = loadConfig();
-    assert.deepEqual(config.learning, { patternAnalysis: false, retentionDays: 30 });
+    assert.deepEqual(config.learning, { patternAnalysis: false, retentionDays: 30, allowedRetentionDays: 90 }, "the removed keys are gone; the allowed-call retention keeps its default");
     assert.equal("loadThreshold" in config.conscience, false);
     assert.equal(config.conscience.recommendThreshold, 0.9, "the rest of the section still applies");
     assert.deepEqual(config.warnings, []);
