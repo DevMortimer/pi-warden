@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type { JudgmentsOffReason } from "./backend.js";
 import type { ConscienceConfig } from "./config.js";
 import { redact } from "./redact.js";
+import { CORE_PI_TOOLS } from "./tools.js";
 import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./shape.js";
 import type { TaskSpine } from "./shape.js";
 import { fileContentHash, toolSourceHash } from "./hashing.js";
@@ -260,6 +261,18 @@ export function questionHash(questions: Questions): string {
 
 /* ─── Candidate eligibility ─────────────────────────────────────────── */
 
+/**
+ * What the session already knows and can reach; used to drop candidates that teach nothing new.
+ */
+export interface SessionFilters {
+  /** Tool names the agent already called in this session. */
+  calledTools?: ReadonlySet<string> | undefined;
+  /** File paths the agent already read in this session (a skill file already read is never re-recommended). */
+  readFiles?: ReadonlySet<string> | undefined;
+  /** Tool names the agent can call by that name in this session; undefined means no restriction. */
+  callableTools?: ReadonlySet<string> | undefined;
+}
+
 /** Check if a candidate is excluded by the config's exclude list. */
 function isExcluded(id: string, exclude: string[]): boolean {
   for (const pattern of exclude) {
@@ -289,6 +302,12 @@ function words(text: string): string[] {
 export function isDestructiveTool(name: string, ...descriptions: Array<string | undefined>): boolean {
   if (words(name).some(w => DESTRUCTIVE_MARKERS.has(w))) return true;
   return descriptions.some(d => d !== undefined && DESTRUCTIVE_MARKERS.has(words(d)[0] ?? ""));
+}
+
+/** True when the index entry's lead, useWhen, or examples say the tool deletes, drops, or destroys something. */
+export function indexEntrySaysDestructive(entry: { lead: string; useWhen: string[]; examples: string[] } | undefined): boolean {
+  if (!entry) return false;
+  return [entry.lead, ...entry.useWhen, ...entry.examples].some(text => words(text).some(w => DESTRUCTIVE_MARKERS.has(w)));
 }
 
 /**
@@ -328,6 +347,7 @@ export function eligibleCandidates(
   globalIndex?: { entries: IndexEntry[] } | undefined,
   projectIndex?: { entries: IndexEntry[] } | undefined,
   platform: NodeJS.Platform = process.platform,
+  session?: SessionFilters | undefined,
 ): { candidates: Candidate[]; skillOverflow: boolean; toolOverflow: boolean } {
   const candidates: Candidate[] = [];
   let skillOverflow = false;
@@ -349,6 +369,8 @@ export function eligibleCandidates(
       if (skill.disableModelInvocation) continue;
       // Already supplied: skip
       if (suppliedSkills.includes(skill.name)) continue;
+      // A skill file the agent already read in this session is not worth recommending again.
+      if (skill.filePath && session?.readFiles?.has(skill.filePath)) continue;
       if (count >= MAX_ELIGIBLE) { skillOverflow = true; break; }
       const sourceHash = skill.filePath ? fileContentHash(skill.filePath) : "missing";
       const entry = findEntry(skill.name, sourceHash);
@@ -367,11 +389,16 @@ export function eligibleCandidates(
     let count = 0;
     for (const tool of tools) {
       if (isExcluded(tool.name, config.tools.exclude)) continue;
-      // Core tools the agent uses on nearly every turn: a recommendation to use one tells it nothing new.
+      // Core Pi tools the agent always has: a recommendation to use one tells it nothing new.
+      if (CORE_PI_TOOLS.has(tool.name)) continue;
       if (config.skipTools.includes(tool.name)) continue;
+      // A tool the agent already called in this session, or one it cannot call by this name, is not a new capability.
+      if (session?.calledTools?.has(tool.name)) continue;
+      if (session?.callableTools && !session.callableTools.has(tool.name)) continue;
       const sourceHash = toolSourceHash(tool.name, tool.description);
       const entry = findEntry(tool.name, sourceHash);
       if (isDestructiveTool(tool.name, tool.description, entry?.lead)) continue;
+      if (indexEntrySaysDestructive(entry)) continue;
       if (isPlatformIneligibleTool(tool.name, platform, tool.description, entry?.lead)) continue;
       if (count >= MAX_ELIGIBLE) { toolOverflow = true; break; }
       candidates.push({
@@ -444,6 +471,8 @@ export interface ConscienceDeps {
   projectIndex?: { entries: IndexEntry[] } | undefined;
   /** Platform the agent's tools run on. Injected for testability; defaults to `process.platform`. */
   platform?: NodeJS.Platform;
+  /** What the session already called, read, and can reach; drops candidates that teach nothing new. */
+  session?: SessionFilters | undefined;
 }
 
 /**
@@ -505,7 +534,7 @@ export async function assess(
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: deps.judgmentsOff ?? "no_consent" };
   }
 
-  const { candidates, skillOverflow, toolOverflow } = eligibleCandidates(skills, tools, config, activeSkills, suppliedSkills, deps.globalIndex, deps.projectIndex, deps.platform);
+  const { candidates, skillOverflow, toolOverflow } = eligibleCandidates(skills, tools, config, activeSkills, suppliedSkills, deps.globalIndex, deps.projectIndex, deps.platform, deps.session);
   if (candidates.length === 0) {
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: "no_match" };
   }

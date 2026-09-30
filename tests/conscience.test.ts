@@ -13,6 +13,7 @@ import {
   SCORE_LEVELS,
   isDestructiveTool,
   isPlatformIneligibleTool,
+  indexEntrySaysDestructive,
 } from "../src/conscience.js";
 import type { Candidate, Judge } from "../src/conscience.js";
 import type { ConscienceConfig } from "../src/config.js";
@@ -113,6 +114,13 @@ const defaultSkills = [
   fakeSkill("impeccable", "Frontend interface design, polish, and UX"),
   fakeSkill("tdd", "Test-driven development"),
   fakeSkill("research", "Research questions against primary sources"),
+];
+
+/** Tools that are not core Pi tools: the core list answers by itself, so the other filters need these. */
+const extensionTools = [
+  { name: "search_code", description: "Search the code index for literal strings" },
+  { name: "tiny_fetch", description: "Fetch a web page as text" },
+  { name: "mcp__linear", description: "Query the issue tracker" },
 ];
 
 /* ─── sanitizeDescription ───────────────────────────────────────────── */
@@ -248,11 +256,11 @@ test("eligibleCandidates excludes by name pattern", () => {
 });
 
 test("eligibleCandidates excludes by wildcard pattern", () => {
-  const config = fakeConfig({ tools: { enabled: true, exclude: ["bas*"] } });
-  const { candidates } = eligibleCandidates([], defaultTools, config, [], []);
+  const config = fakeConfig({ tools: { enabled: true, exclude: ["search_*"] } });
+  const { candidates } = eligibleCandidates([], extensionTools, config, [], []);
   const ids = candidates.map(c => c.id);
-  assert.ok(!ids.includes("bash"));
-  assert.ok(ids.includes("read"));
+  assert.ok(!ids.includes("search_code"));
+  assert.ok(ids.includes("tiny_fetch"));
 });
 
 test("eligibleCandidates skips already-supplied skills", () => {
@@ -269,7 +277,7 @@ test("eligibleCandidates returns empty when both categories disabled", () => {
 
 test("eligibleCandidates returns tools-only when skills mode is off but tools enabled", () => {
   const config = fakeConfig({ skills: { mode: "off", exclude: [] } });
-  const { candidates } = eligibleCandidates(defaultSkills, defaultTools, config, [], []);
+  const { candidates } = eligibleCandidates(defaultSkills, extensionTools, config, [], []);
   assert.ok(candidates.every(c => c.kind === "tool"));
   assert.ok(candidates.length > 0);
 });
@@ -310,20 +318,49 @@ test("default skipTools: only the custom tool and the skill reach the request", 
   assert.deepEqual(requests.flat().sort(), ["skill:tdd", "tool:search_code"]);
 });
 
-test("skipTools: [] restores every tool in the request", async () => {
+test("skipTools: [] never brings back a core Pi tool", async () => {
   const { judge, requests } = recordingJudge();
   await assess("add a test", "", mixedCatalog.skills, mixedCatalog.tools, [], [], defaultDeps(judge, { skipTools: [] }));
-  assert.deepEqual(requests.flat().sort(), ["skill:tdd", "tool:bash", "tool:read", "tool:search_code"]);
+  assert.deepEqual(requests.flat().sort(), ["skill:tdd", "tool:search_code"]);
 });
 
-test("eligibleCandidates with skipTools: [] keeps every core tool", () => {
+test("skipTools still drops a named non-core tool", async () => {
+  const { judge, requests } = recordingJudge();
+  await assess("add a test", "", mixedCatalog.skills, mixedCatalog.tools, [], [], defaultDeps(judge, { skipTools: ["search_code"] }));
+  assert.deepEqual(requests.flat().sort(), ["skill:tdd"]);
+});
+
+test("eligibleCandidates never offers a core Pi tool, whatever skipTools says", () => {
   const { candidates } = eligibleCandidates([], defaultTools, fakeConfig({ skipTools: [] }), [], []);
-  assert.deepEqual(candidates.map(c => c.id), ["read", "bash", "edit"]);
+  assert.deepEqual(candidates.map(c => c.id), []);
 });
 
 test("eligibleCandidates never drops a skill by skipTools", () => {
   const { candidates } = eligibleCandidates([fakeSkill("bash", "A skill that shares a core tool name")], [], fakeConfig({ skipTools: ["bash"] }), [], []);
   assert.deepEqual(candidates.map(c => `${c.kind}:${c.id}`), ["skill:bash"]);
+});
+
+test("eligibleCandidates drops a skill whose file the session already read", () => {
+  const skills = [fakeSkill("impeccable", "Frontend interface design"), fakeSkill("tdd", "Test-driven development")];
+  const session = { readFiles: new Set(["/skills/impeccable/SKILL.md"]) };
+  const { candidates } = eligibleCandidates(skills, [], fakeConfig(), [], [], undefined, undefined, process.platform, session);
+  assert.deepEqual(candidates.map(c => c.id), ["tdd"]);
+});
+
+test("eligibleCandidates drops a tool the session already called and a tool it cannot call", () => {
+  const session = { calledTools: new Set(["search_code"]), callableTools: new Set(["tiny_fetch"]) };
+  const { candidates } = eligibleCandidates([], extensionTools, fakeConfig(), [], [], undefined, undefined, process.platform, session);
+  assert.deepEqual(candidates.map(c => c.id), ["tiny_fetch"], "called tools and uncallable tools are gone; the reachable one stays");
+});
+
+test("indexEntrySaysDestructive reads the entry, not just the name", () => {
+  const clean = { lead: "List indexed projects", useWhen: ["inventory check"], examples: ["list_projects()"] };
+  const dirty = { lead: "Delete a project from the index", useWhen: ["list projects"], examples: [] };
+  const example = { lead: "List projects", useWhen: ["cleanup"], examples: ["drop the old graph"] };
+  assert.equal(indexEntrySaysDestructive(clean), false);
+  assert.equal(indexEntrySaysDestructive(dirty), true);
+  assert.equal(indexEntrySaysDestructive(example), true);
+  assert.equal(indexEntrySaysDestructive(undefined), false);
 });
 
 test("eligibleCandidates never offers a destructive tool, by name part or leading description verb", () => {
@@ -340,16 +377,16 @@ test("eligibleCandidates never offers a destructive tool, by name part or leadin
   assert.deepEqual(candidates.map(c => c.id), ["list_projects", "edit_text", "dropdown_state"]);
 });
 
-test("eligibleCandidates drops powershell on darwin and linux and keeps it on win32", () => {
+test("eligibleCandidates drops pwsh on darwin and linux and keeps it on win32", () => {
   const tools = [
-    { name: "powershell", description: "Run PowerShell commands" },
+    { name: "pwsh", description: "Run PowerShell commands" },
     { name: "list_projects", description: "List indexed projects" },
   ];
   const ids = (platform: NodeJS.Platform) =>
     eligibleCandidates([], tools, fakeConfig(), [], [], undefined, undefined, platform).candidates.map(c => c.id);
   assert.deepEqual(ids("darwin"), ["list_projects"]);
   assert.deepEqual(ids("linux"), ["list_projects"]);
-  assert.deepEqual(ids("win32"), ["powershell", "list_projects"]);
+  assert.deepEqual(ids("win32"), ["pwsh", "list_projects"]);
 });
 
 test("eligibleCandidates never drops a skill by the platform rule", () => {
