@@ -676,32 +676,44 @@ function moverDestination(segment: string, dir: DirPath | undefined, vars: VarVa
   return { dest: operands.length ? placedWord(operands[operands.length - 1]!, dir, vars) : undefined };
 }
 
-/** A `cd` or `pushd` segment: the directory it moves to, or an unknown one when its operand cannot be read. */
-function cdDirectory(segment: string, base: DirPath, vars: VarValues | undefined): { dir: DirPath } | undefined {
-  const tokens = segment.trim().split(/\s+/).filter(Boolean).map(token => token.replace(/^[("'`]+|[\"')`]+$/g, ""));
-  const head = commandWord(tokens);
-  if (!head || (head.word !== "cd" && head.word !== "pushd")) return undefined;
-  // `cd` alone goes home, `cd -` swaps the last directory, and `cd a b` is not a directory this guard reads.
-  const operands = tokens.slice(head.index + 1).filter(token => !token.startsWith("-"));
-  if (operands.length !== 1) return { dir: { kind: "unknown" } };
-  const moved = resolveWord(operands[0]!, base, vars);
+/**
+ * A `cd` or `pushd` segment: the directory it moves to, and whether it is a change the guard does not read (`popd`,
+ * `cd -`, `eval`, `builtin cd`, `command cd`, `source`, `.`). Undefined when the segment moves nothing.
+ */
+function cdDirectory(segment: string, base: DirPath, vars: VarValues | undefined): { dir: DirPath; changed?: boolean } | undefined {
+  const head = statementHead(segment);
+  if (head === undefined) return undefined;
+  if (head.word === "popd" || head.word === "eval" || head.word === "source" || head.word === ".") return { dir: { kind: "unknown" }, changed: true };
+  if (head.word !== "cd" && head.word !== "pushd") return undefined;
+  if (head.skipped.some(token => token === "builtin" || token === "command")) return { dir: { kind: "unknown" }, changed: true };
+  const operands = head.rest;
+  // `cd -` swaps the last directory, a change this guard does not follow; `cd` alone goes home and `cd a b` is not a
+  // directory it reads, so those keep today's reading for relative targets.
+  if (operands.length === 1 && operands[0] === "-") return { dir: { kind: "unknown" }, changed: true };
+  const dirs = operands.filter(token => !token.startsWith("-"));
+  if (dirs.length !== 1) return { dir: { kind: "unknown" } };
+  const moved = resolveWord(dirs[0]!, base, vars);
   if (moved.kind === "path") return { dir: { kind: "path", path: moved.path } };
   return { dir: moved.kind === "temp" ? { kind: "temp", key: moved.key } : { kind: "unknown" } };
 }
 
 /**
- * The directory each segment resolves relative paths against, after every `cd` or `pushd` before it. Until one moves it
- * the entry is undefined, so a relative target keeps today's reading; a `cd` this guard cannot read makes it unknown.
+ * The directory each segment resolves relative paths against, after every `cd` or `pushd` before it, and whether a
+ * directory change the guard does not read stands before it. Until one moves it the entry is undefined, so a relative
+ * target keeps today's reading; a `cd` this guard cannot read makes it unknown.
  */
-function effectiveDirs(segments: readonly string[], cwd: string | undefined, vars?: readonly VarValues[] | undefined): (DirPath | undefined)[] {
+function effectiveDirs(segments: readonly string[], cwd: string | undefined, vars?: readonly VarValues[] | undefined): { dirs: (DirPath | undefined)[]; changed: boolean[] } {
   const dirs: (DirPath | undefined)[] = [];
+  const changed: boolean[] = [];
   let dir: DirPath | undefined;
+  let unread = false;
   for (let index = 0; index < segments.length; index++) {
     dirs.push(dir);
+    changed.push(unread);
     const moved = cdDirectory(segments[index]!, dir ?? cwdPath(cwd), vars?.[index]);
-    if (moved !== undefined) dir = moved.dir;
+    if (moved !== undefined) { dir = moved.dir; unread = moved.changed === true; }
   }
-  return dirs;
+  return { dirs, changed };
 }
 
 /**
@@ -740,7 +752,7 @@ export function movedInTargets(tool: string, input: Record<string, unknown>, cwd
   const roots = [...volatileTempRoots(), ...scratchRoots];
   if (!roots.length) return [];
   const segments = splitShell(stripDataText(command).text);
-  const dirs = effectiveDirs(segments, cwd);
+  const { dirs } = effectiveDirs(segments, cwd);
   const found = new Set<string>();
   for (let index = 0; index < segments.length; index++) {
     const mover = moverDestination(segments[index]!, dirs[index] ?? cwdPath(cwd), undefined);
@@ -764,7 +776,9 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
   const force = flags.some(flag => flag === "--force" || (/^-[a-zA-Z]+$/.test(flag) && flag.includes("f")));
   if (!recursive) return undefined;
   const targets = rmOperands(tokens.filter(token => !token.startsWith("-"))).map(word => targetWord(word, context?.dir, context?.vars));
-  const dangerousTarget = targets.some(target => isDangerousTarget(target, cwd));
+  // A directory change the guard does not read (`popd`, `eval`, `cd -`, …) leaves every later relative target unread:
+  // it may name anything, so it is dangerous rather than merely risky.
+  const dangerousTarget = targets.some(target => isDangerousTarget(target, cwd) || (context?.dirChanged === true && target.kind === "unknown"));
   const budget = scratchBudget();
   const exemptions = context !== undefined;
   // A command or an earlier call that moved or linked data into a target keeps it: nothing about it is provable then.
@@ -1078,6 +1092,8 @@ interface RmContext {
   recorded?: readonly string[] | undefined;
   /** The directory a relative target resolves against, after a `cd` or `pushd` earlier in the same command. */
   dir?: DirPath | undefined;
+  /** Whether a directory change the guard does not read (`popd`, `eval`, `cd -`, …) stands before this segment. */
+  dirChanged?: boolean | undefined;
 }
 
 /** A path strictly inside a volatile temp root, after symlinks are resolved. A temp root itself has none. */
@@ -1863,11 +1879,11 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     const scratchRoots = blocked ? undefined : options?.scratchPaths;
     // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
     // A mover word the per-segment parse cannot read (`bash -c 'mv a b'`, `xargs ln -s a b`) keeps every hold as well.
-    const dirs = effectiveDirs(segments, cwd, scratchVars);
+    const { dirs, changed } = effectiveDirs(segments, cwd, scratchVars);
     const moved = blocked ? [] : segments.map((segment, index) => moverDestination(segment, dirs[index] ?? cwdPath(cwd), scratchVars?.[index])).filter((mover): mover is Mover => mover !== undefined);
     const unread = blocked ? false : unreadMover(segments);
     for (let index = 0; index < segments.length; index++) {
-      const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, unreadMover: unread, recorded: options?.movedIn, dir: dirs[index] });
+      const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, unreadMover: unread, recorded: options?.movedIn, dir: dirs[index], dirChanged: changed[index] });
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
       if (hit && !exempt.has(hit.id)) add(hit);
     }

@@ -460,10 +460,32 @@ test("effective directory: a relative rm target after a cd resolves against it",
   assert.deepEqual(rmIds("cd /tmp/x && rm -rf build /var/tmp/y"), ["rm-recursive-dangerous-target"], "one target outside the temp roots keeps the hold");
   assert.deepEqual(rmIds("cd /tmp/x && rm -rf build/../../y"), ["rm-recursive-dangerous-target"], "a `..` segment keeps the hold");
   assert.deepEqual(rmIds("cd /tmp/x && rm -rf dist"), ["rm-temp-subtree"], "the target is classified by the path it names");
-  for (const command of ["cd - && rm -rf build", "cd && rm -rf build", "cd a b && rm -rf build", `cd "$(git rev-parse --show-toplevel)" && rm -rf build`, `cd "$UNKNOWN" && rm -rf build`]) {
-    assert.deepEqual(rmIds(command), ["rm-rf"], `a cd that cannot be read keeps today's reading: ${command}`);
+  for (const command of ["cd && rm -rf build", "cd a b && rm -rf build", `cd "$(git rev-parse --show-toplevel)" && rm -rf build`, `cd "$UNKNOWN" && rm -rf build`]) {
+    assert.deepEqual(rmIds(command), ["rm-rf"], `a cd whose destination cannot be read keeps today's reading: ${command}`);
   }
   assert.deepEqual(rmIds("rm -rf build"), ["rm-rf"], "without a cd nothing changes");
+});
+
+test("effective directory: a keyword before a cd counts, and an unread change holds relative targets", () => {
+  const held = [
+    "if cd ~; then rm -rf projects; fi",
+    "while cd ~; do rm -rf projects; break; done",
+    "until cd ~; do rm -rf projects; break; done",
+    "if false; then :; elif cd ~; then rm -rf projects; fi",
+    "if false; then :; else cd ~; rm -rf projects; fi",
+    "! cd ~; rm -rf projects",
+    "{ cd ~; }; rm -rf projects",
+    "(cd ~) ; rm -rf projects",
+    "cd /tmp/x && eval cd ~ && rm -rf projects",
+    "cd /tmp/x && builtin cd ~ && rm -rf projects",
+    "cd /tmp/x && command cd ~ && rm -rf projects",
+    "cd /tmp/x && source ./env.sh && rm -rf projects",
+    "cd /tmp/x && . ./env.sh && rm -rf projects",
+    "cd - && rm -rf build",
+    "cd ~ && pushd /tmp/x && popd && rm -rf projects",
+    "cd /tmp/x && popd && rm -rf projects",
+  ];
+  for (const command of held) assert.deepEqual(rmIds(command), ["rm-recursive-dangerous-target"], command);
 });
 
 test("moved-in data: the destination of a same-command mv or ln keeps every release rule off", () => {

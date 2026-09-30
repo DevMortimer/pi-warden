@@ -9,6 +9,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Fixed
 
 - Resolving a variable is an allowlist. A literal assignment, a `mktemp` variable, `$HOME`, or `$TMPDIR` resolves only when every way the command can set a variable is a form the parser reads; `eval`, `source` or `.` as a command, `printf -v`, `read`, `mapfile`, `readarray`, `getopts`, `let`, an arithmetic `((…))`, a `${NAME=…}`/`${NAME:=…}` or `+=` assignment, a declaration builtin with an option, and a function definition anywhere in the command resolve no variable, and the targets classify as they did before the variable rules: `D=/tmp/x; printf -v D %s ~; rm -rf "$D"` and `D=/tmp/x; mapfile -t D < list; rm -rf "$D"` hold again.
+- A `cd` or `pushd` after `if`, `then`, `elif`, `else`, `do`, `while`, `until`, `!`, `{`, or `(` moves the directory the guard resolves against, so `if cd ~; then rm -rf projects; fi` and `while cd ~; do rm -rf projects; break; done` hold. `popd`, `cd -`, `eval`, `builtin cd`, `command cd`, `source`, and `.` leave the directory unknown for every later segment, and a relative recursive `rm` after one holds as `rm-recursive-dangerous-target` instead of resolving: `cd /tmp/x && eval cd ~ && rm -rf projects` and `cd ~ && pushd /tmp/x && popd && rm -rf projects` hold.
 
 ## 0.81.0
 
