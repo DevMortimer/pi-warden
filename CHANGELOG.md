@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- A database an earlier version wrote keeps the columns that version's `INSERT` names (`task`, `input_summary`, `prediction`, `preceding_actions`, `confidence`). They are no longer rebuilt away: they stay on `holds`, always empty, so a Pi session still running the older code — and a downgrade — keeps recording holds against a migrated database instead of failing every guarded call until it restarts. The size win does not change: the task text lands once in `hold_tasks`, and the text columns are cleared on the rows of calls that were not held, whose `scores` column keeps the empty object its `NOT NULL` constraint needs.
+- At each start, the text and context columns an older session wrote after the migration are cleared on the rows of calls that were not held. A new `hold_meta` table keeps the highest row id already cleared, so a start looks only at the rows written since the last one and changes no page when there are none; a database another session holds skips the step, as it skips the prune, and the next start runs it.
 
 ## 0.81.0
 

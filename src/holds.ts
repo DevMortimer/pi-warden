@@ -13,7 +13,8 @@ import type { ActionSummary, Level, PreviousAction, ScopeLabel, Verdict } from "
  * - **approved**: the user's reply released the hold (steer mode) or the confirm dialog allowed it. False positive.
  * - **declined**: the confirm dialog refused it. True positive.
  * - **replanned**: after the user replied, the agent ran a different call that changes something instead. True positive.
- * - **abandoned**: the run after the user's reply ended with neither: the hold was never released and nothing else ran. True positive.
+ * - **abandoned**: the run after the user's reply ended with neither: the hold was never released and nothing else ran. An unknown outcome: it is
+ *   counted in neither the numerator nor the denominator, because nobody showed what the hold was worth.
  * - **regretted**: the user's next message tells the agent to stop, undo, or not do an allowed call. False negative.
  * - **accepted**: the user's next message was checked and does not regret the allowed calls of the last turn.
  *
