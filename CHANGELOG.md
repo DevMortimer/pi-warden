@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.80.1
+
 ### Added
 
 - `scripts/steer-calibration.mjs`: the blind-label steer measurement (draw the sample from a copy of the hold log, score the labels, gate the slices). `scripts/steer-ask-probe.mjs` measures a candidate question on the same labels, one request per call.
