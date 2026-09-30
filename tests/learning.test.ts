@@ -508,7 +508,7 @@ test("recordHold writes the session id, and the task text lands once in hold_tas
   });
 });
 
-test("a row of a call that was not held keeps only what a reader uses", async () => {
+test("a row of a call that was not held keeps its judge data and drops the summary", async () => {
   await withOwnDatabase(async (dirs, file) => {
     await initSchema(0, dirs, 0);
     await recordHold(row(false, Date.now(), "session-abc"), dirs);
@@ -516,11 +516,16 @@ test("a row of a call that was not held keeps only what a reader uses", async ()
     const allowed = d.prepare("SELECT task_hash, plan, context_summary, scores, reasons, agent_reason, command_preview, held FROM holds").get() as Record<string, unknown>;
     assert.equal(allowed.held, 0);
     assert.equal(allowed.command_preview, "npm test", "queryHoldsForProject reads the preview on an allowed row");
-    for (const column of ["task_hash", "plan", "context_summary", "reasons", "agent_reason"]) {
+    assert.equal(JSON.parse(String(allowed.scores)).irreversible, 0.5, "an allowed row keeps the judge scores: calibration reads them");
+    assert.deepEqual(JSON.parse(String(allowed.reasons)), ["irreversible 0.5"], "an allowed row keeps the reasons");
+    assert.equal(allowed.plan, "check the suite", "an allowed row keeps the agent's plan");
+    const tasks = d.prepare("SELECT hash, text FROM hold_tasks").all() as Array<{ hash: string; text: string }>;
+    assert.equal(tasks.length, 1, "the task text is stored once for an allowed call too");
+    assert.equal(tasks[0]!.text, "run the tests");
+    assert.equal(allowed.task_hash, tasks[0]!.hash, "the allowed row points at it");
+    for (const column of ["context_summary", "agent_reason"]) {
       assert.equal(allowed[column], null, `${column} is not stored for an allowed call`);
     }
-    assert.equal(allowed.scores, "{}", "an allowed row carries the empty scores object the NOT NULL column needs");
-    assert.equal((d.prepare("SELECT COUNT(*) AS total FROM hold_tasks").get() as { total: number }).total, 0, "no task text is stored for an allowed call");
     d.close();
   });
 });
@@ -531,19 +536,20 @@ test("the prune keeps a hold for retentionDays and an allowed call for allowedRe
     const now = Date.now();
     const day = 86_400_000;
     const keptHold = await recordHold(row(true, now - 120 * day), dirs);
-    const droppedAllowed = await recordHold(row(false, now - 120 * day), dirs);
-    const droppedHold = await recordHold(row(true, now - 400 * day), dirs);
-    const keptAllowed = await recordHold(row(false, now - day), dirs);
+    const droppedAllowed = await recordHold({ ...row(false, now - 120 * day), task: "the dropped allowed call's task" }, dirs);
+    const droppedHold = await recordHold({ ...row(true, now - 400 * day), task: "the dropped hold's task" }, dirs);
+    const keptAllowed = await recordHold({ ...row(false, now - day), task: "the kept allowed call's task" }, dirs);
     await initSchema(365, dirs, 90);
     const d = new DatabaseSync(file, { readOnly: true });
     const rows = d.prepare("SELECT id FROM holds ORDER BY id").all() as Array<{ id: number }>;
     assert.deepEqual(rows.map(entry => entry.id), [keptHold, keptAllowed], `the allowed row past 90 days and the hold past 365 are gone (dropped ${droppedAllowed}, ${droppedHold})`);
-    assert.equal((d.prepare("SELECT COUNT(*) AS total FROM hold_tasks").get() as { total: number }).total, 1, "the task text of the pruned hold goes with it");
+    const texts = (d.prepare("SELECT text FROM hold_tasks ORDER BY text").all() as Array<{ text: string }>).map(entry => entry.text);
+    assert.deepEqual(texts, ["run the tests", "the kept allowed call's task"], "the prune keeps the text a remaining row points at, an allowed row included, and drops the rest");
     d.close();
   });
 });
 
-test("an older database keeps its columns, moves the task text once, and slims the allowed rows", async () => {
+test("an older database keeps its columns, moves the task text once, and settles the allowed rows", async () => {
   await withOwnDatabase(async (dirs, file) => {
     mkdirSync(join(dirs.agentDir, "pi-warden"), { recursive: true });
     const old = new DatabaseSync(file);
@@ -590,18 +596,23 @@ test("an older database keeps its columns, moves the task text once, and slims t
     const tasks = d.prepare("SELECT hash, text FROM hold_tasks").all() as Array<{ hash: string; text: string }>;
     assert.equal(tasks.length, 1, "the repeated task text is stored once");
     assert.equal(tasks[0]!.text, "the shared task text");
-    const held = d.prepare("SELECT id, task_hash, task, input_summary, prediction, preceding_actions, plan, scores, reasons, agent_reason, outcome FROM holds WHERE held = 1 ORDER BY id").all() as Array<Record<string, unknown>>;
+    const held = d.prepare("SELECT id, task_hash, task, input_summary, prediction, preceding_actions, plan, context_summary, scores, reasons, agent_reason, outcome FROM holds WHERE held = 1 ORDER BY id").all() as Array<Record<string, unknown>>;
     assert.equal(held.length, 2, "no held row is lost");
     assert.deepEqual([held[0]!.id, held[1]!.id], [1, 2], "ids are preserved");
     assert.equal(held[0]!.task_hash, tasks[0]!.hash, "a held row points at the stored task text");
     assert.equal(held[0]!.plan, "plan text");
+    assert.equal(held[0]!.context_summary, "context text", "a held row keeps its summary");
+    assert.equal(held[0]!.agent_reason, "reason text", "a held row keeps its agent reason");
     assert.equal(held[0]!.outcome, null);
     assert.equal(held[1]!.outcome, "approved");
     const allowed = d.prepare("SELECT task_hash, task, input_summary, prediction, preceding_actions, plan, context_summary, scores, reasons, agent_reason, outcome FROM holds WHERE held = 0").get() as Record<string, unknown>;
     assert.equal(allowed.outcome, "accepted", "an allowed row keeps its outcome");
     assert.equal((d.prepare("SELECT COUNT(*) AS total FROM holds WHERE task IS NOT NULL OR input_summary IS NOT NULL OR prediction IS NOT NULL OR preceding_actions IS NOT NULL").get() as { total: number }).total, 0, "the task text is moved out of every row, not copied");
-    for (const column of ["task_hash", "task", "input_summary", "prediction", "preceding_actions", "plan", "context_summary", "reasons", "agent_reason"]) assert.equal(allowed[column], null, `${column} is not stored on an allowed row`);
-    assert.equal(allowed.scores, "{}", "an allowed row keeps the empty scores object, never NULL");
+    assert.equal(allowed.task_hash, tasks[0]!.hash, "the allowed row points at the task text too");
+    assert.equal(allowed.plan, "plan text", "an allowed row keeps the agent's plan");
+    assert.equal(JSON.parse(String(allowed.scores)).irreversible, 0.5, "an allowed row keeps the judge scores");
+    assert.equal(JSON.parse(String(allowed.reasons))[0], "irreversible 0.5", "an allowed row keeps the reasons");
+    for (const column of ["task", "input_summary", "prediction", "preceding_actions", "context_summary", "agent_reason"]) assert.equal(allowed[column], null, `${column} is cleared on an allowed row`);
     assert.ok((d.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_holds_project_signature'").get()), "the indexes are there");
     d.close();
 
@@ -688,15 +699,15 @@ test("an older version's INSERT and history query still work against a migrated 
     assert.equal(sameReason.length, 1);
     d.close();
 
-    // The new reader finds the same held row. Its task text is gone: no `task_hash` points at it, the row is not moved.
+    // The new reader finds the same held row. Its task text is not in hold_tasks yet: the row is settled at the next start.
     const history = await querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/old/project", dirs);
     assert.equal(history.exact.length, 1, "the new reader finds the row too");
-    assert.equal(history.exact[0]!.task, null, "a held row an older session wrote after the migration has no task text for the new reader");
+    assert.equal(history.exact[0]!.task, null, "a held row an older session wrote after the migration has no task text for the new reader until the next start");
     assert.equal(history.exact[0]!.plan, "plan text", "its other context still reads");
   });
 });
 
-test("an allowed row an older version writes after the migration is slimmed at the next start", async () => {
+test("a row an older version writes after the migration is settled at the next start", async () => {
   await withOwnDatabase(async (dirs, file) => {
     mkdirSync(join(dirs.agentDir, "pi-warden"), { recursive: true });
     const old = new DatabaseSync(file);
@@ -714,17 +725,31 @@ test("an allowed row an older version writes after the migration is slimmed at t
     write(true, "an older session's turn");
     await initSchema(0, dirs, 0);
 
-    const cleared = ["task", "input_summary", "preceding_actions", "task_hash", "plan", "context_summary", "reasons", "agent_reason"];
+    const settled = ["task", "input_summary", "preceding_actions", "context_summary", "agent_reason"];
     const d = new DatabaseSync(file, { readOnly: true });
     const rows = d.prepare("SELECT id, held, task_hash, task, input_summary, preceding_actions, plan, context_summary, scores, reasons, agent_reason, outcome FROM holds ORDER BY id").all() as Array<Record<string, unknown>>;
     assert.equal(rows.length, 2, "both rows of the older session are there");
     const allowed = rows[0]!;
-    for (const name of cleared) assert.equal(allowed[name], null, `the allowed row keeps no ${name}`);
-    assert.equal(allowed.scores, "{}", "the allowed row's NOT NULL scores column holds the empty object");
-    assert.equal(rows[1]!.task, "an older session's turn", "a held row of the older session keeps the text the older reader reads");
-    assert.equal(rows[1]!.task_hash, null, "a held row written after the migration is not moved into hold_tasks");
-    assert.equal((d.prepare("SELECT value FROM hold_meta WHERE key = 'allowed_cleared_id'").get() as { value: number }).value, 2, "the start remembers the highest id it cleared");
+    for (const name of settled) assert.equal(allowed[name], null, `the allowed row keeps no ${name}`);
+    assert.equal(JSON.parse(String(allowed.scores)).irreversible, 0.5, "the judge scores the older session wrote on an allowed row stay");
+    assert.equal(JSON.parse(String(allowed.reasons))[0], "irreversible 0.5", "its reasons stay");
+    assert.equal(allowed.plan, "plan text", "its plan stays");
+    const heldRow = rows[1]!;
+    assert.equal(heldRow.task, null, "the held row's task text moves too");
+    assert.equal(heldRow.context_summary, "context text", "a held row keeps its summary");
+    assert.equal(heldRow.agent_reason, "agent reason", "and the agent reason");
+    const tasks = d.prepare("SELECT hash, text FROM hold_tasks").all() as Array<{ hash: string; text: string }>;
+    assert.equal(tasks.length, 1, "the shared task text is stored once");
+    assert.equal(tasks[0]!.text, "an older session's turn");
+    assert.equal(allowed.task_hash, tasks[0]!.hash, "the allowed row points at the stored task text");
+    assert.equal(heldRow.task_hash, tasks[0]!.hash, "the held row points at it too");
+    assert.equal((d.prepare("SELECT value FROM hold_meta WHERE key = 'settled_id'").get() as { value: number }).value, 2, "the start remembers the highest id it settled");
     d.close();
+
+    // The new reader reads that task text back through hold_tasks.
+    const history = await querySmartHistory("bash", { irreversible: 0.5, reasons: ["irreversible 0.5"] }, "/old/project", dirs);
+    assert.equal(history.exact.length, 1, "the new reader finds the held row the older session wrote");
+    assert.equal(history.exact[0]!.task, "an older session's turn", "and reads its task text through hold_tasks");
 
     // A row the older session writes after that start waits for the next one.
     write(false, "the next turn");
@@ -733,14 +758,16 @@ test("an allowed row an older version writes after the migration is slimmed at t
     before.close();
     await initSchema(0, dirs, 0);
     const after = new DatabaseSync(file, { readOnly: true });
-    assert.equal((after.prepare("SELECT task FROM holds WHERE id = 3").get() as { task: string | null }).task, null, "the next start slims it");
-    assert.equal((after.prepare("SELECT value FROM hold_meta WHERE key = 'allowed_cleared_id'").get() as { value: number }).value, 3, "and moves the mark past it");
-    assert.equal((after.prepare("SELECT task FROM holds WHERE id = 2").get() as { task: string }).task, "an older session's turn", "the held row is untouched");
+    assert.equal((after.prepare("SELECT task FROM holds WHERE id = 3").get() as { task: string | null }).task, null, "the next start settles it");
+    assert.equal((after.prepare("SELECT value FROM hold_meta WHERE key = 'settled_id'").get() as { value: number }).value, 3, "and moves the mark past it");
+    assert.equal((after.prepare("SELECT COUNT(*) AS total FROM hold_tasks").get() as { total: number }).total, 2, "its task text lands in hold_tasks");
+    assert.equal((after.prepare("SELECT task_hash IS NOT NULL AS has_hash FROM holds WHERE id = 3").get() as { has_hash: number }).has_hash, 1, "and the row points at it");
+    assert.equal((after.prepare("SELECT task_hash FROM holds WHERE id = 2").get() as { task_hash: string }).task_hash, tasks[0]!.hash, "the held row the first start settled is left alone");
     after.close();
   });
 });
 
-test("a start while another session holds the database clears nothing, and the next start clears the rows", async () => {
+test("a start while another session holds the database settles nothing, and the next start settles the rows", async () => {
   await withOwnDatabase(async (dirs, file) => {
     mkdirSync(join(dirs.agentDir, "pi-warden"), { recursive: true });
     const old = new DatabaseSync(file);
@@ -760,7 +787,8 @@ test("a start while another session holds the database clears nothing, and the n
 
     await initSchema(0, dirs, 0);
     const d = new DatabaseSync(file, { readOnly: true });
-    assert.equal((d.prepare("SELECT task FROM holds ORDER BY id DESC LIMIT 1").get() as { task: string | null }).task, null, "the next start clears it");
+    assert.equal((d.prepare("SELECT task FROM holds ORDER BY id DESC LIMIT 1").get() as { task: string | null }).task, null, "the next start settles it");
+    assert.equal((d.prepare("SELECT task_hash IS NOT NULL AS has_hash FROM holds ORDER BY id DESC LIMIT 1").get() as { has_hash: number }).has_hash, 1, "its task text is in hold_tasks and the row points at it");
     d.close();
   });
 });

@@ -56,32 +56,26 @@ const HOLDS_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_holds_outcome ON holds(outcome);
   CREATE INDEX IF NOT EXISTS idx_holds_timestamp ON holds(timestamp);`;
 
-/** Columns only a held row keeps: the held = 1 queries read them; nothing reads them for an allowed call. */
-const HELD_ONLY_COLUMNS = ["task_hash", "plan", "context_summary", "scores", "reasons", "agent_reason"];
+/**
+ * Prose a held row carries and an allowed row does not: no reader and no calibration asks for it there.
+ * Everything else a call writes -- the task text through `task_hash`, the plan, the scores, and the reasons --
+ * stays on an allowed row, because calibration on field traffic reads it.
+ */
+const CLEARED_ON_ALLOWED_COLUMNS = ["context_summary", "agent_reason"];
 
-/** Text an earlier layout wrote for every call, held or not. Clearing it is the size win; the columns stay. */
+/** Text an earlier layout wrote for every call, held or not. The task text moves to `hold_tasks`; the rest goes. */
 const LEGACY_TEXT_COLUMNS = ["task", "input_summary", "preceding_actions", "prediction"];
 
-/** Everything an allowed row is better off without; the migration clears it on the rows of calls that were not held. */
-const CLEARED_ON_ALLOWED_COLUMNS = [...HELD_ONLY_COLUMNS, ...LEGACY_TEXT_COLUMNS];
-
-/**
- * The columns whose content marks a row an older session wrote. `scores` is not one: every layout declares it NOT
- * NULL, so an allowed row always carries the empty object, and a row this version wrote matches nothing here.
- */
-const MARKS_AN_OLDER_ROW = CLEARED_ON_ALLOWED_COLUMNS.filter(name => name !== "scores");
-
-/** `hold_meta` keys: that the one-time move ran, and the highest row id whose allowed text was cleared. */
+/** `hold_meta` keys: that the one-time move ran, and the highest row id an older session's row was settled at. */
 const LAYOUT_KEY = "layout";
-const ALLOWED_CLEARED_ID = "allowed_cleared_id";
+const SETTLED_ID = "settled_id";
 
 /**
- * Three tables. `holds` keeps one row per judged call: the columns every reader uses on every row, plus the
- * context a held row carries. The task text is stored once in `hold_tasks`, keyed by its hash, so a turn's
- * task is not repeated for every call it made; `holds.task_hash` points at it. A call that was not held has
- * no context columns: no reader asks for them on an allowed row, and they were most of the file. `hold_meta`
- * holds the two marks the startup maintenance steps keep. The five columns at the end stay for the version
- * that wrote them; see HOLDS_TABLE_COLUMNS.
+ * Three tables. `holds` keeps one row per judged call: the columns every reader uses on every row, the judge data
+ * (`scores`, `reasons`) and the agent's plan, and the task text once in `hold_tasks`, which the row points at by
+ * `task_hash`; a turn's task is not repeated for every call it made. A call that was not held carries no summary
+ * and no agent reason, and that is most of what made the file large. `hold_meta` holds the two marks the startup
+ * maintenance steps keep. The five columns at the end stay for the version that wrote them; see HOLDS_TABLE_COLUMNS.
  */
 export const HOLDS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS holds (${HOLDS_TABLE}
@@ -196,11 +190,11 @@ function writeMeta(d: SqliteDb, key: string, value: number): void {
   d.prepare("INSERT INTO hold_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
 }
 
-/** The task text of each held row moves into `hold_tasks` once; the row keeps the hash. */
-function moveTaskText(d: SqliteDb): void {
+/** The task text of each row moves into `hold_tasks` once; the row keeps the hash. */
+function moveTaskText(d: SqliteDb, fromId: number): void {
   const insert = d.prepare("INSERT OR IGNORE INTO hold_tasks (hash, text) VALUES (?, ?)");
   const update = d.prepare("UPDATE holds SET task_hash = ? WHERE id = ?");
-  const rows = d.prepare("SELECT id, task FROM holds WHERE held = 1 AND task IS NOT NULL AND length(task) > 0").all() as Array<{ id: number; task: string }>;
+  const rows = d.prepare("SELECT id, task FROM holds WHERE id > ? AND task IS NOT NULL AND length(task) > 0").all(fromId) as Array<{ id: number; task: string }>;
   for (const row of rows) {
     const hash = taskHash(row.task);
     insert.run(hash, row.task);
@@ -208,29 +202,27 @@ function moveTaskText(d: SqliteDb): void {
   }
 }
 
-/** Clear the text an older layout wrote; a held row's task text is in `hold_tasks` by then. */
-function clearLegacyText(d: SqliteDb): void {
-  d.prepare(`UPDATE holds SET ${LEGACY_TEXT_COLUMNS.map(name => `${name} = NULL`).join(", ")}
-    WHERE ${LEGACY_TEXT_COLUMNS.map(name => `${name} IS NOT NULL`).join(" OR ")}`).run();
+/** Clear the text an earlier layout wrote; the task text is in `hold_tasks` by then. */
+function clearLegacyText(d: SqliteDb, fromId: number): void {
+  const mark = LEGACY_TEXT_COLUMNS.map(name => `${name} IS NOT NULL`).join(" OR ");
+  d.prepare(`UPDATE holds SET ${LEGACY_TEXT_COLUMNS.map(name => `${name} = NULL`).join(", ")} WHERE id > ? AND (${mark})`).run(fromId);
 }
 
 /**
- * Clear the context and text of every allowed row past `fromId`. A row that carries none of it is left alone, so a
- * start that finds only rows this version wrote changes no page. `scores` takes the empty object rather than NULL:
- * every layout declares it NOT NULL, and an older table rejects a NULL write.
+ * Clear the prose an allowed row does not carry. A row that has none of it is left alone, so a start that finds
+ * only rows this version wrote changes no page.
  */
-function clearAllowedText(d: SqliteDb, fromId: number): void {
-  const assignments = CLEARED_ON_ALLOWED_COLUMNS.map(name => `${name} = ${name === "scores" ? "'{}'" : "NULL"}`).join(", ");
-  const mark = MARKS_AN_OLDER_ROW.map(name => `${name} IS NOT NULL`).join(" OR ");
-  d.prepare(`UPDATE holds SET ${assignments} WHERE held = 0 AND id > ? AND (${mark})`).run(fromId);
+function clearAllowedProse(d: SqliteDb, fromId: number): void {
+  const mark = CLEARED_ON_ALLOWED_COLUMNS.map(name => `${name} IS NOT NULL`).join(" OR ");
+  d.prepare(`UPDATE holds SET ${CLEARED_ON_ALLOWED_COLUMNS.map(name => `${name} = NULL`).join(", ")} WHERE held = 0 AND id > ? AND (${mark})`).run(fromId);
 }
 
 /**
  * One-time move to the slim layout, inside one transaction: no column is dropped and no row is copied, so a session
- * still running an older version keeps writing into this table. The task text of each held row lands once in
- * `hold_tasks` (the row keeps its hash), the older layout's text is cleared, and the rows of calls that were not
- * held keep no context columns. A missing column is added, which also gives back the columns an earlier build of
- * this version slimmed away. A database already on this layout is left alone. Returns whether it changed anything.
+ * still running an older version keeps writing into this table. The task text of each row lands once in
+ * `hold_tasks` (the row keeps its hash), the older layout's text is cleared, and an allowed row loses the summary
+ * and the agent reason. A missing column is added, which also gives back the columns an earlier build of this
+ * version slimmed away. A database already on this layout is left alone. Returns whether it changed anything.
  */
 function migrateHolds(d: SqliteDb): boolean {
   const before = tableColumns(d, "holds");
@@ -244,10 +236,10 @@ function migrateHolds(d: SqliteDb): boolean {
     // An added column carries no constraint: NOT NULL cannot be added to a table that already has rows.
     for (const [name, type] of missing) d.exec(`ALTER TABLE holds ADD COLUMN ${name} ${type.replace(" NOT NULL", "")}`);
     if (move) {
-      moveTaskText(d);
-      clearLegacyText(d);
-      clearAllowedText(d, 0);
-      writeMeta(d, ALLOWED_CLEARED_ID, newestHoldId(d));
+      moveTaskText(d, 0);
+      clearLegacyText(d, 0);
+      clearAllowedProse(d, 0);
+      writeMeta(d, SETTLED_ID, newestHoldId(d));
       writeMeta(d, LAYOUT_KEY, 1);
     }
     d.exec("COMMIT");
@@ -259,19 +251,23 @@ function migrateHolds(d: SqliteDb): boolean {
 }
 
 /**
- * At each start, clear the context and text of the allowed rows an older session wrote since the last one: that
- * version knows nothing of this layout and fills the columns this one never writes. The highest id already cleared
- * is kept in `hold_meta`, so a start looks only at the rows written after it and writes nothing when there are
- * none. Another session holding the database skips the step, as it does the prune; the next start runs it.
+ * At each start, bring the rows an older session wrote since the last one to the shape the migration leaves: the
+ * task text moves into `hold_tasks` (the row keeps the hash), the older layout's text goes, and an allowed row
+ * loses the summary and the agent reason. That version knows nothing of this layout and fills every column it has.
+ * The highest id already settled is kept in `hold_meta`, so a start looks only at the rows written after it and
+ * writes nothing when there are none. Another session holding the database skips the step, as it does the prune;
+ * the next start runs it.
  */
-function slimAllowedRows(d: SqliteDb): void {
-  const cleared = readMeta(d, ALLOWED_CLEARED_ID);
+function settleNewRows(d: SqliteDb): void {
+  const settled = readMeta(d, SETTLED_ID);
   const newest = newestHoldId(d);
-  if (newest <= cleared) return;
+  if (newest <= settled) return;
   d.exec("BEGIN IMMEDIATE");
   try {
-    clearAllowedText(d, cleared);
-    writeMeta(d, ALLOWED_CLEARED_ID, newest);
+    moveTaskText(d, settled);
+    clearLegacyText(d, settled);
+    clearAllowedProse(d, settled);
+    writeMeta(d, SETTLED_ID, newest);
     d.exec("COMMIT");
   } catch (err) {
     try { d.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
@@ -325,9 +321,9 @@ function vacuumWhenManyFreePages(d: SqliteDb): void {
 }
 
 /**
- * Create the schema, migrate an older database once, clear what an older session wrote since the last start, and
- * prune past retention. The migration runs with the normal write timeout, because a write into a database the
- * migration has not reached yet fails; the clearing, the prune, and the VACUUM skip a database another session
+ * Create the schema, migrate an older database once, settle the rows an older session wrote since the last start,
+ * and prune past retention. The migration runs with the normal write timeout, because a write into a database the
+ * migration has not reached yet fails; the settling, the prune, and the VACUUM skip a database another session
  * holds, and the next start runs them.
  * `allowedRetentionDays` is how long a call that was not held is kept; held rows use `retentionDays`.
  */
@@ -336,7 +332,7 @@ export async function initSchema(retentionDays = 365, dirs: HostDirs = defaultHo
     const d = await getDb(dirs);
     d.exec(HOLDS_SCHEMA);
     migrateHolds(d);
-    withoutWaiting(d, () => slimAllowedRows(d));
+    withoutWaiting(d, () => settleNewRows(d));
     withoutWaiting(d, () => pruneHolds(d, retentionDays, allowedRetentionDays));
     vacuumWhenManyFreePages(d);
   } catch (err: unknown) {
@@ -464,14 +460,14 @@ export function toHoldRecord(
 // --- Recording ---
 
 /**
- * One row per judged call. The task text goes into hold_tasks under its hash, once per task; the context
- * columns are written for a held row only, because no reader asks for them on the row of an allowed call. The
- * `scores` column is NOT NULL in every layout, so an allowed row carries the empty object instead of NULL.
+ * One row per judged call. The task text goes into hold_tasks under its hash, once per task, for a held and an
+ * allowed row alike. A call that was not held carries the judge data and the plan as well, and no summary or
+ * agent reason, which no reader and no calibration asks for there.
  */
 export async function recordHold(hold: HoldRecord, dirs: HostDirs = defaultHostDirs()): Promise<number> {
   const d = await getDb(dirs);
   const hash = signatureHash(hold.tool, hold.scores);
-  const taskKey = hold.held && hold.task ? taskHash(hold.task) : null;
+  const taskKey = hold.task ? taskHash(hold.task) : null;
   if (taskKey && hold.task) d.prepare("INSERT OR IGNORE INTO hold_tasks (hash, text) VALUES (?, ?)").run(taskKey, hold.task);
   const stmt = d.prepare(`
     INSERT INTO holds
@@ -483,10 +479,10 @@ export async function recordHold(hold: HoldRecord, dirs: HostDirs = defaultHostD
   const result = stmt.run(
     hold.timestamp, hold.projectRoot, hold.sessionId ?? null,
     hold.tool, hash, hold.commandPreview,
-    taskKey, hold.held ? hold.plan ?? null : null,
-    hold.held ? hold.contextSummary ?? null : null, hold.held ? JSON.stringify(hold.scores) : "{}",
+    taskKey, hold.plan ?? null,
+    hold.held ? hold.contextSummary ?? null : null, JSON.stringify(hold.scores),
     hold.level, hold.held ? 1 : 0,
-    hold.held ? JSON.stringify(hold.reasons) : null, hold.held ? hold.agentReason ?? null : null,
+    JSON.stringify(hold.reasons), hold.held ? hold.agentReason ?? null : null,
   );
   return Number(result.lastInsertRowid);
 }
