@@ -118,14 +118,25 @@ const promptWithSkills = (text: string, skills: Array<{ name: string; descriptio
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
 /**
+ * When the current test began. Every record a test reads was written after it. The fake session manager has no
+ * `getSessionId`, so every session of this file falls back to the process id and writes the same log path; a write
+ * still in flight from an earlier session can land after this one's, and a read that only counts lines sees it.
+ */
+let testStartedAt = 0;
+/**
  * The hold log and the trace file are written without blocking the hook; a test that reads one waits for the expected
  * number of lines. Every record ends in a newline, so text after the last one is an append still in progress.
  */
 const readLog = async (path: string, lines: number, settled = true): Promise<Record<string, unknown>[]> => {
+  const writtenAt = (record: Record<string, unknown>): number => {
+    const at = record.at;
+    return typeof at === "number" ? at : typeof at === "string" ? Date.parse(at) : Number.NaN;
+  };
   for (let attempt = 0; attempt < 200; attempt++) {
     const text = await readFile(path, "utf8").catch(() => "");
     const parsed = text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
-    if (parsed.length === lines && (!settled || parsed.every(record => record.outcome !== "pending"))) return parsed;
+    const ours = parsed.length > 0 && parsed.every(record => writtenAt(record) >= testStartedAt);
+    if (parsed.length === lines && ours && (!settled || parsed.every(record => record.outcome !== "pending"))) return parsed;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error(`log at ${path} did not reach ${lines} labelled lines`);
@@ -202,6 +213,7 @@ before(async () => {
 });
 
 beforeEach(async () => {
+  testStartedAt = Date.now();
   notices.length = 0; widgets.length = 0; confirms.length = 0;
   confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; hangNetwork = false; failStatus = undefined; prompt = "Run the test suite";
   keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0; requestUrls.length = 0; requestAuth.length = 0;
