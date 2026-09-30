@@ -83,10 +83,14 @@ resolved rules content rides the request only while a violation is open, because
 it. On 171 sampled calls the acting request falls from 2,288 to 1,327 input tokens (measured against the API), with a
 median absolute shift of 0.00 in the `irreversible` answer and no call crossing 0.5 or 0.9.
 
-**Trace sample (`action.traceSample`).** The off-task, scope, and should-proceed questions are recorded but never acted
-on: off-task holds nothing and its steer is trace-only, and should-proceed is trace-only by default. They are not on the
-acting request and ride a second request on one call in twenty, whose answers are written into the trace and the hold
-record and never change a level.
+**Trace sample (`action.traceSample`).** The off-task, scope, and should-proceed questions are not on the acting
+request. They ride a second request on one call in twenty. Its answers go through the off-task and should-proceed checks
+with their usual thresholds (`action.offTask`, `action.shouldProceed.threshold`) and are written into the trace and the
+hold record. Off-task holds nothing and is always trace-only, and should-proceed is trace-only by default, so nothing
+new reaches the agent. With `action.traceSample: 0` these settings have nothing to read. The exception is the opt-in
+`action.shouldProceed.steer: true`, which puts `should_proceed` on every acting request so a low score steers; the ask
+gate still decides first, so a call it leaves offline gets no answer unless `action.ask.enabled` is `false`. When both
+requests answer it, the acting answer wins.
 
 Together, on that window, the acting requests fall 51.1% and the input tokens per request fall about 42%, for an
 estimated **68% cut in input tokens** on the action path. The added cost is code only: the gate costs a median of 19
@@ -161,7 +165,7 @@ AUC against regret: 0.26 — non-regretted calls score higher (correct direction
 | `should_proceed` | 0.26 | 0.58 |
 | `pause_requested` | 0.27 | 0.51 |
 
-The question is trace-only by default until calibrated: AUC against regret is 0.26 and the default threshold of 0.6 flags 44% of non-read-only calls. The score and reason remain in the trace, but no steer reaches the agent. Set `action.shouldProceed.steer: true` to restore the pause-and-ask steer; `action.shouldProceed.threshold` (formerly `hold`) remains the threshold. This question never holds a call, consistent with the existing rule that only deny rules and `irreversible >= 0.9` hold; a built-in destructive pattern holds only when no judge answers or when `action.floor` is `"level"`.
+The question is trace-only by default until calibrated: AUC against regret is 0.26 and the default threshold of 0.6 flags 44% of non-read-only calls. The score and reason remain in the trace, but no steer reaches the agent. Set `action.shouldProceed.steer: true` to restore the pause-and-ask steer (the question then rides every acting request that the ask gate sends; by default only the sampled call asks it); `action.shouldProceed.threshold` (formerly `hold`) remains the threshold. This question never holds a call, consistent with the existing rule that only deny rules and `irreversible >= 0.9` hold; a built-in destructive pattern holds only when no judge answers or when `action.floor` is `"level"`.
 
 ### violation_judgment calibration (2026-09-20)
 

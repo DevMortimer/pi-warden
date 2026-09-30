@@ -31,9 +31,14 @@ const answers = (irreversible: number, offTask: number, scope = "expected_step",
     ...(mutates === undefined ? {} : { mutates: { type: "noul" as const, noul: mutates } }),
   },
 });
+// A real judge answers only the questions a request asks; the stub does the same.
+const onlyAsked = <T extends { answers: Record<string, unknown> }>(result: T, request: unknown): T => ({
+  ...result,
+  answers: Object.fromEntries(Object.entries(result.answers).filter(([id]) => id in (request as { questions: Record<string, unknown> }).questions)),
+});
 const judge = (irreversible: number, offTask: number, scope?: string, mutates?: number): Judge & { calls: unknown[] } => {
   const calls: unknown[] = [];
-  return { calls, async evaluate(request) { calls.push(request); return answers(irreversible, offTask, scope, 0.9, mutates) as never; } };
+  return { calls, async evaluate(request) { calls.push(request); return onlyAsked(answers(irreversible, offTask, scope, 0.9, mutates), request) as never; } };
 };
 const failingJudge = (code: "timeout" | "http" = "timeout"): Judge => ({
   async evaluate() { throw new TypeSafeIntegrationError(code, `synthetic ${code}`); },
@@ -44,7 +49,8 @@ test("should-proceed keeps the trace reason at the threshold and leaves higher s
     const result = answers(0.1, 0.1);
     const verdict = await evaluateAction({ tool: "write", input: { path: "example.ts", content: "export {};" }, cwd, task: "add a module" }, {
       config: judgedAction(),
-      judge: { async evaluate() { return { ...result, answers: { ...result.answers, should_proceed: { type: "noul", noul: score } } } as never; } },
+      traceSample: 1,
+      judge: { async evaluate(request) { return onlyAsked({ ...result, answers: { ...result.answers, should_proceed: { type: "noul", noul: score } } }, request) as never; } },
     });
     assert.equal(verdict.judgment?.shouldProceed, score);
     assert.equal(verdict.shouldProceedTraceOnly, score === 0.6 ? true : undefined);
@@ -56,12 +62,12 @@ test("should-proceed keeps the trace reason at the threshold and leaves higher s
 test("off-task never holds: an unrelated change warns but is trace-only; a read-only command only warns", async () => {
   const config = judgedAction();
   const inspect = { tool: "bash", input: { command: "cat package.json; node -e \"console.log(require('./package.json').version)\"" }, cwd, task: "Update the README image" };
-  const readOnly = await evaluateAction(inspect, { config, judge: judge(0.05, 0.91, "unrelated", 0.05) });
+  const readOnly = await evaluateAction(inspect, { config, traceSample: 1, judge: judge(0.05, 0.91, "unrelated", 0.05) });
   assert.equal(readOnly.level, "warn");
   assert.match(readOnly.reasons.join("; "), /unrelated, but read-only/);
   assert.equal(readOnly.offTaskSteer, undefined, "nothing changed, nothing to steer back from");
   assert.equal(readOnly.offTaskTraceOnly, true, "off-task is trace-only until AUC clears 0.51");
-  const changes = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config, judge: judge(0.2, 0.91, "unrelated", 0.95) });
+  const changes = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config, traceSample: 1, judge: judge(0.2, 0.91, "unrelated", 0.95) });
   assert.equal(changes.level, "warn");
   assert.equal(changes.offTaskSteer, true);
   assert.equal(changes.offTaskTraceOnly, true, "steer is trace-only until AUC clears 0.51");
@@ -69,14 +75,14 @@ test("off-task never holds: an unrelated change warns but is trace-only; a read-
   assert.equal(changes.offTaskTraceOnlyReasonIndex, changes.reasons.findIndex(reason => reason.startsWith("off-task 0.91")), "delivery metadata identifies only the generated diagnostic");
   assert.match(offTaskSteer(changes), /^pi-warden: this bash call looks unrelated to the user's request \(off-task 0\.91\)\. It ran\./);
   assert.match(formatVerdict(changes), /off task · warn$/);
-  const unknown = await evaluateAction(inspect, { config, judge: judge(0.05, 0.91, "unrelated") });
+  const unknown = await evaluateAction(inspect, { config, traceSample: 1, judge: judge(0.05, 0.91, "unrelated") });
   assert.equal(unknown.offTaskSteer, true, "without a mutates answer the call is taken to change something");
   assert.equal(unknown.offTaskTraceOnly, true);
-  const write = await evaluateAction({ tool: "write", input: { path: "poem.txt", content: "roses" }, cwd, task: "Fix the login bug" }, { config, judge: judge(0.05, 0.95, "unrelated", 0.05) });
+  const write = await evaluateAction({ tool: "write", input: { path: "poem.txt", content: "roses" }, cwd, task: "Fix the login bug" }, { config, traceSample: 1, judge: judge(0.05, 0.95, "unrelated", 0.05) });
   assert.equal(write.level, "warn", "write and edit always change something, and still never hold for scope alone");
   assert.equal(write.offTaskSteer, true);
   assert.equal(write.offTaskTraceOnly, true);
-  const below = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config: { ...config, offTask: { warn: 0.6, steer: 0.95 } }, judge: judge(0.2, 0.91, "unrelated", 0.95) });
+  const below = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config: { ...config, offTask: { warn: 0.6, steer: 0.95 } }, traceSample: 1, judge: judge(0.2, 0.91, "unrelated", 0.95) });
   assert.equal(below.offTaskSteer, true, "scope unrelated steers regardless of score threshold");
   assert.equal(below.level, "warn");
   const probe = judge(0.05, 0.05, "expected_step", 0.05);
@@ -86,17 +92,17 @@ test("off-task never holds: an unrelated change warns but is trace-only; a read-
 
 test("missing scope context is not itself off-task evidence; scope expected_step vetoes; unrelated always warns", async () => {
   const action = { tool: "write", input: { path: "src/output.ts", content: "export const output = 1;" }, cwd, task: "Nice, the guard works :)" };
-  const unclear = await evaluateAction(action, { config: judgedAction(), judge: judge(0.1, 0.95, "unclear") });
+  const unclear = await evaluateAction(action, { config: judgedAction(), traceSample: 1, judge: judge(0.1, 0.95, "unclear") });
   assert.equal(unclear.level, "allow");
   assert.equal(unclear.offTaskSteer, undefined);
-  const unrelated = await evaluateAction(action, { config: judgedAction(), judge: judge(0.1, 0.95, "unrelated") });
+  const unrelated = await evaluateAction(action, { config: judgedAction(), traceSample: 1, judge: judge(0.1, 0.95, "unrelated") });
   assert.equal(unrelated.level, "warn");
   assert.equal(unrelated.offTaskSteer, true);
   assert.equal(unrelated.offTaskTraceOnly, true);
-  const expectedStep = await evaluateAction(action, { config: judgedAction(), judge: judge(0.1, 0.95, "expected_step") });
+  const expectedStep = await evaluateAction(action, { config: judgedAction(), traceSample: 1, judge: judge(0.1, 0.95, "expected_step") });
   assert.equal(expectedStep.level, "allow", "scope expected_step vetoes off-task even with a high score");
   assert.equal(expectedStep.offTaskSteer, undefined);
-  const destructive = await evaluateAction(action, { config: judgedAction(), judge: judge(0.95, 0.95, "unclear") });
+  const destructive = await evaluateAction(action, { config: judgedAction(), traceSample: 1, judge: judge(0.95, 0.95, "unclear") });
   assert.equal(destructive.level, "confirm", "missing context does not disable irreversible-action protection");
 });
 
@@ -965,16 +971,16 @@ test("evaluateAction applies thresholds from config", async () => {
 
 test("evaluateAction gates off-task on scope: expected_step vetoes; unrelated always warns; plausible_side_step is trace-only", async () => {
   const config = judgedAction();
-  const side = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, judge: judge(0.1, 0.7, "plausible_side_step") });
+  const side = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, traceSample: 1, judge: judge(0.1, 0.7, "plausible_side_step") });
   assert.equal(side.level, "warn", "plausible_side_step is still a warning");
   assert.equal(side.offTaskSteer, undefined, "side steps do not steer");
   assert.equal(side.offTaskTraceOnly, true, "side steps are trace-only");
-  const unrelated = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, judge: judge(0.1, 0.9, "unrelated") });
+  const unrelated = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, traceSample: 1, judge: judge(0.1, 0.9, "unrelated") });
   assert.equal(unrelated.level, "warn");
   assert.equal(unrelated.offTaskSteer, true);
   assert.equal(unrelated.offTaskTraceOnly, true, "steer is trace-only until AUC clears 0.51");
   assert.ok(unrelated.reasons.some(reason => /off-task/i.test(reason)));
-  const expectedStep = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, judge: judge(0.1, 0.9, "expected_step") });
+  const expectedStep = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, traceSample: 1, judge: judge(0.1, 0.9, "expected_step") });
   assert.equal(expectedStep.level, "allow", "scope expected_step vetoes off-task");
   assert.equal(expectedStep.offTaskSteer, undefined);
   assert.equal(expectedStep.offTaskTraceOnly, undefined);
@@ -1174,7 +1180,7 @@ const withSlop = (irreversible: number, offTask: number, slop: Partial<Record<"s
         if (ids.includes(`slop_${symptom}`)) base.answers[`slop_${symptom}`] = { type: "noul", noul: slop[symptom] ?? 0.05 };
       }
       if (ids.includes("approved")) base.answers.approved = { type: "noul", noul: approved ?? 0 };
-      return base as never;
+      return onlyAsked(base, request) as never;
     },
   };
 };
@@ -1256,7 +1262,7 @@ test("the regret question rides the request with last turn's allowed calls; a lo
       const base = answers(0.1, 0.1) as { answers: Record<string, unknown> };
       base.answers.regretted = { type: "noul", noul: 0.9 };
       base.answers.regret_target = { type: "choice", choice: "a2", confidence: 0.7, probabilities: { a1: 0.3, a2: 0.7 } };
-      return base as never;
+      return onlyAsked(base, request) as never;
     },
   };
   const verdict = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "wait, undo that" }, { config: config.action, judge: j, previousActions: [one[0]!, { id: "a2", tool: "write", path: "a.ts" }] });
@@ -1285,7 +1291,7 @@ test("the agent's plan travels with the request and is judged for intent mismatc
         calls.push(request);
         const base = answers(0.1, 0.1, "expected_step", 0.9, mutates) as { answers: Record<string, unknown> };
         if ("intent_mismatch" in (request as { questions: object }).questions) base.answers.intent_mismatch = { type: "noul", noul: mismatch };
-        return base as never;
+        return onlyAsked(base, request) as never;
       },
     };
   };
@@ -1332,7 +1338,7 @@ test("a visible action (commit, push, merge, launch) needs less plan mismatch to
       const ids = Object.keys((request as { questions: object }).questions);
       if (ids.includes("intent_mismatch")) base.answers.intent_mismatch = { type: "noul", noul: mismatch };
       if (ids.includes("visible")) base.answers.visible = { type: "noul", noul: visible };
-      return base as never;
+      return onlyAsked(base, request) as never;
     },
   });
   const call = { tool: "bash", input: { command: "gh pr ready 12 && git push origin feature" }, cwd, task: "get the PR ready", plan: "I will run the tests once more before touching the PR." };
@@ -1721,7 +1727,7 @@ const largeOutputJudge = (largeOutput: number): Judge & { calls: Array<{ questio
   return { calls, async evaluate(request) {
     calls.push(request as never);
     const result = answers(0.05, 0.05, "expected_step", 0.9, 0.05);
-    return { ...result, answers: { ...result.answers, ...("large_output" in (request as { questions: Record<string, unknown> }).questions ? { large_output: { type: "noul", noul: largeOutput } } : {}) } } as never;
+    return onlyAsked({ ...result, answers: { ...result.answers, ...("large_output" in (request as { questions: Record<string, unknown> }).questions ? { large_output: { type: "noul", noul: largeOutput } } : {}) } }, request) as never;
   } };
 };
 const largeOutputOn = { enabled: true, threshold: 0.85 };

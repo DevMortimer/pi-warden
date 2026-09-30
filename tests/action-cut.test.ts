@@ -107,6 +107,92 @@ test("the acting request carries only what a delivered outcome reads: no context
   assert.equal(verdict.level, "allow");
 });
 
+/** Answers off-task, scope, and should-proceed badly whenever a request asks them, and nothing else it was not asked. */
+const badAnswers = (acting: number, sampled = acting): Judge & { calls: Array<{ questions: Record<string, unknown> }> } => {
+  const calls: Array<{ questions: Record<string, unknown> }> = [];
+  return {
+    calls,
+    async evaluate(request) {
+      calls.push(request as never);
+      const questions = (request as { questions: Record<string, unknown> }).questions;
+      const answers: Record<string, unknown> = { irreversible: { type: "noul", noul: 0.05 }, mutates: { type: "noul", noul: 0.9 } };
+      if (questions.off_task) answers.off_task = { type: "noul", noul: 0.95 };
+      if (questions.scope) answers.scope = { type: "choice", choice: "unrelated", confidence: 0.9 };
+      if (questions.should_proceed) answers.should_proceed = { type: "noul", noul: "irreversible" in questions ? acting : sampled };
+      return { model: "jev-test", answers, usage: { input_tokens: 10, output_tokens: 0 }, elapsedMs: 1 } as never;
+    },
+  };
+};
+const write = { tool: "write", input: { path: "src/a.ts", content: "export const a = 1;" }, cwd: "", task: "add a module" };
+
+test("with the default config the acting request asks no off-task, scope, or should-proceed question", async () => {
+  const j = badAnswers(0.1);
+  const verdict = await evaluateAction({ ...write, cwd }, { config: { ...config(), traceSample: 0 }, judge: j });
+  assert.equal(j.calls.length, 1, "one acting request and no sample");
+  for (const id of ["off_task", "scope", "should_proceed"]) assert.equal(id in j.calls[0]!.questions, false, id);
+  assert.equal(verdict.level, "allow");
+  assert.equal(verdict.judgment?.shouldProceed, undefined);
+});
+
+test("with shouldProceed.steer the acting request asks should-proceed, and a score at or below the threshold steers", async () => {
+  const cfg = { ...config(), traceSample: 0, shouldProceed: { threshold: 0.6, steer: true } };
+  const j = badAnswers(0.3);
+  const verdict = await evaluateAction({ ...write, cwd }, { config: cfg, judge: j });
+  assert.equal(j.calls.length, 1, "the opt-in adds a question, not a request");
+  assert.ok("should_proceed" in j.calls[0]!.questions);
+  assert.equal("off_task" in j.calls[0]!.questions || "scope" in j.calls[0]!.questions, false, "off-task stays off the acting request");
+  assert.equal(verdict.level, "warn");
+  assert.equal(verdict.shouldProceedSteer, true);
+  assert.equal(verdict.shouldProceedTraceOnly, undefined, "the opt-in steer reaches the agent");
+  assert.ok(verdict.reasons.includes("should-proceed 0.30 (may need user input before continuing)"));
+  const above = await evaluateAction({ ...write, cwd }, { config: cfg, judge: badAnswers(0.61) });
+  assert.equal(above.level, "allow");
+  assert.equal(above.shouldProceedSteer, undefined);
+});
+
+test("the opt-in steer does not widen the ask gate: a call the gate decides offline gets no should-proceed answer", async () => {
+  const gated = { ...config(), traceSample: 0, shouldProceed: { threshold: 0.6, steer: true } };
+  const j = badAnswers(0.1);
+  const offline = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "run the tests" }, { config: gated, judge: j });
+  assert.equal(j.calls.length, 0, "no request at all");
+  assert.equal(offline.judgment, undefined);
+  assert.equal(offline.level, "allow");
+  const everything = badAnswers(0.1);
+  await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "run the tests" }, { config: { ...gated, ask: { enabled: false } }, judge: everything });
+  assert.ok("should_proceed" in everything.calls[0]!.questions, "ask.enabled false asks every judged call");
+});
+
+test("the acting should-proceed answer wins over the sampled one", async () => {
+  const cfg = { ...config(), shouldProceed: { threshold: 0.6, steer: true } };
+  const j = badAnswers(0.9, 0.1);
+  const verdict = await evaluateAction({ ...write, cwd }, { config: cfg, judge: j, traceSample: 1 });
+  assert.equal(j.calls.length, 2);
+  assert.equal(verdict.judgment?.shouldProceed, 0.9);
+  assert.equal(verdict.shouldProceedSteer, undefined);
+});
+
+test("a sampled call runs its off-task and scope answers through the trace-only chain, and never holds", async () => {
+  const j = badAnswers(0.1);
+  const verdict = await evaluateAction({ ...write, cwd }, { config: { ...config(), ask: { enabled: false } }, judge: j, traceSample: 1 });
+  assert.equal(verdict.level, "warn");
+  assert.equal(verdict.offTaskTraceOnly, true);
+  assert.equal(verdict.reasons[verdict.offTaskTraceOnlyReasonIndex!], "off-task 0.95 (unrelated to the request; trace-only until AUC clears 0.51)");
+  assert.equal(verdict.shouldProceedTraceOnly, true);
+  assert.equal(verdict.reasons[verdict.shouldProceedTraceOnlyReasonIndex!], "should-proceed 0.10 (trace-only until calibrated)");
+});
+
+test("with traceSample 0 no call gets an off-task or should-proceed reason", async () => {
+  const j = badAnswers(0.1);
+  for (const input of [write, { tool: "edit", input: { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] }, cwd: "", task: "rename" }, { tool: "bash", input: { command: "git push origin main" }, cwd: "", task: "push it" }]) {
+    const verdict = await evaluateAction({ ...input, cwd }, { config: { ...config(), traceSample: 0 }, judge: j, traceSample: 0 });
+    assert.equal(verdict.judgment?.offTask, undefined);
+    assert.equal(verdict.judgment?.scope, undefined);
+    assert.equal(verdict.judgment?.shouldProceed, undefined);
+    assert.equal(verdict.reasons.some(reason => /off-task|should-proceed/.test(reason)), false, verdict.reasons.join("; "));
+  }
+  assert.equal(j.calls.length, 3, "each call sent its acting request only");
+});
+
 test("a sampled call also asks the trace-only questions, and their answers never set the level", async () => {
   const j = judgeOf();
   const first = await evaluateAction({ tool: "bash", input: { command: "git push origin main" }, cwd, task: "push it" }, { config: config(), judge: j, traceSample: 1 });

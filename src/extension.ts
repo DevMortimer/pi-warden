@@ -2957,7 +2957,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /var/tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${destination} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
           const verdict = await evaluateAction(
             { tool: "bash", input: { command: "rm -rf /var/tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
-            { config: { ...config.action, enabled: true, tools: ["bash"] }, judge, rules: config.rules },
+            { config: { ...config.action, enabled: true, tools: ["bash"] }, judge, rules: config.rules, traceSample: config.action.traceSample },
           );
           const deliveryVerdict = ctx.hasUI ? verdict : agentDeliveryVerdict(verdict);
           const deliveryReasons = deliveryVerdict.reasons;
