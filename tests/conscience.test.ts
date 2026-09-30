@@ -14,6 +14,11 @@ import {
   isDestructiveTool,
   isPlatformIneligibleTool,
   indexEntrySaysDestructive,
+  gatePrompt,
+  rankCandidates,
+  isShortContinuation,
+  isRelayedReport,
+  spineKeyOf,
 } from "../src/conscience.js";
 import type { Candidate, Judge } from "../src/conscience.js";
 import type { ConscienceConfig } from "../src/config.js";
@@ -44,6 +49,9 @@ const fakeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceConfig
   maxLoadedBytes: 65536,
   recommendThreshold: 0.80,
   advanceThreshold: 0.70,
+  // The gate has its own tests below; these mechanics tests keep the full catalog and no floor.
+  localTopK: 64,
+  localFloor: 0,
   ...overrides,
 });
 
@@ -459,6 +467,90 @@ test("assess never recommends a skipped core tool, even when the judge rates it 
   assert.equal(result.selected?.id, "search_code");
 });
 
+/* ─── Local gate ─────────────────────────────────────────────────────── */
+
+test("isShortContinuation accepts replies and rejects real requests", () => {
+  assert.equal(isShortContinuation("yes"), true);
+  assert.equal(isShortContinuation("go."), true);
+  assert.equal(isShortContinuation("1. ship the fix"), true);
+  assert.equal(isShortContinuation("b. wait for the build"), true);
+  assert.equal(isShortContinuation("add a test for the retry path"), false);
+  assert.equal(isShortContinuation("yes, and also update the changelog while you are there"), false);
+  assert.equal(isShortContinuation(""), false);
+});
+
+test("isRelayedReport opens with a hand-off, not with a request", () => {
+  assert.equal(isRelayedReport("scout reports:\n\n--- turn at 2026-09-29 17:41:32 ---\n\ncommitted"), true);
+  assert.equal(isRelayedReport("Report from the build agent:\nall green"), true);
+  assert.equal(isRelayedReport("fix the build"), false);
+});
+
+test("gatePrompt skips a continuation and a relayed report before ranking anything", () => {
+  const config = fakeConfig();
+  assert.equal(gatePrompt({ prompt: "yes", candidates: [], config }).skipReason, "short_continuation");
+  assert.equal(gatePrompt({ prompt: "scout reports:\n\ndone", candidates: [], config }).skipReason, "relayed_report");
+});
+
+test("gatePrompt ranks the request against the task spine and cuts to the top k", () => {
+  const config = fakeConfig({ localTopK: 2, localFloor: 0 });
+  const { candidates } = eligibleCandidates(defaultSkills, [], config, [], []);
+  const spine = { goal: "make the tests green", task: "the retry test flakes", history: [] as string[] };
+  const outcome = gatePrompt({ prompt: "the retry test flakes", spine, candidates, config });
+  assert.equal(outcome.skipReason, undefined);
+  assert.equal(outcome.ranked?.length, 2, "only the top k reaches a request");
+  assert.equal(outcome.ranked?.[0]?.candidate.id, "tdd", "the term overlap decides the order");
+});
+
+test("gatePrompt sends no request when nothing clears the local floor", () => {
+  const config = fakeConfig({ localFloor: 5 });
+  const { candidates } = eligibleCandidates([fakeSkill("impeccable", "Frontend interface design")], [], config, [], []);
+  const outcome = gatePrompt({ prompt: "deploy the service", candidates, config });
+  assert.equal(outcome.skipReason, "local_floor");
+  assert.equal(outcome.ranked, undefined);
+});
+
+test("spineKeyOf is stable for one spine and moves when the request changes", () => {
+  const spine = { goal: "g", task: "t", history: ["h"] };
+  assert.equal(spineKeyOf("t", spine), spineKeyOf("t", { goal: "g", task: "t", history: ["h"] }));
+  assert.notEqual(spineKeyOf("other", spine), spineKeyOf("t", spine));
+});
+
+test("rankCandidates orders skills before tools on a tie and is deterministic", () => {
+  const skills = [fakeSkill("zebra", "a zebra skill"), fakeSkill("alpha", "an alpha skill")];
+  const { candidates } = eligibleCandidates(skills, [{ name: "mcp__widget", description: "widget" }], fakeConfig({ localFloor: 0 }), [], []);
+  const ranked = rankCandidates("nothing overlaps here", undefined, candidates);
+  assert.deepEqual(ranked.map(r => r.candidate.id), ["alpha", "zebra", "mcp__widget"]);
+  assert.deepEqual(rankCandidates("nothing overlaps here", undefined, candidates).map(r => r.candidate.id), ["alpha", "zebra", "mcp__widget"]);
+});
+
+test("assess spends no request on a short continuation", async () => {
+  const { judge, requests } = recordingJudge();
+  const result = await assess("yes", "", mixedCatalog.skills, mixedCatalog.tools, [], [], defaultDeps(judge));
+  assert.equal(result.requestCount, 0);
+  assert.equal(result.skipReason, "short_continuation");
+  assert.equal(requests.length, 0);
+});
+
+test("assess asks about only the local top k in one request", async () => {
+  const { judge, requests } = recordingJudge();
+  const result = await assess("design a landing page", "", defaultSkills, extensionTools, [], [], defaultDeps(judge, { localTopK: 2 }));
+  assert.equal(result.requestCount, 1, "the whole top k fits one request");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.length, 2);
+});
+
+test("assess marks the spine assessed so the next prompt on that spine is skipped", async () => {
+  const { judge, requests } = recordingJudge();
+  const assessedSpines = new Set<string>();
+  const deps = { ...defaultDeps(judge), assessedSpines };
+  const first = await assess("design a landing page", "", defaultSkills, extensionTools, [], [], deps);
+  assert.equal(first.requestCount, 1);
+  const second = await assess("design a landing page", "", defaultSkills, extensionTools, [], [], deps);
+  assert.equal(second.skipReason, "spine_assessed");
+  assert.equal(second.requestCount, 0);
+  assert.equal(requests.length, 1, "the second prompt asks nothing");
+});
+
 /* ─── assess: answer parsing (defect 1) ─────────────────────────────── */
 
 test("assess parses Choice answer using .choice field, not .response", async () => {
@@ -492,7 +584,7 @@ test("assest returns unclear when Choice answer has no .choice field", async () 
     conscience_disposition: { type: "choice", confidence: 0.5, probabilities: {} },
   });
   const result = await assess(
-    "test", "", defaultSkills, defaultTools, [], [],
+    "verify the numbers", "", defaultSkills, defaultTools, [], [],
     defaultDeps(judge),
   );
   assert.equal(result.disposition, "unclear");
@@ -515,7 +607,7 @@ test("P(useful now) is low when only level 1 (related) has high probability", as
   // level 1 = related (0.7), level 2 = 0.1, level 3 = 0.05 → pUseful = 0.15
   const judge = selectionJudge("advance", "c1", 1, [0.1, 0.7, 0.1, 0.05]);
   const result = await assess(
-    "test", "", defaultSkills, defaultTools, [], [],
+    "verify the numbers", "", defaultSkills, defaultTools, [], [],
     defaultDeps(judge, { recommendThreshold: 0.5 }),
   );
   assert.ok(Math.abs(result.usefulness - 0.15) < 0.001, `usefulness should be 0.15, got ${result.usefulness}`);
@@ -527,7 +619,7 @@ test("assess returns below_threshold when usefulness is below recommendThreshold
   // pUseful = 0.6 + 0.2 = 0.8, but threshold is 0.9
   const judge = selectionJudge("advance", "c1", 2, [0.05, 0.15, 0.6, 0.2]);
   const result = await assess(
-    "test", "", defaultSkills, defaultTools, [], [],
+    "verify the numbers", "", defaultSkills, defaultTools, [], [],
     defaultDeps(judge, { recommendThreshold: 0.9 }),
   );
   assert.equal(result.skipReason, "below_threshold");
@@ -538,7 +630,7 @@ test("assess selects when usefulness meets recommendThreshold", async () => {
   // pUseful = 0.65 + 0.25 = 0.9, threshold is 0.9
   const judge = selectionJudge("advance", "c1", 3, [0.05, 0.05, 0.65, 0.25]);
   const result = await assess(
-    "test", "", defaultSkills, defaultTools, [], [],
+    "verify the numbers", "", defaultSkills, defaultTools, [], [],
     defaultDeps(judge, { recommendThreshold: 0.9 }),
   );
   assert.equal(result.selected!.id, "impeccable");
@@ -548,7 +640,7 @@ test("assess selects when usefulness meets recommendThreshold", async () => {
 test("assess returns below_threshold when P(advance) is below recommendThreshold", async () => {
   const judge = selectionJudge("advance", "c1", 3, [0.05, 0.05, 0.65, 0.25], 0.5);
   const result = await assess(
-    "test", "", defaultSkills, defaultTools, [], [],
+    "verify the numbers", "", defaultSkills, defaultTools, [], [],
     defaultDeps(judge, { recommendThreshold: 0.9 }),
   );
   assert.equal(result.skipReason, "below_threshold");
@@ -689,7 +781,7 @@ test("assess uses min(conscience.timeoutMs, sharedTimeoutMs) for deadline", asyn
   };
   // conscience says 10000ms but shared says 200ms → effective is 200ms
   await assess(
-    "test", "", defaultSkills, defaultTools, [], [],
+    "verify the numbers", "", defaultSkills, defaultTools, [], [],
     { judge, config: fakeConfig({ timeoutMs: 10000 }), sharedTimeoutMs: 200, now: () => start },
   );
   // The timeout check happens before the judge call, so if shared is small, it may timeout
@@ -724,14 +816,14 @@ test("assess returns no_match when no eligible candidates", async () => {
 });
 
 test("assess returns awaiting_user when disposition is awaiting_user", async () => {
-  const result = await assess("test", "", defaultSkills, defaultTools, [], [], defaultDeps(dispositionJudge("awaiting_user")));
+  const result = await assess("verify the numbers", "", defaultSkills, defaultTools, [], [], defaultDeps(dispositionJudge("awaiting_user")));
   assert.equal(result.disposition, "awaiting_user");
   assert.equal(result.selected, null);
   assert.equal(result.skipReason, "awaiting_user");
 });
 
 test("assess returns no_gap when disposition is no_gap", async () => {
-  const result = await assess("test", "", defaultSkills, defaultTools, [], [], defaultDeps(dispositionJudge("no_gap")));
+  const result = await assess("verify the numbers", "", defaultSkills, defaultTools, [], [], defaultDeps(dispositionJudge("no_gap")));
   assert.equal(result.disposition, "no_gap");
   assert.equal(result.selected, null);
 });
@@ -740,7 +832,7 @@ test("assess handles judge timeout gracefully", async () => {
   const slowJudge: Judge = {
     evaluate: () => new Promise(resolve => setTimeout(() => resolve({ answers: {} }), 5000)),
   };
-  const result = await assess("test", "", defaultSkills, defaultTools, [], [], {
+  const result = await assess("verify the numbers", "", defaultSkills, defaultTools, [], [], {
     judge: slowJudge,
     config: fakeConfig({ timeoutMs: 10 }),
     sharedTimeoutMs: 5000,
@@ -753,7 +845,7 @@ test("assess handles judge throwing gracefully", async () => {
   const throwingJudge: Judge = {
     evaluate: async () => { throw new Error("network error"); },
   };
-  const result = await assess("test", "", defaultSkills, defaultTools, [], [], defaultDeps(throwingJudge));
+  const result = await assess("verify the numbers", "", defaultSkills, defaultTools, [], [], defaultDeps(throwingJudge));
   assert.equal(result.skipReason, "error");
 });
 
@@ -781,7 +873,7 @@ test("assess ranks by usefulness probability, then Score level, then skill-befor
     },
   };
   const result = await assess(
-    "test", "", defaultSkills, defaultTools, [], [],
+    "verify the numbers", "", defaultSkills, defaultTools, [], [],
     defaultDeps(judge, { recommendThreshold: 0.5 }),
   );
   assert.equal(result.selected!.kind, "skill", "skill should rank before tool when usefulness is equal");
@@ -867,7 +959,7 @@ test("assess returns below_threshold when pAdvance is below advanceThreshold", a
   // usefulness passes recommendThreshold (0.9) but pAdvance is 0.5 (below advanceThreshold 0.7)
   const judge = selectionJudge("advance", "c1", 3, [0.05, 0.05, 0.65, 0.25], 0.5);
   const result = await assess(
-    "test", "", defaultSkills, defaultTools, [], [],
+    "verify the numbers", "", defaultSkills, defaultTools, [], [],
     defaultDeps(judge, { recommendThreshold: 0.9, advanceThreshold: 0.7 }),
   );
   assert.equal(result.skipReason, "below_threshold");
@@ -879,7 +971,7 @@ test("assess selects when both usefulness and pAdvance pass their thresholds", a
   // usefulness = 0.9, pAdvance = 0.8, both pass
   const judge = selectionJudge("advance", "c1", 3, [0.05, 0.05, 0.65, 0.25], 0.8);
   const result = await assess(
-    "test", "", defaultSkills, defaultTools, [], [],
+    "verify the numbers", "", defaultSkills, defaultTools, [], [],
     defaultDeps(judge, { recommendThreshold: 0.9, advanceThreshold: 0.7 }),
   );
   assert.equal(result.selected!.id, "impeccable");

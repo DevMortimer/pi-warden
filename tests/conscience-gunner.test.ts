@@ -50,6 +50,9 @@ const defaultConscienceConfig = (overrides: Partial<ConscienceConfig> = {}): Con
   maxLoadedBytes: 65536,
   recommendThreshold: 1.0,
   advanceThreshold: 0.70,
+  // The gate has its own tests; these tests keep the full catalog and no floor.
+  localTopK: 64,
+  localFloor: 0,
   ...overrides,
 });
 
@@ -65,6 +68,9 @@ const loadModeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceCo
   maxLoadedBytes: 65536,
   recommendThreshold: 1.0,
   advanceThreshold: 0.70,
+  // The gate has its own tests; these tests keep the full catalog and no floor.
+  localTopK: 64,
+  localFloor: 0,
   ...overrides,
 });
 

@@ -119,7 +119,20 @@ function turnsOf(session, branch) {
     const skillMatch = turn.prompt.match(/\/skill:(\S+)/);
     if (skillMatch) turn.skillExpansions.push(skillMatch[1]);
   }
-  return turns.filter(t => t.prompt);
+  // Session state as the extension sees it: what the agent already called and already read
+  // before this prompt, used by the conscience's candidate filters.
+  const kept = turns.filter(t => t.prompt);
+  const calledTools = new Set();
+  const readFiles = new Set();
+  for (const turn of kept) {
+    turn.sessionTools = [...calledTools];
+    turn.sessionReads = [...readFiles];
+    for (const tc of turn.toolCalls) {
+      calledTools.add(tc.name);
+      if (tc.name === 'read') readFiles.add(String(tc.input.path ?? tc.input.file ?? ''));
+    }
+  }
+  return kept;
 }
 
 async function loadTurns(paths) {
@@ -263,7 +276,10 @@ async function runAssessment(turn, skills, toolCatalog, judge, indexes) {
     toolCatalog,
     activeSkills,
     suppliedSkills,
-    { judge, config: fakeConfig(), sharedTimeoutMs: timeoutMs, now: () => Date.now(), ...(indexes ?? {}) },
+    {
+      judge, config: fakeConfig(), sharedTimeoutMs: timeoutMs, now: () => Date.now(), ...(indexes ?? {}),
+      session: { calledTools: new Set(turn.sessionTools ?? []), readFiles: new Set(turn.sessionReads ?? []) },
+    },
   );
 }
 
@@ -550,6 +566,17 @@ async function run() {
   if (ownerLabels) {
     activeTurns = turns.filter(t => ownerLabels.has(`${t.session}#${t.index}`));
     console.log(`Filtered to ${activeTurns.length} turns matching owner labels.`);
+  }
+
+  // Filter to an explicit prompt list (JSONL rows of {file, prompt}) when --match is set.
+  const matchFile = value('match');
+  if (matchFile) {
+    const wanted = new Set(readFileSync(resolve(matchFile), 'utf8').split('\n').filter(Boolean).map(l => {
+      const row = JSON.parse(l);
+      return `${row.file}\u0000${row.prompt}`;
+    }));
+    activeTurns = activeTurns.filter(t => wanted.has(`${t.file}\u0000${t.prompt}`));
+    console.log(`Filtered to ${activeTurns.length} turns matching the prompt list (${wanted.size} listed).`);
   }
 
   // Load index (--index) for the full tool catalog and candidate metadata
