@@ -19,6 +19,15 @@ export const RELEVANCE_HEADER = "pi-warden relevance compaction";
 export const KEEP_CHARS = 4000;
 const KEEP_HEAD = 2400;
 const KEEP_TAIL = 1200;
+/** The first words of every relevance appendix (`compaction.mode: "append"`), sent as one custom message after Pi's summary. */
+export const APPENDIX_HEADER = "pi-warden relevance appendix";
+/**
+ * The appendix may take this share of the summary Pi wrote. Pi's summary carries the task state at full size; the
+ * appendix only carries the exact text a summary cannot hold, so the small share is the design, not a compromise.
+ */
+export const APPENDIX_RATIO = 0.3;
+/** No appendix section is cut below this many characters of its result: a tiny budget still keeps something verbatim. */
+export const UNIT_MIN_CHARS = 250;
 /** pi-typesafe refuses a request over 64 KiB of JSON; the margin covers the model name and the envelope. */
 export const MAX_REQUEST_BYTES = 60_000;
 /** Questions per request: fewer than the API's 32, so the shared state stays the larger part of each request. */
@@ -450,7 +459,7 @@ function taskState(input: Pick<RelevanceInput, "task" | "spine" | "focus">): Jso
 export interface KeepRequest { state: { task: JsonObject; conversation: string[]; candidates: JsonObject }; questions: Record<string, NoulQuestion>; ids: string[] }
 
 /** Keep questions packed into requests that stay under the byte limit. Every request carries the task and the outline. */
-export function buildRequests(units: readonly Unit[], input: Pick<RelevanceInput, "task" | "spine" | "focus">, questionsPerRequest = MAX_QUESTIONS): KeepRequest[] {
+export function buildRequests(units: readonly Unit[], input: Pick<RelevanceInput, "task" | "spine" | "focus">, questionsPerRequest = MAX_QUESTIONS, wanted: (unit: ScoredUnit) => boolean = () => true): KeepRequest[] {
   const task = taskState(input);
   const conversation = outline(units);
   const perRequest = Math.max(1, Math.min(MAX_QUESTIONS, Math.floor(questionsPerRequest)));
@@ -460,6 +469,7 @@ export function buildRequests(units: readonly Unit[], input: Pick<RelevanceInput
   let current: KeepRequest | undefined;
   let size = 0;
   for (const unit of candidates(units)) {
+    if (!wanted(unit)) continue;
     const view = candidateView(unit);
     const question = keepQuestion(unit.id);
     const entry = bytes({ [unit.id]: view }) + bytes({ [unit.id]: question });
@@ -484,14 +494,16 @@ function fence(label: string, text: string): string {
   return `${ticks}${label}\n${text}\n${ticks}`;
 }
 
-function cut(text: string, savedPath?: string): string {
-  if (text.length <= KEEP_CHARS) return text;
-  const omitted = text.length - KEEP_HEAD - KEEP_TAIL;
-  return `${text.slice(0, KEEP_HEAD)}\n[pi-warden: ${omitted} characters left out here${savedPath ? `; full output: ${savedPath}` : ""}]\n${text.slice(-KEEP_TAIL)}`;
+function cut(text: string, savedPath?: string, limit = KEEP_CHARS): string {
+  if (text.length <= limit) return text;
+  const head = Math.min(KEEP_HEAD, Math.floor(limit * 0.6));
+  const tail = Math.min(KEEP_TAIL, limit - head);
+  const omitted = text.length - head - tail;
+  return `${text.slice(0, head)}\n[pi-warden: ${omitted} characters left out here${savedPath ? `; full output: ${savedPath}` : ""}]\n${text.slice(-tail)}`;
 }
 
 /** A kept unit as its section, or undefined when the unit is only a "left out" line. */
-function keptSection(unit: Unit, kept: boolean, savedPathFor: ((text: string) => string | undefined) | undefined): string | undefined {
+function keptSection(unit: Unit, kept: boolean, savedPathFor: ((text: string) => string | undefined) | undefined, keepChars = KEEP_CHARS): string | undefined {
   switch (unit.kind) {
     case "user":
     case "assistant":
@@ -500,11 +512,11 @@ function keptSection(unit: Unit, kept: boolean, savedPathFor: ((text: string) =>
       return undefined;
     case "tool": {
       if (!kept || unit.result === undefined || unit.flagged) return undefined;
-      const result = unit.compressed ? unit.result : cut(unit.result, savedPathFor?.(unit.result));
-      return `=== tool call: ${unit.tool}${unit.isError ? ", failed" : ""} ===\n${fence(INPUT_LABEL, cut(unit.call))}\n${fence(UNTRUSTED_TOOL, result)}`;
+      const result = unit.compressed ? unit.result : cut(unit.result, savedPathFor?.(unit.result), keepChars);
+      return `=== tool call: ${unit.tool}${unit.isError ? ", failed" : ""} ===\n${fence(INPUT_LABEL, cut(unit.call, undefined, keepChars))}\n${fence(UNTRUSTED_TOOL, result)}`;
     }
     case "note":
-      return kept ? `=== extension message: ${unit.label} ===\n${fence(UNTRUSTED_MESSAGE, cut(unit.text))}` : undefined;
+      return kept ? `=== extension message: ${unit.label} ===\n${fence(UNTRUSTED_MESSAGE, cut(unit.text, undefined, keepChars))}` : undefined;
     case "summary":
       return kept ? `=== earlier summary: ${unit.label} ===\n${fence("", unit.text)}` : undefined;
   }
@@ -546,7 +558,154 @@ export function renderSummary(units: readonly Unit[], files: FileLists, keep: Re
 
 export const summaryTokens = (summary: string) => Math.ceil(summary.length / 4);
 
+/* ─── Appendix (compaction.mode: "append") ─────────────────────────── */
+
+const pathOf = (input: Record<string, unknown> | undefined): string | undefined => {
+  const value = input?.path ?? input?.file_path;
+  return typeof value === "string" ? value : undefined;
+};
+
+/**
+ * Units the appendix keeps in code, with no question: the last touch of every file the span modified (its newest
+ * content or change), and the latest failing output. These are facts the agent goes back for whatever Jev ranks.
+ */
+export function pinnedUnits(units: readonly Unit[], files: FileLists): ScoredUnit[] {
+  const pinned: ScoredUnit[] = [];
+  for (const file of files.modifiedFiles) {
+    const last = [...units].reverse().find(unit => unit.kind === "tool" && unit.input !== undefined && pathOf(unit.input) === file);
+    if (last) pinned.push(last as ScoredUnit);
+  }
+  const failing = [...units].reverse().find(unit => unit.kind === "tool" && unit.isError && unit.result !== undefined && !unit.flagged);
+  if (failing) pinned.push(failing as ScoredUnit);
+  // Priority order, one slot per unit: a latest failure that also modified a file keeps its earlier slot.
+  return pinned.filter((unit, index) => pinned.indexOf(unit) === index);
+}
+
+/** Tool results Jev is asked about in append mode: every result that is not pinned and not withheld. */
+export function appendixCandidates(units: readonly Unit[], files: FileLists): ScoredUnit[] {
+  const pinned = new Set(pinnedUnits(units, files));
+  return candidates(units).filter(unit => unit.kind === "tool" && !pinned.has(unit));
+}
+
+export interface AppendixResult { text: string; keptIds: string[]; tokens: number; /** The per-unit result cut the text used; a longer result is kept as head and tail. */ keepChars: number }
+
+/**
+ * The appendix for one compaction: pinned units first in the budget, then the scored tool results best first. Every
+ * section sits in the original span order; a unit that cannot fit is skipped, so small units still land when one
+ * candidate is huge. The whole text, header included, stays under `budgetChars`; empty when nothing fits.
+ */
+export function renderAppendix(units: readonly Unit[], files: FileLists, scores: Readonly<Record<string, number>>, options: { budgetChars: number; keepThreshold?: number; savedPathFor?: (text: string) => string | undefined }): AppendixResult {
+  const threshold = options.keepThreshold ?? 0.5;
+  const pinned = pinnedUnits(units, files);
+  const ranked = appendixCandidates(units, files)
+    .filter(unit => (scores[unit.id] ?? 0) >= threshold)
+    .sort((a, b) => (scores[b.id] ?? 0) - (scores[a.id] ?? 0));
+  // A unit may take at most a sixth of the budget: many small exact samples beat few deep ones under a fixed size.
+  const keepChars = Math.min(KEEP_CHARS, Math.max(UNIT_MIN_CHARS, Math.floor(options.budgetChars / 6)));
+  const keep = new Set<string>();
+  const overhead = APPENDIX_HEADER.length + 2;
+  // The pinned units are kept in code, but may take at most half the budget: they must not crowd out what Jev ranks.
+  const pinnedBudget = Math.floor((options.budgetChars - overhead) / 2);
+  let pinnedUsed = 0;
+  for (const unit of pinned) {
+    const section = keptSection(unit, true, options.savedPathFor, keepChars);
+    if (section === undefined || section.length + 2 > pinnedBudget - pinnedUsed) continue;
+    keep.add(unit.id);
+    pinnedUsed += section.length + 2;
+  }
+  let remaining = options.budgetChars - overhead - pinnedUsed;
+  for (const unit of ranked) {
+    const section = keptSection(unit, true, options.savedPathFor, keepChars);
+    if (section === undefined || section.length + 2 > remaining) continue;
+    keep.add(unit.id);
+    remaining -= section.length + 2;
+  }
+  const sections = units
+    .filter((unit): unit is ScoredUnit => "id" in unit && keep.has(unit.id))
+    .map(unit => keptSection(unit, true, options.savedPathFor, keepChars)!);
+  const text = sections.length ? `${APPENDIX_HEADER}\n\n${sections.join("\n\n")}` : "";
+  return { text, keptIds: [...keep], tokens: summaryTokens(text), keepChars };
+}
+
+export type AppendixScoreResult =
+  | { ok: true; units: Unit[]; files: FileLists; scores: Record<string, number>; stats: CompactionStats }
+  | { ok: false; reason: FallbackReason; detail?: string; scores: Record<string, number>; stats: CompactionStats };
+
+/**
+ * The scoring half of the appendix: the same state and the same keep question as a relevance compaction, but only
+ * for tool results that are not kept in code. Failure returns a reason instead; the caller then sends no appendix and
+ * Pi's summary stands alone. It never cancels or replaces a compaction.
+ */
+export async function scoreAppendix(input: RelevanceInput, options: RelevanceOptions): Promise<AppendixScoreResult> {
+  const started = Date.now();
+  const { units, files } = buildUnits(input);
+  const asked = appendixCandidates(units, files);
+  const wanted = new Set(asked.map(unit => unit.id));
+  const scores: Record<string, number> = {};
+  const stats: CompactionStats = { candidates: asked.length + pinnedUnits(units, files).length, kept: 0, dropped: 0, requests: 0, inputTokens: 0, elapsedMs: 0, threshold: options.config.keepThreshold, summaryTokens: 0 };
+  const fail = (reason: FallbackReason, detail?: string): AppendixScoreResult => ({ ok: false, reason, ...(detail ? { detail } : {}), scores, stats: { ...stats, elapsedMs: Date.now() - started } });
+  if (options.signal?.aborted) return fail("aborted");
+  const failure = await askKeep(units, input, unit => wanted.has(unit.id), options, scores, stats);
+  if (failure) return fail(failure.reason, failure.detail);
+  return { ok: true, units, files, scores, stats: { ...stats, elapsedMs: Date.now() - started } };
+}
+
 /* ─── Run ───────────────────────────────────────────────────────────── */
+
+/**
+ * The keep questions for `wanted` units in bounded, parallel requests; `scores` and `stats` count what was sent. One
+ * failed request stops the rest and returns the reason: a compaction either gets every answer or falls back whole.
+ */
+async function askKeep(units: readonly Unit[], input: Pick<RelevanceInput, "task" | "spine" | "focus">, wanted: (unit: ScoredUnit) => boolean, options: RelevanceOptions, scores: Record<string, number>, stats: CompactionStats): Promise<{ reason: FallbackReason; detail?: string } | undefined> {
+  const started = Date.now();
+  const requests = buildRequests(units, input, options.questionsPerRequest ?? MAX_QUESTIONS, wanted);
+  if (!requests.length) return undefined;
+  // Both limits are checked before anything is sent, so a compaction that cannot finish spends nothing.
+  const cap = options.config.maxRequests;
+  if (requests.length > cap) return { reason: "budget", detail: `${requests.length} requests needed, compaction.maxRequests is ${cap}` };
+  const left = options.requestsLeft?.();
+  if (left !== undefined && left - requests.length < REQUEST_RESERVE) return { reason: "budget", detail: `${left} requests left in the session budget, ${requests.length} needed, ${REQUEST_RESERVE} kept for the guards` };
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, options.config.timeoutMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+  let failure: { reason: FallbackReason; detail?: string } | undefined;
+  try {
+    await fanOut(requests, async request => {
+      // The guards spend from the same budget while this runs, so the reserve is read again before every request.
+      const now = options.requestsLeft?.();
+      if (now !== undefined && now < REQUEST_RESERVE) throw Object.assign(new Error(`${now} requests left in the session budget, ${REQUEST_RESERVE} kept for the guards`), { code: "reserve" });
+      stats.requests++;
+      // A request's own deadline trails the compaction deadline, so a timeout is reported as one, not as a failed request.
+      const deadline = Math.max(1, options.config.timeoutMs - (Date.now() - started)) + DEADLINE_SLACK_MS;
+      const answer = await ask(options.judge, { state: request.state, questions: request.questions }, { timeoutMs: Math.min(deadline, options.requestTimeoutMs ?? deadline), signal });
+      if (!answer.ok) throw Object.assign(new Error(answer.error), { code: answer.errorCode });
+      stats.inputTokens += answer.usage?.input_tokens ?? 0;
+      for (const id of request.ids) {
+        const value = (answer.answers as Record<string, { noul?: unknown } | undefined>)[id]?.noul;
+        if (typeof value !== "number") throw new Error(`no answer for ${id}`);
+        scores[id] = value;
+      }
+    }, {
+      concurrency: options.concurrency ?? CONCURRENCY,
+      signal,
+      stopOn: error => {
+        if (!failure) {
+          const code = (error as { code?: string }).code;
+          const detail = error instanceof Error ? error.message : String(error);
+          failure = timedOut || code === "timeout" ? { reason: "timeout" } : options.signal?.aborted ? { reason: "aborted" } : code === "reserve" ? { reason: "budget", detail } : code === "budget" ? { reason: "budget" } : { reason: "judge error", detail };
+        }
+        // One failed request means Pi's summary runs; the requests still in flight are not worth waiting for.
+        controller.abort();
+        return true;
+      },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!failure && (timedOut || options.signal?.aborted)) failure = { reason: timedOut ? "timeout" : "aborted" };
+  return failure;
+}
 
 export async function relevanceCompaction(input: RelevanceInput, options: RelevanceOptions): Promise<RelevanceResult> {
   const started = Date.now();
@@ -561,50 +720,7 @@ export async function relevanceCompaction(input: RelevanceInput, options: Releva
   const floor = renderSummary(units, files, new Set(), options.savedPathFor);
   if (summaryTokens(floor) > budget) return fail("too large", `${summaryTokens(floor)} tokens before any tool output`);
   if (scored.length) {
-    const requests = buildRequests(units, input, options.questionsPerRequest ?? MAX_QUESTIONS);
-    // Both limits are checked before anything is sent, so a compaction that cannot finish spends nothing.
-    const cap = options.config.maxRequests;
-    if (requests.length > cap) return fail("budget", `${requests.length} requests needed, compaction.maxRequests is ${cap}`);
-    const left = options.requestsLeft?.();
-    if (left !== undefined && left - requests.length < REQUEST_RESERVE) return fail("budget", `${left} requests left in the session budget, ${requests.length} needed, ${REQUEST_RESERVE} kept for the guards`);
-    const controller = new AbortController();
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, options.config.timeoutMs);
-    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
-    let failure: { reason: FallbackReason; detail?: string } | undefined;
-    try {
-      await fanOut(requests, async request => {
-        // The guards spend from the same budget while this runs, so the reserve is read again before every request.
-        const now = options.requestsLeft?.();
-        if (now !== undefined && now < REQUEST_RESERVE) throw Object.assign(new Error(`${now} requests left in the session budget, ${REQUEST_RESERVE} kept for the guards`), { code: "reserve" });
-        stats.requests++;
-        const deadline = Math.max(1, options.config.timeoutMs - (Date.now() - started)) + DEADLINE_SLACK_MS;
-        const answer = await ask(options.judge, { state: request.state, questions: request.questions }, { timeoutMs: Math.min(deadline, options.requestTimeoutMs ?? deadline), signal });
-        if (!answer.ok) throw Object.assign(new Error(answer.error), { code: answer.errorCode });
-        stats.inputTokens += answer.usage?.input_tokens ?? 0;
-        for (const id of request.ids) {
-          const value = (answer.answers as Record<string, { noul?: unknown } | undefined>)[id]?.noul;
-          if (typeof value !== "number") throw new Error(`no answer for ${id}`);
-          scores[id] = value;
-        }
-      }, {
-        concurrency: options.concurrency ?? CONCURRENCY,
-        signal,
-        stopOn: error => {
-          if (!failure) {
-            const code = (error as { code?: string }).code;
-            const detail = error instanceof Error ? error.message : String(error);
-            failure = timedOut || code === "timeout" ? { reason: "timeout" } : options.signal?.aborted ? { reason: "aborted" } : code === "reserve" ? { reason: "budget", detail } : code === "budget" ? { reason: "budget" } : { reason: "judge error", detail };
-          }
-          // One failed request means Pi's summary runs; the requests still in flight are not worth waiting for.
-          controller.abort();
-          return true;
-        },
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!failure && (timedOut || options.signal?.aborted)) failure = { reason: timedOut ? "timeout" : "aborted" };
+    const failure = await askKeep(units, input, () => true, options, scores, stats);
     if (failure) return fail(failure.reason, failure.detail);
   }
   const threshold = options.config.keepThreshold;
@@ -623,10 +739,14 @@ export async function relevanceCompaction(input: RelevanceInput, options: Releva
 }
 
 /** One line for /warden status. */
-export function formatCompaction(enabled: boolean, record: { runs: number; replaced: number; fallbacks: Partial<Record<FallbackReason | "skipped" | "judgments off", number>>; last?: CompactionStats | undefined }): string {
+export function formatCompaction(enabled: boolean, record: { runs: number; replaced: number; appended: number; fallbacks: Partial<Record<FallbackReason | "skipped" | "judgments off", number>>; last?: CompactionStats | undefined }, mode: "replace" | "append" = "replace"): string {
   if (!enabled) return "Relevance compaction: off (compaction.enabled).";
-  if (!record.runs) return "Relevance compaction: on; no compaction yet this session.";
   const fallbacks = Object.entries(record.fallbacks).filter(([, count]) => count).map(([reason, count]) => `${reason} ${count}`).join(", ");
   const last = record.last ? ` Last: kept ${record.last.kept} of ${record.last.candidates} scored units, ${record.last.requests} request${record.last.requests === 1 ? "" : "s"}, ${(record.last.elapsedMs / 1000).toFixed(1)} s, ~${record.last.summaryTokens} tokens.` : "";
+  if (mode === "append") {
+    if (!record.runs) return "Relevance appendix: on; no compaction yet this session.";
+    return `Relevance appendix: ${record.runs} compaction${record.runs === 1 ? "" : "s"}, ${record.appended} with a verbatim appendix${fallbacks ? `, ${record.runs - record.appended} without (${fallbacks})` : ""}.${last}`;
+  }
+  if (!record.runs) return "Relevance compaction: on; no compaction yet this session.";
   return `Relevance compaction: ${record.runs} compaction${record.runs === 1 ? "" : "s"}, ${record.replaced} replaced Pi's summary${fallbacks ? `, Pi's summary ran instead (${fallbacks})` : ""}.${last}`;
 }

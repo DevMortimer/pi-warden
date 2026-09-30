@@ -4,7 +4,7 @@ import type { Judge } from "pi-typesafe";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { applyProjectOverrides, applyUserOverrides, defaultConfig } from "../src/config.js";
 import { completeConfig } from "../src/shape.js";
-import { buildRequests, buildUnits, formatCompaction, KEEP_CHARS, MAX_QUESTIONS, MAX_REQUEST_BYTES, RELEVANCE_HEADER, relevanceCompaction, renderSummary, REQUEST_RESERVE } from "../src/relevance.js";
+import { appendixCandidates, buildRequests, buildUnits, formatCompaction, KEEP_CHARS, MAX_QUESTIONS, MAX_REQUEST_BYTES, pinnedUnits, APPENDIX_HEADER, RELEVANCE_HEADER, relevanceCompaction, renderAppendix, renderSummary, REQUEST_RESERVE, scoreAppendix } from "../src/relevance.js";
 import type { RelevanceInput, SpanMessage, ToolUnit, Unit } from "../src/relevance.js";
 
 const config = { keepThreshold: 0.5, maxSummaryTokens: 20000, timeoutMs: 2000, maxRequests: 12 };
@@ -226,10 +226,11 @@ test("a span with no scored unit needs no request", async () => {
 });
 
 test("config: off by default, user overrides, clamps, and a missing section keeps Pi's summary", () => {
-  assert.deepEqual(defaultConfig().compaction, { enabled: false, keepThreshold: 0.5, maxSummaryTokens: 20000, timeoutMs: 20000, maxRequests: 12, skipProviders: ["claude-bridge"] });
-  const user = applyUserOverrides(defaultConfig(), { compaction: { enabled: true, keepThreshold: 0.7, maxSummaryTokens: 10, timeoutMs: 999999, maxRequests: 0, skipProviders: ["a", "", 3] } });
-  assert.deepEqual(user.compaction, { enabled: true, keepThreshold: 0.7, maxSummaryTokens: 1000, timeoutMs: 120000, maxRequests: 12, skipProviders: ["a"] });
+  assert.deepEqual(defaultConfig().compaction, { enabled: false, mode: "replace", keepThreshold: 0.5, maxSummaryTokens: 20000, timeoutMs: 20000, maxRequests: 12, skipProviders: ["claude-bridge"] });
+  const user = applyUserOverrides(defaultConfig(), { compaction: { enabled: true, mode: "append", keepThreshold: 0.7, maxSummaryTokens: 10, timeoutMs: 999999, maxRequests: 0, skipProviders: ["a", "", 3] } });
+  assert.deepEqual(user.compaction, { enabled: true, mode: "append", keepThreshold: 0.7, maxSummaryTokens: 1000, timeoutMs: 120000, maxRequests: 12, skipProviders: ["a"] });
   assert.deepEqual(applyUserOverrides(defaultConfig(), { compaction: { keepThreshold: 7 } }).compaction.keepThreshold, 0.5);
+  assert.equal(applyUserOverrides(defaultConfig(), { compaction: { mode: "replace-all" } }).compaction.mode, "replace", "an unknown mode keeps the default");
   const { compaction: _dropped, ...stale } = defaultConfig();
   const shaped = completeConfig(stale);
   assert.equal(shaped.config.compaction.enabled, false);
@@ -237,10 +238,13 @@ test("config: off by default, user overrides, clamps, and a missing section keep
 });
 
 test("status line", () => {
-  assert.equal(formatCompaction(false, { runs: 0, replaced: 0, fallbacks: {} }), "Relevance compaction: off (compaction.enabled).");
-  assert.equal(formatCompaction(true, { runs: 0, replaced: 0, fallbacks: {} }), "Relevance compaction: on; no compaction yet this session.");
-  assert.equal(formatCompaction(true, { runs: 2, replaced: 1, fallbacks: { timeout: 1 }, last: { candidates: 9, kept: 3, dropped: 6, requests: 1, inputTokens: 10, elapsedMs: 1500, threshold: 0.5, summaryTokens: 800 } }),
+  assert.equal(formatCompaction(false, { runs: 0, replaced: 0, appended: 0, fallbacks: {} }), "Relevance compaction: off (compaction.enabled).");
+  assert.equal(formatCompaction(true, { runs: 0, replaced: 0, appended: 0, fallbacks: {} }), "Relevance compaction: on; no compaction yet this session.");
+  assert.equal(formatCompaction(true, { runs: 2, replaced: 1, appended: 0, fallbacks: { timeout: 1 }, last: { candidates: 9, kept: 3, dropped: 6, requests: 1, inputTokens: 10, elapsedMs: 1500, threshold: 0.5, summaryTokens: 800 } }),
     "Relevance compaction: 2 compactions, 1 replaced Pi's summary, Pi's summary ran instead (timeout 1). Last: kept 3 of 9 scored units, 1 request, 1.5 s, ~800 tokens.");
+  assert.equal(formatCompaction(true, { runs: 3, replaced: 0, appended: 2, fallbacks: { timeout: 1 }, last: { candidates: 9, kept: 3, dropped: 6, requests: 1, inputTokens: 10, elapsedMs: 1500, threshold: 0.5, summaryTokens: 800 } }, "append"),
+    "Relevance appendix: 3 compactions, 2 with a verbatim appendix, 1 without (timeout 1). Last: kept 3 of 9 scored units, 1 request, 1.5 s, ~800 tokens.");
+  assert.equal(formatCompaction(true, { runs: 0, replaced: 0, appended: 0, fallbacks: {} }, "append"), "Relevance appendix: on; no compaction yet this session.");
 });
 
 test("wrapper: a kept tool result, a user message, and an earlier summary part cannot open or close Pi's <summary>", async () => {
@@ -333,11 +337,84 @@ test("request budget: the reserve is read before each request, so guards spendin
 });
 
 test("config: a project file cannot turn compaction on, but may tune the other keys", () => {
-  const project = applyProjectOverrides(defaultConfig(), { compaction: { enabled: true, keepThreshold: 0.8, maxRequests: 4, timeoutMs: 9000 } });
+  const project = applyProjectOverrides(defaultConfig(), { compaction: { enabled: true, mode: "append", keepThreshold: 0.8, maxRequests: 4, timeoutMs: 9000 } });
   assert.equal(project.compaction.enabled, false);
+  assert.equal(project.compaction.mode, "replace", "nor switch the user's compaction to the appendix");
   assert.equal(project.compaction.keepThreshold, 0.8);
   assert.equal(project.compaction.maxRequests, 4);
   assert.equal(project.compaction.timeoutMs, 9000);
   const onByUser = applyUserOverrides(defaultConfig(), { compaction: { enabled: true } });
   assert.equal(applyProjectOverrides(onByUser, { compaction: { enabled: false } }).compaction.enabled, true, "nor turn off what the user turned on");
+});
+
+test("appendix: the last touch of every modified file and the latest failing output are kept without a question", () => {
+  const messages: SpanMessage[] = [
+    { role: "assistant", content: [call("c1", "write", { path: "src/a.ts", content: "export const a = 1;" }), call("c2", "bash", { command: "npm test" }), call("c3", "edit", { path: "src/a.ts", edits: [] })] },
+    result("c1", "write", "Wrote src/a.ts"),
+    result("c2", "bash", "FAIL tests/a.test.ts", true),
+    result("c3", "edit", "Edited src/a.ts"),
+  ];
+  const { units, files } = buildUnits({ messages, fileOps: { read: [], written: ["src/a.ts"], edited: ["src/a.ts"] } });
+  assert.deepEqual(pinnedUnits(units, files).map(unit => unit.id), ["u3", "u2"], "the newest touch of each modified file first, then the latest failure");
+  assert.deepEqual(appendixCandidates(units, files).map(unit => unit.id), ["u1"], "a pinned unit costs no question");
+});
+
+test("appendix: pinned units win the budget, scored results follow by score, and the text stays under the budget", () => {
+  const long = `FAIL tests/parse.test.ts\n${"x".repeat(4000)}`;
+  const messages: SpanMessage[] = [
+    { role: "assistant", content: [call("c1", "read", { path: "src/parse.ts" }), call("c2", "bash", { command: "npm test" }), call("c3", "read", { path: "README.md" })] },
+    result("c1", "read", "export function parse(s: string) { return s.split('-'); }"),
+    result("c2", "bash", long, true),
+    result("c3", "read", "# Project\nNothing relevant here."),
+  ];
+  const { units, files } = buildUnits({ messages });
+  const pinned = renderAppendix(units, files, {}, { budgetChars: 4000 });
+  assert.ok(pinned.text.startsWith(APPENDIX_HEADER));
+  assert.ok(pinned.text.length <= 4000);
+  assert.ok(pinned.text.includes("FAIL tests/parse.test.ts"), "the failing output is kept in code, with no score");
+  assert.ok(!pinned.text.includes("Nothing relevant here"), "an unscored result is not kept");
+  assert.equal(pinned.keptIds.length, 1);
+  const ranked = renderAppendix(units, files, { u1: 0.9, u3: 0.2 }, { budgetChars: 4000, keepThreshold: 0.5 });
+  assert.ok(ranked.text.includes("export function parse"), "a scored result joins the pinned failure");
+  assert.ok(!ranked.text.includes("Nothing relevant here"), "a result under the threshold is left out");
+  assert.ok(ranked.text.indexOf("export function parse") < ranked.text.indexOf("FAIL tests/parse.test.ts"), "sections follow the span order, not the priority order");
+  assert.ok(ranked.text.length <= 4000);
+  const tight = renderAppendix(units, files, { u1: 0.9, u3: 0.9 }, { budgetChars: 400, keepThreshold: 0.5 });
+  assert.ok(tight.text.length <= 400);
+  assert.ok(tight.keptIds.length >= 1, "one huge unit does not crowd out every other candidate");
+  assert.equal(renderAppendix(units, files, { u1: 0.9 }, { budgetChars: 10 }).text, "", "a budget under the header keeps nothing");
+});
+
+test("appendix scoring: only unpinned tool results are asked about, and a failure returns a reason", async () => {
+  const messages: SpanMessage[] = [
+    { role: "assistant", content: [call("c1", "write", { path: "src/a.ts", content: "export const a = 1;" }), call("c2", "read", { path: "src/b.ts" })] },
+    result("c1", "write", "Wrote src/a.ts"),
+    result("c2", "read", "export const b = 2;"),
+  ];
+  const sent: Array<{ state: unknown; questions: Record<string, unknown> }> = [];
+  const scored = await scoreAppendix({ messages, task: "t", fileOps: { read: ["src/b.ts"], written: ["src/a.ts"], edited: [] } }, { judge: fakeJudge({ u2: 0.9 }, sent), config });
+  assert.ok(scored.ok);
+  assert.deepEqual(Object.keys(sent[0]!.questions), ["u2"], "the pinned write is not asked about");
+  assert.equal(scored.stats.candidates, 2);
+  assert.equal(scored.stats.requests, 1);
+  assert.equal(scored.stats.inputTokens, 100);
+  const failing: Judge = { evaluate: (async () => { throw new TypeSafeIntegrationError("connection", "TypeSafe request failed."); }) as unknown as Judge["evaluate"] };
+  const failed = await scoreAppendix({ messages, task: "t" }, { judge: failing, config });
+  assert.equal(!failed.ok && failed.reason, "judge error");
+  const abandoned = await scoreAppendix({ messages, task: "t" }, { judge: fakeJudge(), config, signal: AbortSignal.abort() });
+  assert.equal(!abandoned.ok && abandoned.reason, "aborted");
+  assert.equal(abandoned.stats.requests, 0);
+});
+
+test("appendix budget: a span over compaction.maxRequests or inside the reserve sends nothing", async () => {
+  const sent: Array<{ state: unknown; questions: Record<string, unknown> }> = [];
+  const many: SpanMessage[] = [];
+  for (let index = 0; index < 3; index++) {
+    many.push({ role: "assistant", content: [call(`c${index}`, "read", { path: `f${index}` })] }, result(`c${index}`, "read", `text ${index}`));
+  }
+  const capped = await scoreAppendix({ messages: many, task: "t" }, { judge: fakeJudge({}, sent), config: { ...config, maxRequests: 2 }, questionsPerRequest: 1 });
+  assert.equal(!capped.ok && capped.reason, "budget");
+  const reserve = await scoreAppendix({ messages: many, task: "t" }, { judge: fakeJudge({}, sent), config, questionsPerRequest: 1, requestsLeft: () => REQUEST_RESERVE + 2 });
+  assert.equal(!reserve.ok && reserve.reason, "budget");
+  assert.equal(sent.length, 0);
 });

@@ -91,6 +91,25 @@ The conscience coach assesses whether the agent is missing a useful skill or too
 
 The feature ships experimental, off by default, and not recommended: on this data it keeps more text than Pi's summary without holding what the agent went back for. Try it or improve it; changes that make it smaller or keep what the agent goes back for are welcome.
 
+### Relevance compaction replay (2026-09-30, replace against the hybrid appendix)
+
+`node scripts/relevance-replay.mjs` on the same 48 recorded compactions (34 re-fetch reads after 17 of them), both designs at the defaults and with real requests; `--designs` runs one design at a time, so the replace numbers come from one run and the hybrid numbers from a second one over the same spans. The hybrid keeps the summary Pi wrote and appends at most 30% of its size.
+
+| Design | Tokens median (p90) | vs Pi (median) | Re-read covered | Requests median (p90) | ms median (p90) |
+| --- | --- | --- | --- | --- | --- |
+| replace (the relevance compaction) | 12,529 (18,359) | 5.02x | 11/34: 1 whole, 10 head and tail, 20 missed, 3 in a fallback | 6 (10) | 720 (1,159) |
+| hybrid (Pi's summary + appendix) | 3,321 (5,355) | 1.28x | 5/34: 0 whole, 5 head and tail, 27 missed, 2 in a fallback | 5 (9) | 768 (1,158) |
+
+"Covered" means the file's content sits in the summary or the appendix, whole or cut to head and tail. Pi's summary holds no tool output word for word and names all 34 paths, so the appendix is where the hybrid's coverage comes from. Sizes are medians over the compactions each design produced (41 replace, 43 hybrid; Pi's summary median 2,561 tokens, p90 4,322).
+
+- **The gate fails on coverage.** The hybrid passes size (1.28x, at most 1.3 by construction) but holds 5 of the 34 re-read files, not the 10 the gate asks for.
+- **Where it loses.** From the saved scores of the run: 12 of the 27 missed units scored under `keepThreshold` (0.5) at all, one at rank 197 of its compaction; the rest ranked 2 to 24 among 42 to 264 scored units while the budget kept 2 to 6. The ranking, not the size, is the binding limit.
+- **The first hybrid version gave the budget away.** Keeping the modified files and the failing output first without a bound left no room for Jev's picks in 13 of the 15 compactions with re-fetches (3/34 covered); bounding that group to half the budget doubled coverage to 5/34. The shipped code is the bounded version.
+- **Two of the 34** sat in spans that needed more than `compaction.maxRequests` (12) requests and got the summary alone.
+- **Head and tail are shallow** at these summary sizes (250 to 1,000 characters of a result). "Covered" is the mechanical presence test; an agent that needs the file usually still reads it again.
+- **Cost.** 688 requests and 11.7M input tokens for the two runs together (replace 236 requests and 4.8M tokens, the hybrid 226 requests and 3.9M tokens per run). No timeout at 20 s; the hybrid scores tool results only and sends slightly fewer requests per compaction.
+- **Next hypothesis.** The keep question asks whether the agent will need a unit's exact content "to continue the task"; re-reads follow the working set instead — files still open, skills consulted again. A question that predicts the re-read ("will the agent open this file again") is the next candidate and ships only with its own measurement. Cheaper code-side tests on the same scores: rank reads of files touched late in the span above other tool results at the same score, or keep a whole small file before any excerpt of a large one.
+
 ### Intent mismatch (2026-09-29, blind labels)
 
 140 sampled calls with a plan were labelled by hand, without the score in view, for whether the call did something other than the agent's stated plan. The `intent_mismatch` score separates the two (AUROC 0.815), but the steer it would deliver does not: of the 37 calls that would reach the agent, 16 did exactly what the plan said, 20 went beyond the plan on something the user's latest request had asked for, and 1 caught something the user had not asked for. The score, the trace entry, the `/warden status` counters, and the thresholds are unchanged; `action.intentTraceOnly` defaults to `"all"` for this reason, and `"invisible"` restores the old delivery.
@@ -414,7 +433,7 @@ Set `context.enabled: false` to turn it off. Full-output files can contain secre
 
 ### Relevance compaction
 
-Experimental, off by default, not recommended. In a replay of 48 recorded compactions its summary was 4.7 times the size of Pi's at the median and kept whole only 1 of the 34 files the agent read again. Try it or improve it; changes that make it smaller or keep what the agent goes back for are welcome.
+Experimental, off by default, not recommended. In a replay of 48 recorded compactions ([Calibration](#calibration) below) its summary was 5.0 times the size of Pi's at the median and held 1 of the 34 files the agent read again whole and 10 as head and tail. The `append` mode is the smaller hybrid: it keeps Pi's summary and spends at most 30% of its size on verbatim text, which held 5 of the 34 (all as head and tail). Try it or improve it; changes that make it smaller or keep what the agent goes back for are welcome.
 
 Opt-in (`compaction.enabled`, user file only; needs TypeSafe consent). When Pi compacts a session, pi-warden can write the summary instead of Pi's model, in `session_before_compact`. Nothing in it is paraphrased:
 
@@ -425,7 +444,9 @@ Opt-in (`compaction.enabled`, user file only; needs TypeSafe consent). When Pi c
 - **Requests:** every request carries the task, an outline of the whole span (shrunk in stages to fit), and up to 24 units with a redacted input and a head/tail sample of each result, under the 64 KiB request limit; labels and headings are redacted too. Four requests run at once, at most `compaction.maxRequests` (12) per compaction. The compaction shares the session's `maxRequests` budget with the guards: it sends nothing when its requests would leave fewer than 50 of that budget, and it stops before any request when fewer than 50 remain, so a compaction never turns judgments off for the guards.
 - **Fallback:** Pi's summary runs (the hook returns nothing; it never cancels a compaction) when consent is missing, the model's provider is in `compaction.skipProviders`, the span needs more than `compaction.maxRequests` requests, the request reserve is reached, a request fails or passes the global `timeoutMs`, `compaction.timeoutMs` passes, the compaction is aborted, or the summary stays over `compaction.maxSummaryTokens` after the threshold is raised. Each compaction leaves one trace entry (kept and scored units, requests, input tokens, time, or the fallback reason), and `/warden status` has one line for the session.
 
-The compaction appendix above still follows every compaction, this one included.
+- **Appendix mode** (`compaction.mode: "append"`, default `"replace"`). Pi writes its summary; pi-warden keeps a small verbatim appendix beside it. The span is scored as above, tool results only, and the units kept in code cost no question. After the compaction succeeds the appendix is sent as one custom message (`pi-warden-relevance-appendix`) right after the summary: the last touch of every file the span modified and the latest failing output first — kept in code, together at most half the budget — then the tool results at or above `compaction.keepThreshold`, best score first. The appendix, header included, is at most 30% of the size of the summary Pi wrote; each unit keeps at most a sixth of that (head and tail past it), and a unit that cannot fit is skipped. A scoring failure, timeout, abort, or request-budget stop sends no appendix and the summary stands alone; nothing cancels or replaces a compaction. One trace entry per compaction and its own line in `/warden status`.
+
+The compaction evidence appendix above still follows every compaction, these included.
 
 ### Context filter (beta, off by default)
 

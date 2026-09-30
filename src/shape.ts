@@ -68,7 +68,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     learning: section("learning", { patternAnalysis: true, retentionDays: 365 }),
     prefs: section("prefs", { enabled: false, inject: false }),
     // A missing section keeps Pi's own compaction summary, as before the section existed.
-    compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
+    compaction: section("compaction", { ...off, mode: "replace", keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
     // An older config module collects no warnings.
     warnings: Array.isArray(source.warnings) ? source.warnings : [],
     conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70 }),

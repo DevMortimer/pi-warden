@@ -275,10 +275,15 @@ export interface FilterConfig {
   timeoutMs: number;
 }
 
+/** `replace`: the relevance compaction stands in for Pi's summary. `append`: Pi writes the summary and a small verbatim appendix follows it. */
+export type CompactionMode = "replace" | "append";
+
 /** Relevance compaction (relevance.ts): Jev picks what of the discarded span is kept word for word instead of Pi's summary. */
 export interface CompactionConfig {
   /** Replace Pi's compaction summary with a relevance compaction. Off by default. User file only: it sends data and spends requests. */
   enabled: boolean;
+  /** What happens to Pi's summary: `replace` (default) swaps it for the relevance compaction; `append` keeps it and adds a small verbatim appendix after it. User file only, like `enabled`: both modes send data and spend requests. */
+  mode: CompactionMode;
   /** P(needed again) at or above which a unit is kept word for word. */
   keepThreshold: number;
   /** Size budget for the summary in tokens (characters / 4); over it the threshold is raised, then Pi's summary runs. */
@@ -562,7 +567,7 @@ export function defaultConfig(): WardenConfig {
     prefs: { enabled: true, inject: true },
     waste: { enabled: true, tip: false, every: 20, sleep: true, paging: true, search: true, recheck: true },
     // pi-claude-bridge compacts its own models and cancels on failure; its summary must not be replaced.
-    compaction: { enabled: false, keepThreshold: 0.5, maxSummaryTokens: 20000, timeoutMs: 20000, maxRequests: 12, skipProviders: ["claude-bridge"] },
+    compaction: { enabled: false, mode: "replace", keepThreshold: 0.5, maxSummaryTokens: 20000, timeoutMs: 20000, maxRequests: 12, skipProviders: ["claude-bridge"] },
     warnings: [],
   };
 }
@@ -1083,11 +1088,17 @@ function applyWaste(base: WasteConfig, raw: unknown): WasteConfig {
 /** Pi awaits the compaction hook with no deadline of its own, so this one is bounded too. */
 const MAX_COMPACTION_TIMEOUT_MS = 120_000;
 
+function compactionMode(value: unknown, fallback: CompactionMode): CompactionMode {
+  return value === "replace" || value === "append" ? value : fallback;
+}
+
 function applyCompaction(base: CompactionConfig, raw: unknown, source: "user" | "project"): CompactionConfig {
   if (!isObject(raw)) return base;
   return {
     // Turning it on sends the session to Jev and spends requests, so only the user decides; a project tunes the rest.
+    // The mode goes with it: switching a user's compaction to the appendix is a silent change of what is kept.
     enabled: source === "user" ? boolean(raw.enabled, base.enabled) : base.enabled,
+    mode: source === "user" ? compactionMode(raw.mode, base.mode) : base.mode,
     keepThreshold: probability(raw.keepThreshold, base.keepThreshold),
     maxSummaryTokens: Math.max(1000, positiveInteger(raw.maxSummaryTokens, base.maxSummaryTokens)),
     timeoutMs: Math.min(MAX_COMPACTION_TIMEOUT_MS, positiveInteger(raw.timeoutMs, base.timeoutMs)),

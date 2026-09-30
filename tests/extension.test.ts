@@ -3930,6 +3930,37 @@ test("session_compact: empty session sends nothing", async () => {
   assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-compact-evidence").length, 0, "no message for an empty session");
 });
 
+test("session_before_compact + session_compact: append mode keeps Pi's summary and sends a small verbatim appendix", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, compaction: { enabled: true, mode: "append" }, ...STACK_BAR }));
+  sentMessages.length = 0;
+  nextAnswers = { u1: 0.9, u2: 0.1 };
+  assert.equal(await fire("session_before_compact", beforeCompact()), undefined, "Pi writes its own summary");
+  assert.equal(requests.length, 1, "one scoring request for the tool results");
+  assert.deepEqual(Object.keys(requests[0]!.questions), ["u1", "u2"]);
+  const compactHandlers = extension.handlers.get("session_compact") ?? [];
+  await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: { summary: "S".repeat(2000) }, fromExtension: false, reason: "threshold", willRetry: false }, context()]);
+  const appendix = sentMessages.filter(m => m.message.customType === "pi-warden-relevance-appendix");
+  assert.equal(appendix.length, 1, "one relevance appendix message");
+  assert.ok(appendix[0]!.message.content.startsWith("pi-warden relevance appendix"));
+  assert.match(appendix[0]!.message.content, /export const a = 1;/, "the kept result is word for word");
+  assert.doesNotMatch(appendix[0]!.message.content, /build log noise/, "a result under the threshold is not in the appendix");
+  assert.ok(appendix[0]!.message.content.length <= 600, "the appendix is at most 30% of Pi's 2000-character summary");
+  await runCommand("status", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /Relevance appendix: 1 compaction, 1 with a verbatim appendix\. Last: kept 1 of 2 scored units, 1 request/);
+});
+
+test("session_before_compact + session_compact: append mode with no judge sends no appendix and records why", async () => {
+  await writeFile(configPath(), JSON.stringify({ compaction: { enabled: true, mode: "append" }, ...STACK_BAR }));
+  sentMessages.length = 0;
+  assert.equal(await fire("session_before_compact", beforeCompact()), undefined);
+  assert.equal(networkCalls, 0, "no consent: nothing is sent");
+  const compactHandlers = extension.handlers.get("session_compact") ?? [];
+  await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: { summary: "S".repeat(2000) }, fromExtension: false, reason: "threshold", willRetry: false }, context()]);
+  assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-relevance-appendix").length, 0, "no appendix without scores");
+  await runCommand("status", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /Relevance appendix: 1 compaction, 0 with a verbatim appendix, 1 without \(judgments off 1\)/);
+});
+
 test("session_compact: two compactions send two messages, each from the memory at that time", async () => {
   await writeFile(configPath(), JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
   sentMessages.length = 0;

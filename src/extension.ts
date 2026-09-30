@@ -78,8 +78,8 @@ import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatFilterLedger, formatLedger } from "./saver.js";
 import { SeenText, collapseRuns, seenItem } from "./dedupe.js";
 import { buildCompactSnapshot, compactAppendix, recallText } from "./compact.js";
-import { formatCompaction, relevanceCompaction } from "./relevance.js";
-import type { CompactionStats, FallbackReason } from "./relevance.js";
+import { APPENDIX_RATIO, formatCompaction, relevanceCompaction, renderAppendix, scoreAppendix, summaryTokens } from "./relevance.js";
+import type { CompactionStats, FileLists, FallbackReason, Unit } from "./relevance.js";
 import { applyLoopAction, formatLoopsForUser, formatOpenLoops, LOOP_ACTIONS, LOOP_CHARS, loopsFingerprint, loopsPath, openLoops, readLoops, updateLoops } from "./loops.js";
 import { changePrefsStore, emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, LESSON_CHARS, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences } from "./prefs.js";
 import type { PrefItem, PrefsScan } from "./prefs.js";
@@ -91,7 +91,7 @@ import { TraceFile, judgmentsState, traceDir, traceFilePath } from "./trace-file
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, rulesTokens, SENTENCE_TEMPLATES, TOKEN_NAMES } from "./widget.js";
 import { statusWidget } from "./widget-render.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); with the context filter on (`context.filter`, off by default), the redacted text of a large tool output in chunks, with the call's command and the agent's stated plan; a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample, so Jev can say which to keep word for word. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); with the context filter on (`context.filter`, off by default), the redacted text of a large tool output in chunks, with the call's command and the agent's stated plan; a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample (tool calls and results only when `compaction.mode` is `append`), so Jev can say which to keep word for word. The summary it writes, and in `append` mode the small verbatim appendix sent after Pi's summary, stay in the session. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (configurable, default 365 days). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -457,7 +457,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
   /** Relevance compactions this session, for /warden status. */
-  const compactions: { runs: number; replaced: number; fallbacks: Partial<Record<FallbackReason | "skipped" | "judgments off", number>>; last?: CompactionStats | undefined } = { runs: 0, replaced: 0, fallbacks: {} };
+  const compactions: { runs: number; replaced: number; appended: number; fallbacks: Partial<Record<FallbackReason | "skipped" | "judgments off", number>>; last?: CompactionStats | undefined } = { runs: 0, replaced: 0, appended: 0, fallbacks: {} };
+  /** Units scored for the relevance appendix (compaction.mode "append"), held until session_compact renders them against Pi's summary. */
+  let appendixPending: { units: Unit[]; files: FileLists; scores: Record<string, number>; stats: CompactionStats } | undefined;
   /** The trace entry of this turn's latest saving; its ledger line was written before the turn counted, so turn_end adds one that has. */
   let savingEntry: TraceEntry | undefined;
   // Learns which compression strategies work best per tool, so the next call skips the judge when confident.
@@ -1036,7 +1038,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
       try { await rm(dir, { recursive: true, force: true }); } catch (err) { console.warn("pi-warden: temp cleanup failed:", err); }
     }
     ledger.reset();
-    compactions.runs = 0; compactions.replaced = 0; compactions.fallbacks = {}; compactions.last = undefined;
+    compactions.runs = 0; compactions.replaced = 0; compactions.appended = 0; compactions.fallbacks = {}; compactions.last = undefined;
+    appendixPending = undefined;
     seenText.clear();
     savingEntry = undefined;
     compressionLearner.reset();
@@ -2180,8 +2183,29 @@ export default function wardenExtension(host: ExtensionAPI): void {
     ...(openLoopsText ? { openLoops: openLoopsText } : {}),
   });
 
-  pi.on("session_compact", async (_event, ctx) => {
+  pi.on("session_compact", async (event, ctx) => {
     const config = configFor(ctx);
+    // Relevance appendix (compaction.mode "append"): the scored units, rendered under a share of the summary Pi just
+    // wrote and sent as one custom message. Not a steer; one message per compaction; do not spend a steer unit.
+    const pending = appendixPending;
+    appendixPending = undefined;
+    if (pending && config.enabled && config.compaction.mode === "append") {
+      try {
+        const budgetChars = Math.floor(event.compactionEntry.summary.length * APPENDIX_RATIO);
+        const appendix = renderAppendix(pending.units, pending.files, pending.scores, { budgetChars, keepThreshold: config.compaction.keepThreshold, savedPathFor: (text: string) => ledger.storedPathIn(text) });
+        if (appendix.text) {
+          compactions.appended++;
+          compactions.last = { ...pending.stats, kept: appendix.keptIds.length, dropped: pending.stats.candidates - appendix.keptIds.length, summaryTokens: appendix.tokens };
+          record(ctx, config, "context", `warden · context · relevance appendix · kept ${appendix.keptIds.length} of ${pending.stats.candidates}`, [
+            `appendix ~${appendix.tokens} tokens against Pi's ${summaryTokens(event.compactionEntry.summary)}; ${pending.stats.requests} request${pending.stats.requests === 1 ? "" : "s"}, ${pending.stats.inputTokens} input tokens, ${pending.stats.elapsedMs} ms`,
+          ]);
+          pi.sendMessage({ customType: `${PACKAGE_NAME}-relevance-appendix`, content: appendix.text, display: config.steerVisible });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        record(ctx, config, "context", "relevance-appendix error", [`renderAppendix failed: ${message}`]);
+      }
+    }
     if (!config.enabled || !config.context.compactAppendix) return;
     try {
       const file = loopsFile(ctx);
@@ -2207,10 +2231,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const config = configFor(ctx);
     if (!config.enabled || !config.compaction.enabled) return undefined;
     compactions.runs++;
+    appendixPending = undefined;
     const fallback = (reason: FallbackReason | "skipped" | "judgments off", details: string[], stats?: CompactionStats) => {
       compactions.fallbacks[reason] = (compactions.fallbacks[reason] ?? 0) + 1;
       if (stats) compactions.last = stats;
-      record(ctx, config, "context", `warden · context · relevance compaction · Pi's summary ran (${reason})`, details);
+      record(ctx, config, "context", config.compaction.mode === "append" ? `warden · context · relevance appendix · none sent (${reason})` : `warden · context · relevance compaction · Pi's summary ran (${reason})`, details);
       return undefined;
     };
     const provider = ctx.model?.provider;
@@ -2220,20 +2245,36 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const preparation = event.preparation;
     try {
       const task = latestUserPrompt(ctx) ?? "";
-      const result = await relevanceCompaction({
+      const input = {
         messages: preparation.isSplitTurn ? [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages] : preparation.messagesToSummarize,
         previousSummary: preparation.previousSummary,
         fileOps: preparation.fileOps,
         task,
         spine: taskSpine(ctx.sessionManager.getBranch(), task),
         focus: event.customInstructions,
-      }, {
-        judge, config: config.compaction, signal: event.signal, savedPathFor: text => ledger.storedPathIn(text),
+      };
+      const runOptions = {
+        judge, config: config.compaction, signal: event.signal, savedPathFor: (text: string) => ledger.storedPathIn(text),
         // The client carries the global per-request timeout; compaction.timeoutMs bounds the whole compaction on top of it.
         requestTimeoutMs: config.timeoutMs,
         // Read from the shared client, so requests every guard started count against the reserve.
         requestsLeft: () => (judge.getSpend().caps.maxRequests ?? config.maxRequests) - judge.getUsage().requestsStarted,
-      });
+      };
+      // Append mode: Pi writes its summary; the scored units wait for session_compact, which knows its size.
+      if (config.compaction.mode === "append") {
+        const scored = await scoreAppendix(input, runOptions);
+        const stats = scored.stats;
+        const counts = `${stats.candidates} scored units, ${stats.requests} request${stats.requests === 1 ? "" : "s"}, ${stats.inputTokens} input tokens, ${stats.elapsedMs} ms`;
+        if (!scored.ok) {
+          if (scored.reason === "budget") { if (ctx.hasUI) ctx.ui.notify(`warden: the relevance appendix stopped to spare the request budget (${scored.detail ?? "budget reached"}); Pi's summary runs alone.`, "warning"); }
+          else if (scored.reason === "judge error") noteError(ctx, `Relevance appendix failed (${scored.detail ?? "TypeSafe error"}); Pi's summary runs alone.`, undefined);
+          return fallback(scored.reason, [`${counts}; ${scored.reason}${scored.detail ? `: ${scored.detail}` : ""}`], stats);
+        }
+        appendixPending = { units: scored.units, files: scored.files, scores: scored.scores, stats };
+        record(ctx, config, "context", `warden · context · relevance appendix · scored ${stats.candidates} units`, [`${counts}; Pi's summary runs and the appendix follows it`]);
+        return undefined;
+      }
+      const result = await relevanceCompaction(input, runOptions);
       const stats = result.stats;
       const counts = `${stats.candidates} scored units, ${stats.requests} request${stats.requests === 1 ? "" : "s"}, ${stats.inputTokens} input tokens, ${stats.elapsedMs} ms`;
       if (!result.ok) {
@@ -2560,7 +2601,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
             `${formatMuted(steerStats.muted(), config.steers)}${stats.steersMuted ? ` This session: ${stats.steersMuted} steer${stats.steersMuted === 1 ? "" : "s"} kept in the trace only.` : ""}`,
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action, trace-only: ${config.action.intentTraceOnly}); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
             formatLedger(ledger.snapshot()),
-            formatCompaction(config.compaction.enabled, compactions),
+            formatCompaction(config.compaction.enabled, compactions, config.compaction.mode),
             ...(config.context.filter.enabled || ledger.snapshot().filter.requests > 0 || Object.keys(ledger.snapshot().filter.fallbacks).length > 0 ? [formatFilterLedger(ledger.snapshot())] : []),
             ...(config.learning.patternAnalysis ? [`Learning: ${(await generateRecommendations(ctx.cwd, dirs)).length} recommendations, steer effectiveness ${Math.round((await analyzeSteerEffectivenessReport(ctx.cwd, dirs)).overall * 100)}% (use /warden recommend for details)`] : []),
             `${formatHolds(holds.snapshot(), config.action.feedbackLog ? holdLog?.path : undefined)}${holdLog?.lastFailure ? ` Log write failed: ${holdLog.lastFailure}.` : ""}`,

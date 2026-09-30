@@ -6,7 +6,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+- `compaction.mode` (`"replace"` or `"append"`, default `"replace"`, user file only): what pi-warden does with Pi's compaction summary. `"replace"` is the existing relevance compaction and behaves as before. `"append"` keeps Pi's summary and sends a small verbatim appendix right after it, as one custom message (`pi-warden-relevance-appendix`): the last touch of every file the span modified and its latest failing output first (kept in code, together at most half the budget), then the tool results Jev ranks at or above `compaction.keepThreshold`. The whole appendix is at most 30% of the size of the summary Pi wrote and each unit at most a sixth of that, head and tail past it. Any scoring failure, timeout, abort, or request-budget stop sends no appendix and the summary runs alone; the hook never cancels or replaces a compaction. Compaction stays off by default.
+
+### Changed
+- `scripts/relevance-replay.mjs` replays the recorded compactions through both designs (`--designs`) and prints the comparison table. Second measurement in `docs/guards.md` → Calibration: at the defaults the replace design is 5.0 times Pi's summary at the median and holds 1 of the 34 re-read files whole and 10 as head and tail; the hybrid (Pi's summary plus the appendix) is 1.28 times and holds 5 of the 34. The measurement gate — 10 of the 34 at no more than 1.3 times — fails on coverage.
 
 ## 0.80.0
 
