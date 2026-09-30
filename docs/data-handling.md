@@ -46,3 +46,7 @@ Obvious credentials (`Authorization` headers, `TOKEN=` and `SECRET=` assignments
 
 Text steered to the agent names the tool, the reasons, and the scores, not the command. User-declared path rules and command rules are evaluated entirely in code; their matches travel only as pattern ids and scores in the reasons, never as the matched path or command text. Arming-rule state is session-local memory that never leaves the machine. UI errors never include upstream response bodies or keys. Judgments are model output; thresholds are yours to tune.
 
+
+## Hold outcomes
+
+The hold log labels each hold with what happened next: `approved` (your reply released it, or the confirm dialog allowed it), `declined` (the confirm dialog refused it), `replanned` (after your reply the agent ran a different call that changes something), `abandoned` (the run after your reply neither released nor replaced it), `regretted` (your next message regrets an allowed call), and `accepted` (your next message was checked and does not regret the allowed calls of the last turn). The first four are decided in code; regret is one Jev question that rides the first call after your reply. The precision line in `/warden status` reports `(declined + replanned) / (approved + declined + replanned)`; `abandoned` is counted apart, because a hold nobody acted on is not evidence either way.
