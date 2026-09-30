@@ -62,6 +62,7 @@
     "check": "npm run typecheck && npm test && npm run build",
     "prepack": "npm run build",
     "eval:ab": "node scripts/eval-ab.mjs",
+    "eval:power": "node eval/power.mjs",
     "eval:judge": "node scripts/judge-bench.mjs",
     "eval:replay": "node scripts/rules-replay.mjs",
     "eval:rules": "node scripts/rules-bench.mjs",

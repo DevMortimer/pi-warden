@@ -4,6 +4,12 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## Unreleased
+
+### Added
+
+- A/B benchmark tooling: a third cell (`warden-offline`, pi-warden with Jev judgments off, so only the offline parts run) beside the prose-only and warden cells; a cost axis that prices each run in dollars — agent input, output, cache-read, and cache-write tokens from the session log at a price table in `eval/config.mjs`, plus the run's Jev requests and input tokens — reported per run and per cell; four multi-turn tasks (5-6 user turns, a project rule matters only after the first turn) that exercise the turn-start rules reminder; `npm run eval:power`, the power calculation from the earlier reports (violations per run, success non-inferiority, dollars per run) with the proposed batch and its estimated cost; and `eval/preregistration.md`, the pre-registration for the 1.0 thesis run. Repo tooling; rides along with the next release.
+
 ## 0.82.0
 
 ### Added
