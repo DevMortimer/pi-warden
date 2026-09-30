@@ -8,6 +8,18 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.84.0
+
+### Added
+
+- `conscience.localTopK` (default 31, the most one request holds) and `conscience.localFloor` (default 0.5): the local rank decides how many candidates reach Jev, and a prompt with no candidate above the floor gets no request at all.
+
+### Changed
+
+- The conscience never offers Pi's core tools, a tool whose name or index entry says it deletes, drops, or destroys, a tool the session already called, a skill file the session already read, or a tool the model cannot call by that name in this session.
+- A local gate runs before any request. Short continuations, relayed child reports, and a task spine already assessed in this session are skipped with a traced reason; the rest are ranked locally against the request and the task spine, and only the top candidates go to Jev.
+- A recommendation tip is the name, one `useWhen` line, and for a skill the file to read, instead of the whole tool description.
+
 ## 0.83.0
 
 ### Changed

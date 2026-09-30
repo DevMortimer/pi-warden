@@ -41,6 +41,16 @@ export function commandOf(tool: string, input: Record<string, unknown>): Command
 /** Tools whose calls carry commands and should be guarded by default. */
 export const COMMAND_TOOLS = ["bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file"];
 
+/**
+ * Core Pi tools: the model always has them, so a recommendation that names one says nothing new.
+ * The conscience never offers them, whatever `conscience.skipTools` is set to; the list also carries
+ * the names Pi core ships on other platforms or may add (`think`, `task`, the todo pair).
+ */
+export const CORE_PI_TOOLS: ReadonlySet<string> = new Set([
+  "bash", "edit", "find", "grep", "ls", "powershell", "read", "write",
+  "glob", "think", "webfetch", "task", "todowrite", "todoread",
+]);
+
 /** Text that signals failure in tool output when the tool itself did not flag an error (context-mode reports exit codes inline). */
 export function outputReportsFailure(text: string): boolean {
   return /(?:^|\n)\s*Command exited with code [1-9]\d*\b/.test(text) || /(?:^|\n)\s*\(timed out\)\s*$/.test(text);

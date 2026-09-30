@@ -14,6 +14,7 @@ import { redact } from "./redact.js";
 import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./shape.js";
 import type { TaskSpine } from "./shape.js";
 import { fileContentHash, toolSourceHash } from "./hashing.js";
+import { CORE_PI_TOOLS } from "./tools.js";
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
 
@@ -97,7 +98,11 @@ export type SkipReason =
   | "budget"
   | "explicit_skill"
   | "origin_unknown"
-  | "below_threshold";
+  | "below_threshold"
+  | "short_continuation"
+  | "relayed_report"
+  | "spine_assessed"
+  | "local_floor";
 
 /** Score levels for the usefulness question. Levels are ordered from least to most useful. */
 export const SCORE_LEVELS = [
@@ -260,6 +265,16 @@ export function questionHash(questions: Questions): string {
 
 /* ─── Candidate eligibility ─────────────────────────────────────────── */
 
+/** What the session already knows and can reach; used to drop candidates that teach nothing new. */
+export interface SessionFilters {
+  /** Tool names the agent already called in this session. */
+  calledTools?: ReadonlySet<string> | undefined;
+  /** File paths the agent already read in this session (a skill file already read is never re-recommended). */
+  readFiles?: ReadonlySet<string> | undefined;
+  /** Tool names the agent can call by that name in this session; undefined means no restriction. */
+  callableTools?: ReadonlySet<string> | undefined;
+}
+
 /** Check if a candidate is excluded by the config's exclude list. */
 function isExcluded(id: string, exclude: string[]): boolean {
   for (const pattern of exclude) {
@@ -289,6 +304,12 @@ function words(text: string): string[] {
 export function isDestructiveTool(name: string, ...descriptions: Array<string | undefined>): boolean {
   if (words(name).some(w => DESTRUCTIVE_MARKERS.has(w))) return true;
   return descriptions.some(d => d !== undefined && DESTRUCTIVE_MARKERS.has(words(d)[0] ?? ""));
+}
+
+/** True when the index entry's lead, useWhen, or examples say the tool deletes, drops, or destroys something. */
+export function indexEntrySaysDestructive(entry: { lead: string; useWhen: string[]; examples: string[] } | undefined): boolean {
+  if (!entry) return false;
+  return [entry.lead, ...entry.useWhen, ...entry.examples].some(text => words(text).some(w => DESTRUCTIVE_MARKERS.has(w)));
 }
 
 /**
@@ -328,6 +349,7 @@ export function eligibleCandidates(
   globalIndex?: { entries: IndexEntry[] } | undefined,
   projectIndex?: { entries: IndexEntry[] } | undefined,
   platform: NodeJS.Platform = process.platform,
+  session?: SessionFilters | undefined,
 ): { candidates: Candidate[]; skillOverflow: boolean; toolOverflow: boolean } {
   const candidates: Candidate[] = [];
   let skillOverflow = false;
@@ -349,6 +371,8 @@ export function eligibleCandidates(
       if (skill.disableModelInvocation) continue;
       // Already supplied: skip
       if (suppliedSkills.includes(skill.name)) continue;
+      // A skill file the agent already read in this session is not worth recommending again.
+      if (skill.filePath && session?.readFiles?.has(skill.filePath)) continue;
       if (count >= MAX_ELIGIBLE) { skillOverflow = true; break; }
       const sourceHash = skill.filePath ? fileContentHash(skill.filePath) : "missing";
       const entry = findEntry(skill.name, sourceHash);
@@ -368,10 +392,15 @@ export function eligibleCandidates(
     for (const tool of tools) {
       if (isExcluded(tool.name, config.tools.exclude)) continue;
       // Core tools the agent uses on nearly every turn: a recommendation to use one tells it nothing new.
+      if (CORE_PI_TOOLS.has(tool.name)) continue;
       if (config.skipTools.includes(tool.name)) continue;
+      // A tool the agent already called in this session, or one it cannot call by this name, is not a new capability.
+      if (session?.calledTools?.has(tool.name)) continue;
+      if (session?.callableTools && !session.callableTools.has(tool.name)) continue;
       const sourceHash = toolSourceHash(tool.name, tool.description);
       const entry = findEntry(tool.name, sourceHash);
       if (isDestructiveTool(tool.name, tool.description, entry?.lead)) continue;
+      if (indexEntrySaysDestructive(entry)) continue;
       if (isPlatformIneligibleTool(tool.name, platform, tool.description, entry?.lead)) continue;
       if (count >= MAX_ELIGIBLE) { toolOverflow = true; break; }
       candidates.push({
@@ -385,6 +414,162 @@ export function eligibleCandidates(
   }
 
   return { candidates, skillOverflow, toolOverflow };
+}
+
+/* ─── Local gate: no request without a reason to ask ───────────────── */
+
+/** Words that carry no ranking signal. */
+const STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "does", "for", "from", "has", "have", "how",
+  "i", "if", "in", "into", "is", "it", "its", "me", "my", "no", "not", "of", "on", "or", "our", "out", "so",
+  "that", "the", "their", "them", "then", "there", "these", "they", "this", "to", "up", "us", "was", "we",
+  "what", "when", "where", "which", "who", "why", "will", "with", "you", "your",
+]);
+
+function tokenize(text: string): string[] {
+  return text.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1 && !STOP_WORDS.has(t));
+}
+
+/** The text a candidate is ranked on: the name plus the index lead/useWhen/examples, or the bare description. */
+export function candidateDoc(candidate: Candidate): string {
+  const entry = candidate.indexEntry;
+  if (!entry) return `${candidate.id} ${candidate.description}`;
+  return [candidate.id, entry.lead, ...entry.useWhen, ...entry.examples].join(" ");
+}
+
+/** One candidate's local rank score against the request and the task spine. */
+export interface RankedCandidate {
+  candidate: Candidate;
+  score: number;
+}
+
+/**
+ * BM25 (k1 1.2, b 0.75) over the candidate documents, queried with the request and the task spine.
+ * Purely local: no request, no model. Ties break skill before tool, then by name, so the order is stable.
+ */
+export function rankCandidates(prompt: string, spine: TaskSpine | undefined, candidates: readonly Candidate[], context?: string | undefined): RankedCandidate[] {
+  if (candidates.length === 0) return [];
+  const query = new Set(tokenize([prompt, context ?? "", spine?.goal ?? "", ...(spine?.history ?? [])].join(" ")));
+  const docTokens = candidates.map(c => tokenize(candidateDoc(c)));
+  const total = docTokens.length;
+  const avgLength = docTokens.reduce((sum, tokens) => sum + tokens.length, 0) / total || 1;
+  const df = new Map<string, number>();
+  for (const tokens of docTokens) for (const term of new Set(tokens)) df.set(term, (df.get(term) ?? 0) + 1);
+  const k1 = 1.2;
+  const b = 0.75;
+  const scored = candidates.map((candidate, i) => {
+    const tokens = docTokens[i]!;
+    const tf = new Map<string, number>();
+    for (const term of tokens) tf.set(term, (tf.get(term) ?? 0) + 1);
+    let score = 0;
+    for (const term of query) {
+      const f = tf.get(term);
+      if (!f) continue;
+      const n = df.get(term) ?? 0;
+      const idf = Math.log(1 + (total - n + 0.5) / (n + 0.5));
+      score += (idf * (f * (k1 + 1))) / (f + k1 * (1 - b + (b * tokens.length) / avgLength));
+    }
+    return { candidate, score };
+  });
+  scored.sort((x, y) => y.score - x.score
+    || (x.candidate.kind === y.candidate.kind
+      ? x.candidate.id.localeCompare(y.candidate.id)
+      : x.candidate.kind === "skill" ? -1 : 1));
+  return scored;
+}
+
+/** A reply that continues an in-flight task and cannot need a new capability. */
+const CONTINUATION_RE = /^(?:y|n|yes|no|ok|okay|sure|nope|yep|yup|go|thanks|thank you|please|do it|ship it|lgtm|agreed|ack|right|fine|exactly|sounds good|please do|go ahead|approved|hi|hey)[.!?]*$/i;
+/** One answer picked from a list: "1. …" or "b. …". */
+const CHOICE_RE = /^(?:\d{1,2}|[a-z])\s*[.)]\s*\S/i;
+/** A prompt that opens with a report relayed from a child agent, not a request of its own. */
+const REPORT_HEAD_RE = /^(?:[\w.+-]{1,30}(?: [\w.+-]{1,30}){0,2} reports|report from [\w. +-]{1,40}|status report(?: from [\w. +-]{1,40})?):/i;
+/** Longest prompt still treated as a continuation; real requests are longer. */
+const MAX_CONTINUATION_CHARS = 60;
+
+/** True for a short reply such as "yes", "go", or "1. …": it continues the agent's work, it does not open a new one. */
+export function isShortContinuation(prompt: string): boolean {
+  const text = prompt.trim();
+  if (text.length === 0 || text.length > MAX_CONTINUATION_CHARS) return false;
+  return CONTINUATION_RE.test(text) || CHOICE_RE.test(text);
+}
+
+/** True for a prompt that is a child agent's report handed to the operator, opening with "<name> reports:". */
+export function isRelayedReport(prompt: string): boolean {
+  const firstLine = prompt.trimStart().split("\n", 1)[0]?.trim() ?? "";
+  return REPORT_HEAD_RE.test(firstLine);
+}
+
+/** The identity of one assessment: the task spine (goal, earlier turns) plus the request. */
+export function spineKeyOf(prompt: string, spine: TaskSpine | undefined): string {
+  const parts = [spine?.goal ?? "", ...(spine?.history ?? []), prompt];
+  return createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 16);
+}
+
+/** Outcome of the local gate: either a traced reason to send no request, or the ranked top-k to ask Jev about. */
+export interface GateOutcome {
+  skipReason?: SkipReason;
+  ranked?: RankedCandidate[];
+  spineKey?: string;
+}
+
+/**
+ * Everything that decides whether a request is worth sending, decided locally before any network call:
+ * prompt skips, the once-per-spine dedupe, the BM25 rank against the request and the task spine, the
+ * top-k cut, and the local floor. `config.localTopK` and `config.localFloor` come from the replay.
+ */
+export function gatePrompt(args: {
+  prompt: string;
+  context?: string | undefined;
+  spine?: TaskSpine | undefined;
+  candidates: readonly Candidate[];
+  config: ConscienceConfig;
+  assessedSpines?: Set<string> | undefined;
+}): GateOutcome {
+  const { prompt, context, spine, candidates, config, assessedSpines } = args;
+  if (isShortContinuation(prompt)) return { skipReason: "short_continuation" };
+  if (isRelayedReport(prompt)) return { skipReason: "relayed_report" };
+  const key = spineKeyOf(prompt, spine);
+  if (assessedSpines?.has(key)) return { skipReason: "spine_assessed" };
+  const ranked = rankCandidates(prompt, spine, candidates, context);
+  const top = ranked[0];
+  const floor = config.localFloor ?? 0;
+  if (!top || top.score < floor) return { skipReason: "local_floor" };
+  const topK = Math.max(1, Math.trunc(config.localTopK ?? 31));
+  return { ranked: ranked.slice(0, topK), spineKey: key };
+}
+
+/* ─── Tip text ──────────────────────────────────────────────────────── */
+
+/**
+ * The one line of the tip: the useWhen line sharing the most terms with the request, else the first line.
+ * No full tool description: that is 400 characters the agent already has.
+ */
+export function tipLine(candidate: Candidate, prompt: string): string | undefined {
+  const useWhen = candidate.indexEntry?.useWhen ?? [];
+  if (useWhen.length > 0) {
+    const query = new Set(tokenize(prompt));
+    let best = useWhen[0]!;
+    let bestScore = -1;
+    for (const line of useWhen) {
+      const score = tokenize(line).reduce((count, term) => count + (query.has(term) ? 1 : 0), 0);
+      if (score > bestScore) { best = line; bestScore = score; }
+    }
+    return best.trim();
+  }
+  const firstLine = candidate.description.split("\n").map(s => s.trim()).filter(Boolean)[0];
+  if (!firstLine) return undefined;
+  const sentence = firstLine.split(/(?<=[.!?])\s/)[0] ?? firstLine;
+  return sentence.trim();
+}
+
+/** One tip: the name, one line of when it helps, and for a skill the file to read. */
+export function recommendationText(candidate: Candidate, prompt: string, lead = "Consider"): string {
+  const what = candidate.kind === "skill" ? "skill" : "tool";
+  const line = tipLine(candidate, prompt);
+  const head = line ? `${lead} using the "${candidate.id}" ${what}: ${line}` : `${lead} using the "${candidate.id}" ${what}`;
+  const file = candidate.kind === "skill" ? candidate.skill?.filePath : undefined;
+  return file ? `${head}. Read: ${file}` : head;
 }
 
 /* ─── Description cap ───────────────────────────────────────────────── */
@@ -444,6 +629,10 @@ export interface ConscienceDeps {
   projectIndex?: { entries: IndexEntry[] } | undefined;
   /** Platform the agent's tools run on. Injected for testability; defaults to `process.platform`. */
   platform?: NodeJS.Platform;
+  /** What the session already called, read, and can reach; drops candidates that teach nothing new. */
+  session?: SessionFilters | undefined;
+  /** Spines already assessed in this session; passed only by prompt-level assessments. */
+  assessedSpines?: Set<string> | undefined;
 }
 
 /**
@@ -505,9 +694,17 @@ export async function assess(
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: deps.judgmentsOff ?? "no_consent" };
   }
 
-  const { candidates, skillOverflow, toolOverflow } = eligibleCandidates(skills, tools, config, activeSkills, suppliedSkills, deps.globalIndex, deps.projectIndex, deps.platform);
+  const { candidates, skillOverflow, toolOverflow } = eligibleCandidates(skills, tools, config, activeSkills, suppliedSkills, deps.globalIndex, deps.projectIndex, deps.platform, deps.session);
   if (candidates.length === 0) {
     return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs: 0, requestCount: 0, skipReason: "no_match" };
+  }
+
+  // Local gate: skip prompts that cannot need a new capability, then rank and keep the top-k.
+  // Everything below happens before the first network call, so the prompt never waits on it.
+  const gate = gatePrompt({ prompt, context: recentContext, spine, candidates, config, assessedSpines: deps.assessedSpines });
+  if (gate.skipReason || !gate.ranked) {
+    const elapsedMs = (deps.now?.() ?? Date.now()) - start;
+    return { disposition: "no_gap", selected: null, usefulness: 0, pAdvance: 0, questionHash: "", elapsedMs, requestCount: 0, skipReason: gate.skipReason ?? "local_floor" };
   }
 
   const effectiveTimeout = Math.min(config.timeoutMs, sharedTimeoutMs);
@@ -515,38 +712,28 @@ export async function assess(
 
   const MAX_IN_FLIGHT = 4;
 
-  // Skill chunks are built first so the semaphore fills with skill requests before
-  // any tool request gets a slot — a slow tool batch cannot starve the skill result.
+  // One chunk per batch of the ranked list, in rank order: the top-k fits in a single request
+  // (MAX_QUESTIONS_PER_REQUEST minus the shared disposition question), so an assessment asks
+  // about every surviving candidate once.
   type Category = "skill" | "tool";
   interface ChunkWork {
-    category: Category;
+    kinds: Category[];
     items: Array<{ candidate: Candidate; capped: { candidate: Candidate; overLimit: boolean } }>;
-    overflow: boolean;
   }
-  const categoryMeta: Array<{ category: Category; overflow: boolean }> = [
-    { category: "skill", overflow: skillOverflow },
-    { category: "tool", overflow: toolOverflow },
-  ];
-  const cappedByCategory: Record<Category, Array<{ candidate: Candidate; capped: { candidate: Candidate; overLimit: boolean } }>> = {
-    skill: candidates.filter(c => c.kind === "skill").map(c => ({ candidate: c, capped: capDescription(c) })),
-    tool: candidates.filter(c => c.kind === "tool").map(c => ({ candidate: c, capped: capDescription(c) })),
-  };
   const maxCandidatesPerRequest = MAX_QUESTIONS_PER_REQUEST - 1; // -1 for disposition
+  const cappedRanked = gate.ranked.map(r => ({ candidate: r.candidate, capped: capDescription(r.candidate) }));
   const workQueue: ChunkWork[] = [];
-  for (const meta of categoryMeta) {
-    const items = cappedByCategory[meta.category];
-    if (items.length === 0 && !meta.overflow) continue;
-    for (let i = 0; i < items.length; i += maxCandidatesPerRequest) {
-      workQueue.push({ category: meta.category, items: items.slice(i, i + maxCandidatesPerRequest), overflow: false });
-    }
-    if (items.length === 0 && meta.overflow) {
-      workQueue.push({ category: meta.category, items: [], overflow: true });
-    }
+  for (let i = 0; i < cappedRanked.length; i += maxCandidatesPerRequest) {
+    const items = cappedRanked.slice(i, i + maxCandidatesPerRequest);
+    workQueue.push({ kinds: [...new Set(items.map(item => item.candidate.kind))], items });
   }
+  // The spine is assessed as soon as a request goes out for it, so the next prompt on the same
+  // spine is skipped instead of spending another request.
+  if (workQueue.length > 0 && gate.spineKey) deps.assessedSpines?.add(gate.spineKey);
 
-  // Per-category tracking: a category whose every batch fails or times out is discarded.
-  const categoryCompleted: Record<Category, boolean> = { skill: false, tool: false };
-  const categoryFailed: Record<Category, boolean> = { skill: false, tool: false };
+  // Per-kind tracking: a kind whose every batch fails is discarded.
+  const kindCompleted: Record<Category, boolean> = { skill: false, tool: false };
+  const kindFailed: Record<Category, boolean> = { skill: false, tool: false };
   const judgeError: { value: { message: string; category: string } | null } = { value: null };
 
   type ScoredCandidate = { candidate: Candidate; usefulness: number; level: number };
@@ -572,11 +759,7 @@ export async function assess(
   }
 
   async function runChunk(work: ChunkWork): Promise<void> {
-    if (work.items.length === 0) {
-      if (work.overflow) categoryCompleted[work.category] = true;
-      return;
-    }
-
+    const fail = () => { for (const kind of work.kinds) kindFailed[kind] = true; };
     const opaqueBatch = assignOpaqueIds(work.items.map(e => e.capped.candidate));
     const { questions, dispositionKey } = buildBatchQuestions(
       opaqueBatch, prompt, recentContext, activeSkills, suppliedSkills,
@@ -586,7 +769,7 @@ export async function assess(
 
     const remaining = deadline - (deps.now?.() ?? Date.now());
     if (remaining <= 0) {
-      categoryFailed[work.category] = true;
+      fail();
       return;
     }
 
@@ -600,12 +783,12 @@ export async function assess(
       answers = result.answers;
       state_.requestCount++;
     } catch (err) {
-      categoryFailed[work.category] = true;
+      fail();
       judgeError.value = { message: err instanceof Error ? err.message : String(err), category: classifyError(err) };
       return;
     }
 
-    categoryCompleted[work.category] = true;
+    for (const kind of work.kinds) kindCompleted[kind] = true;
 
     if (state_.disposition === "unclear") {
       const dispRaw = parseChoiceAnswer(answers[dispositionKey]);
@@ -639,8 +822,8 @@ export async function assess(
   const elapsedMs = (deps.now?.() ?? Date.now()) - start;
   const { disposition, pAdvance, hash, requestCount, bestScored } = state_;
 
-  const skillUsable = categoryCompleted.skill && !categoryFailed.skill;
-  const toolUsable = categoryCompleted.tool && !categoryFailed.tool;
+  const skillUsable = kindCompleted.skill && !kindFailed.skill;
+  const toolUsable = kindCompleted.tool && !kindFailed.tool;
 
   // When every category failed, the judge is broken — surface the error, not no_match.
   if (!skillUsable && !toolUsable && judgeError.value) {

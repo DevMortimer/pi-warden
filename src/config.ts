@@ -436,6 +436,10 @@ export interface ConscienceConfig {
   recommendThreshold: number;
   /** P(advance) from the disposition question must reach this before a candidate is considered. Default 0.70. */
   advanceThreshold: number;
+  /** Candidates the local ranker keeps for Jev (1..256); the rest never reach a request. Default 31, the most one request holds; the labelled replay keeps 8 of 9 good picks at 31 and fewer at 12 or 20. */
+  localTopK: number;
+  /** Local BM25 floor against the request and the task spine; below it the conscience sends no request. Default 0.5. */
+  localFloor: number;
 }
 
 
@@ -560,6 +564,8 @@ export function defaultConfig(): WardenConfig {
       // Beta policy thresholds (measured 2026-09-22); disabled by default, conscience.enabled is the switch.
       recommendThreshold: 0.80,
       advanceThreshold: 0.70,
+      localTopK: 31,
+      localFloor: 0.5,
     },
     prefs: { enabled: true, inject: true },
     waste: { enabled: true, tip: false, every: 20, sleep: true, paging: true, search: true, recheck: true },
@@ -1148,6 +1154,8 @@ function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig
     maxLoadedBytes: Math.max(1024, Math.min(262144, typeof raw.maxLoadedBytes === "number" ? raw.maxLoadedBytes : base.maxLoadedBytes)),
     recommendThreshold: Math.max(0, Math.min(1, typeof raw.recommendThreshold === "number" ? raw.recommendThreshold : base.recommendThreshold)),
     advanceThreshold: Math.max(0, Math.min(1, typeof raw.advanceThreshold === "number" ? raw.advanceThreshold : base.advanceThreshold)),
+    localTopK: Math.max(1, Math.min(256, typeof raw.localTopK === "number" ? Math.trunc(raw.localTopK) : base.localTopK)),
+    localFloor: Math.max(0, Math.min(20, typeof raw.localFloor === "number" ? raw.localFloor : base.localFloor)),
   };
 }
 

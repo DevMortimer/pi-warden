@@ -1,5 +1,5 @@
 /**
- * Gunner tests for feat/conscience.
+ * Safety tests for the conscience.
  *
  * Every test targets a safety rule the branch does not actually enforce.
  * Tests that PASS reveal existing enforcement; tests that FAIL reveal real defects.
@@ -50,6 +50,9 @@ const defaultConscienceConfig = (overrides: Partial<ConscienceConfig> = {}): Con
   maxLoadedBytes: 65536,
   recommendThreshold: 1.0,
   advanceThreshold: 0.70,
+  // The gate has its own tests; these tests keep the full catalog and no floor.
+  localTopK: 64,
+  localFloor: 0,
   ...overrides,
 });
 
@@ -65,6 +68,9 @@ const loadModeConfig = (overrides: Partial<ConscienceConfig> = {}): ConscienceCo
   maxLoadedBytes: 65536,
   recommendThreshold: 1.0,
   advanceThreshold: 0.70,
+  // The gate has its own tests; these tests keep the full catalog and no floor.
+  localTopK: 64,
+  localFloor: 0,
   ...overrides,
 });
 
@@ -130,7 +136,7 @@ const allLowScores = (): Record<string, { level: number; probs: number[] }> => (
 });
 
 before(async () => {
-  temp = await mkdtemp(join(tmpdir(), "conscience-gunner-"));
+  temp = await mkdtemp(join(tmpdir(), "conscience-safety-"));
 });
 
 after(async () => {
