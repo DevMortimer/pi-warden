@@ -17,7 +17,7 @@ export { formatExcerpt, formatQuestion } from "./excerpt.js";
 export type { OutputFormat } from "./excerpt.js";
 export { detectSearchTool, recallInstruction, classifyRecall } from "./recall.js";
 export type { SearchTool } from "./recall.js";
-export { redact, findSecrets, looksLikeSecretValue, syntheticish, partitionSecrets, secretFingerprint, secretIds } from "./redact.js";
+export { redact, findSecrets, looksLikeSecretValue, maskSecrets, syntheticish, partitionSecrets, secretFingerprint, secretIds } from "./redact.js";
 export { detectNotifier, notifierCommand, sendNotification, candidates as notifierCandidates, clipBody } from "./notify.js";
 export type { NotifierName, NotifierTarget, Notification, NotifierCommand, Runner } from "./notify.js";
 export { NOTIFY_TYPES, isNotifyType, newReports, mentionsTrouble, triageQuestion, reportDigest, buildTriageRequest, triageReport, reportLabel, WakePolicy, formatWake } from "./subagent.js";

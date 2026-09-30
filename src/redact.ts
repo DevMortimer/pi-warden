@@ -61,15 +61,38 @@ const ASSIGNMENTS: RegExp[] = [
   /\bbearer\s+([^\s"']+)/gi,
   /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:([^\s/@]+)@/gi,
 ];
+/**
+ * Code that follows `key =` or `key: value` in a source file, not a credential value: a call or an index on a
+ * code-style name (`readKeySync(configPath`, `tokens.map((t`, `opts?.filter(x`, `arr[0]`), a non-null assertion
+ * (`match[1]!.split(`), an arrow body (`x => y`), a template literal (`` `x${y}` ``, `` tag`/\s+/` ``), or a type name
+ * with type arguments (`Record<string`, `Map<string, Token>`).
+ *
+ * The name of a call or an index must read as code: camelCase, PascalCase, or a dotted path. `secret=Pa9ss(9xyz` and
+ * `API_KEY=abc[123]DEF` stay credentials, because a bracket or a parenthesis between otherwise opaque characters is a
+ * key, not an expression.
+ *
+ * Every pattern here is linear. A repeated group must not overlap the character class that starts the next
+ * iteration: an earlier version wrote the name alternatives as `[a-z]+(?:[A-Z][\w$]*)+`, whose `[\w$]*` could eat the
+ * capital that the next iteration needed, so it backtracked exponentially on a long mixed-case value and froze the
+ * guard on a recorded tool result.
+ */
+const CODE_VALUE: RegExp[] = [
+  /^(?:[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)+|[a-z]+(?:[A-Z][a-z0-9_$]*)+|[A-Z][a-z]+(?:[A-Z][a-z0-9_$]*)*)\s*[(\[]/,
+  /^[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*\s*\[[^\]\n]*\]\s*(?:[.!(\[]|$)/,
+  /=>/,
+  /`|\$\{/,
+  /^[A-Z][\w$]*\s*</,
+];
+
 /** Words that sit after `secret:` in code and docs. */
 const NOT_VALUES = new Set(["boolean", "string", "number", "object", "any", "unknown", "null", "undefined", "true", "false", "none", "nil", "void", "never", "required", "optional", "redacted", "hidden", "masked", "omitted", "unset", "missing", "empty", "changeme", "example", "placeholder", "password", "secret", "token", "value", "text", "str", "int", "bytes", "yes", "no", "on", "off", "auto", "default", "bearer", "basic", "env", "process", "os", "environ", "config", "settings", "input", "output", "prompt"]);
 
 /**
  * A value shape, not a name: at least 8 characters, not a type word or placeholder (`<redacted>`, `***`, `REDACTED`,
  * `xxxx`), not a plain number (`19415506`, `19,415,506`), not an identifier or expression in code (`findSecrets(text)`,
- * `output.secretIds`, a type name), not a reference to somewhere the value lives (`$VAR`, `${...}`, `process.env.X`,
- * `<your key>`, `[redacted]`), not an all-caps identifier, and with the mixture of character classes that keys have
- * (digits with letters, or both cases with punctuation).
+ * `output.secretIds`, `match[1]!.split(/\s+/`, a type name), not a reference to somewhere the value lives (`$VAR`,
+ * `${...}`, `process.env.X`, `<your key>`, `[redacted]`), not an all-caps identifier, and with the mixture of
+ * character classes that keys have (digits with letters, or both cases with punctuation).
  */
 export function looksLikeSecretValue(value: string): boolean {
   const raw = value.trim();
@@ -80,8 +103,8 @@ export function looksLikeSecretValue(value: string): boolean {
   if (NOT_VALUES.has(lower)) return false;
   if (/^[$%<\[{*]|^(?:process|os|env|settings|config|secrets?|vault|keychain|import\.meta)\.|^\$?\{|^\*+$|^x+$|^(?:your|my|the|a|an)[-_ ]/i.test(text)) return false;
   if (/^\d+(?:[,_]\d+)*$/.test(text)) return false; // a plain number, separators allowed: 19415506, 797330_123, 19,415,506
-  if (/^(?:[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+|[a-z]+(?:[A-Z][\w$]*)+|[A-Z][a-z]+(?:[A-Z][\w$]*)*)\s*[(\[]/.test(text)) return false; // a call or index expression: a bracket straight after a code identifier or property path (`findSecrets(text)`, `secretValues.filter((id`); a bracket inside mixed characters is a password, not code
-  if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(text)) return false; // a property access: output.secretIds
+  if (CODE_VALUE.some(pattern => pattern.test(text))) return false; // a call, an index, an arrow body, or a template substitution: see CODE_VALUE
+  if (/^[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)+$/.test(text)) return false; // a property access: output.secretIds, opts?.value
   if (/^[A-Z][A-Z0-9_]{6,}$/.test(text)) return false; // an environment variable name
   if (/^[A-Z][a-z]+(?:[A-Z][a-z0-9]*)*$/.test(text) && !/\d{3,}/.test(text)) return false; // a class or type name in code
   if (/^[a-z]+(?:[A-Z][a-z0-9]*)+$/.test(text) && !/\d{3,}/.test(text)) return false; // a camelCase identifier
