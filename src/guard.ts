@@ -561,8 +561,8 @@ type WordPath =
   | { kind: "temp"; key: string }
   | { kind: "unknown"; word: string };
 
-/** The directory a relative path resolves against: a real path, or one this guard cannot read. */
-type DirPath = { kind: "path"; path: string } | { kind: "unknown" };
+/** The directory a relative path resolves against: a real path, a `mktemp` variable's path, or one this guard cannot read. */
+type DirPath = { kind: "path"; path: string } | { kind: "temp"; key: string } | { kind: "unknown" };
 
 /** The shell's own working directory, as a `DirPath`. */
 const cwdPath = (cwd: string | undefined): DirPath => (cwd === undefined ? { kind: "unknown" } : { kind: "path", path: cwd });
@@ -576,33 +576,44 @@ function underPath(child: string, parent: string): boolean {
 }
 
 /**
- * A word resolved to an absolute path: a literal path, `~`, or a relative path against `dir`. Undefined for a variable,
- * a substitution, a glob-only word, a `..` segment, and a relative path with no directory to resolve against: those
- * keep the hold by staying unplaceable.
+ * A word resolved to the path it names: a literal path, `~`, a relative path against `dir`, a value a variable of the
+ * same command holds, or the path a `mktemp` variable made. Undefined for a substitution, a glob-only word, a `..`
+ * segment, a variable the command does not fix, and a relative word with no directory: those keep the hold.
  */
-function resolveWord(word: string, dir: DirPath | undefined): WordPath {
+function resolveWord(word: string, dir: DirPath | undefined, vars: VarValues | undefined): WordPath {
   const clean = unquoteWord(word);
   if (!clean || clean === "." || clean === ".." || clean === "./" || clean === "../" || clean === "*") return { kind: "unknown", word };
   if (clean.split(/[\\/]/).includes("..")) return { kind: "unknown", word };
+  // Quotes around the variable itself or around a part of the path are not part of the name: `"$D"/after`, `$D/'after'`.
+  const variable = /^\$\{?([A-Za-z_]\w*)\}?(\/.*)?$/.exec(clean.replace(/["']/g, ""));
+  if (variable) {
+    const name = variable[1]!;
+    const rest = variable[2] ?? "";
+    if (vars?.mktemp.has(name)) return { kind: "temp", key: name + rest };
+    const value = vars?.literal.get(name);
+    if (value === undefined) return { kind: "unknown", word };
+    return place(value + rest, dir, word);
+  }
   return place(clean, dir, word);
 }
 
-/** A literal path text: `~`, an absolute path, or a path relative to `dir`. */
+/** A path text placed: `~`, an absolute path, a path relative to `dir`, or one under a `mktemp` variable's directory. */
 function place(text: string, dir: DirPath | undefined, word: string): WordPath {
   if (text === "~") return { kind: "path", path: homedir() };
   if (text.startsWith("~/")) return { kind: "path", path: resolve(homedir(), text.slice(2)) };
   if (text.startsWith("~") || /[$`\\]/.test(text)) return { kind: "unknown", word };
   if (isAbsolute(text)) return { kind: "path", path: resolve(text) };
-  if (dir === undefined || dir.kind !== "path") return { kind: "unknown", word };
+  if (dir === undefined || dir.kind === "unknown") return { kind: "unknown", word };
+  if (dir.kind === "temp") return { kind: "temp", key: `${dir.key}/${text}` };
   return { kind: "path", path: resolve(dir.path, text) };
 }
 
 /** An `rm` operand as the classifier reads it: a path it can place, or the word it cannot. */
-const targetWord = (word: string, dir: DirPath | undefined): WordPath => resolveWord(word, dir);
+const targetWord = (word: string, dir: DirPath | undefined, vars: VarValues | undefined): WordPath => resolveWord(word, dir, vars);
 
 /** The concrete path a word names, or undefined when it cannot be pinned down. */
-function placedWord(word: string, dir: DirPath | undefined): string | undefined {
-  const resolved = resolveWord(word, dir);
+function placedWord(word: string, dir: DirPath | undefined, vars: VarValues | undefined): string | undefined {
+  const resolved = resolveWord(word, dir, vars);
   return resolved.kind === "path" ? resolved.path : undefined;
 }
 
@@ -614,6 +625,8 @@ const targetText = (target: WordPath): string => (target.kind === "path" ? targe
  * bare wildcard, `.`/`..`, a home path, a variable the classifier could not place, a wildcard directly under `/`).
  */
 function isDangerousTarget(target: WordPath, cwd: string | undefined): boolean {
+  // A variable a `mktemp` made holds a path outside the project, and the guard cannot see which: dangerous as before.
+  if (target.kind === "temp") return true;
   const clean = unquoteWord(targetText(target));
   if (clean === "/" || clean === "~" || clean === "*" || clean === "." || clean === ".." || clean.startsWith("~/") || clean.startsWith("$") || clean.startsWith("/*") || clean === "./" || clean === "../") return true;
   if (isAbsolute(clean)) return cwd === undefined ? true : !isInside(clean, cwd);
@@ -627,42 +640,43 @@ const MOVER_WORD = /^(?:g|bsd)?(?:mv|ln)$/;
 interface Mover { dest: string | undefined }
 
 /** The destination a `mv` or `ln` segment writes to: the last operand, or the value of `-t`/`--target-directory`. */
-function moverDestination(segment: string, dir: DirPath | undefined): Mover | undefined {
+function moverDestination(segment: string, dir: DirPath | undefined, vars: VarValues | undefined): Mover | undefined {
   const tokens = segment.trim().split(/\s+/).filter(Boolean).map(token => token.replace(/^[("'`]+|[\"')`]+$/g, ""));
   const head = commandWord(tokens);
   if (!head || !MOVER_WORD.test(head.word)) return undefined;
   const rest = tokens.slice(head.index + 1);
   for (let index = 0; index < rest.length; index++) {
     const token = rest[index]!;
-    if (token === "-t" || token === "--target-directory") return { dest: placedWord(rest[index + 1] ?? "", dir) };
-    if (token.startsWith("--target-directory=")) return { dest: placedWord(token.slice("--target-directory=".length), dir) };
+    if (token === "-t" || token === "--target-directory") return { dest: placedWord(rest[index + 1] ?? "", dir, vars) };
+    if (token.startsWith("--target-directory=")) return { dest: placedWord(token.slice("--target-directory=".length), dir, vars) };
   }
   const operands = rest.filter(token => !token.startsWith("-"));
-  return { dest: operands.length ? placedWord(operands[operands.length - 1]!, dir) : undefined };
+  return { dest: operands.length ? placedWord(operands[operands.length - 1]!, dir, vars) : undefined };
 }
 
 /** A `cd` or `pushd` segment: the directory it moves to, or an unknown one when its operand cannot be read. */
-function cdDirectory(segment: string, base: DirPath): { dir: DirPath } | undefined {
+function cdDirectory(segment: string, base: DirPath, vars: VarValues | undefined): { dir: DirPath } | undefined {
   const tokens = segment.trim().split(/\s+/).filter(Boolean).map(token => token.replace(/^[("'`]+|[\"')`]+$/g, ""));
   const head = commandWord(tokens);
   if (!head || (head.word !== "cd" && head.word !== "pushd")) return undefined;
   // `cd` alone goes home, `cd -` swaps the last directory, and `cd a b` is not a directory this guard reads.
   const operands = tokens.slice(head.index + 1).filter(token => !token.startsWith("-"));
   if (operands.length !== 1) return { dir: { kind: "unknown" } };
-  const moved = resolveWord(operands[0]!, base);
-  return { dir: moved.kind === "path" ? { kind: "path", path: moved.path } : { kind: "unknown" } };
+  const moved = resolveWord(operands[0]!, base, vars);
+  if (moved.kind === "path") return { dir: { kind: "path", path: moved.path } };
+  return { dir: moved.kind === "temp" ? { kind: "temp", key: moved.key } : { kind: "unknown" } };
 }
 
 /**
  * The directory each segment resolves relative paths against, after every `cd` or `pushd` before it. Until one moves it
  * the entry is undefined, so a relative target keeps today's reading; a `cd` this guard cannot read makes it unknown.
  */
-function effectiveDirs(segments: readonly string[], cwd: string | undefined): (DirPath | undefined)[] {
+function effectiveDirs(segments: readonly string[], cwd: string | undefined, vars?: readonly VarValues[] | undefined): (DirPath | undefined)[] {
   const dirs: (DirPath | undefined)[] = [];
   let dir: DirPath | undefined;
-  for (const segment of segments) {
+  for (let index = 0; index < segments.length; index++) {
     dirs.push(dir);
-    const moved = cdDirectory(segment, dir ?? cwdPath(cwd));
+    const moved = cdDirectory(segments[index]!, dir ?? cwdPath(cwd), vars?.[index]);
     if (moved !== undefined) dir = moved.dir;
   }
   return dirs;
@@ -707,7 +721,7 @@ export function movedInTargets(tool: string, input: Record<string, unknown>, cwd
   const dirs = effectiveDirs(segments, cwd);
   const found = new Set<string>();
   for (let index = 0; index < segments.length; index++) {
-    const mover = moverDestination(segments[index]!, dirs[index] ?? cwdPath(cwd));
+    const mover = moverDestination(segments[index]!, dirs[index] ?? cwdPath(cwd), undefined);
     const real = mover?.dest === undefined ? undefined : realTarget(mover.dest);
     if (real !== undefined && roots.some(root => real !== root && underPath(real, root))) found.add(real);
   }
@@ -727,7 +741,7 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
   const recursive = flags.some(flag => flag === "--recursive" || (/^-[a-zA-Z]+$/.test(flag) && /[rR]/.test(flag)));
   const force = flags.some(flag => flag === "--force" || (/^-[a-zA-Z]+$/.test(flag) && flag.includes("f")));
   if (!recursive) return undefined;
-  const targets = rmOperands(tokens.filter(token => !token.startsWith("-"))).map(word => targetWord(word, context?.dir));
+  const targets = rmOperands(tokens.filter(token => !token.startsWith("-"))).map(word => targetWord(word, context?.dir, context?.vars));
   const dangerousTarget = targets.some(target => isDangerousTarget(target, cwd));
   const budget = scratchBudget();
   const exemptions = context !== undefined;
@@ -1028,8 +1042,8 @@ function isSessionScratch(target: string, scratch: ScratchRecords, budget: Scrat
 
 /** Command-scoped context `classifyRm` uses to release scratch: `mktemp` variables, declared roots, and volatile temp roots. */
 interface RmContext {
-  /** Variables a `mktemp` assigned earlier in the same command and did not reassign before this `rm`. */
-  vars?: ReadonlySet<string> | undefined;
+  /** The values the variables of this command hold at this segment (`commandVars`). */
+  vars?: VarValues | undefined;
   /** Scratch roots the host declared for this session (`scratchPaths`). */
   roots?: readonly string[] | undefined;
   /** The volatile temp roots, read lazily so a command with no recursive `rm` pays nothing. */
@@ -1054,14 +1068,6 @@ function isTempSubtree(target: WordPath, roots: readonly string[]): boolean {
   return /(?:^|\/)var\/folders\//.test(real) && tempRootOf(real, macFolderRoots()) !== undefined;
 }
 
-/** A target that is a variable holding a `mktemp` path from this command, or a path under it: `"$NAME"`, `$NAME`, `$NAME/sub`. */
-function mktempTarget(target: string, vars: ReadonlySet<string> | undefined): boolean {
-  if (!vars?.size) return false;
-  const clean = target.replace(/^["']|["']$/g, "");
-  const match = /^\$\{?([A-Za-z_]\w*)\}?(\/[^\s]*)?$/.exec(clean);
-  return match !== null && vars.has(match[1]!) && !(match[2] ?? "").split("/").includes("..");
-}
-
 /** A target strictly inside a scratch root the host declared, after symlinks are resolved. */
 function inScratchRoot(target: WordPath, roots: readonly string[]): boolean {
   if (!roots.length || target.kind !== "path") return false;
@@ -1071,10 +1077,10 @@ function inScratchRoot(target: WordPath, roots: readonly string[]): boolean {
   return real !== undefined && roots.some(root => real !== root && underPath(real, root));
 }
 
-/** Every target scratch the session recorded, a `mktemp` variable of this command, or a host-declared scratch root. */
+/** Every target scratch the session recorded, a path a `mktemp` variable of this command holds, or a declared root. */
 function isScratchTarget(target: WordPath, scratch: ScratchRecords | undefined, context: RmContext | undefined, budget: ScratchBudget): boolean {
-  return (scratch !== undefined && isSessionScratch(targetText(target), scratch, budget))
-    || mktempTarget(targetText(target), context?.vars)
+  return target.kind === "temp"
+    || (scratch !== undefined && isSessionScratch(targetText(target), scratch, budget))
     || inScratchRoot(target, context?.roots ?? []);
 }
 
@@ -1130,22 +1136,49 @@ function variableWrites(command: string): Map<string, number> {
   return writes;
 }
 
+/** The value a literal assignment gives: quoted or bare, with no `$`, backtick, substitution, or glob. `~` is allowed. */
+function literalValue(value: string): string | undefined {
+  const clean = value.trim().replace(/^(["'])([\s\S]*)\1$/, "$2").trim();
+  if (!clean || /[$`*?[\]{}]/.test(clean)) return undefined;
+  return clean;
+}
+
+/** The variable values one command may read: `mktemp` variables, single literal assignments, and `$HOME`/`$TMPDIR`. */
+interface VarValues {
+  /** Variables a `mktemp` earlier in the command assigned and nothing else wrote. */
+  mktemp: ReadonlySet<string>;
+  /** Variables a single literal assignment earlier in the command gave a value this guard can read. */
+  literal: ReadonlyMap<string, string>;
+}
+
+/** Names whose value comes from the session environment when the command never writes them. */
+const ENV_VARS = ["HOME", "TMPDIR"] as const;
+
 /**
- * For every segment index, the variables an earlier segment of the same command assigned from a `mktemp` and did not
- * reassign since. An `rm` in a later segment of that command may then delete the path they hold. A name the command
+ * For every segment index, the variables an earlier segment of the same command gave a value this guard can read: a
+ * `mktemp` path, a single literal assignment, and `$HOME`/`$TMPDIR` from the session environment. A name the command
  * writes anywhere else — a function body, a subshell, a `read`, a `for`, an `unset` — is never one of them.
  */
-function mktempVars(segments: readonly string[], tempRoots: () => readonly string[], writes: ReadonlyMap<string, number>): Set<string>[] {
-  const snapshots: Set<string>[] = [];
-  const current = new Set<string>();
+function commandVars(segments: readonly string[], tempRoots: () => readonly string[], writes: ReadonlyMap<string, number>, env: NodeJS.ProcessEnv = process.env): VarValues[] {
+  const snapshots: VarValues[] = [];
+  const mktemp = new Set<string>();
+  const literal = new Map<string, string>();
+  for (const name of ENV_VARS) {
+    const value = env[name];
+    if (value && !writes.has(name)) literal.set(name, value);
+  }
   for (const segment of segments) {
-    snapshots.push(new Set(current));
+    snapshots.push({ mktemp: new Set(mktemp), literal: new Map(literal) });
     const assign = MKTEMP_SEGMENT.exec(segment.trim());
     if (!assign) continue;
     const name = assign[1]!;
+    mktemp.delete(name);
+    literal.delete(name);
+    if (writes.get(name) !== 1) continue;
     const args = mktempArgs(assign[2]!);
-    if (args !== undefined && writes.get(name) === 1 && mktempMakesTemp(args, tempRoots())) current.add(name);
-    else current.delete(name);
+    if (args !== undefined && mktempMakesTemp(args, tempRoots())) { mktemp.add(name); continue; }
+    const value = literalValue(assign[2]!);
+    if (value !== undefined) literal.set(name, value);
   }
   return snapshots;
 }
@@ -1760,15 +1793,15 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     // A command that mounts, attaches, binds, or syncs data in with its source removed can put existing data under a
     // path a later `rm` deletes, and the birth-time walk cannot see it: no release rule applies at all then.
     const blocked = privileged || MOVES_DATA_IN.test(unquoted(command)) || MOVES_DATA_IN.test(unquoted(raw));
-    // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
-    // Their destinations resolve against the directory the shell is in at that point, `cd` or `pushd` included.
-    const dirs = effectiveDirs(segments, cwd);
-    const moved = blocked ? [] : segments.map((segment, index) => moverDestination(segment, dirs[index] ?? cwdPath(cwd))).filter((mover): mover is Mover => mover !== undefined);
     // Read the cheap volatile temp roots only when a recursive rm needs them; the macOS /var/folders walk is lazier.
     let volatile: string[] | undefined;
     const volatileRoots = () => (volatile ??= disposableTempRoots());
-    const scratchVars = blocked ? undefined : mktempVars(segments, volatileRoots, variableWrites(command));
+    const scratchVars = blocked ? undefined : commandVars(segments, volatileRoots, variableWrites(command));
     const scratchRoots = blocked ? undefined : options?.scratchPaths;
+    // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
+    // Their destinations resolve against the directory the shell is in at that point, `cd` or `pushd` included.
+    const dirs = effectiveDirs(segments, cwd, scratchVars);
+    const moved = blocked ? [] : segments.map((segment, index) => moverDestination(segment, dirs[index] ?? cwdPath(cwd), scratchVars?.[index])).filter((mover): mover is Mover => mover !== undefined);
     for (let index = 0; index < segments.length; index++) {
       const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, recorded: options?.movedIn, dir: dirs[index] });
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.

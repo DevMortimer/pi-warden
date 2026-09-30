@@ -397,6 +397,35 @@ test("session scratch: a command that moves or links data in keeps the hold", as
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
+test("literal variables: a target resolves to the value the command gave it", () => {
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = "/tmp";
+  try {
+    for (const command of [`D=/tmp/x && rm -rf "$D"`, `D=/tmp/x && rm -rf "$D"/after`, `D=/tmp/x && rm -rf \${D}`, `D='/tmp/x' && rm -rf "$D"`, `rm -rf "$TMPDIR/foo"`]) {
+      assert.deepEqual(rmIds(command), ["rm-temp-subtree"], command);
+    }
+    assert.deepEqual(rmIds(`d=$(mktemp -d) && cd "$d" && rm -rf build`), ["rm-session-scratch"], "a cd into a mktemp directory makes the target scratch");
+    const held = [
+      `rm -rf "$HOME/projects"`,
+      `D=/tmp/x && rm -rf "$D"/*`,
+      `D=/tmp/x && rm -rf "$D" "$E"`,
+      `D=/tmp/x; D=/tmp/y; rm -rf "$D"`,
+      `rm -rf "$F"; F=/tmp/x`,
+      `D=/tmp/x && f() { D=~; }; rm -rf "$D"`,
+      `D=$RANDOM && rm -rf "$D"`,
+      `D=/tmp/x* && rm -rf "$D"`,
+      `D=~/x && rm -rf "$D"`,
+      `TMPDIR=/tmp/x rm -rf "$TMPDIR/y"`,
+      `unset TMPDIR; rm -rf "$TMPDIR/"`,
+      `unset HOME; rm -rf "$HOME/projects"`,
+      `D=/tmp/x && rm -rf "$D/../y"`,
+    ];
+    for (const command of held) assert.ok(destructiveRm(matchPatterns("bash", { command }, cwd)), command);
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved;
+  }
+});
+
 test("effective directory: a relative rm target after a cd resolves against it", () => {
   assert.deepEqual(rmIds("cd /tmp/x && rm -rf build"), ["rm-temp-subtree"], "a relative target after a cd into a temp root");
   assert.deepEqual(rmIds("cd /tmp/x; pushd sub && rm -rf build"), ["rm-temp-subtree"], "pushd moves the directory too");
