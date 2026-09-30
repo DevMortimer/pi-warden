@@ -10,7 +10,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import * as tuiModule from "@earendil-works/pi-tui";
 type MouseRegionConstructor = new (child: ReturnType<typeof statusWidget>, onMouse: (event: { type: string; button: string }) => { handled: boolean } | undefined) => import("@earendil-works/pi-tui").Component;
 const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ MouseRegion: MouseRegionConstructor }>).MouseRegion;
-import { authState, backendHost, createTypeSafe, describeAuth, resolveBackend } from "pi-typesafe";
+import { authState, backendHost, createTypeSafe, describeAuth, resolveBackend, ask } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
 import { backendName, describeBackend, disclosureFor, judgeOptions, loginStoresKey } from "./backend.js";
@@ -76,6 +76,7 @@ import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatFilterLedger, formatLedger } from "./saver.js";
+import { buildCuratorRequest, curatedRuleList, curatedRules, CURATOR_TIMEOUT_MS, CURATOR_TYPE, CuratorLedger, formatCuratedRules, formatCurator, ruleScores } from "./curator.js";
 import { SeenText, collapseRuns, seenItem } from "./dedupe.js";
 import { buildCompactSnapshot, compactAppendix, recallText } from "./compact.js";
 import { formatCompaction, relevanceCompaction } from "./relevance.js";
@@ -91,7 +92,7 @@ import { TraceFile, judgmentsState, traceDir, traceFilePath } from "./trace-file
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, rulesTokens, SENTENCE_TEMPLATES, TOKEN_NAMES } from "./widget.js";
 import { statusWidget } from "./widget-render.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); with the context filter on (`context.filter`, off by default), the redacted text of a large tool output in chunks, with the call's command and the agent's stated plan; a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample, so Jev can say which to keep word for word. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (a hold is kept 365 days and an allowed call 90, both configurable). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), and up to eight redacted prior user/assistant text messages for task context, plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens) sent with every action request unless the rules guard is off (`rules.enabled: false`), which keeps that content on this machine; for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); with the context filter on (`context.filter`, off by default), the redacted text of a large tool output in chunks, with the call's command and the agent's stated plan; before each new user message, when the rules guard is on, your new request (1500 redacted characters), the same task spine, and every rule of the active rules source (each rule's heading, its text clipped at 300 characters, and its `paths:` scope), one question per rule, so Jev can say which of them apply; a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; and, on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample, so Jev can say which to keep word for word. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (a hold is kept 365 days and an allowed call 90, both configurable). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -460,6 +461,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
+  /** The turn-start rules reminder's requests, rules named, and latency, for /warden status. */
+  const curator = new CuratorLedger();
   /** Relevance compactions this session, for /warden status. */
   const compactions: { runs: number; replaced: number; fallbacks: Partial<Record<FallbackReason | "skipped" | "judgments off", number>>; last?: CompactionStats | undefined } = { runs: 0, replaced: 0, fallbacks: {} };
   /** The trace entry of this turn's latest saving; its ledger line was written before the turn counted, so turn_end adds one that has. */
@@ -1054,6 +1057,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       try { await rm(dir, { recursive: true, force: true }); } catch (err) { console.warn("pi-warden: temp cleanup failed:", err); }
     }
     ledger.reset();
+    curator.reset();
     compactions.runs = 0; compactions.replaced = 0; compactions.fallbacks = {}; compactions.last = undefined;
     seenText.clear();
     savingEntry = undefined;
@@ -1105,6 +1109,61 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
     if (opening.enabled && _event.reason === "resume") await announceLoops(ctx, opening, openingBranch);
   });
+
+  /**
+   * The turn-start rules reminder: one Jev request asks one noul per rule whether it applies to the new request, and
+   * the rules that pass the threshold ride back as one short message. Never throws and never edits an earlier
+   * message; a judgment that is off, fails, or times out appends nothing and says why in the trace.
+   */
+  const curateTurnStart = async (ctx: ExtensionContext, config: WardenConfig, prompt: string): Promise<string | undefined> => {
+    const set = rulesGuard.store.load(ctx.cwd, config.rules);
+    if (!set) return undefined;
+    // A fallback document with no rule headings is judged as one document by the rules guard; there are no rules to ask about.
+    if (!set.rules.length) {
+      record(ctx, config, "rules", "warden · rules · turn start · no rule headings", [
+        "trigger: before_agent_start",
+        `sources: ${set.sources.join(", ")}`,
+        set.proseOnly ? "no rule-shaped sections in the document" : "the document is judged as one aggregate by the rules guard",
+      ]);
+      return undefined;
+    }
+    const judge = judgeFor(config);
+    if (!judge) {
+      curator.failed();
+      record(ctx, config, "rules", "warden · rules · turn start · no judgment", [
+        "trigger: before_agent_start",
+        `skipReason: ${judgmentsOffReason(config) ?? "cooldown"}`,
+        "nothing was appended",
+      ]);
+      return undefined;
+    }
+    const rules = curatedRuleList(set.rules);
+    const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
+    const request = buildCuratorRequest(prompt, taskSpine(branch, prompt), rules);
+    const started = Date.now();
+    const answer = await ask(judge, request, { timeoutMs: Math.min(config.timeoutMs, CURATOR_TIMEOUT_MS), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+    const elapsedMs = Date.now() - started;
+    if (!answer.ok) {
+      curator.failed();
+      record(ctx, config, "rules", "warden · rules · turn start · nothing appended", [
+        "trigger: before_agent_start",
+        `error: ${answer.error}`,
+        `asked ${rules.length} rule${rules.length === 1 ? "" : "s"} in ${elapsedMs} ms`,
+      ]);
+      return undefined;
+    }
+    const scores = ruleScores(answer.answers as Record<string, unknown>, rules);
+    const selected = curatedRules(rules, scores, config.rulesAtTurnStart.threshold);
+    curator.sent(elapsedMs);
+    curator.added(selected.length);
+    record(ctx, config, "rules", `warden · rules · turn start · ${selected.length ? `${selected.length} rule${selected.length === 1 ? "" : "s"} named` : "none apply"}`, [
+      "trigger: before_agent_start",
+      `asked ${rules.length} of ${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}${set.alwaysDropped ? ` (${set.alwaysDropped} past the request cap)` : ""} in ${elapsedMs} ms`,
+      ...(selected.length ? [`named: ${selected.map(rule => `${rule.id} ${(scores[rules.indexOf(rule)] ?? 0).toFixed(2)}`).join(", ")}`] : [`no rule passed the ${config.rulesAtTurnStart.threshold} threshold`]),
+      `sources: ${set.sources.join(", ")}`,
+    ]);
+    return selected.length ? formatCuratedRules(selected) : undefined;
+  };
 
   // A new user prompt starts a new attempt history, a new steer budget, and a new restatement window; answering the
   // user is never a restatement.
@@ -1328,6 +1387,16 @@ export default function wardenExtension(host: ExtensionAPI): void {
           clearTimeout(timer);
         }
       }
+    }
+
+    // ── Rules at turn start ──
+    // One request before the first model call of this user turn asks which of the project's rules apply, and the
+    // ones that do ride back as one short custom message after the newest user message (Pi appends it), so nothing
+    // earlier in the context moves and a warm prompt cache stays valid. The request comes after the conscience block
+    // so a conscience message that owns the turn is not replaced. Nothing here throws; a failure appends nothing.
+    if (config.enabled && config.rules.enabled && config.rulesAtTurnStart.enabled) {
+      const curated = await curateTurnStart(ctx, config, event.prompt);
+      if (curated) return { message: { customType: CURATOR_TYPE, content: curated, display: config.steerVisible } };
     }
   });
 
@@ -2589,6 +2658,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
             formatSteers(stats),
             `${formatMuted(steerStats.muted(), config.steers)}${stats.steersMuted ? ` This session: ${stats.steersMuted} steer${stats.steersMuted === 1 ? "" : "s"} kept in the trace only.` : ""}`,
             `Thresholds: irreversible warn ${config.action.irreversible.warn} / hold ${config.action.irreversible.confirm}; off-task warn ${config.action.offTask.warn} / steer ${config.action.offTask.steer} (never holds); intent mismatch ${config.action.intentMismatch} (${config.action.visibleMismatch} on a visible action, trace-only: ${config.action.intentTraceOnly}); stuck same-strategy ${config.stuck.sameStrategy} after ${config.stuck.minFailures} failures; done claims ${config.done.claimsDone}; slop ${config.slop.threshold}, rules ${config.rules.threshold}, prose ${config.slop.prose.threshold} in ${config.slop.prose.trend}/3 replies; runaway ${config.runaway.repeats} repeats (thinking ${config.runaway.thinkingRepeats}), recover ${config.runaway.recover}; failOpen ${config.action.failOpen}.`,
+            formatCurator(curator.snapshot()),
+            "Working memory: off in this version (the feasibility gate failed; see docs/guards.md).",
             formatLedger(ledger.snapshot()),
             formatCompaction(config.compaction.enabled, compactions),
             ...(config.context.filter.enabled || ledger.snapshot().filter.requests > 0 || Object.keys(ledger.snapshot().filter.fallbacks).length > 0 ? [formatFilterLedger(ledger.snapshot())] : []),

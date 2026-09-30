@@ -144,6 +144,8 @@ const readLog = async (path: string, lines: number, settled = true): Promise<Rec
 };
 const STACK_BAR = { widget: { barMode: "stack" } };
 const grantConsent = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
+/** Consent with the rules guard on: the turn-start reminder needs a rule set to ask about. */
+const curatorConfig = () => writeFile(configPath(), JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, ...STACK_BAR }));
 
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), "pi-warden-ext-"));
@@ -4806,6 +4808,8 @@ test("the compaction appendix carries the open loops, and warden_recall prints i
     await toolResult("edit", { path: join(temporary, "src/a.ts"), edits: [] }, "Edited src/a.ts", false, ctx);
     await loopsTool({ action: "add", text: "Rerun the build", when: "after the type fix" }, ctx);
     sentMessages.length = 0;
+    // The turn-start rules reminder sent its own request when the prompt arrived; nothing below sends another.
+    const beforeRecall = networkCalls;
     const compactHandlers = extension.handlers.get("session_compact") ?? [];
     await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, ctx]);
     const appendix = sentMessages.find(m => m.message.customType === "pi-warden-compact-evidence")!.message.content;
@@ -4816,7 +4820,7 @@ test("the compaction appendix carries the open loops, and warden_recall prints i
     for (const section of sections) assert.ok(appendix.includes(section), `the appendix carries the same text: ${section}`);
     assert.match(recall, /npm run build → src\/a\.ts\(3,7\): error TS2322/);
     assert.match(recall, /last passing check: npm test; code changed since last passing check: yes/);
-    assert.equal(networkCalls, 0, "recall and loops make no judgment request");
+    assert.equal(networkCalls, beforeRecall, "recall and loops make no judgment request");
   } finally {
     await rm(loopsDir(), { recursive: true, force: true });
   }
@@ -4841,6 +4845,82 @@ test("waste: the session tip is off by default and is appended to the prompt onc
   assert.equal((options.appendSystemPrompt ?? "").split("Tool calls are expensive").length - 1, 1, "the tip appears once");
   await runCommand("trace", context({ hasUI: false }));
   assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 1, "the trace records the tip delivery once per session");
+});
+
+test("rules at turn start: the message rides back from before_agent_start, after the newest user message, and names only the rules that passed", async () => {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n\n# House prose\nNo em-dashes in documents.\n");
+  try {
+    nextAnswers = { ...nextAnswers, applies_0: 0.9, applies_1: 0.1 };
+    const sentBefore = sentMessages.length;
+    const result = await fire("before_agent_start", { prompt: "Read the config module and tighten the retry default" }) as { message?: { customType: string; content: string } };
+    assert.equal(result?.message?.customType, "pi-warden-rules");
+    assert.equal(result?.message?.content, "Rules that apply to this request:\n- No hardcoded secrets: Source code must not contain passwords or API keys.", "only the rule that passed the threshold is named, heading and first line");
+    // The appended message is Pi's own custom message: sending it ourselves would place it somewhere other than after the newest user message.
+    assert.equal(sentMessages.length, sentBefore, "nothing is sent as a separate message");
+    const state = requests.at(-1)!.state as { request: string; rules: Array<{ rule: string }> };
+    assert.equal(state.request, "Read the config module and tighten the retry default");
+    assert.deepEqual(state.rules.map(rule => rule.rule), ["No hardcoded secrets", "House prose"], "every rule is asked about, so the ones left out are left out on the answer");
+    assert.ok(!("task" in state), "the curator's own state is the request and the rules, not an action summary");
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+test("rules at turn start: no rule over the threshold appends nothing", async () => {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    // The fake judge answers an unknown question with 0.1, below the 0.3 threshold.
+    const result = await fire("before_agent_start", { prompt: "What does the retry helper do?" });
+    assert.equal(result, undefined, "no rule applies: the turn start gets nothing");
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+test("rules at turn start: a failed request appends nothing and the trace says why", async () => {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    failNetwork = true;
+    assert.equal(await fire("before_agent_start", { prompt: "Read the config module" }), undefined, "fail open");
+    failNetwork = false;
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · nothing appended/);
+    assert.match(sentMessages.at(-1)!.message.content, /error: TypeSafe returned HTTP 503/);
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+test("rules at turn start: the request is redacted and the table carries the rule with its path scope", async () => {
+  await curatorConfig();
+  const key = projectKey();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n\n# Version bumps stay out of features\npaths: package.json, CHANGELOG.md\nUse a separate commit.\n");
+  try {
+    await fire("before_agent_start", { prompt: `Deploy uses this key: ${key}` });
+    const body = requests.at(-1)!;
+    assert.ok(Object.keys(body.questions).every(name => name.startsWith("applies_")), "one question per rule");
+    assert.ok(!JSON.stringify(body).includes(key.slice(0, 20)), "the key never reaches the judge");
+    const state = body.state as { rules: Array<{ rule: string; applies_to_files: string[] }> };
+    assert.deepEqual(state.rules[1]!.applies_to_files, ["package.json", "CHANGELOG.md"], "a rule's scope rides with it");
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+test("working memory is off in this version and a config that asks for it is warned about", async () => {
+  await writeFile(configPath(), JSON.stringify({ typesafe: true, workingMemory: { enabled: true }, ...STACK_BAR }));
+  await sessionStart();
+  assert.match(notices.at(-1)!.text, /workingMemory\.enabled has no effect: the feature is not shipped/);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /Working memory: off in this version \(the feasibility gate failed/);
+  assert.match(notices.at(-1)!.text, /Rules at turn start: no requests yet this session\./);
 });
 
 test("waste: a nudge rides the tool result and never blocks a call or changes a hold", async () => {
@@ -5072,12 +5152,13 @@ test("turn rules: one end-of-run steer covers the run's diff and the files no pe
     assert.match(steers[0]!.message.content, /the change to app\.txt \(made by a command, not an edit\)/);
     assert.equal(steers[0]!.options?.deliverAs, "followUp");
     assert.equal(steers[0]!.options?.triggerTurn, true, "the same delivery as the done-check");
-    // A second run with no change judges nothing and steers nothing.
+    // A second run with no change judges nothing and steers nothing. The turn-start rules reminder is not a run
+    // judgment: it asks before the model call, so only the run's own requests count here.
     requests.length = 0;
     sentMessages.length = 0;
     await newPrompt("thanks", context({ cwd: repo }));
     await agentEnd("You're welcome.", context({ cwd: repo }));
-    assert.equal(requests.length, 0);
+    assert.equal(requests.filter(request => !Object.keys(request.questions).some(name => name.startsWith("applies_"))).length, 0);
     assert.equal(steersOnly().length, 0);
   } finally {
     guard.restore();

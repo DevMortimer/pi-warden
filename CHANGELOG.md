@@ -4,6 +4,19 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## Unreleased
+
+### Added
+
+- The turn-start rules reminder: before the first model call of each new user message, pi-warden sends one request asking which of the project's rules apply to that request (one question per rule, carrying the request, the task spine, and each rule's heading, text, and `paths:` scope), and appends the ones that pass the threshold as one short custom message after your message, at most three, strongest first. Nothing earlier in the context moves, so a warm prompt cache is never invalidated; a judgment that is off, fails, or takes longer than two seconds appends nothing and says so in the trace. `rulesAtTurnStart.enabled` (default true) and `rulesAtTurnStart.threshold` (default 0.3) control it; a project file may make it stricter, never turn it off. Measured on 100 real requests from three projects, labelled by one model: 68.9% of the rules named apply, 80 of 100 requests name at least one rule, p50 278 ms and p90 336 ms per request. See [guards.md → Rules at turn start](docs/guards.md#rules-at-turn-start).
+- `workingMemory` in the config: the pruning-at-a-cold-turn-start idea, shipped off and ineffective. The feasibility measurement before any of its code (200 sampled tool results, one Jev question each) found no threshold that drops at least 30% of the candidates with at most 10% misses, so the feature is not built; `workingMemory.enabled` stays false whatever the file says and a config that asks for it gets a warning naming the measurement. See [guards.md → Working-memory feasibility](docs/guards.md#working-memory-feasibility-2026-09-30-gate-failed).
+- `/warden status` reports the session's turn-start reminder: rules named, requests, failures, and the latency percentiles.
+
+### Docs
+
+- `docs/guards.md` (Rules at turn start) describes the reminder, its thresholds, the three-rule message, and its failure behaviour, with the rules-selection measurement and the failed working-memory gate in the calibration entries.
+- `docs/configuration.md` documents `rulesAtTurnStart.*` and `workingMemory.*`; `docs/data-handling.md` lists exactly what the turn-start request sends; `docs/commands.md` names the new `/warden status` totals.
+
 ## 0.82.0
 
 ### Added

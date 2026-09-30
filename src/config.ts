@@ -239,6 +239,32 @@ export interface RulesConfig {
   sensitivePaths: Record<string, string>;
 }
 
+export interface RulesAtTurnStartConfig {
+  /** Ask which rules apply before each new user message, and append the ones that do as one short message. */
+  enabled: boolean;
+  /** P(this rule applies) at or above which the rule is named. Measured against the owner's own requests; see docs/guards.md. */
+  threshold: number;
+}
+
+/**
+ * Working memory: at a cold start of a user turn, replace old tool results the task no longer needs with one-line
+ * stubs that keep a recall path, and keep that view for the session.
+ *
+ * Not shipped, and the switch cannot turn it on: the feasibility measurement in docs/guards.md found no threshold that
+ * drops enough candidates at an acceptable miss rate, so the extension prunes nothing and records one trace line when
+ * a config asks for it. The keys are here so the surface is stable when the judgment improves.
+ */
+export interface WorkingMemoryConfig {
+  /** Off, and ineffective: the feasibility gate failed (see docs/guards.md, Calibration). */
+  enabled: boolean;
+  /** P(the agent still needs the exact result) below which a result would be stubbed. */
+  threshold: number;
+  /** Only a turn that starts this long after the previous model call may rewrite the context; a warm cache is never touched. */
+  coldAfterSeconds: number;
+  /** Model calls a result must have been in context before it is a candidate. */
+  minAgeCalls: number;
+}
+
 export interface ContextConfig {
   enabled: boolean;
   /** Only new tool output is compressed; warm history and system prompts are never changed. */
@@ -464,6 +490,10 @@ export interface WardenConfig {
   slop: SlopGuardConfig;
   security: SecurityConfig;
   rules: RulesConfig;
+  /** A rules reminder at the start of each user turn (curator.ts). */
+  rulesAtTurnStart: RulesAtTurnStartConfig;
+  /** Context pruning at a cold turn start; the section ships off because the feasibility gate failed. */
+  workingMemory: WorkingMemoryConfig;
   context: ContextConfig;
   runaway: RunawayConfig;
   notify: NotifyConfig;
@@ -498,7 +528,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 11;
+export const CONFIG_SCHEMA = 12;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -536,6 +566,10 @@ export function defaultConfig(): WardenConfig {
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true },
     rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
+    // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
+    rulesAtTurnStart: { enabled: true, threshold: 0.3 },
+    // Off and ineffective: no measured threshold cleared the gate (docs/guards.md, Calibration).
+    workingMemory: { enabled: false, threshold: 0.3, coldAfterSeconds: 300, minAgeCalls: 10 },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
@@ -996,11 +1030,13 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "rulesAtTurnStart" | "workingMemory" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
   return {
     compaction: applyCompaction(base.compaction, raw.compaction, source),
     waste: applyWaste(base.waste, raw.waste),
     rules: applyRules(base.rules, raw.rules),
+    rulesAtTurnStart: applyRulesAtTurnStart(base.rulesAtTurnStart, raw.rulesAtTurnStart, source, warnings),
+    workingMemory: applyWorkingMemory(base.workingMemory, raw.workingMemory, source, warnings),
     runaway: applyRunaway(base.runaway, raw.runaway),
     subagent: applySubagent(base.subagent, raw.subagent),
     // A project file may switch notifications off or on, but never names a command to run.
@@ -1079,6 +1115,29 @@ function applyWaste(base: WasteConfig, raw: unknown): WasteConfig {
     paging: boolean(raw.paging, base.paging),
     search: boolean(raw.search, base.search),
     recheck: boolean(raw.recheck, base.recheck),
+  };
+}
+
+/** The turn-start reminder spends a request before every user message, so a project file may make it stricter, never turn it off. */
+function applyRulesAtTurnStart(base: RulesAtTurnStartConfig, raw: unknown, source: "user" | "project", warnings: string[]): RulesAtTurnStartConfig {
+  if (!isObject(raw)) return base;
+  const project = source === "project";
+  return {
+    enabled: project ? projectSwitch("rulesAtTurnStart.enabled", raw.enabled, base.enabled, warnings) : boolean(raw.enabled, base.enabled),
+    // A lower cut names more rules, which is the stricter reading of "remind me".
+    threshold: project ? projectProbability("rulesAtTurnStart.threshold", raw.threshold, base.threshold, warnings) : probability(raw.threshold, base.threshold),
+  };
+}
+
+/** Working memory is off and cannot be switched on in this version; the values are kept so the surface does not move later. */
+function applyWorkingMemory(base: WorkingMemoryConfig, raw: unknown, source: "user" | "project", warnings: string[]): WorkingMemoryConfig {
+  if (!isObject(raw)) return base;
+  if (raw.enabled === true) warnings.push("workingMemory.enabled has no effect: the feature is not shipped (the feasibility gate failed; see docs/guards.md)");
+  return {
+    enabled: base.enabled,
+    threshold: source === "project" ? projectProbability("workingMemory.threshold", raw.threshold, base.threshold, warnings) : probability(raw.threshold, base.threshold),
+    coldAfterSeconds: positiveInteger(raw.coldAfterSeconds, base.coldAfterSeconds),
+    minAgeCalls: positiveInteger(raw.minAgeCalls, base.minAgeCalls),
   };
 }
 

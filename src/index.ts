@@ -27,6 +27,8 @@ export type { RunawayVerdict, RepeatSignal, StreamKind } from "./runaway.js";
 export { completeConfig, shapeWarning, EXPECTED_SCHEMA, taskSpine } from "./shape.js";
 export type { TaskSpine } from "./shape.js";
 export { ContextLedger, formatLedger } from "./saver.js";
+export { buildCuratorRequest, curatedRuleList, curatedRules, curatorPercentile, CURATOR_APPEND_LIMIT, CURATOR_REQUEST_CHARS, CURATOR_RULE_CHARS, CURATOR_RULE_LIMIT, CURATOR_TIMEOUT_MS, CURATOR_TYPE, CuratorLedger, formatCuratedRules, formatCurator, ruleFirstLine, ruleQuestions, ruleScores } from "./curator.js";
+export type { CuratedRule, CuratorSnapshot } from "./curator.js";
 export { relevanceCompaction, buildUnits, buildRequests, candidates as compactionCandidates, outline as compactionOutline, renderSummary, keepQuestion, formatCompaction, summaryTokens, RELEVANCE_HEADER, KEEP_CHARS, MAX_QUESTIONS, MAX_REQUEST_BYTES } from "./relevance.js";
 export type { SpanMessage, Unit, ScoredUnit, ToolUnit, NoteUnit, SummaryUnit, FileLists, RelevanceInput, RelevanceOptions, RelevanceResult, FallbackReason, CompactionStats, KeepRequest } from "./relevance.js";
 export { HoldLedger, HoldLog, holdLogPath, formatHolds, outcomeNote, regretsAt, textRegrets } from "./holds.js";
