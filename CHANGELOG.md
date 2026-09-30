@@ -4,14 +4,20 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
-
-
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
 
+## 0.82.1
+
+### Added
+
+- `scripts/steer-calibration.mjs`: the blind-label steer measurement (draw the sample from a copy of the hold log, score the labels, gate the slices). `scripts/steer-ask-probe.mjs` measures a candidate question on the same labels, one request per call.
+- `should_ask` in `scripts/action-candidates.mjs`: a reworded should-proceed question that asks whether any visible instruction covers the call. Recorded as a candidate only (never acted on); its measurement is blocked on the TypeSafe account balance.
 
 ### Docs
 
+- The off-task and should-proceed steers are documented as trace-only, with what `action.offTask.warn`, `action.offTask.steer`, `action.shouldProceed.threshold` and `action.shouldProceed.steer` really change, and the 2026-09-30 blind-label measurement (no slice passes the ship gate) in `docs/guards.md` and `docs/configuration.md`.
 - `README.md` matches `docs/guards.md`: the features table describes the off-task and should-proceed notices as trace-only (the 2026-09-30 labels found 2 of 427 calls that needed asking, so they do not support `action.shouldProceed.steer`), and the versioning section puts `action.shouldProceed.steer` next to `compaction.*`, `context.filter.*`, and `conscience.*`, outside the semver promise. The guards docs also name who labelled those 427 calls: one language model, blind to the scores and strata, on the clipped request, plan, context, and call.
 
 ## 0.82.0
@@ -63,17 +69,6 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - `docs/configuration.md` documents `learning.allowedRetentionDays`.
 - `docs/data-handling.md` describes the slim hold database, the one-time migration, and every hold outcome.
-
-## 0.80.1
-
-### Added
-
-- `scripts/steer-calibration.mjs`: the blind-label steer measurement (draw the sample from a copy of the hold log, score the labels, gate the slices). `scripts/steer-ask-probe.mjs` measures a candidate question on the same labels, one request per call.
-- `should_ask` in `scripts/action-candidates.mjs`: a reworded should-proceed question that asks whether any visible instruction covers the call. Recorded as a candidate only (never acted on); its measurement is blocked on the TypeSafe account balance.
-
-### Docs
-
-- The off-task and should-proceed steers are documented as trace-only, with what `action.offTask.warn`, `action.offTask.steer`, `action.shouldProceed.threshold` and `action.shouldProceed.steer` really change, and the 2026-09-30 blind-label measurement (no slice passes the ship gate) in `docs/guards.md` and `docs/configuration.md`.
 
 ## 0.80.0
 
