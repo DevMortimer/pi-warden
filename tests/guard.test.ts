@@ -397,6 +397,21 @@ test("session scratch: a command that moves or links data in keeps the hold", as
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
+test("effective directory: a relative rm target after a cd resolves against it", () => {
+  assert.deepEqual(rmIds("cd /tmp/x && rm -rf build"), ["rm-temp-subtree"], "a relative target after a cd into a temp root");
+  assert.deepEqual(rmIds("cd /tmp/x; pushd sub && rm -rf build"), ["rm-temp-subtree"], "pushd moves the directory too");
+  assert.deepEqual(rmIds(`cd ${tmpdir()} && cd sub && rm -rf build`), ["rm-temp-subtree"], "a relative directory resolves against the previous one");
+  assert.deepEqual(rmIds("cd ~ && rm -rf projects"), ["rm-recursive-dangerous-target"], "a cd inside the home directory");
+  assert.deepEqual(rmIds("cd /Users && rm -rf someone/projects"), ["rm-recursive-dangerous-target"]);
+  assert.deepEqual(rmIds("cd /tmp/x && rm -rf build /var/tmp/y"), ["rm-recursive-dangerous-target"], "one target outside the temp roots keeps the hold");
+  assert.deepEqual(rmIds("cd /tmp/x && rm -rf build/../../y"), ["rm-recursive-dangerous-target"], "a `..` segment keeps the hold");
+  assert.deepEqual(rmIds("cd /tmp/x && rm -rf dist"), ["rm-temp-subtree"], "the target is classified by the path it names");
+  for (const command of ["cd - && rm -rf build", "cd && rm -rf build", "cd a b && rm -rf build", `cd "$(git rev-parse --show-toplevel)" && rm -rf build`, `cd "$UNKNOWN" && rm -rf build`]) {
+    assert.deepEqual(rmIds(command), ["rm-rf"], `a cd that cannot be read keeps today's reading: ${command}`);
+  }
+  assert.deepEqual(rmIds("rm -rf build"), ["rm-rf"], "without a cd nothing changes");
+});
+
 test("moved-in data: the destination of a same-command mv or ln keeps every release rule off", () => {
   const held = [
     `mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app`,

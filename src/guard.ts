@@ -561,6 +561,12 @@ type WordPath =
   | { kind: "temp"; key: string }
   | { kind: "unknown"; word: string };
 
+/** The directory a relative path resolves against: a real path, or one this guard cannot read. */
+type DirPath = { kind: "path"; path: string } | { kind: "unknown" };
+
+/** The shell's own working directory, as a `DirPath`. */
+const cwdPath = (cwd: string | undefined): DirPath => (cwd === undefined ? { kind: "unknown" } : { kind: "path", path: cwd });
+
 /** A word with its surrounding quotes removed. */
 const unquoteWord = (word: string): string => word.replace(/^["']|["']$/g, "");
 
@@ -574,21 +580,30 @@ function underPath(child: string, parent: string): boolean {
  * a substitution, a glob-only word, a `..` segment, and a relative path with no directory to resolve against: those
  * keep the hold by staying unplaceable.
  */
-function pathWord(word: string, dir: string | undefined): string | undefined {
+function resolveWord(word: string, dir: DirPath | undefined): WordPath {
   const clean = unquoteWord(word);
-  if (!clean || clean === "." || clean === ".." || clean === "./" || clean === "../" || clean === "*") return undefined;
-  if (clean.split(/[\\/]/).includes("..")) return undefined;
-  if (clean === "~") return homedir();
-  if (clean.startsWith("~/")) return resolve(homedir(), clean.slice(2));
-  if (isAbsolute(clean)) return resolve(clean);
-  if (/[$`\\]/.test(clean) || clean.startsWith("~")) return undefined;
-  return dir === undefined ? undefined : resolve(dir, clean);
+  if (!clean || clean === "." || clean === ".." || clean === "./" || clean === "../" || clean === "*") return { kind: "unknown", word };
+  if (clean.split(/[\\/]/).includes("..")) return { kind: "unknown", word };
+  return place(clean, dir, word);
+}
+
+/** A literal path text: `~`, an absolute path, or a path relative to `dir`. */
+function place(text: string, dir: DirPath | undefined, word: string): WordPath {
+  if (text === "~") return { kind: "path", path: homedir() };
+  if (text.startsWith("~/")) return { kind: "path", path: resolve(homedir(), text.slice(2)) };
+  if (text.startsWith("~") || /[$`\\]/.test(text)) return { kind: "unknown", word };
+  if (isAbsolute(text)) return { kind: "path", path: resolve(text) };
+  if (dir === undefined || dir.kind !== "path") return { kind: "unknown", word };
+  return { kind: "path", path: resolve(dir.path, text) };
 }
 
 /** An `rm` operand as the classifier reads it: a path it can place, or the word it cannot. */
-function targetWord(word: string, dir: string | undefined): WordPath {
-  const path = pathWord(word, dir);
-  return path === undefined ? { kind: "unknown", word } : { kind: "path", path };
+const targetWord = (word: string, dir: DirPath | undefined): WordPath => resolveWord(word, dir);
+
+/** The concrete path a word names, or undefined when it cannot be pinned down. */
+function placedWord(word: string, dir: DirPath | undefined): string | undefined {
+  const resolved = resolveWord(word, dir);
+  return resolved.kind === "path" ? resolved.path : undefined;
 }
 
 /** The path a target names, or the word as written. */
@@ -612,18 +627,45 @@ const MOVER_WORD = /^(?:g|bsd)?(?:mv|ln)$/;
 interface Mover { dest: string | undefined }
 
 /** The destination a `mv` or `ln` segment writes to: the last operand, or the value of `-t`/`--target-directory`. */
-function moverDestination(segment: string, dir: string | undefined): Mover | undefined {
+function moverDestination(segment: string, dir: DirPath | undefined): Mover | undefined {
   const tokens = segment.trim().split(/\s+/).filter(Boolean).map(token => token.replace(/^[("'`]+|[\"')`]+$/g, ""));
   const head = commandWord(tokens);
   if (!head || !MOVER_WORD.test(head.word)) return undefined;
   const rest = tokens.slice(head.index + 1);
   for (let index = 0; index < rest.length; index++) {
     const token = rest[index]!;
-    if (token === "-t" || token === "--target-directory") return { dest: pathWord(rest[index + 1] ?? "", dir) };
-    if (token.startsWith("--target-directory=")) return { dest: pathWord(token.slice("--target-directory=".length), dir) };
+    if (token === "-t" || token === "--target-directory") return { dest: placedWord(rest[index + 1] ?? "", dir) };
+    if (token.startsWith("--target-directory=")) return { dest: placedWord(token.slice("--target-directory=".length), dir) };
   }
   const operands = rest.filter(token => !token.startsWith("-"));
-  return { dest: operands.length ? pathWord(operands[operands.length - 1]!, dir) : undefined };
+  return { dest: operands.length ? placedWord(operands[operands.length - 1]!, dir) : undefined };
+}
+
+/** A `cd` or `pushd` segment: the directory it moves to, or an unknown one when its operand cannot be read. */
+function cdDirectory(segment: string, base: DirPath): { dir: DirPath } | undefined {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean).map(token => token.replace(/^[("'`]+|[\"')`]+$/g, ""));
+  const head = commandWord(tokens);
+  if (!head || (head.word !== "cd" && head.word !== "pushd")) return undefined;
+  // `cd` alone goes home, `cd -` swaps the last directory, and `cd a b` is not a directory this guard reads.
+  const operands = tokens.slice(head.index + 1).filter(token => !token.startsWith("-"));
+  if (operands.length !== 1) return { dir: { kind: "unknown" } };
+  const moved = resolveWord(operands[0]!, base);
+  return { dir: moved.kind === "path" ? { kind: "path", path: moved.path } : { kind: "unknown" } };
+}
+
+/**
+ * The directory each segment resolves relative paths against, after every `cd` or `pushd` before it. Until one moves it
+ * the entry is undefined, so a relative target keeps today's reading; a `cd` this guard cannot read makes it unknown.
+ */
+function effectiveDirs(segments: readonly string[], cwd: string | undefined): (DirPath | undefined)[] {
+  const dirs: (DirPath | undefined)[] = [];
+  let dir: DirPath | undefined;
+  for (const segment of segments) {
+    dirs.push(dir);
+    const moved = cdDirectory(segment, dir ?? cwdPath(cwd));
+    if (moved !== undefined) dir = moved.dir;
+  }
+  return dirs;
 }
 
 /**
@@ -661,9 +703,11 @@ export function movedInTargets(tool: string, input: Record<string, unknown>, cwd
   if (!command) return [];
   const roots = [...volatileTempRoots(), ...scratchRoots];
   if (!roots.length) return [];
+  const segments = splitShell(stripDataText(command).text);
+  const dirs = effectiveDirs(segments, cwd);
   const found = new Set<string>();
-  for (const segment of splitShell(stripDataText(command).text)) {
-    const mover = moverDestination(segment, cwd);
+  for (let index = 0; index < segments.length; index++) {
+    const mover = moverDestination(segments[index]!, dirs[index] ?? cwdPath(cwd));
     const real = mover?.dest === undefined ? undefined : realTarget(mover.dest);
     if (real !== undefined && roots.some(root => real !== root && underPath(real, root))) found.add(real);
   }
@@ -683,7 +727,7 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
   const recursive = flags.some(flag => flag === "--recursive" || (/^-[a-zA-Z]+$/.test(flag) && /[rR]/.test(flag)));
   const force = flags.some(flag => flag === "--force" || (/^-[a-zA-Z]+$/.test(flag) && flag.includes("f")));
   if (!recursive) return undefined;
-  const targets = rmOperands(tokens.filter(token => !token.startsWith("-"))).map(word => targetWord(word, undefined));
+  const targets = rmOperands(tokens.filter(token => !token.startsWith("-"))).map(word => targetWord(word, context?.dir));
   const dangerousTarget = targets.some(target => isDangerousTarget(target, cwd));
   const budget = scratchBudget();
   const exemptions = context !== undefined;
@@ -994,6 +1038,8 @@ interface RmContext {
   moved?: readonly Mover[] | undefined;
   /** Destinations earlier calls moved into a volatile temp root or a declared scratch root. */
   recorded?: readonly string[] | undefined;
+  /** The directory a relative target resolves against, after a `cd` or `pushd` earlier in the same command. */
+  dir?: DirPath | undefined;
 }
 
 /** A path strictly inside a volatile temp root, after symlinks are resolved. A temp root itself has none. */
@@ -1715,14 +1761,16 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     // path a later `rm` deletes, and the birth-time walk cannot see it: no release rule applies at all then.
     const blocked = privileged || MOVES_DATA_IN.test(unquoted(command)) || MOVES_DATA_IN.test(unquoted(raw));
     // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
-    const moved = blocked ? [] : segments.map(segment => moverDestination(segment, cwd)).filter((mover): mover is Mover => mover !== undefined);
+    // Their destinations resolve against the directory the shell is in at that point, `cd` or `pushd` included.
+    const dirs = effectiveDirs(segments, cwd);
+    const moved = blocked ? [] : segments.map((segment, index) => moverDestination(segment, dirs[index] ?? cwdPath(cwd))).filter((mover): mover is Mover => mover !== undefined);
     // Read the cheap volatile temp roots only when a recursive rm needs them; the macOS /var/folders walk is lazier.
     let volatile: string[] | undefined;
     const volatileRoots = () => (volatile ??= disposableTempRoots());
     const scratchVars = blocked ? undefined : mktempVars(segments, volatileRoots, variableWrites(command));
     const scratchRoots = blocked ? undefined : options?.scratchPaths;
     for (let index = 0; index < segments.length; index++) {
-      const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, recorded: options?.movedIn });
+      const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, recorded: options?.movedIn, dir: dirs[index] });
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
       if (hit && !exempt.has(hit.id)) add(hit);
     }
