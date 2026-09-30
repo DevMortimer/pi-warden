@@ -6,18 +6,20 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-### Fixed
-
-- A database an earlier version wrote keeps the columns that version's `INSERT` names (`task`, `input_summary`, `prediction`, `preceding_actions`, `confidence`). They are no longer rebuilt away: they stay on `holds`, always empty, so a Pi session still running the older code — and a downgrade — keeps recording holds against a migrated database instead of failing every guarded call until it restarts. The size win does not change: the task text lands once in `hold_tasks`, and the text columns are cleared on the rows of calls that were not held, whose `scores` column keeps the empty object its `NOT NULL` constraint needs.
-- At each start, the text and context columns an older session wrote after the migration are cleared on the rows of calls that were not held. A new `hold_meta` table keeps the highest row id already cleared, so a start looks only at the rows written since the last one and changes no page when there are none; a database another session holds skips the step, as it skips the prune, and the next start runs it.
+<!-- Empty. Next release starts here. -->
 
 ## 0.81.0
 
 ### Changed
 
-- The hold database stores less per call. Every row now carries the Pi session id (it used to be empty); the task text is stored once per task, in a `hold_tasks` table keyed by its hash, instead of once per call; and a row of a call that was not held keeps only the columns a reader uses, so no task, plan, summary, scores, or reasons. A database written by an earlier version is migrated once at startup, inside one transaction, and the pages the migration and the prune free are reclaimed by a VACUUM that runs only when no other session holds the database; when one does, the VACUUM is skipped and the next start tries again, so no session waits for it.
+- The hold database stores less per call. Every row now carries the Pi session id (it used to be empty); the task text is stored once per task, in a `hold_tasks` table keyed by its hash, instead of once per call; and a row of a call that was not held keeps only the columns a reader uses, so no task, plan, summary, or reasons, and an empty scores object where every layout requires one. A database written by an earlier version is migrated once at startup, inside one transaction, and the pages the migration and the prune free are reclaimed by a VACUUM that runs only when no other session holds the database; when one does, the VACUUM is skipped and the next start tries again, so no session waits for it.
 - A record of a call that was not held is pruned after `learning.allowedRetentionDays` (default 90 days); `learning.retentionDays` (default 365) still applies to holds.
 - A steer-mode hold is labelled by what happened next: `approved` (your reply released the call), `replanned` (the agent ran a different call that changes something instead), and the new `abandoned` (the run after your reply neither released nor replaced it). The old rule labelled a hold `replanned` two prompts later without looking at what the agent did. `/warden status` counts abandoned holds apart, and the precision line still reports (declined + replanned) over the labelled holds.
+
+### Fixed
+
+- A database an earlier version wrote keeps the columns that version's `INSERT` names (`task`, `input_summary`, `prediction`, `preceding_actions`, `confidence`). They are no longer rebuilt away: they stay on `holds`, always empty, so a Pi session still running the older code — and a downgrade — keeps recording holds against a migrated database instead of failing every guarded call until it restarts. The size win does not change: the task text lands once in `hold_tasks`, and the text columns are cleared on the rows of calls that were not held.
+- At each start, the text and context columns an older session wrote after the migration are cleared on the rows of calls that were not held. A new `hold_meta` table keeps the highest row id already cleared, so a start looks only at the rows written since the last one and changes no page when there are none; a database another session holds skips the step, as it skips the prune, and the next start runs it.
 
 ### Docs
 
