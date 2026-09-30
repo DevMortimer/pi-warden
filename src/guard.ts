@@ -636,6 +636,26 @@ function isDangerousTarget(target: WordPath, cwd: string | undefined): boolean {
 /** A `mv` or `ln` command word: both can put existing data under a path a later `rm` deletes. */
 const MOVER_WORD = /^(?:g|bsd)?(?:mv|ln)$/;
 
+/** A `mv` or `ln` command word anywhere in a command, quoted and escaped spellings included, as `MOVES_IN` reads them. */
+const ANY_MOVER = /(?:^|[\s;&|(`])(?:g|bsd)?(?:mv|ln)(?=[\s;&|)`]|$)/;
+
+/** A `mv` or `ln` at the start of a statement: after `;`, `&&`, `|`, `{`, `(`, or a newline, or at the segment start. */
+const STATEMENT_MOVER = /(?:^|[\n;&|({])\s*(?:g|bsd)?(?:mv|ln)(?=[\s;&|)`}]|$)/;
+
+/**
+ * A `mv` or `ln` word this guard could not read as a destination: one inside a shell-sink segment (`bash -c 'mv …'`,
+ * `xargs mv`, `eval "ln …"`), or at a statement position of a segment whose head is something else
+ * (`f() { mv a b; }`). Such a command moves data it does not name, so nothing it deletes is provably disposable.
+ */
+function unreadMover(segments: readonly string[]): boolean {
+  return segments.some(segment => {
+    const head = commandWord(segment.trim().split(/\s+/).filter(Boolean))?.word;
+    if (head !== undefined && MOVER_WORD.test(head)) return false;
+    const text = segment.replace(/['"\\]/g, "");
+    return head !== undefined && SHELL_SINKS.has(head) ? ANY_MOVER.test(text) : STATEMENT_MOVER.test(text);
+  });
+}
+
 /** A `mv`/`ln` destination of one command. `dest` is undefined when it cannot be resolved, which keeps every hold. */
 interface Mover { dest: string | undefined }
 
@@ -746,7 +766,7 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
   const budget = scratchBudget();
   const exemptions = context !== undefined;
   // A command or an earlier call that moved or linked data into a target keeps it: nothing about it is provable then.
-  const clean = (target: WordPath): boolean => !movesInto(target, context?.moved) && !movedInEarlier(target, context?.recorded);
+  const clean = (target: WordPath): boolean => !context?.unreadMover && !movesInto(target, context?.moved) && !movedInEarlier(target, context?.recorded);
   if (exemptions && targets.length && targets.every(target => clean(target) && isScratchTarget(target, scratch, context, budget))) {
     return { id: "rm-session-scratch", severity: "risky", label: "recursive rm of session scratch: every target is under the temp directory or a declared scratch root" };
   }
@@ -1050,6 +1070,8 @@ interface RmContext {
   tempRoots?: (() => readonly string[]) | undefined;
   /** Destinations the `mv` and `ln` segments of this command write to. */
   moved?: readonly Mover[] | undefined;
+  /** A `mv` or `ln` word in this command that could not be read as a destination: no release then. */
+  unreadMover?: boolean | undefined;
   /** Destinations earlier calls moved into a volatile temp root or a declared scratch root. */
   recorded?: readonly string[] | undefined;
   /** The directory a relative target resolves against, after a `cd` or `pushd` earlier in the same command. */
@@ -1799,11 +1821,12 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     const scratchVars = blocked ? undefined : commandVars(segments, volatileRoots, variableWrites(command));
     const scratchRoots = blocked ? undefined : options?.scratchPaths;
     // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
-    // Their destinations resolve against the directory the shell is in at that point, `cd` or `pushd` included.
+    // A mover word the per-segment parse cannot read (`bash -c 'mv a b'`, `xargs ln -s a b`) keeps every hold as well.
     const dirs = effectiveDirs(segments, cwd, scratchVars);
     const moved = blocked ? [] : segments.map((segment, index) => moverDestination(segment, dirs[index] ?? cwdPath(cwd), scratchVars?.[index])).filter((mover): mover is Mover => mover !== undefined);
+    const unread = blocked ? false : unreadMover(segments);
     for (let index = 0; index < segments.length; index++) {
-      const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, recorded: options?.movedIn, dir: dirs[index] });
+      const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, unreadMover: unread, recorded: options?.movedIn, dir: dirs[index] });
       // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
       if (hit && !exempt.has(hit.id)) add(hit);
     }

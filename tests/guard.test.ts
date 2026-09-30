@@ -452,6 +452,8 @@ test("moved-in data: the destination of a same-command mv or ln keeps every rele
     `mv ~/projects/app "$UNKNOWN" && rm -rf /tmp/old-app`,
     `mv ~/projects/app /tmp/old-app && rm -rf /tmp/old-app/sub`,
     `mv ~/projects/app /tmp && rm -rf /tmp/old-app`,
+    `bash -c 'mv ~/projects/app /tmp/old-app' && rm -rf /tmp/old-app`,
+    `xargs mv -t /tmp/old-app && rm -rf /tmp/old-app`,
   ];
   for (const command of held) {
     assert.deepEqual(rmIds(command), ["rm-recursive-dangerous-target"], `a moved-in destination keeps the hold: ${command}`);
