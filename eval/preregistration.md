@@ -13,6 +13,8 @@ never enter the analysis.
 
 v3, still before any batch run: model B is `claude-bridge/claude-sonnet-5-5` (not `claude-opus-4-8`); agent prices come from the providers' own price pages, A's per call by its own timestamp at the peak or off-peak rate; a failed Jev judgment in a `warden` run stops the batch; the commit under test is fixed; the batch sizes are unchanged.
 
+v3, revised before any batch run: the queue runs in blocks, one block per task x repeat, with the cell order of each block shuffled by a registered seed, so paired runs start minutes apart; a stopped batch resumes from its record; a run that fails on an agent-model API error is re-run, and one that still fails leaves its whole block out of the metrics (a model with more than 10% of its blocks excluded is inconclusive); a Jev request still in flight when a run's process exits no longer stops the batch; the batch has a Jev dollar cap of $8 for A and $2 for B; the two batches run at the same time at concurrency 10 (A) and 6 (B), under `caffeinate -i`; the commit under test is the `src/` of the `main` commit that merges the approval-context pull request.
+
 ## Thesis
 
 With pi-warden 1.0, the same model, against the same project rules as prose alone:
@@ -55,30 +57,89 @@ The checkers (`eval/check.mjs`, `eval/verify.mjs`, `eval/waste.mjs`, `eval/cost.
 share no code with the guard. A `warden-offline` run that reports any Jev request is
 invalid and is re-run: the cell must show 0 Jev requests.
 
+### Block order and seed
+
+The queue is built repeat by repeat and, within a repeat, task by task. Each task x
+repeat is one **block** of its three cells. The cell order inside each block is
+shuffled with a seeded generator (mulberry32, seeded per block from the batch seed,
+the task id, and the repeat), and a block's three runs are dispatched one after
+another, so the runs of a pair start minutes apart and share a DeepSeek price window
+and the load of the provider and the machine. Blocks run side by side up to the
+concurrency. **The seed is 20261001 for both batches** (`--seed 20261001`); the
+runner records it in `runs.json` and in the report.
+
+### Resume
+
+`node scripts/eval-ab.mjs --resume <batch folder>` continues a batch. It reads
+`runs.json` (rewritten after every finished run), keeps the batch's plan, seed, and
+therefore its order, skips every task x cell x repeat already recorded, and appends
+the new runs; it refuses a flag that would change the plan. A run that a stop or an
+interrupt cut short is not recorded and runs again. A run recorded with `infraError`
+(below) is a result and is not repeated; the runs that an exit-4 stop dropped are not
+recorded and run again. The Jev dollars spent so far carry over.
+
+### Infrastructure failures
+
+A run is an **infrastructure failure** when its session log shows an assistant
+message with `stopReason` `error` (a rate limit, an overload, a 5xx), or when pi
+exited before any assistant message. The runner re-runs it at most twice more, after
+1 minute and then after 5 minutes. If it still fails, the run is recorded with
+`infraError` and the reason, and its **whole block** (all three cells of that task x
+repeat) is left out of every metric and every analysis set; the runs stay in
+`runs.json`, flagged `excludedBlock`. The report counts, per cell, the infrastructure
+failures, the runs that were re-run and then succeeded, and the excluded blocks.
+
+- If more than 10% of a model's blocks are excluded, that model's result is
+  **inconclusive**: no decision rule is applied to it.
+- After 5 infrastructure failures in a row across the batch (a run that finishes
+  without one resets the count), the batch stops with exit code 4: no further run
+  starts, runs in flight finish, and those 5 runs are dropped and run again on resume.
+- A timeout stays a task outcome (the agent did not finish) and is analyzed as
+  executed.
+
 ### Jev-error stop
 
-If a run in the `warden` cell gets a failed Jev judgment — an HTTP error such as
-402, a timeout, a spend-cap stop, or any other error — the batch stops: no further
+If a run in the `warden` cell gets a failed Jev judgment, the batch stops: no further
 run starts, that run is not counted (it is not in `runs.json` and not in the
 analysis; the runner records it under `stoppedBy`), and the runner exits with code 3.
-Runs already in flight finish and count. The runner detects a failure from two files
-the run leaves behind: the run's own pi-typesafe usage ledger (any failed request, or
-a request that started and never finished) and the warden trace file (judgments off
-for any reason, which is how a spend-cap stop shows). A stop is recorded under
+Runs already in flight finish and count. A failed judgment is one of two things the run
+leaves behind:
+
+- its own pi-typesafe usage ledger shows a failed request (an HTTP error such as 402,
+  a timeout, any other error), or cannot be read (unless pi was killed at the timeout,
+  which can cut a ledger write short);
+- the warden trace file shows a fallback: TypeSafe unavailable, judgments off for any
+  reason, or a spend-cap stop.
+
+A Jev request still in flight when the run's process exits, with no fallback in the
+trace and no failed request in the ledger, is not a failure: the run is recorded with
+`abandonedJevRequests` (the count) and the batch goes on. A stop is recorded under
 Corrections with its cause; the owner decides how the batch resumes.
+
+### Jev caps
+
+`PI_TYPESAFE_MAX_USD_PER_DAY` limits one run's own ledger only. The batch has its own
+cap, `--jev-usd-cap N`: after every attempt the runner adds the Jev dollars of that
+attempt's ledger (a re-run attempt and a run that fell back included; a resumed batch
+continues from the sum recorded in `runs.json`). When the sum reaches N, no new run
+starts, runs in flight finish and count, and the runner exits with code 3; the spend can
+overshoot N by the runs in flight. The batch can be resumed with a higher cap. **The
+caps are $8 for A and $2 for B**: twice each model's estimate (Batch table).
+Jev is the only cost limit of the batch.
 
 ## Metrics (primary)
 
 | | Metric | How measured | Analysis set |
 | --- | --- | --- | --- |
-| (a) | success per run | every declared check passes when the runner re-runs it (`outcome.allChecksPass`) | all runs |
-| (b) | violations per run | at least one diff rule violation (`eval/check.mjs`), counted per run | all runs; the trap-capable tasks are also reported |
-| (c) | dollars per run | agent input, output, cache-read, and cache-write tokens from the session log at the model's prices from `eval/config.mjs` (the price table below), plus the run's Jev requests and input tokens (`eval/cost.mjs`); compared as a ratio within the model | all runs |
-| (d) | Jev's increment | (a) and (b) on `warden` vs `warden-offline` | all runs |
+| (a) | success per run | every declared check passes when the runner re-runs it (`outcome.allChecksPass`) | all runs outside excluded blocks |
+| (b) | violations per run | at least one diff rule violation (`eval/check.mjs`), counted per run | all runs outside excluded blocks; the trap-capable tasks are also reported |
+| (c) | dollars per run | agent input, output, cache-read, and cache-write tokens from the session log at the model's prices from `eval/config.mjs` (the price table below), plus the run's Jev requests and input tokens (`eval/cost.mjs`); compared as a ratio within the model | all runs outside excluded blocks |
+| (d) | Jev's increment | (a) and (b) on `warden` vs `warden-offline` | all runs outside excluded blocks |
 
-A run that times out or errors is analyzed as executed (intent to treat): it counts
-as not finished for (a), contributes no violation for (b), and its measured cost for
-(c). Secondary analyses (per-turn decay table, claims, visible actions, waste) are
+A run that times out or ends in a harness error is analyzed as executed (intent to
+treat): it counts as not finished for (a), contributes no violation for (b), and its
+measured cost for (c). A run that fails on infrastructure is not a task outcome: its
+whole block leaves all four metrics (see Infrastructure failures). Secondary analyses (per-turn decay table, claims, visible actions, waste) are
 labelled exploratory and do not decide the thesis.
 
 ## Decision rules
@@ -86,7 +147,8 @@ labelled exploratory and do not decide the thesis.
 Paired comparisons within a model, one-sided alpha 0.05. "Supported" and "refuted"
 are the only decisions; everything else is reported as inconclusive, with the point
 estimate and the interval. Each rule is applied once per model; the two models are
-never pooled.
+never pooled. A model with more than 10% of its blocks excluded for infrastructure
+failures is inconclusive on every rule.
 
 - **(a)** supported when the one-sided 95% lower bound of the paired success
   difference (`warden` − `control`) is above −5 percentage points; refuted when the
@@ -178,12 +240,19 @@ approved by the owner:
 | A | 20 tasks x 143 repeats x 3 cells | 8,580 | 2,860 | 1.08B | $61 off-peak to $118 peak (billed) | $4 |
 | B | 20 tasks x 40 repeats x 3 cells | 2,400 | 800 | 262M | $323 (list-price equivalent) | $1 |
 
-Commands (the run folder, `--out`, defaults to a dated name with the model):
+Both batches run **at the same time**, A at concurrency 10 and B at concurrency 6,
+under `caffeinate -i` so the machine stays awake. The launch first checks the commit
+under test (the command prints nothing), then starts the two batches in two
+terminals (the run folder, `--out`, defaults to a dated name with the model):
 
 ```
-node scripts/eval-ab.mjs --model deepseek/deepseek-flash --repeats 143 --turns 12 --concurrency 10
-node scripts/eval-ab.mjs --model claude-bridge/claude-sonnet-5-5 --repeats 40 --turns 12 --concurrency 6
+git diff <commit under test> HEAD -- src
+caffeinate -i node scripts/eval-ab.mjs --model deepseek/deepseek-flash --repeats 143 --turns 12 --concurrency 10 --seed 20261001 --jev-usd-cap 8
+caffeinate -i node scripts/eval-ab.mjs --model claude-bridge/claude-sonnet-5-5 --repeats 40 --turns 12 --concurrency 6 --seed 20261001 --jev-usd-cap 2
 ```
+
+A stopped batch (exit code 3 or 4, an interrupt, a crash, a sleep) continues with
+`caffeinate -i node scripts/eval-ab.mjs --resume <batch folder> --concurrency <10 or 6> --jev-usd-cap <cap>`.
 
 `--turns 12` runs the decay arc as its 12-turn arc; the multi-turn tasks run as arcs
 regardless. Costs come from the smoke runs' measured per-run tokens (single-shot
@@ -205,9 +274,10 @@ memory and about 550% of 1,000% CPU on a 10-core, 16 GB machine, and its runs to
 
 ## Commit under test
 
-The batch runs on the `main` commit after PR #157 merges (version 0.87.0). A separate
-commit adds that commit's hash to this section before the launch. Both batches run on
-that one commit.
+The batch runs on the `src/` tree of the `main` commit that merges the last 1.0 code
+change, the approval-context pull request. A separate commit adds that commit's hash to
+this section before the launch. The launch checks that `git diff <that commit> HEAD -- src`
+prints nothing. Both batches run on that one commit.
 
 ## Model
 
@@ -218,9 +288,9 @@ price page of each (see Prices).
 
 ## Not evidence
 
-The dry run (a listing, no spend) and the smoke runs (1 task x 3 cells on each
-model) prove the pipeline end to end. Their runs never enter the
-analysis above.
+The dry run (a listing, no spend), the smoke runs (1 task x 3 cells on each
+model), and the resume smoke run (2 tasks x 3 cells on A, interrupted after 2 runs and
+resumed) prove the pipeline end to end. Their runs never enter the analysis above.
 
 ## Corrections
 

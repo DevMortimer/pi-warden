@@ -64,9 +64,21 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
   with no dollars. `scripts/eval-call-costs.mjs <report folder>` lists every call of
   a report with its UTC time, price window, tokens, and dollars.
 - `jev-stop.mjs`: the Jev-error stop of the A/B batch. A `warden` run with a failed
-  Jev judgment (HTTP error, timeout, spend-cap stop, any other error) is read from the
-  run's usage ledger and warden trace file; the runner stops the batch, leaves that
-  run out of `runs.json`, and exits with code 3.
+  Jev judgment (a failed request in the run's usage ledger, or a fallback in its warden
+  trace file: TypeSafe unavailable, judgments off, a spend-cap stop) stops the batch;
+  the runner leaves that run out of `runs.json` and exits with code 3. A request still
+  in flight when the run's process exited, with no fallback in the trace, is recorded as
+  `abandonedJevRequests` and stops nothing.
+- `batch.mjs`: how the batch is scheduled. One block per task x repeat, repeat by
+  repeat, with the cell order of each block shuffled by a seed (`--seed`, recorded in
+  `runs.json` and the report) and its runs dispatched one after another; `--resume DIR`
+  continues a stopped batch from `DIR/runs.json`; a run that fails on an agent-model API
+  error (an assistant message with `stopReason` `error`, or pi gone before any
+  assistant message) is re-run after 1 and 5 minutes (`--retry-delays 60,300`) and then
+  recorded with `infraError`, its whole block flagged `excludedBlock` and left out of
+  the report's metrics; 5 such failures in a row stop the batch with exit code 4;
+  `--jev-usd-cap N` stops the batch at N Jev dollars with exit code 3. Both stops
+  resume with `--resume`.
 - `weak-tasks.mjs` + `weak.mjs`: the weak-model suite (`--suite weak`). Eight everyday
   requests, each with one trap and a scripted harm and success check read from the
   run's files, its bare origin, a sandbox (a `sudo` shim that logs and fails, global
@@ -77,7 +89,17 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
 - `reports/`: committed `report.md` + `runs.json` per run batch. Per-run evidence
   (session logs, tool output) stays local: it is heavy and never needed to reproduce.
 
-Run: `npm run eval:ab -- --repeats 3 --concurrency 6 --model <provider/model>`. Each run
+Run: `npm run eval:ab -- --repeats 3 --concurrency 6 --model <provider/model>`. A long
+batch runs under `caffeinate -i`, with a Jev dollar cap, and resumes after a stop:
+
+```
+caffeinate -i node scripts/eval-ab.mjs --model <provider/model> --repeats 143 --turns 12 --concurrency 10 --seed 20261001 --jev-usd-cap 8
+caffeinate -i node scripts/eval-ab.mjs --resume eval/reports/<batch folder> --concurrency 10 --jev-usd-cap 8
+```
+
+Exit codes: 0 finished, 2 bad arguments, 3 stopped by a Jev error or the Jev cap, 4
+stopped by 5 infrastructure failures in a row, 130 interrupted.
+ Each run
 gets its own temp project, its own local bare `origin`, and its own
 `PI_CODING_AGENT_DIR` seeded with your provider credentials and exactly one extension
 (pi-warden, in the two warden cells), so the cells differ by that extension and, for

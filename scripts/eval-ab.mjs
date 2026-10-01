@@ -30,18 +30,42 @@
  * from the session log at the model's prices from eval/config.mjs (each call at the
  * price of its own timestamp), plus the run's Jev requests and input tokens.
  *
+ * Blocks (eval/batch.mjs): the queue runs repeat by repeat, task by task. One task x
+ * repeat is a block of its cells in an order shuffled by a seeded generator (`--seed`,
+ * recorded in runs.json and the report), and a block's runs go one after another, so
+ * paired runs start minutes apart and share a price window and the machine's load.
+ *
+ * Resume: `--resume DIR` reads DIR/runs.json (rewritten after every run), keeps its
+ * seed, plan, and order, skips every task x cell x repeat already recorded, and appends
+ * the rest. A run that a stop or an interrupt cut short runs again.
+ *
+ * Infrastructure failures: a run whose session log shows an assistant message with
+ * stopReason `error`, or whose pi exited before any assistant message, is re-run after
+ * 1 and then 5 minutes (`--retry-delays`). One that still fails is recorded with
+ * `infraError`, and its whole block leaves the metrics (`excludedBlock`). Five final
+ * failures in a row stop the batch with exit code 4; those runs are dropped and run
+ * again on resume. A timeout is a task outcome.
+ *
  * Jev-error stop (eval/jev-stop.mjs): when a run of a cell that asks Jev ends with a
- * failed judgment (HTTP error, timeout, spend-cap stop, any other error), the batch
- * starts no more runs, that run is left out of runs.json and the report (it is listed
- * under `stoppedBy`, its evidence folder stays), and the script exits with code 3.
- * Runs already in flight finish and count. A batch with `--typesafe-cap` spends its
- * judged-request allowance on purpose and does not apply the rule.
+ * failed judgment (a failed request in its ledger, or a fallback in its warden trace:
+ * TypeSafe unavailable, judgments off, a spend-cap stop), the batch starts no more
+ * runs, that run is left out of runs.json and the report (it is listed under
+ * `stoppedBy`, its evidence folder stays), and the script exits with code 3. Runs
+ * already in flight finish and count. A request still in flight when the run's process
+ * exited, with no fallback in the trace, is recorded as `abandonedJevRequests` and stops
+ * nothing. A batch with `--typesafe-cap` spends its judged-request allowance on purpose
+ * and does not apply the rule.
+ *
+ * Jev dollar cap: `--jev-usd-cap N` sums the Jev dollars of every finished run's ledger
+ * (re-runs and a run that fell back included, resumed batches cumulative). At N no new
+ * run starts, runs in flight finish, and the script exits with code 3.
  *
  * Usage:
  *   node scripts/eval-ab.mjs                                  # all tasks, both cells, 1 repeat
  *   node scripts/eval-ab.mjs --repeats 3 --concurrency 6 --model deepseek/deepseek-v4.1-flash
  *   node scripts/eval-ab.mjs --tasks t6-dsn,t7-todo --max-runs 4 --keep
  *   node scripts/eval-ab.mjs --turns 12 --tasks t16-decay      # decay arc, one long session
+ *   node scripts/eval-ab.mjs --resume eval/reports/<batch folder>   # continue a stopped batch
  *   node scripts/eval-ab.mjs --suite weak --repeats 2 --typesafe-cap 400 \
  *     --model deepseek/deepseek-flash --waste both
  *
@@ -65,9 +89,9 @@
 import { parseArgs } from "node:util";
 import { spawn, execFileSync } from "node:child_process";
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync as writeFileSyncNow } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tasks, taskById } from "../eval/tasks.mjs";
 import { violations, violationCounts } from "../eval/check.mjs";
@@ -75,8 +99,9 @@ import { buildReport } from "../eval/report.mjs";
 import { filterEnv, filteredNames } from "../eval/env.mjs";
 import { claimAudit, claims, checksRun, finalAssistantText, gitFacts, readSessionEvents, runScript, runTestFile, toolCalls, visibleActions } from "../eval/verify.mjs";
 import { outcomeAxis, wasteAxis } from "../eval/waste.mjs";
-import { runCost } from "../eval/cost.mjs";
-import { jevFailure } from "../eval/jev-stop.mjs";
+import { jevDollars, jevUsage, runCost } from "../eval/cost.mjs";
+import { abandonedJevRequests, jevFailure } from "../eval/jev-stop.mjs";
+import { DEFAULT_SEED, RETRY_DELAYS_MS, blockOrder, firstRuns, infraReason, infraSection, infraCounts, markExclusions, metricRuns, runBatch, runKey } from "../eval/batch.mjs";
 import { weakTasks, weakTaskById } from "../eval/weak-tasks.mjs";
 import { buildWeakReport, callsWithResults, judgedRequests, repeatedFailures, snapshot, steersInOrder, traceGuards, turnsOf } from "../eval/weak.mjs";
 
@@ -85,26 +110,71 @@ const FIXTURE = join(ROOT, "eval", "fixture");
 const WARDEN_INDEX = join(ROOT, "extensions", "index.js");
 const REPORTS = join(ROOT, "eval", "reports");
 
-const { values } = parseArgs({
+const { values: cli } = parseArgs({
   options: {
-    repeats: { type: "string", default: "1" },
+    repeats: { type: "string" },
     tasks: { type: "string" },
     "max-runs": { type: "string" },
     concurrency: { type: "string", default: "4" },
     turns: { type: "string" },
-    suite: { type: "string", default: "ab" },
+    suite: { type: "string" },
     waste: { type: "string" },
     extension: { type: "string", multiple: true },
     "typesafe-cap": { type: "string" },
+    "jev-usd-cap": { type: "string" },
     provider: { type: "string" },
     model: { type: "string" },
     thinking: { type: "string" },
-    "timeout-min": { type: "string", default: "12" },
+    "timeout-min": { type: "string" },
+    "retry-delays": { type: "string" },
+    seed: { type: "string" },
+    resume: { type: "string" },
     out: { type: "string" },
     keep: { type: "boolean", default: false },
     "dry-run": { type: "boolean", default: false },
   },
 });
+
+/** The flags that define a batch: a resumed batch takes them from its runs.json and refuses a different value. */
+const PLAN_KEYS = ["repeats", "tasks", "suite", "waste", "typesafe-cap", "provider", "model", "thinking", "turns", "seed", "timeout-min"];
+const PLAN_DEFAULTS = { repeats: "1", suite: "ab", "timeout-min": "12", seed: String(DEFAULT_SEED) };
+const RESUME_DIR = cli.resume ? resolve(cli.resume) : null;
+let stored = null;
+if (RESUME_DIR) {
+  try {
+    stored = JSON.parse(readFileSync(join(RESUME_DIR, "runs.json"), "utf8"));
+  } catch (error) {
+    console.error(`--resume: cannot read ${join(RESUME_DIR, "runs.json")}: ${error.message}`);
+    process.exit(2);
+  }
+  if (!stored.plan) {
+    console.error("--resume: runs.json has no plan; only a batch started by this version can resume");
+    process.exit(2);
+  }
+  if (cli.out && resolve(cli.out) !== RESUME_DIR) {
+    console.error("--resume DIR continues in DIR; do not pass a different --out");
+    process.exit(2);
+  }
+  for (const key of PLAN_KEYS) {
+    if (cli[key] !== undefined && String(cli[key]) !== String(stored.plan[key])) {
+      console.error(`--resume: --${key} ${cli[key]} differs from the batch's ${stored.plan[key]}; a resumed batch keeps its plan`);
+      process.exit(2);
+    }
+  }
+  if (stored.plan["typesafe-cap"] !== undefined) {
+    console.error("--resume does not support a batch with --typesafe-cap");
+    process.exit(2);
+  }
+}
+const values = { ...PLAN_DEFAULTS, ...cli };
+if (stored) for (const key of PLAN_KEYS) if (stored.plan[key] !== undefined) values[key] = stored.plan[key];
+const SEED = Number(values.seed);
+const JEV_USD_CAP = values["jev-usd-cap"] ? Math.max(0, Number(values["jev-usd-cap"])) : null;
+const RETRY_DELAYS = values["retry-delays"] ? values["retry-delays"].split(",").map((s) => Number(s) * 1000) : RETRY_DELAYS_MS;
+if (!Number.isInteger(SEED) || (JEV_USD_CAP !== null && !Number.isFinite(JEV_USD_CAP)) || RETRY_DELAYS.some((ms) => !Number.isFinite(ms) || ms < 0)) {
+  console.error("--seed must be an integer, --jev-usd-cap a number of dollars, --retry-delays seconds like 60,300");
+  process.exit(2);
+}
 
 const REPEATS = Math.max(1, Number(values.repeats));
 const CONCURRENCY = Math.max(1, Number(values.concurrency));
@@ -275,6 +345,10 @@ function piArgs(cell, sessionDir, extra = []) {
   return args;
 }
 
+/** The pi processes in flight, and whether an interrupt (SIGINT, SIGTERM) ended the batch. */
+const children = new Set();
+let interrupted = false;
+
 function runPi(project, agentDir, sessionDir, prompt, cell, env, extra = [], timeoutMs = TIMEOUT_MS) {
   return new Promise((resolveP) => {
     const started = Date.now();
@@ -283,12 +357,14 @@ function runPi(project, agentDir, sessionDir, prompt, cell, env, extra = [], tim
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    children.add(child);
     let out = "", err = "";
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("close", (code) => {
+      children.delete(child);
       clearTimeout(timer);
       resolveP({ code, out, err, timedOut, seconds: (Date.now() - started) / 1000 });
     });
@@ -413,6 +489,9 @@ async function runOnce(task, cell, repeat, allowance = null) {
   const checks = task.checks ?? ["test"];
   try {
     const pi = await runPi(project, agentDir, sessions, task.prompt, cell, env, [], TIMEOUT_MS * (task.timeoutScale ?? 1));
+    if (interrupted) return { aborted: true, pi, base, checks };
+    const infra = infraReason(readSessionEvents(sessions), pi);
+    if (infra) return { infra, pi, base, checks };
     const record = await score({
       project, sessions, agentDir, baseline, checks, dropped, task, dirs,
       run: { task: task.id, family: task.family ?? "rules", trap: task.trap, cell, repeat, seconds: pi.seconds, ...(allowance === null ? {} : { typesafeAllowance: allowance }) },
@@ -438,10 +517,16 @@ async function runArc(task, cell, repeat, allowance = null) {
   const prompts = task.arc.slice(0, TURNS || task.arc.length);
   let previousViolations = 0;
   let previousSteers = 0;
+  let seen = 0;
   try {
     for (let i = 0; i < prompts.length; i++) {
       const pi = await runPi(project, agentDir, sessions, prompts[i], cell, env, i === 0 ? [] : ["-c"]);
+      if (interrupted) return { aborted: true, pi, base, checks };
       const events = readSessionEvents(sessions);
+      // Only this turn's messages count: an earlier turn's reply says nothing about this pi process.
+      const infra = infraReason(events.slice(seen), pi);
+      seen = events.length;
+      if (infra) return { infra: `turn ${i + 1}: ${infra}`, pi: { ...pi, seconds: turns.reduce((t, x) => t + x.seconds, 0) + pi.seconds }, base, checks };
       const calls = toolCalls(events);
       const text = finalAssistantText(events);
       const found = claims(text);
@@ -498,31 +583,37 @@ async function main() {
   // Batch folders read <date>-<model>-<tasks>x<cells>x<repeats>; a same-minute collision appends the time.
   const modelSlug = (values.model ?? "default").split("/").pop().replace(/[^A-Za-z0-9.-]/g, "");
   const modeSlug = (TURNS ? `-turns${TURNS}` : "") + (WEAK ? "-weak" : "") + (WASTE === null ? "" : `-waste${WASTE}`);
-  let outDir = values.out ? resolve(values.out) : join(REPORTS, `${stamp}-${modelSlug}-${SELECTED.length}x${CELLS.length}x${REPEATS}${modeSlug}`);
-  if (!values.out && existsSync(outDir)) outDir += `-${new Date().toISOString().slice(11, 16).replace(":", "")}`;
+  let outDir = RESUME_DIR ?? (values.out ? resolve(values.out) : join(REPORTS, `${stamp}-${modelSlug}-${SELECTED.length}x${CELLS.length}x${REPEATS}${modeSlug}`));
+  if (!RESUME_DIR && !values.out && existsSync(outDir)) outDir += `-${new Date().toISOString().slice(11, 16).replace(":", "")}`;
 
-  const runs = [];
-  const planned = [];
-  for (const task of SELECTED) for (const cell of CELLS) for (let r = 1; r <= REPEATS; r++) planned.push({ task, cell, repeat: r });
-  const cap = values["max-runs"] ? Number(values["max-runs"]) : planned.length;
-  const queue = planned.slice(0, cap);
+  const taskIds = SELECTED.map((t) => t.id);
+  const blocks = blockOrder({ taskIds, cells: CELLS, repeats: REPEATS, seed: SEED }).map((b) => ({ ...b, family: byId(b.task).family ?? (WEAK ? "weak" : "rules") }));
+  const plan = { ...Object.fromEntries(PLAN_KEYS.filter((k) => values[k] !== undefined).map((k) => [k, values[k]])), tasks: taskIds.join(",") };
+  const state = { runs: stored?.runs ?? [], jevUsd: stored?.jevUsd ?? 0, stops: stored?.stops ?? [] };
+  const plannedRuns = values["max-runs"] ? firstRuns(blocks, Number(values["max-runs"])) : blocks;
+  const queue = plannedRuns.flatMap((b) => b.cells.map((cell) => ({ task: byId(b.task), cell, repeat: b.repeat })));
+  const done = new Set(state.runs.map(runKey));
+  const remaining = queue.filter((q) => !done.has(runKey({ task: q.task.id, cell: q.cell, repeat: q.repeat })));
 
   console.log(`eval-ab: ${WEAK ? "weak suite, " : ""}${SELECTED.length} tasks x ${CELLS.length} cells x ${REPEATS} repeat(s), ` +
-    `${queue.length} run(s) at concurrency ${CONCURRENCY}` +
+    `${queue.length} run(s) in ${plannedRuns.length} block(s) at concurrency ${CONCURRENCY}, seed ${SEED}` +
+    (RESUME_DIR ? `, resuming: ${state.runs.length} recorded, ${remaining.length} to run` : "") +
     (values.model ? `, model ${values.model}` : ", pi default model") +
     (TURNS ? `, ${TURNS} turns per run` : "") +
     (TYPESAFE_CAP !== null ? `, TypeSafe cap ${TYPESAFE_CAP}` : "") +
+    (JEV_USD_CAP !== null ? `, Jev cap $${JEV_USD_CAP}` : "") +
     (values["dry-run"] ? " (dry run)" : ""));
 
   if (values["dry-run"]) {
-    for (const { task, cell, repeat } of queue) console.log(`would run: ${task.id} [${task.family ?? "rules"}] ${cell} r${repeat}`);
+    for (const { task, cell, repeat } of remaining) console.log(`would run: ${task.id} [${task.family ?? "rules"}] ${cell} r${repeat}`);
     return;
   }
   // Only a real batch gets a report folder; a dry run leaves nothing behind.
   await mkdir(outDir, { recursive: true });
+  const firstStop = state.stops.length;
 
   // Judged-request budget: a warden run's allowance is its weight's share of what is neither spent nor reserved.
-  const budget = { used: 0, reserved: 0, weightLeft: queue.filter((q) => asksJev(q.cell)).reduce((s, q) => s + (q.task.judgeWeight ?? 1), 0) };
+  const budget = { used: 0, reserved: 0, weightLeft: remaining.filter((q) => asksJev(q.cell)).reduce((s, q) => s + (q.task.judgeWeight ?? 1), 0) };
   const takeAllowance = (task) => {
     const weight = task.judgeWeight ?? 1;
     const free = TYPESAFE_CAP - budget.used - budget.reserved;
@@ -531,72 +622,130 @@ async function main() {
     budget.reserved += Math.max(0, share);
     return share;
   };
+  const allowances = new Map();
 
-  let done = 0;
-  let cursor = 0;
-  let stoppedBy = null;
-  const worker = async () => {
-    while (cursor < queue.length && !stoppedBy) {
-      const { task, cell, repeat } = queue[cursor++];
-      const label = `${task.id} ${cell} r${repeat}`;
-      const started = Date.now();
-      const allowance = TYPESAFE_CAP !== null && asksJev(cell) ? takeAllowance(task) : null;
-      if (allowance !== null && allowance < 1) {
-        runs.push({ task: task.id, family: task.family, cell, repeat, skipped: `TypeSafe cap ${TYPESAFE_CAP} reached` });
-        done++;
-        process.stdout.write(`[${done}/${queue.length}] ${label} ... skipped: TypeSafe cap reached\n`);
-        continue;
-      }
-      const outcome = task.arc && (TURNS || !task.prompt) ? await runArc(task, cell, repeat, allowance) : await runOnce(task, cell, repeat, allowance);
-      const { record, pi, base } = outcome;
-      if (allowance !== null) {
-        budget.reserved -= allowance;
-        budget.used += record.weak?.judged ?? allowance;
-      }
-      // A failed Jev judgment in a run that asks Jev ends the batch and the run is not counted.
-      const jevError = asksJev(cell) && allowance === null
-        ? jevFailure({ agentDir: join(base, "agent-dir"), traceDir: join(base, "trace") })
-        : null;
-      if (jevError) {
-        stoppedBy ??= { task: task.id, cell, repeat, reason: jevError };
-        done++;
-        process.stdout.write(`[${done}/${queue.length}] ${label} ... JEV ERROR, not counted: ${jevError}. The batch stops.\n`);
-      } else {
-        runs.push({ ...record, piExit: pi.code, timedOut: pi.timedOut, seconds: Math.round(pi.seconds) });
-        done++;
-        const summary = record.weak
-          ? `exit=${pi.code}${pi.timedOut ? " TIMEOUT" : ""} harm=${record.weak.harm} success=${record.weak.success} tokens=${record.waste?.totalTokens} calls=${record.waste?.toolCalls} holds=${record.weak.holds.length} steers=${record.weak.steers.length} judged=${record.weak.judged}${TYPESAFE_CAP !== null ? ` (batch ${budget.used}/${TYPESAFE_CAP})` : ""} ${Math.round(pi.seconds)}s`
-          : record.turns
-          ? `turns=${record.turns.length} viols=${record.turns.at(-1)?.violations ?? 0} actions=${record.turns.flatMap((t) => t.visibleActions).length} ${Math.round((Date.now() - started) / 1000)}s`
-          : `exit=${pi.code}${pi.timedOut ? " TIMEOUT" : ""} tests ${record.testsPass}pass/${record.testsFail}fail build=${record.buildOk} viols=${record.violations?.length ?? 0} claims=${record.contradicted?.length ?? 0}false actions=${record.visibleActions?.length ?? 0} ${Math.round(pi.seconds)}s`;
-        process.stdout.write(`[${done}/${queue.length}] ${label} ... ${summary}\n`);
-      }
-      try {
-        const evidence = join(outDir, "runs", `${task.id}-${cell}-r${repeat}`);
-        await mkdir(evidence, { recursive: true });
-        await cp(base, evidence, { recursive: true });
-        await writeFile(join(evidence, "pi-stdout.log"), pi.out);
-        await writeFile(join(evidence, "pi-stderr.log"), pi.err);
-        if (record.testTail) await writeFile(join(evidence, "npm-test.log"), record.testTail);
-        if (record.buildTail) await writeFile(join(evidence, "npm-build.log"), record.buildTail);
-        // Evidence keeps the session log, never the credential copies made for the run.
-        await rm(join(evidence, "agent-dir", "pi-typesafe", "auth.json"), { force: true });
-        await rm(join(evidence, "agent-dir", "auth.json"), { force: true });
-      } catch { /* evidence copy is best effort; the record is the artifact */ }
-      await rm(base, { recursive: true, force: true });
-    }
+  /** runs.json, written after every change: a crash or an interrupt loses only the runs in flight. */
+  const document = (final = false) => {
+    const sorted = [...state.runs].sort((a, b) => (a.task + a.cell + String(a.repeat)).localeCompare(b.task + b.cell + String(b.repeat)));
+    markExclusions(sorted);
+    const current = state.stops.slice(firstStop).at(-1);
+    return scrubPaths(JSON.stringify({
+      stamp: stored?.stamp ?? stamp, seed: SEED, plan, jevUsd: state.jevUsd,
+      args: { ...values, extension: values.extension?.map((p) => p.split("/").pop()), out: values.out?.split("/").pop() },
+      ...(current ? { stoppedBy: current } : {}), stops: state.stops, runs: sorted,
+    }, null, 2));
   };
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
+  const persist = () => {
+    const tmp = join(outDir, "runs.json.tmp");
+    writeFileSyncNow(tmp, document());
+    renameSync(tmp, join(outDir, "runs.json"));
+  };
 
-  runs.sort((a, b) => (a.task + a.cell + String(a.repeat)).localeCompare(b.task + b.cell + String(b.repeat)));
-  const md = WEAK ? buildWeakReport({ runs, stamp, args: values, cap: TYPESAFE_CAP }) : buildReport({ runs, stamp, args: values });
+  /** One attempt of one run: the run itself, its evidence, and what the batch rules need to know about it. */
+  const execute = async (run, attempt) => {
+    const task = byId(run.task);
+    const { cell, repeat } = run;
+    const label = `${task.id} ${cell} r${repeat}`;
+    let allowance = null;
+    if (TYPESAFE_CAP !== null && asksJev(cell)) {
+      const a = allowances.get(runKey(run)) ?? { total: null, spent: 0 };
+      if (a.total === null) a.total = takeAllowance(task);
+      allowances.set(runKey(run), a);
+      allowance = attempt === 0 ? a.total : Math.max(0, a.total - a.spent);
+      if (attempt > 0) budget.reserved += allowance;
+      if (allowance < 1) {
+        budget.reserved -= Math.max(0, allowance);
+        return { record: { task: task.id, family: task.family, cell, repeat, skipped: `TypeSafe cap ${TYPESAFE_CAP} reached` }, jevUsd: 0, summary: "skipped: TypeSafe cap reached" };
+      }
+    }
+    const startedAt = new Date().toISOString();
+    const outcome = task.arc && (TURNS || !task.prompt) ? await runArc(task, cell, repeat, allowance) : await runOnce(task, cell, repeat, allowance);
+    const { record, pi, base } = outcome;
+    const agentDir = join(base, "agent-dir");
+    const jevUsd = jevDollars(jevUsage(agentDir));
+    if (allowance !== null) {
+      const judged = record?.weak?.judged ?? allowance;
+      allowances.get(runKey(run)).spent += judged;
+      budget.reserved -= allowance;
+      budget.used += judged;
+    }
+    if (outcome.aborted) {
+      await rm(base, { recursive: true, force: true });
+      return { aborted: true, jevUsd };
+    }
+    // A failed Jev judgment in a run that asks Jev ends the batch and the run is not counted.
+    const jevError = asksJev(cell) && allowance === null ? jevFailure({ agentDir, traceDir: join(base, "trace"), killed: pi.timedOut }) : null;
+    const full = record ? {
+      ...record, startedAt, piExit: pi.code, timedOut: pi.timedOut, seconds: Math.round(pi.seconds),
+      ...(asksJev(cell) ? { abandonedJevRequests: abandonedJevRequests(agentDir) } : {}),
+    } : null;
+    try {
+      const evidence = join(outDir, "runs", `${task.id}-${cell}-r${repeat}`);
+      await rm(evidence, { recursive: true, force: true });
+      await mkdir(evidence, { recursive: true });
+      await cp(base, evidence, { recursive: true });
+      await writeFile(join(evidence, "pi-stdout.log"), pi.out);
+      await writeFile(join(evidence, "pi-stderr.log"), pi.err);
+      if (record?.testTail) await writeFile(join(evidence, "npm-test.log"), record.testTail);
+      if (record?.buildTail) await writeFile(join(evidence, "npm-build.log"), record.buildTail);
+      // Evidence keeps the session log, never the credential copies made for the run.
+      await rm(join(evidence, "agent-dir", "pi-typesafe", "auth.json"), { force: true });
+      await rm(join(evidence, "agent-dir", "auth.json"), { force: true });
+    } catch { /* evidence copy is best effort; the record is the artifact */ }
+    await rm(base, { recursive: true, force: true });
+    const summary = !record ? "" : record.weak
+      ? `exit=${pi.code}${pi.timedOut ? " TIMEOUT" : ""} harm=${record.weak.harm} success=${record.weak.success} tokens=${record.waste?.totalTokens} calls=${record.waste?.toolCalls} holds=${record.weak.holds.length} steers=${record.weak.steers.length} judged=${record.weak.judged}${TYPESAFE_CAP !== null ? ` (batch ${budget.used}/${TYPESAFE_CAP})` : ""} ${Math.round(pi.seconds)}s`
+      : record.turns
+      ? `turns=${record.turns.length} viols=${record.turns.at(-1)?.violations ?? 0} actions=${record.turns.flatMap((t) => t.visibleActions).length} ${Math.round(pi.seconds)}s`
+      : `exit=${pi.code}${pi.timedOut ? " TIMEOUT" : ""} tests ${record.testsPass}pass/${record.testsFail}fail build=${record.buildOk} viols=${record.violations?.length ?? 0} claims=${record.contradicted?.length ?? 0}false actions=${record.visibleActions?.length ?? 0} ${Math.round(pi.seconds)}s`;
+    return { record: full, infra: outcome.infra ?? null, jevError, jevUsd, summary };
+  };
+
+  // An interrupt ends the batch cleanly: the runs in flight are killed and not recorded (they run again on resume).
+  const control = { stop: null, streak: [] };
+  const wakers = new Set();
+  const sleep = (ms) => new Promise((resolveSleep) => {
+    const wake = () => { clearTimeout(timer); wakers.delete(wake); resolveSleep(); };
+    const timer = setTimeout(wake, ms);
+    wakers.add(wake);
+  });
+  const interrupt = () => {
+    interrupted = true;
+    control.stop ??= { kind: "interrupt" };
+    for (const child of children) child.kill("SIGKILL");
+    for (const wake of wakers) wake();
+  };
+  process.on("SIGINT", interrupt);
+  process.on("SIGTERM", interrupt);
+
+  persist();
+  const { stop } = await runBatch({
+    blocks: plannedRuns, state, execute, persist, concurrency: CONCURRENCY, jevUsdCap: JEV_USD_CAP,
+    total: queue.length, retryDelaysMs: RETRY_DELAYS, sleep, control, log: (line) => console.log(line),
+  });
+
+  const metrics = metricRuns(state.runs);
+  const md = WEAK ? buildWeakReport({ runs: metrics, stamp, args: values, cap: TYPESAFE_CAP }) : buildReport({ runs: metrics, stamp, args: values });
+  md.splice(2, 0, `Block order: repeat by repeat, task by task; the cells of each block shuffled with seed ${SEED}.`, "");
+  md.push(...infraSection(state.runs, blocks.length));
   await writeFile(join(outDir, "report.md"), scrubPaths(md.join("\n")));
-  const shown = JSON.stringify({ stamp, args: { ...values, extension: values.extension?.map((p) => p.split("/").pop()), out: values.out?.split("/").pop() }, ...(stoppedBy ? { stoppedBy } : {}), runs }, null, 2);
-  await writeFile(join(outDir, "runs.json"), scrubPaths(shown));
+  persist();
   console.log(`\nreport: ${join(outDir, "report.md")}`);
   console.log(md.filter((l) => l.startsWith("|") && !l.startsWith("| ---")).join("\n"));
-  if (stoppedBy) {
-    console.error(`\nBATCH STOPPED: Jev error in ${stoppedBy.task} ${stoppedBy.cell} r${stoppedBy.repeat}, not counted: ${stoppedBy.reason}. ${queue.length - runs.length - 1} planned run(s) did not run.`);
+  const left = queue.length - state.runs.length;
+  const counts = infraCounts(state.runs, blocks.length);
+  if (counts.inconclusive) console.error(`\nMore than 10% of the blocks are excluded (${counts.excludedBlocks} of ${blocks.length}): this model's result is inconclusive.`);
+  if (stop?.kind === "interrupt") {
+    console.error(`\nBATCH INTERRUPTED: ${state.runs.length} run(s) recorded, ${left} to go. Resume with --resume ${basename(outDir)}.`);
+    process.exitCode = 130;
+  } else if (stop?.kind === "infra") {
+    console.error(`\nBATCH STOPPED: ${stop.reason}; those runs are not recorded and run again on resume. ${left} planned run(s) did not run. Resume with --resume ${basename(outDir)}.`);
+    process.exitCode = 4;
+  } else if (stop?.kind === "jev-cap") {
+    console.error(`\nBATCH STOPPED: ${stop.reason}. ${left} planned run(s) did not run. Resume with --resume ${basename(outDir)} and a higher --jev-usd-cap.`);
+    process.exitCode = 3;
+  } else if (stop) {
+    console.error(`\nBATCH STOPPED: Jev error in ${stop.task} ${stop.cell} r${stop.repeat}, not counted: ${stop.reason}. ${left - 1} planned run(s) did not run.`);
     process.exitCode = 3;
   }
 }

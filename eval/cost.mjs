@@ -73,6 +73,14 @@ export function jevUsage(agentDir) {
 
 const round6 = (x) => Math.round(x * 1e6) / 1e6;
 
+/** The Jev dollars of a run's requests and tokens, at the Jev prices. */
+export function jevDollars(jev) {
+  return round6(
+    jev.requests * JEV_PRICE.perRequestUsd +
+    (jev.inputTokens * JEV_PRICE.inputUsdPerMTok + jev.outputTokens * JEV_PRICE.outputUsdPerMTok) / 1e6,
+  );
+}
+
 /**
  * Each model call priced by its own timestamp: `{ at, atIso, window, usd, ...tokens }`
  * with `window` "peak", "off-peak", or "flat" and `usd` null (window null) when the
@@ -97,10 +105,7 @@ export function callCosts(events, model) {
 export function runCost({ events, agentDir, model }) {
   const tokens = sessionTokens(events);
   const jev = jevUsage(agentDir);
-  const jevUsd = round6(
-    jev.requests * JEV_PRICE.perRequestUsd +
-    (jev.inputTokens * JEV_PRICE.inputUsdPerMTok + jev.outputTokens * JEV_PRICE.outputUsdPerMTok) / 1e6,
-  );
+  const jevUsd = jevDollars(jev);
   const calls = callCosts(events, model);
   const unpriced = calls.find((call) => call.usd === null);
   if (!hasPrice(model) || unpriced) {

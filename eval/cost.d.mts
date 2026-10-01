@@ -31,5 +31,6 @@ export interface RunCost {
 export function sessionCalls(events: unknown[]): SessionCall[];
 export function sessionTokens(events: unknown[]): RunCost["tokens"];
 export function jevUsage(agentDir: string): RunCost["jev"];
+export function jevDollars(jev: RunCost["jev"]): number;
 export function callCosts(events: unknown[], model: string): CallCost[];
 export function runCost(input: { events: unknown[]; agentDir: string; model: string }): RunCost;
