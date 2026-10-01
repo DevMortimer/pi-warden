@@ -118,8 +118,8 @@ const toolResult = (toolName: string, input: Record<string, unknown>, output: st
   fire("tool_result", { toolName, toolCallId: "call-1", input, content: [{ type: "text", text: output }], isError: failed, details: toolName === "bash" ? { exitCode: failed ? 1 : 0 } : undefined }, ctx);
 const agentEnd = (finalText: string, ctx = context()) => fire("agent_end", { messages: [{ role: "user", content: prompt ?? "" }, { role: "assistant", content: [{ type: "text", text: finalText }], stopReason: "stop" }] }, ctx);
 const newPrompt = (text: string, ctx = context()) => { prompt = text; return fire("before_agent_start", { prompt: text }, ctx).then(() => fire("agent_start", {}, ctx)); };
-/** Fire before_agent_start with skills in systemPromptOptions, let the background assessment settle, and reach the next
- * tool boundary, which is where a passing tip is delivered. The delivered tip comes back in the hook's old message
+/** Fire before_agent_start with skills in systemPromptOptions, let the background assessment settle, and reach the
+ * end of a turn whose loop continues, which is where a passing tip is delivered. The delivered tip comes back in the hook's old message
  * shape, so a test reads delivery the same way it reads a refusal. */
 const promptWithSkills = async (text: string, skills: Array<{ name: string; description: string; filePath: string; baseDir: string; sourceInfo: { path: string; source: string; scope: string; origin: string }; disableModelInvocation: boolean }>, ctx = context()) => {
   prompt = text;
@@ -134,7 +134,7 @@ const promptWithSkills = async (text: string, skills: Array<{ name: string; desc
 /** The end of a turn that ran `results.length` tool calls: Pi emits each call's `tool_execution_end`, then `turn_end`. */
 const toolTurn = async (results: Array<{ terminate?: boolean }> = [{}], stopReason = "toolUse", ctx = context()) => {
   for (const [index, result] of results.entries()) await fire("tool_execution_end", { toolCallId: `call-${index + 1}`, toolName: "read", result: { content: [], ...result }, isError: false }, ctx);
-  await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason }, toolResults: [] }, ctx);
+  await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason }, toolResults: results.map((_, index) => ({ role: "toolResult", toolCallId: `call-${index + 1}` })) }, ctx);
 };
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
@@ -3126,7 +3126,7 @@ test("conscience: no-tool lifecycle fixture for recommend mode", async () => {
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "the tip is delivered at the next tool boundary in recommend mode");
+  assert.ok(result?.message, "the tip is delivered at the end of a turn whose loop continues in recommend mode");
   assert.match(result!.message!.content, /impeccable/i, "the message should recommend the impeccable skill");
   assert.match(result!.message!.content, /Consider using/, "the message should suggest consideration");
 });
@@ -3150,7 +3150,7 @@ test("conscience: no-tool lifecycle fixture for load mode", async () => {
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "the loaded skill body is delivered at the next tool boundary in load mode");
+  assert.ok(result?.message, "the loaded skill body is delivered at the end of a turn whose loop continues in load mode");
   assert.ok(result!.message!.content.length > 100, "load mode should supply the full skill body");
   assert.match(result!.message!.content, /impeccable/);
 });
@@ -3183,7 +3183,7 @@ test("conscience: a lowered threshold delivers one tip at the next tool boundary
   const result = await promptWithSkills("design a landing page", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "the tip is delivered at the next tool boundary");
+  assert.ok(result?.message, "the tip is delivered at the end of a turn whose loop continues");
   assert.equal(result!.message!.customType, "pi-warden-conscience");
   assert.match(result!.message!.content, /impeccable/);
   const delivered = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience");
@@ -5023,6 +5023,30 @@ test("background notice: a turn with no tool call ends the run, so the notice is
   assert.match(trace, /the turn made no tool call/);
 });
 
+test("background notice: a host that sends turn_end with tool results and no tool_execution_end still delivers the notice", async () => {
+  const { sent } = await readyReminder(async () => {
+    await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason: "toolUse" }, toolResults: [{ role: "toolResult" }, { role: "toolResult" }] });
+  });
+  const delivered = sent.filter(entry => entry.message.customType === "pi-warden-rules");
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0]!.options?.deliverAs, "steer");
+});
+
+test("background notice: without toolResults on turn_end the tool calls in the assistant message are counted", async () => {
+  const { sent } = await readyReminder(async () => {
+    await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason: "toolUse", content: [{ type: "text", text: "reading" }, { type: "toolCall", id: "call-1", name: "read", arguments: {} }] } });
+  });
+  assert.equal(sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 1);
+});
+
+test("background notice: a terminate result for only some of the calls keeps the loop going", async () => {
+  const { sent } = await readyReminder(async () => {
+    await fire("tool_execution_end", { toolCallId: "call-1", toolName: "read", result: { content: [], terminate: true }, isError: false });
+    await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason: "toolUse" }, toolResults: [{ role: "toolResult" }, { role: "toolResult" }] });
+  });
+  assert.equal(sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 1);
+});
+
 test("background notice: an aborted turn drops the notice, and a nested call is not part of the batch", async () => {
   const aborted = await readyReminder(async () => { await toolTurn([{}], "aborted"); });
   assert.equal(aborted.sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0);
@@ -5034,7 +5058,7 @@ test("background notice: an aborted turn drops the notice, and a nested call is 
   assert.equal(nested.sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0, "the nested call did not make the batch continue");
 });
 
-test("rules at turn start: the prompt does not wait for the judgment, and the reminder reaches the next tool boundary through the steer path", async () => {
+test("rules at turn start: the prompt does not wait for the judgment, and the reminder is steered at the end of a turn whose loop continues", async () => {
   await curatorConfig();
   const rules = join(temporary, "pi-warden.md");
   await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n\n# House prose\nNo em-dashes in documents.\n");
@@ -5047,7 +5071,7 @@ test("rules at turn start: the prompt does not wait for the judgment, and the re
     const result = await fire("before_agent_start", { prompt: "Read the config module and tighten the retry default" });
     const held = Date.now() - started;
     assert.equal(result, undefined, "nothing rides back from before_agent_start");
-    assert.equal(sentMessages.length, sentBefore, "nothing is delivered before a tool boundary");
+    assert.equal(sentMessages.length, sentBefore, "nothing is delivered before the end of a turn");
     assert.ok(held < 250, `before_agent_start held the prompt ${held} ms while the judge was still thinking`);
     releaseJudge?.();
     await waitFor(() => answeredRequests > before, "the background rules judgment");
@@ -5066,7 +5090,7 @@ test("rules at turn start: the prompt does not wait for the judgment, and the re
     assert.deepEqual(state.rules.map(rule => rule.rule), ["No hardcoded secrets", "House prose"], "every rule is asked about, so the ones left out are left out on the answer");
     assert.ok(!("task" in state), "the curator's own state is the request and the rules, not an action summary");
     await runCommand("trace", context({ hasUI: false }));
-    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · 1 rule delivered at the next tool boundary/);
+    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · 1 rule delivered at the end of a turn whose loop continued/);
   } finally {
     await rm(rules, { force: true });
   }
@@ -5132,7 +5156,7 @@ test("rules at turn start: a run that ends before delivery drops the reminder an
     await runCommand("trace", context({ hasUI: false }));
     assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · dropped/);
     assert.match(sentMessages.at(-1)!.message.content, /run ended before the answer arrived/);
-    // The other order: the answer lands during the run and no tool boundary follows before the end.
+    // The other order: the answer lands during the run and no continuing turn ends before the run does.
     const queued = answeredRequests;
     await fire("before_agent_start", { prompt: "Read the config module" });
     await fire("agent_start", {});
@@ -5364,7 +5388,7 @@ const steersOnly = () => sentMessages.filter(message => message.message.customTy
  * A git on PATH whose `add` marks when it finished, and whose `write-tree` can wait for a release file. Ordering goes
  * through real git work: the loader gives the extension its own module instance, so a module seam cannot see its state.
  */
-const snapshotGuard = async (holdTree: boolean) => {
+const snapshotGuard = async (holdTree: boolean, failRevList = false) => {
   const bin = await mkdtemp(join(temporary, "git-guard-"));
   const realGit = execFileSync("sh", ["-c", "command -v git"]).toString().trim();
   const marker = (name: string) => join(bin, name);
@@ -5375,6 +5399,7 @@ const snapshotGuard = async (holdTree: boolean) => {
     `  touch "${marker("added")}"`,
     "  exit 0",
     "fi",
+    ...(failRevList ? ['if [ "$1" = "rev-list" ]; then echo "fatal: rev-list broke" >&2; exit 128; fi'] : []),
     ...(holdTree ? [
       `if [ "$1" = "write-tree" ] && [ ! -e "${marker("released")}" ]; then`,
       "  i=0",
@@ -5424,6 +5449,28 @@ test("turn rules: one end-of-run steer covers the run's diff and the files no pe
     await agentEnd("You're welcome.", context({ cwd: repo }));
     assert.equal(requests.filter(request => !Object.keys(request.questions).some(name => name.startsWith("applies_"))).length, 0);
     assert.equal(steersOnly().length, 0);
+  } finally {
+    guard.restore();
+  }
+});
+
+test("turn rules: a git failure in the git-brought filter is traced with its message, and every changed file is judged", async () => {
+  const repo = await turnRepo(TURN_RULES_MD);
+  await turnConfig();
+  await sessionStart(context({ cwd: repo }));
+  const guard = await snapshotGuard(false, true);
+  try {
+    await newPrompt("rename alpha to beta", context({ cwd: repo }));
+    await afterBaseline(guard);
+    // HEAD moves during the run, so the filter runs; its `git rev-list` fails.
+    await writeFile(join(repo, "app.txt"), "beta\n");
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-am", "rename"], { cwd: repo, stdio: "pipe" });
+    requests.length = 0;
+    nextAnswers = { ...nextAnswers, "turn_the-change-stays-inside-the-task": "ok" };
+    await agentEnd("Done.", context({ cwd: repo }));
+    assert.ok(requests.some(request => Object.keys(request.questions).some(name => name.startsWith("turn_"))), "the changed file was judged");
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /rules · git-brought filter failed: .*rev-list broke.*; every changed file was judged/);
   } finally {
     guard.restore();
   }

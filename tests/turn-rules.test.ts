@@ -10,7 +10,7 @@ import { defaultConfig } from "../src/config.js";
 import type { RulesConfig } from "../src/config.js";
 import { editRulesFor, evaluateRules, formatRuleSetDetails, parseRules, RuleStore, skipReason, turnRulesFor } from "../src/rules.js";
 import type { Rule } from "../src/rules.js";
-import { diffSince, evaluateTurnRun, snapshotTree, turnSteer, TURN_PATH } from "../src/turn-rules.js";
+import { BROUGHT_PROBE_LIMIT, diffSince, evaluateTurnRun, snapshotTree, turnSteer, TURN_PATH } from "../src/turn-rules.js";
 
 let repo: string;
 let notRepo: string;
@@ -340,5 +340,46 @@ test("diffSince: git checkout <old> -- file is still judged, and so is a conflic
     s.run(["add", "README.md"]);
     s.run(["commit", "-q", "-m", "Merge old"]);
     assert.deepEqual(await s.diffPaths(start), ["README.md"], "a resolved conflict is the agent's work");
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: a git failure in the brought filter is returned in the notes and every file is judged", async () => {
+  const s = await scene();
+  try {
+    s.run(["checkout", "-q", "-b", "upstream"]);
+    await writeFile(join(s.dir, "CHANGELOG.md"), "# Changelog\n## 1.2.0\n");
+    s.run(["commit", "-q", "-am", "bump"], OLD);
+    s.run(["checkout", "-q", "main"]);
+    const start = await snapshotTree(s.dir);
+    assert.ok(start.tree);
+    s.run(["merge", "-q", "--ff-only", "upstream"]);
+    const diff = await diffSince(s.dir, start.tree!, 8000, { head: "0".repeat(40), startedAt: start.startedAt });
+    assert.deepEqual(diff!.files.map(file => file.path), ["CHANGELOG.md"], "the filter failed, so the pulled file is judged");
+    assert.equal(diff!.notes.length, 1);
+    assert.match(diff!.notes[0]!, /^git-brought filter failed: .+; every changed file was judged$/);
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: over the probe limit only the newest commits are probed, and the cut is named in the notes", async () => {
+  const s = await scene();
+  try {
+    // One commit per file, oldest first; the files are 10 and the commits are more than the limit allows per file.
+    const files = 10;
+    const commits = Math.floor(BROUGHT_PROBE_LIMIT / files) + 50;
+    s.run(["checkout", "-q", "-b", "upstream"]);
+    const stream: string[] = [];
+    for (let index = 0; index < commits; index++) {
+      const content = `content ${index}\n`;
+      stream.push(`commit refs/heads/upstream\ncommitter t <t@example.com> ${1577836800 + index} +0000\ndata 1\nc\n${index === 0 ? "from refs/heads/main\n" : ""}M 100644 inline f${index % files}.txt\ndata ${content.length}\n${content}\n`);
+    }
+    execFileSync("git", ["fast-import", "--force", "--quiet"], { cwd: s.dir, input: stream.join("") });
+    s.run(["checkout", "-q", "main"]);
+    const start = await snapshotTree(s.dir);
+    assert.ok(start.tree);
+    s.run(["merge", "-q", "--ff-only", "upstream"]);
+    const diff = await diffSince(s.dir, start.tree!, 8000, { head: start.head, startedAt: start.startedAt });
+    assert.deepEqual(diff!.files, [], "the newest commits hold the current content of every file, so all are still found as brought");
+    assert.equal(diff!.notes.length, 1);
+    assert.match(diff!.notes[0]!, new RegExp(`^git-brought filter cut: ${files} files × ${commits} older commits is over the ${BROUGHT_PROBE_LIMIT}-probe limit, so only the newest ${BROUGHT_PROBE_LIMIT / files} commits were probed$`));
   } finally { await s.cleanup(); }
 });

@@ -907,7 +907,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
    * A notice a background judgment made ready. `before_agent_start` never waits for Jev, so an answer that arrives while
    * its run is active waits here until `turn_end`. Pi's loop reads its steering queue right after that event and goes on
    * to another model call only when the turn ran tool calls and not every result set `terminate`; the notice is steered
-   * then, so it rides a call the run makes anyway. In any other case, and when the run ends first, it is dropped and the
+   * then, at the end of a turn whose loop continues, so it rides a call the run makes anyway. In any other case, and when the run ends first, it is dropped and the
    * trace says why: a steer queued by a turn that ends the run would otherwise stay in Pi's queue and join the next run's
    * first request. The turn-start rules reminder is budget-exempt: it is one message per user prompt, and the per-run
    * budget counts the guards' own notices.
@@ -928,17 +928,27 @@ export default function wardenExtension(host: ExtensionAPI): void {
       record(ctx, config, notice.guard, notice.delivered, notice.details);
     }
   };
-  /** What the tool batch of the turn in flight did, read from `tool_execution_end`: how many calls ran and whether every result set `terminate`. */
-  let batchCalls = 0;
+  /**
+   * What `tool_execution_end` reported for the turn in flight: how many top-level results arrived and whether every one set
+   * `terminate`. Only `terminate` is read from it; the call count comes from `turn_end`, because a host need not send this event.
+   */
+  let batchResults = 0;
   let batchTerminates = true;
+  /** The tool calls of the turn: the host's results when `turn_end` carries them, else the tool calls in the assistant message. */
+  const turnCalls = (event: { message?: unknown; toolResults?: readonly unknown[] }): number => {
+    if (Array.isArray(event.toolResults)) return event.toolResults.length;
+    const content = (event.message as { content?: unknown } | undefined)?.content;
+    return Array.isArray(content) ? content.filter(part => (part as { type?: unknown } | null)?.type === "toolCall").length : 0;
+  };
   /** At `turn_end`: deliver the queued notices only when the loop continues anyway; otherwise drop them with a trace line. */
-  const settleNotices = (ctx: ExtensionContext, config: WardenConfig, message: unknown): void => {
-    const calls = batchCalls;
-    const terminates = batchTerminates;
-    batchCalls = 0;
+  const settleNotices = (ctx: ExtensionContext, config: WardenConfig, event: { message?: unknown; toolResults?: readonly unknown[] }): void => {
+    const calls = turnCalls(event);
+    // The batch ended the run only when the host reported a result for every call and every result set `terminate`.
+    const terminates = batchResults > 0 && batchResults >= calls && batchTerminates;
+    batchResults = 0;
     batchTerminates = true;
     if (!pendingNotices.length) return;
-    const stopReason = (message as { stopReason?: string } | undefined)?.stopReason;
+    const stopReason = (event.message as { stopReason?: string } | undefined)?.stopReason;
     if (stopReason === "error" || stopReason === "aborted" || ctx.signal?.aborted) dropPendingNotices(ctx, config, "the turn failed or was aborted, so the run was ending");
     else if (!calls) dropPendingNotices(ctx, config, "the turn made no tool call, so the run was ending");
     else if (terminates) dropPendingNotices(ctx, config, "every tool result in the batch ended the run");
@@ -951,15 +961,15 @@ export default function wardenExtension(host: ExtensionAPI): void {
     pendingNotices = [];
     for (const notice of notices) record(ctx, config, notice.guard, notice.dropped, [reason, ...notice.details]);
   };
-  /** A conscience tip that passed the budget and the activation gate waits for the next tool boundary like the reminder. */
+  /** A conscience tip that passed the budget and the activation gate waits for the end of a turn whose loop continues, like the reminder. */
   const queueConscienceTip = (content: string, detail: string): void => {
     pendingNotices.push({
       customType: `${PACKAGE_NAME}-conscience`,
       content,
       guard: "conscience",
-      delivered: "warden · conscience · tip delivered at the next tool boundary",
+      delivered: "warden · conscience · tip delivered at the end of a turn whose loop continued",
       dropped: "warden · conscience · tip dropped (the run ended first)",
-      details: [`tip: ${detail}`, "the tip passed the budget and the activation gate; the run ended before a tool boundary"],
+      details: [`tip: ${detail}`, "the tip passed the budget and the activation gate; no turn whose loop continued ended before it was dropped"],
     });
   };
   const modelKey = (ctx: ExtensionContext): string | undefined => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
@@ -1174,7 +1184,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
 
   /**
    * The turn-start rules reminder: one Jev request asks one noul per rule whether it applies to the new request, and
-   * the rules that pass the threshold are queued for the next tool boundary. The prompt does not wait for the answer:
+   * the rules that pass the threshold are queued for the end of a turn whose loop continues. The prompt does not wait for the answer:
    * the request starts here and returns, and `deliverPendingNotices` appends the message while the run is streaming.
    * Never throws and never edits an earlier message; a judgment that is off, fails, or times out appends nothing and
    * says why in the trace, and an answer that arrives after the run ended is dropped, also with a trace line.
@@ -1258,7 +1268,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           customType: CURATOR_TYPE,
           content: formatCuratedRules(selected),
           guard: "rules",
-          delivered: `warden · rules · turn start · ${selected.length} rule${selected.length === 1 ? "" : "s"} delivered at the next tool boundary`,
+          delivered: `warden · rules · turn start · ${selected.length} rule${selected.length === 1 ? "" : "s"} delivered at the end of a turn whose loop continued`,
           dropped: "warden · rules · turn start · dropped (the run ended first)",
           details,
         });
@@ -1316,8 +1326,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
 
     // ── Conscience: initial assessment on normal operator prompts ──
     // The assessment runs in the background: the prompt never waits for Jev. A passing tip is queued here and is
-    // delivered at the next tool boundary through the steer path, with the same budget rule as before; a run that ends
-    // first drops it and traces why.
+    // delivered at the end of a turn whose loop continues, through the steer path, with the same budget rule as before; a
+    // turn with no tool call, a batch where every result ended the run, a failed or aborted turn, and a run that ends
+    // first drop it and trace why.
     beforeAgentStartFired = true;
     if (config.enabled && config.conscience.enabled) void (async () => {
       const myGeneration = conscienceGeneration;
@@ -1519,7 +1530,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
 
     // ── Rules at turn start ──
     // One request before the first model call of this user turn asks which of the project's rules apply. It runs in
-    // the background, so the prompt never waits for Jev; the answer is delivered at the next tool boundary through
+    // the background, so the prompt never waits for Jev; the answer is delivered at the end of a turn whose loop continues, through
     // the steer path, appended after the newest message, so nothing earlier in the context moves and a warm prompt
     // cache stays valid. An answer that arrives after the run ended is dropped and traced. Nothing here throws.
     if (config.enabled && config.rules.enabled && config.rulesAtTurnStart.enabled) curateTurnStart(ctx, config, event.prompt);
@@ -1594,7 +1605,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("agent_start", async (_event, ctx) => {
     if (!wardenContinuation) evidence = emptyEvidence();
     wardenContinuation = false;
-    batchCalls = 0;
+    batchResults = 0;
     batchTerminates = true;
     // Turn rules need a baseline of the working tree. The snapshot starts here as a promise and is awaited at
     // agent_end, so this hook never waits for git to hash the changed and untracked files. One trace line when a run
@@ -1610,14 +1621,14 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("tool_execution_end", async event => {
     // A nested call (a script that calls tools) is not part of the loop's batch.
     if ((event as { parentToolCallId?: string }).parentToolCallId) return;
-    batchCalls++;
+    batchResults++;
     if ((event.result as { terminate?: unknown } | undefined)?.terminate !== true) batchTerminates = false;
   });
 
   pi.on("turn_end", async (event, ctx) => {
     // Before anything awaits: Pi reads its steering queue as soon as the turn_end handlers return.
     const noticeConfig = configFor(ctx);
-    if (noticeConfig.enabled) settleNotices(ctx, noticeConfig, event.message);
+    if (noticeConfig.enabled) settleNotices(ctx, noticeConfig, event);
     ledger.turnEnd();
     if (savingEntry) trace.amend(savingEntry, `at turn end: ${formatLedger(ledger.snapshot())}`);
     savingEntry = undefined;
@@ -2531,7 +2542,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
 
   pi.on("agent_end", async (event, ctx) => {
     const config = configFor(ctx);
-    // The run is over: a notice that never reached a tool boundary may not be appended now, because a delivery must
+    // The run is over: a notice that no turn of a continuing loop delivered may not be appended now, because a delivery must
     // never start a turn of its own. It is dropped and traced.
     agentRunActive = false;
     dropPendingNotices(ctx, config, "the run ended before the notice could ride a model call the run made anyway");
@@ -2613,6 +2624,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
         if (turnRun.skipped) {
           record(ctx, config, "rules", `warden · rules · end-of-run pass skipped: ${turnRun.skipped}`, ["trigger: agent_end"]);
         }
+        // The git-brought filter failed or was cut at its probe limit: one line says so, even when no verdict follows.
+        if (turnRun.notes.length) record(ctx, config, "rules", `warden · rules · ${turnRun.notes[0]}`, ["trigger: agent_end", ...turnRun.notes]);
         // One trace line names the files the per-run cap left unjudged, like the skips of one command's shell writes.
         if (turnRun.skips.length) {
           const paths = turnRun.skips.flatMap(skip => (skip.path ? [skip.path] : []));

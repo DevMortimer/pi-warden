@@ -6,7 +6,20 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- A background notice is no longer dropped on a host that does not send `tool_execution_end`. The turn's tool-call count now comes from `turn_end` (`toolResults`, or the tool calls in the assistant message when that field is absent); `tool_execution_end` is read only for `terminate`, and a batch counts as terminated only when the host reported a result for every call and every result set `terminate`.
+- The git-brought filter of the end-of-run rules check no longer swallows a git failure. The failure reaches the run-end trace, which says the filter failed, gives the error message, and says that every changed file was judged.
+- The git-brought filter probes at most 20,000 file × commit pairs. With more, only the newest commits that fit are probed and the trace says the filter was cut; the newest commits find almost every match. Measured with 300 files and 1,000 older commits, the run-end diff takes about 0.3 s instead of about 2.3 s.
+
+### Changed
+
+- The text of the turn-start rules reminder, the conscience tip, `docs/configuration.md`, and `docs/guards.md` says when a notice is delivered: at the end of a turn whose loop continues, and dropped for a turn with no tool call, a batch where every result ended the run, a failed or aborted turn, and a run that ends first. The trace line no longer says "next tool boundary".
+- `docs/configuration.md` and `docs/guards.md` say what the action request carries: earlier messages and the rules content ride only the trace sample (one judged call in twenty, `action.traceSample`), and the rules content rides the acting request only while a violation is open.
+
+### Tests
+
+- New tests cover a host that sends `turn_end` with tool results and no `tool_execution_end`, the tool-call fallback to the assistant message, a `terminate` result for only some calls, a git failure in the filter (unit and run-end trace), and the probe-limit cut.
 
 ## 0.87.0
 
