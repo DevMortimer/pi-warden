@@ -20,10 +20,11 @@ export interface CallCost extends SessionCall {
 export interface RunCost {
   model: string;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; turns: number };
-  jev: { requests: number; inputTokens: number; outputTokens: number };
+  jev: { requests: number; inputTokens: number; outputTokens: number; unreadable?: boolean };
   agentUsd: number | null;
-  jevUsd: number;
+  jevUsd: number | null;
   usd: number | null;
+  jevUnknown?: boolean;
   reason?: string;
   windows?: Record<string, { calls: number; usd: number }>;
 }

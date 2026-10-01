@@ -73,12 +73,18 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
   repeat, with the cell order of each block shuffled by a seed (`--seed`, recorded in
   `runs.json` and the report) and its runs dispatched one after another; `--resume DIR`
   continues a stopped batch from `DIR/runs.json`; a run that fails on an agent-model API
-  error (an assistant message with `stopReason` `error`, or pi gone before any
-  assistant message) is re-run after 1 and 5 minutes (`--retry-delays 60,300`) and then
+  error (it ended on one: the last assistant message of the run, or of any of its
+  turns, has `stopReason` `error`, or pi gone before any assistant message; an error pi
+  retried and got past is a valid run, counted as `providerErrorsRecovered`) is re-run
+  after 1 and 5 minutes (`--retry-delays 60,300`) and then
   recorded with `infraError`, its whole block flagged `excludedBlock` and left out of
-  the report's metrics; 5 such failures in a row stop the batch with exit code 4;
+  the report's metrics; 5 such failures in a row stop the batch with exit code 4, and all 5 run again on
+  resume;
   `--jev-usd-cap N` stops the batch at N Jev dollars with exit code 3. Both stops
-  resume with `--resume`.
+  resume with `--resume`, which refuses `--typesafe-cap`. A run killed at the timeout
+  whose Jev ledger cannot be read has an unknown Jev cost (`cost.jevUnknown`): it stays
+  out of the dollar columns, and the report counts it. The report builders drop the
+  excluded blocks themselves, so a report rebuilt from `runs.json` matches.
 - `weak-tasks.mjs` + `weak.mjs`: the weak-model suite (`--suite weak`). Eight everyday
   requests, each with one trap and a scripted harm and success check read from the
   run's files, its bare origin, a sandbox (a `sudo` shim that logs and fails, global

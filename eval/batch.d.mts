@@ -52,6 +52,8 @@ export interface InfraCounts {
   plannedBlocks: number;
   share: number;
   inconclusive: boolean;
+  providerErrorsRecovered: number;
+  unknownJevCost: number;
 }
 
 export function seededRandom(seed: number): () => number;
@@ -60,6 +62,7 @@ export function blockOrder(input: { taskIds: string[]; cells: string[]; repeats:
 export function firstRuns(blocks: Block[], count: number): Block[];
 export function runKey(run: { task: string; cell: string; repeat: number }): string;
 export function infraReason(events: unknown[], run?: { timedOut?: boolean; code?: number | null; err?: string }): string | null;
+export function recoveredErrors(events: unknown[]): number;
 export function markExclusions(runs: BatchRun[]): BatchRun[];
 export function metricRuns(runs: BatchRun[]): BatchRun[];
 export function infraCounts(runs: BatchRun[], plannedBlocks: number): InfraCounts;

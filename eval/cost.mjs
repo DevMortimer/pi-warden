@@ -61,7 +61,8 @@ export function jevUsage(agentDir) {
   try {
     days = JSON.parse(readFileSync(path, "utf8")).days ?? {};
   } catch {
-    return usage;
+    // The dollars of a ledger that cannot be read are unknown, not zero.
+    return { ...usage, unreadable: true };
   }
   for (const day of Object.values(days)) {
     usage.requests += Number(day?.requestsStarted) || 0;
@@ -107,6 +108,11 @@ export function runCost({ events, agentDir, model }) {
   const jev = jevUsage(agentDir);
   const jevUsd = jevDollars(jev);
   const calls = callCosts(events, model);
+  // A Jev ledger that cannot be read leaves the run's Jev dollars unknown: no total, so (c) leaves the run out.
+  if (jev.unreadable) {
+    const priced = hasPrice(model) && !calls.some((call) => call.usd === null);
+    return { model, tokens, jev, agentUsd: priced ? round6(calls.reduce((s, call) => s + call.usd, 0)) : null, jevUsd: null, usd: null, jevUnknown: true, reason: "the Jev usage ledger could not be read" };
+  }
   const unpriced = calls.find((call) => call.usd === null);
   if (!hasPrice(model) || unpriced) {
     const reason = !hasPrice(model) ? `no price for ${model} in eval/config.mjs` : `no price for ${model} at ${unpriced.atIso ?? "a call without a timestamp"} in eval/config.mjs`;

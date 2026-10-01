@@ -39,9 +39,10 @@
  * seed, plan, and order, skips every task x cell x repeat already recorded, and appends
  * the rest. A run that a stop or an interrupt cut short runs again.
  *
- * Infrastructure failures: a run whose session log shows an assistant message with
- * stopReason `error`, or whose pi exited before any assistant message, is re-run after
- * 1 and then 5 minutes (`--retry-delays`). One that still fails is recorded with
+ * Infrastructure failures: a run that ended on an error (the last assistant message of
+ * the run, or of any of its turns, has stopReason `error`) or whose pi exited before
+ * any assistant message is re-run after 1 and then 5 minutes (`--retry-delays`). An
+ * error pi retried and got past is a valid run, counted as `providerErrorsRecovered`. One that still fails is recorded with
  * `infraError`, and its whole block leaves the metrics (`excludedBlock`). Five final
  * failures in a row stop the batch with exit code 4; those runs are dropped and run
  * again on resume. A timeout is a task outcome.
@@ -53,7 +54,9 @@
  * `stoppedBy`, its evidence folder stays), and the script exits with code 3. Runs
  * already in flight finish and count. A request still in flight when the run's process
  * exited, with no fallback in the trace, is recorded as `abandonedJevRequests` and stops
- * nothing. A batch with `--typesafe-cap` spends its judged-request allowance on purpose
+ * nothing. A run killed at the timeout whose ledger cannot be read stops nothing either,
+ * but its Jev cost is unknown (`cost.jevUnknown`): it leaves the dollar metric only, and
+ * the report counts it. A batch with `--typesafe-cap` spends its judged-request allowance on purpose
  * and does not apply the rule.
  *
  * Jev dollar cap: `--jev-usd-cap N` sums the Jev dollars of every finished run's ledger
@@ -101,7 +104,7 @@ import { claimAudit, claims, checksRun, finalAssistantText, gitFacts, readSessio
 import { outcomeAxis, wasteAxis } from "../eval/waste.mjs";
 import { jevDollars, jevUsage, runCost } from "../eval/cost.mjs";
 import { abandonedJevRequests, jevFailure } from "../eval/jev-stop.mjs";
-import { DEFAULT_SEED, RETRY_DELAYS_MS, blockOrder, firstRuns, infraReason, infraSection, infraCounts, markExclusions, metricRuns, runBatch, runKey } from "../eval/batch.mjs";
+import { DEFAULT_SEED, RETRY_DELAYS_MS, blockOrder, firstRuns, infraReason, infraSection, infraCounts, markExclusions, recoveredErrors, runBatch, runKey } from "../eval/batch.mjs";
 import { weakTasks, weakTaskById } from "../eval/weak-tasks.mjs";
 import { buildWeakReport, callsWithResults, judgedRequests, repeatedFailures, snapshot, steersInOrder, traceGuards, turnsOf } from "../eval/weak.mjs";
 
@@ -155,15 +158,15 @@ if (RESUME_DIR) {
     console.error("--resume DIR continues in DIR; do not pass a different --out");
     process.exit(2);
   }
+  if (cli["typesafe-cap"] !== undefined || stored.plan["typesafe-cap"] !== undefined) {
+    console.error("--resume does not support --typesafe-cap");
+    process.exit(2);
+  }
   for (const key of PLAN_KEYS) {
     if (cli[key] !== undefined && String(cli[key]) !== String(stored.plan[key])) {
       console.error(`--resume: --${key} ${cli[key]} differs from the batch's ${stored.plan[key]}; a resumed batch keeps its plan`);
       process.exit(2);
     }
-  }
-  if (stored.plan["typesafe-cap"] !== undefined) {
-    console.error("--resume does not support a batch with --typesafe-cap");
-    process.exit(2);
   }
 }
 const values = { ...PLAN_DEFAULTS, ...cli };
@@ -490,11 +493,12 @@ async function runOnce(task, cell, repeat, allowance = null) {
   try {
     const pi = await runPi(project, agentDir, sessions, task.prompt, cell, env, [], TIMEOUT_MS * (task.timeoutScale ?? 1));
     if (interrupted) return { aborted: true, pi, base, checks };
-    const infra = infraReason(readSessionEvents(sessions), pi);
+    const events = readSessionEvents(sessions);
+    const infra = infraReason(events, pi);
     if (infra) return { infra, pi, base, checks };
     const record = await score({
       project, sessions, agentDir, baseline, checks, dropped, task, dirs,
-      run: { task: task.id, family: task.family ?? "rules", trap: task.trap, cell, repeat, seconds: pi.seconds, ...(allowance === null ? {} : { typesafeAllowance: allowance }) },
+      run: { task: task.id, family: task.family ?? "rules", trap: task.trap, cell, repeat, seconds: pi.seconds, providerErrorsRecovered: recoveredErrors(events), ...(allowance === null ? {} : { typesafeAllowance: allowance }) },
     });
     return { record, pi, base, checks };
   } catch (error) {
@@ -518,14 +522,17 @@ async function runArc(task, cell, repeat, allowance = null) {
   let previousViolations = 0;
   let previousSteers = 0;
   let seen = 0;
+  let recovered = 0;
   try {
     for (let i = 0; i < prompts.length; i++) {
       const pi = await runPi(project, agentDir, sessions, prompts[i], cell, env, i === 0 ? [] : ["-c"]);
       if (interrupted) return { aborted: true, pi, base, checks };
       const events = readSessionEvents(sessions);
       // Only this turn's messages count: an earlier turn's reply says nothing about this pi process.
-      const infra = infraReason(events.slice(seen), pi);
+      const turnEvents = events.slice(seen);
+      const infra = infraReason(turnEvents, pi);
       seen = events.length;
+      recovered += recoveredErrors(turnEvents);
       if (infra) return { infra: `turn ${i + 1}: ${infra}`, pi: { ...pi, seconds: turns.reduce((t, x) => t + x.seconds, 0) + pi.seconds }, base, checks };
       const calls = toolCalls(events);
       const text = finalAssistantText(events);
@@ -554,7 +561,7 @@ async function runArc(task, cell, repeat, allowance = null) {
     // per-turn table on top.
     const scored = await score({
       project, sessions, agentDir, baseline, checks, dropped, task, dirs,
-      run: { task: task.id, family: task.family ?? "decay", trap: task.trap, cell, repeat, turns },
+      run: { task: task.id, family: task.family ?? "decay", trap: task.trap, cell, repeat, turns, providerErrorsRecovered: recovered },
     });
     return {
       record: { ...scored, turns },
@@ -724,8 +731,8 @@ async function main() {
     total: queue.length, retryDelaysMs: RETRY_DELAYS, sleep, control, log: (line) => console.log(line),
   });
 
-  const metrics = metricRuns(state.runs);
-  const md = WEAK ? buildWeakReport({ runs: metrics, stamp, args: values, cap: TYPESAFE_CAP }) : buildReport({ runs: metrics, stamp, args: values });
+  // The report builders leave out the excluded blocks themselves.
+  const md = WEAK ? buildWeakReport({ runs: state.runs, stamp, args: values, cap: TYPESAFE_CAP }) : buildReport({ runs: state.runs, stamp, args: values });
   md.splice(2, 0, `Block order: repeat by repeat, task by task; the cells of each block shuffled with seed ${SEED}.`, "");
   md.push(...infraSection(state.runs, blocks.length));
   await writeFile(join(outDir, "report.md"), scrubPaths(md.join("\n")));

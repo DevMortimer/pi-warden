@@ -79,20 +79,25 @@ export function firstRuns(blocks, count) {
 export const runKey = (run) => `${run.task}|${run.cell}|${run.repeat}`;
 
 /**
- * Why a run failed for a reason outside the task, or null. The session log shows an
- * assistant message that stopped on an error (a rate limit, an overload, a 5xx), or
- * pi exited before any assistant message. A timeout is the agent not finishing and
- * stays a task outcome.
+ * Why a run failed for a reason outside the task, or null. A run is an infrastructure
+ * failure only when it ended on the error: the session log's last assistant message
+ * stopped on an error (a rate limit, an overload, a 5xx), or pi exited before any
+ * assistant message. An error pi retried and then got past is a valid run
+ * (`recoveredErrors` counts it). A timeout is the agent not finishing and stays a
+ * task outcome. For a multi-turn run the caller passes one turn's events at a time.
  */
 export function infraReason(events, { timedOut = false, code = null, err = "" } = {}) {
   const assistants = events.filter((e) => e.message?.role === "assistant");
-  const failed = assistants.find((e) => e.message.stopReason === "error");
-  if (failed) return `agent model API error: ${String(failed.message.errorMessage ?? "stopReason error").replace(/\s+/g, " ").slice(0, 200)}`;
+  const last = assistants.at(-1);
+  if (last?.message.stopReason === "error") return `agent model API error: ${String(last.message.errorMessage ?? "stopReason error").replace(/\s+/g, " ").slice(0, 200)}`;
   if (assistants.length === 0 && !timedOut) {
     return `pi exited (code ${code}) before any assistant message${err.trim() ? `: ${err.trim().replace(/\s+/g, " ").slice(-160)}` : ""}`;
   }
   return null;
 }
+
+/** Provider errors in a valid run's events that pi retried and got past: assistant messages that stopped on an error. */
+export const recoveredErrors = (events) => events.filter((e) => e.message?.role === "assistant" && e.message.stopReason === "error").length;
 
 /** Sets `excludedBlock` on every run in a block that holds an infrastructure failure, and clears it elsewhere. */
 export function markExclusions(runs) {
@@ -104,7 +109,7 @@ export function markExclusions(runs) {
   return runs;
 }
 
-/** The runs that count for the metrics: no infrastructure failure, and not in a block that has one. */
+/** The runs that count for the metrics: no infrastructure failure, and not in a block that has one. Every report builder applies it itself. */
 export const metricRuns = (runs) => markExclusions(runs).filter((r) => !r.excludedBlock);
 
 /** Infrastructure counts per cell and the excluded share of the batch's blocks. */
@@ -120,20 +125,27 @@ export function infraCounts(runs, plannedBlocks) {
   }
   const excluded = new Set(runs.filter((r) => r.infraError).map((r) => `${r.task}|${r.repeat}`)).size;
   const share = plannedBlocks ? excluded / plannedBlocks : 0;
-  return { perCell, excludedBlocks: excluded, plannedBlocks, share, inconclusive: share > EXCLUSION_LIMIT };
+  return {
+    perCell, excludedBlocks: excluded, plannedBlocks, share, inconclusive: share > EXCLUSION_LIMIT,
+    providerErrorsRecovered: runs.reduce((s, r) => s + (r.providerErrorsRecovered ?? 0), 0),
+    unknownJevCost: runs.filter((r) => r.cost?.jevUnknown).length,
+  };
 }
 
 /** The report section for infrastructure failures and block exclusions. */
 export function infraSection(runs, plannedBlocks) {
   const counts = infraCounts(runs, plannedBlocks);
   const md = ["## Infrastructure failures and excluded blocks", ""];
-  md.push("A run is an infrastructure failure when its session log shows an agent-model API error or pi exited before any assistant message; it is re-run twice (after 1 and 5 minutes), and one that still fails leaves its whole block out of the metrics above. A timeout is a task outcome.");
+  md.push("A run is an infrastructure failure when it ended on an agent-model API error (its last assistant message stopped on an error) or pi exited before any assistant message; it is re-run twice (after 1 and 5 minutes), and one that still fails leaves its whole block out of the metrics above. A provider error that pi retried and got past is not a failure: the run counts, and the errors are counted per run as `providerErrorsRecovered`. A timeout is a task outcome.");
   md.push("");
   md.push("| Cell | Runs recorded | Infrastructure failures | Re-run and then fine | Runs excluded with their block |");
   md.push("| --- | --- | --- | --- | --- |");
   for (const [cell, c] of Object.entries(counts.perCell)) md.push(`| ${cell} | ${c.runs} | ${c.infraErrors} | ${c.retriedOk} | ${c.excludedRuns} |`);
   md.push("");
   md.push(`Excluded blocks: ${counts.excludedBlocks} of ${counts.plannedBlocks} (${(counts.share * 100).toFixed(1)}%). ${counts.inconclusive ? `More than ${EXCLUSION_LIMIT * 100}% of the blocks are excluded: this model's result is INCONCLUSIVE.` : `At most ${EXCLUSION_LIMIT * 100}% of the blocks are excluded.`}`);
+  md.push(`Provider errors recovered inside valid runs: ${counts.providerErrorsRecovered}.`);
+  md.push(`Runs with an unknown Jev cost (killed at the timeout with an unreadable Jev ledger), left out of the dollar metric only: ${counts.unknownJevCost}.`);
+  md.push("");
   for (const run of runs.filter((r) => r.infraError)) md.push(`- ${run.task} ${run.cell} r${run.repeat}: ${run.infraError}`);
   md.push("");
   return md;
