@@ -124,7 +124,7 @@ Each `#` heading is one rule. Every write and edit is judged against it in about
 
 ## Receipts
 
-- **Rules:** in 150 paired agent runs, the agent without pi-warden broke the tested rule **6 times**. With it: **0**.
+- **Rules:** in 150 paired agent runs (four batches, `eval/reports/2026-09-18T00-*`), the agent without pi-warden broke a project rule in **6** of 150 runs. With it: **0** of 150.
 - **Done-check:** after a nudge, the agent ran a check **94 of 124** times, and sometimes found a failure it had missed.
 - **Holds:** when the agent was stopped, it found a safer way **79 of 111** times; you approved 29. Field data from 2026-09-16 to 2026-10-01, across versions, so it includes holds from before the 0.9 threshold and the `rm` scratch change.
 - **Stability:** 13,952 guard cases over 109 overnight cycles, no score drift.
