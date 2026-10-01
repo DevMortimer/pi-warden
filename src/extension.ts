@@ -3144,18 +3144,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
           if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /var/tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${destination} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
           const verdict = await evaluateAction(
             { tool: "bash", input: { command: "rm -rf /var/tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
-            { config: { ...config.action, enabled: true, tools: ["bash"] }, judge, rules: config.rules, traceSample: config.action.traceSample },
+            { config: { ...config.action, enabled: true, tools: ["bash"] }, judge, rules: config.rules },
           );
           const deliveryVerdict = ctx.hasUI ? verdict : agentDeliveryVerdict(verdict);
           const deliveryReasons = deliveryVerdict.reasons;
           const fmt = formatVerdictTokens(verdict, config.widget.action);
           record(ctx, config, "action", fmt.line, actionDetails(verdict, { mode: activeMode(config, ctx.hasUI) }), fmt.tokens);
           const deliveryTokens = actionTokens(deliveryVerdict);
-          if (!ctx.hasUI && verdict.offTaskTraceOnly) {
-            // Redact only off-task presentation tokens; retain the judgment for other consumers.
-            delete deliveryTokens.offTask;
-            delete deliveryTokens.scope;
-          }
           report(`${renderTemplate(DEFAULT_TEMPLATES.action, deliveryTokens)}${deliveryReasons.length ? ` — ${deliveryReasons.join("; ")}` : ""}${judge ? "" : " (pattern checks only: TypeSafe judgments are not enabled or no key is configured)"}${verdict.error ? ` — ${verdict.error}` : ""}`);
           if (verdict.level === "confirm") {
             const mode = activeMode(config, ctx.hasUI);

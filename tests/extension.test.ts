@@ -1283,29 +1283,15 @@ test("trace-only off-task removes only its structured reason from mixed headless
   assert.doesNotMatch(delivered, /off-task 0\.95 \(unrelated to the request/, "no mixed delivery carries the trace-only reason");
 });
 
-test("headless /warden test filters trace-only off-task delivery but keeps the full trace", async () => {
+test("/warden test as the first judged call sends exactly one request, with no trace sample", async () => {
   await writeConfig(JSON.stringify({ typesafe: true, action: { traceSample: 1 }, ...STACK_BAR }));
-  const headless = context({ hasUI: false });
   nextAnswers = { irreversible: 0.95, off_task: 0.95, scope: "unrelated", mutates: 0.95 };
 
-  await runCommand("test", headless);
+  await runCommand("test", context({ hasUI: false }));
 
-  const delivered = sentMessages.map(({ message }) => message.content).join("\n");
-  assert.ok(sentMessages.length >= 1, "filtering one reason does not silence the synthetic report");
-  assert.match(delivered, /irreversible 0\.95/, "the independent risk still reaches the agent");
-  assert.match(delivered, /warden · bash · irreversible 0\.95 ·/, "the formatted summary retains the independent judgment, not just its reason");
-  assert.doesNotMatch(delivered, /off[- ]task/i, "no trace-only off-task diagnostic reaches the agent-visible report");
-  assert.doesNotMatch(delivered, /trace-only/);
-  assert.doesNotMatch(delivered, /unrelated/, "the trace-only scope token is hidden too");
-
-  await runCommand("trace", headless);
-  const trace = sentMessages.at(-1)!.message.content;
-  assert.match(trace, /irreversible 0\.95/, "the trace keeps the independent risk");
-  assert.match(trace, /off-task 0\.95 \(unrelated to the request; trace-only until AUC clears 0\.51\)/, "the trace keeps the off-task diagnostic");
-  assert.match(trace, /jev: irreversible 0\.95 · off-task 0\.95 · unrelated \(0\.80\).*jev-1\.13\.0/, "the trace retains the complete judgment");
-
-  await runCommand("test");
-  assert.ok(notices.some(notice => /warden · bash · irreversible 0\.95 · off-task 0\.95 · unrelated/.test(notice.text)), "interactive diagnostics still render the full judgment");
+  assert.equal(requests.length, 1, "one synthetic request, even with every call sampled");
+  assert.ok(!("off_task" in requests[0]!.questions) && !("scope" in requests[0]!.questions), "the trace-only questions are not asked");
+  assert.deepEqual(requests[0]!.state.context, [], "no earlier messages ride along");
 });
 
 test("trace-only off-task does not soften an independent confirm decision", async () => {
