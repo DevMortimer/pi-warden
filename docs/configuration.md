@@ -186,6 +186,10 @@ After building, `/warden index` reports which skill and tool descriptions would 
 | `waste.search` | Default `true`. A search is `grep` or `rg` on one named file, not a glob and not `-r`. The note fires on the 3rd search of one file in the last 10 calls when two of them use the same or an overlapping pattern and nothing wrote that file between them. |
 | `waste.recheck` | Default `true`. A check is a test, lint, typecheck, or build command (`npm test`, `npm run check`, `npx tsc`, `eslint`, `vitest`, `jest`, `pytest`, `ruff`, `mypy`, `cargo test`, `go test`, `make test`, `flutter test`, `dart analyze`, and their `bun`/`pnpm`/`uv` forms). The note fires when the same runner and target runs again in the last 10 calls with a different output filter, the earlier output was cut by a pipe, the earlier result showed no failure, and nothing wrote a file in between. |
 
+### Removed in 1.0
+
+`conscience.loadThreshold` and `learning.adaptiveThresholds` (documented in 0.74.1) are removed. A user file or a project file that still sets one loads, ignores the key, and adds one config warning for it. The conscience names a skill and asks the agent to load it; no score loads a skill by itself, and `conscience.skills.mode` is the only switch. Thresholds never change on their own; `/warden recommend` suggests changes from your hold history and you apply them.
+
 ## Project config
 
 A project may add `.pi/pi-warden.json` with `enabled` and per-guard overrides: thresholds, extra guarded tools, `rules.files`, `rules.skip`, `rules.sensitivePaths`, or `"done": { "enabled": false }`. Project files are read only when Pi trusts the project. They can never grant `typesafe` consent, change `mode`, raise `timeoutMs` or `maxRequests`, set `notify.command`, or turn relevance compaction on or off (`compaction.enabled`). A key a project file cannot set at all is ignored without a warning.
