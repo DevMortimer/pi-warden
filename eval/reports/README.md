@@ -50,10 +50,18 @@ axis, multi-turn arcs, and both registered models — and never enter the analys
   $0.50 cap). `dry-run.txt` in the folder lists the proposed batch per model
   (8,580 runs on A, 2,400 on B) with no run started.
 - [2026-09-30-thesis-pipeline-smoke-b](2026-09-30-thesis-pipeline-smoke-b/report.md):
-  1 task x 3 cells on `claude-bridge/claude-opus-4-8`, proving the session log
+  1 task x 3 cells on `claude-bridge/claude-opus-4-8` (model B of registration v2,
+  since replaced), proving the session log
   carries that model's usage: 44,593-49,375 tokens per run and $0.128-0.146
   list-price equivalent per run (the plan bills no per-token spend), 4 Jev
   requests on the warden run.
+
+- [2026-10-01-thesis-v3-smoke-a](2026-10-01-thesis-v3-smoke-a/report.md) and
+  [2026-10-01-thesis-v3-smoke-b](2026-10-01-thesis-v3-smoke-b/report.md): 1 task x 3
+  cells (t1-redact) on `deepseek/deepseek-flash` and on `claude-bridge/claude-sonnet-5-5`
+  for registration v3. All 6 runs green. `calls.md` in each folder lists every model
+  call with its UTC time, price window, tokens, and dollars (A: all off-peak, because
+  2026-10-01 is a Chinese public holiday); the Jev-error stop did not fire.
 
 ## Checker changes and re-scoring
 

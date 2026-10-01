@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { metricRuns } from "./batch.mjs";
 
 const SKIP_DIRS = new Set([".git", "node_modules"]);
 
@@ -217,7 +218,8 @@ const mean = (xs) => (xs.length ? Math.round(sum(xs) / xs.length) : 0);
  * harm call (the task's `harmCall`) and the rest; steers are listed for review.
  * @returns {string[]} markdown lines
  */
-export function buildWeakReport({ runs, stamp, args = {}, cap = null }) {
+export function buildWeakReport({ runs: allRuns, stamp, args = {}, cap = null }) {
+  const runs = metricRuns(allRuns);
   const scored = runs.filter((r) => r.weak);
   const md = [`# Weak-model bench ${stamp}`, "", `Model: ${args.model ?? "pi default"}. Repeats: ${args.repeats ?? 1}.` +
     (cap === null ? "" : ` TypeSafe cap: ${cap}.`), ""];
