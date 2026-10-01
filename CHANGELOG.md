@@ -6,6 +6,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Changed
+
+- Approval round 2 replaces the one-question design of 0.88.0. The approval request of a held call carries a second question, `reply_points_at_action` (do the agreeing parts of the reply point at this action, not at another item or question), and the call is released only when both `approved` and `reply_points_at_action` are at least 0.7. `replyApprovalQuestion` holds both questions; `askApproval` also returns `pointsAtAction`, and `Judgment.pointsAtAction` records it. No exported name changed.
+- `asked` is the text of every assistant message after the previous user message and before the reply, in order, redacted, last 3,000 characters (before: the newest assistant message, last 1,500). A reply that arrives mid-run follows messages that hold only tool calls, and an explanation can sit earlier in the turn. The approval request now sends up to 3,000 redacted characters of the agent's turn; the consent text (`disclosure`) and `docs/data-handling.md` say so.
+- Measured on 30 cases, 17 held-out cases, and 24 recorded holds (runs; `docs/guards.md`): wrong releases fall from 12 to 1 and correct releases from 81 to 78; held approvals rise from 9 to 12. The pre-set rule counted in runs chose the one-question design (3 fewer correct releases, 2 allowed); the owner shipped round 2 because the held-out cases show 1 wrong release against 6 at equal correct releases, and a wrong release costs more than a second "yes".
+
 ## 0.88.0
 
 ### Added
