@@ -904,10 +904,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
     return true;
   };
   /**
-   * A notice a background judgment made ready for the next tool boundary. `before_agent_start` never waits for Jev, so
-   * an answer that arrives while its run is active waits here and is appended through the steer path at the next tool
-   * boundary, after the newest message; a run that ends first drops it and traces why. The turn-start rules reminder is
-   * budget-exempt: it is one message per user prompt, and the per-run budget counts the guards' own notices.
+   * A notice a background judgment made ready. `before_agent_start` never waits for Jev, so an answer that arrives while
+   * its run is active waits here until `turn_end`. Pi's loop reads its steering queue right after that event and goes on
+   * to another model call only when the turn ran tool calls and not every result set `terminate`; the notice is steered
+   * then, so it rides a call the run makes anyway. In any other case, and when the run ends first, it is dropped and the
+   * trace says why: a steer queued by a turn that ends the run would otherwise stay in Pi's queue and join the next run's
+   * first request. The turn-start rules reminder is budget-exempt: it is one message per user prompt, and the per-run
+   * budget counts the guards' own notices.
    */
   interface PendingNotice { customType: string; content: string; guard: GuardName; delivered: string; dropped: string; details: string[] }
   let pendingNotices: PendingNotice[] = [];
@@ -925,7 +928,23 @@ export default function wardenExtension(host: ExtensionAPI): void {
       record(ctx, config, notice.guard, notice.delivered, notice.details);
     }
   };
-  /** A run that ended before a queued notice reached a tool boundary appends nothing; the trace says which one and why. */
+  /** What the tool batch of the turn in flight did, read from `tool_execution_end`: how many calls ran and whether every result set `terminate`. */
+  let batchCalls = 0;
+  let batchTerminates = true;
+  /** At `turn_end`: deliver the queued notices only when the loop continues anyway; otherwise drop them with a trace line. */
+  const settleNotices = (ctx: ExtensionContext, config: WardenConfig, message: unknown): void => {
+    const calls = batchCalls;
+    const terminates = batchTerminates;
+    batchCalls = 0;
+    batchTerminates = true;
+    if (!pendingNotices.length) return;
+    const stopReason = (message as { stopReason?: string } | undefined)?.stopReason;
+    if (stopReason === "error" || stopReason === "aborted" || ctx.signal?.aborted) dropPendingNotices(ctx, config, "the turn failed or was aborted, so the run was ending");
+    else if (!calls) dropPendingNotices(ctx, config, "the turn made no tool call, so the run was ending");
+    else if (terminates) dropPendingNotices(ctx, config, "every tool result in the batch ended the run");
+    else deliverPendingNotices(ctx, config);
+  };
+  /** A run that ended before a queued notice could ride a model call the run makes anyway appends nothing; the trace says which one and why. */
   const dropPendingNotices = (ctx: ExtensionContext, config: WardenConfig, reason: string): void => {
     if (!pendingNotices.length) return;
     const notices = pendingNotices;
@@ -1575,6 +1594,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("agent_start", async (_event, ctx) => {
     if (!wardenContinuation) evidence = emptyEvidence();
     wardenContinuation = false;
+    batchCalls = 0;
+    batchTerminates = true;
     // Turn rules need a baseline of the working tree. The snapshot starts here as a promise and is awaited at
     // agent_end, so this hook never waits for git to hash the changed and untracked files. One trace line when a run
     // with turn rules gets no baseline. With no turn rules a failed snapshot is silent: a project without them sees
@@ -1586,7 +1607,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
   });
 
   // Every turn that runs after a compression is a turn that did not carry the removed text.
-  pi.on("turn_end", async (_event, ctx) => {
+  pi.on("tool_execution_end", async event => {
+    // A nested call (a script that calls tools) is not part of the loop's batch.
+    if ((event as { parentToolCallId?: string }).parentToolCallId) return;
+    batchCalls++;
+    if ((event.result as { terminate?: unknown } | undefined)?.terminate !== true) batchTerminates = false;
+  });
+
+  pi.on("turn_end", async (event, ctx) => {
+    // Before anything awaits: Pi reads its steering queue as soon as the turn_end handlers return.
+    const noticeConfig = configFor(ctx);
+    if (noticeConfig.enabled) settleNotices(ctx, noticeConfig, event.message);
     ledger.turnEnd();
     if (savingEntry) trace.amend(savingEntry, `at turn end: ${formatLedger(ledger.snapshot())}`);
     savingEntry = undefined;
@@ -1623,9 +1654,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
-    // The next tool boundary is where a background turn-start notice lands: queued while the run streams, it rides the
-    // request this call's result needs, appended after the newest message.
-    deliverPendingNotices(ctx, config);
     if (event.toolName === "bash" || event.toolName === "write") scratchPending.set(event.toolCallId, { started: Date.now(), candidates: scratchCandidates(event.toolName, event.input as Record<string, unknown>, ctx.cwd), moved: event.toolName === "bash" ? movedInTargets(event.toolName, event.input as Record<string, unknown>, ctx.cwd, sessionScratchPaths) : [] });
     // ── Conscience: track tool attempts on the selected capability ──
     if (config.conscience.enabled && selectedCapability && !triggerConsumed) {
@@ -2011,8 +2039,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("tool_result", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
-    // The answer may have arrived while this call was running; deliver it together with this result.
-    deliverPendingNotices(ctx, config);
     // High-confidence credential values are masked before any other rewrite, so neither the model nor a stored copy
     // sees them. Detection below still reads the original text, so the banner names what was masked. Masking is local
     // and sends nothing, so it runs with the security guard off; only the user's `security.maskOutput` stops it.
@@ -2508,7 +2534,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // The run is over: a notice that never reached a tool boundary may not be appended now, because a delivery must
     // never start a turn of its own. It is dropped and traced.
     agentRunActive = false;
-    dropPendingNotices(ctx, config, "the run ended before the notice reached a tool boundary");
+    dropPendingNotices(ctx, config, "the run ended before the notice could ride a model call the run made anyway");
     if (!config.enabled) return;
     // A steer hold whose reply has arrived, on a run that neither released it nor replaced it, went nowhere.
     noteOutcomes(config, holds.runEnded());

@@ -127,8 +127,14 @@ const promptWithSkills = async (text: string, skills: Array<{ name: string; desc
   await fire("before_agent_start", { prompt: text, systemPromptOptions: { cwd: temporary, skills } }, ctx);
   await settleBackground();
   await toolCall("read", { path: "src/index.ts" }, ctx);
+  await toolTurn([{}], "toolUse", ctx);
   const delivered = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience");
   return delivered.length > before ? { message: delivered.at(-1)!.message } : undefined;
+};
+/** The end of a turn that ran `results.length` tool calls: Pi emits each call's `tool_execution_end`, then `turn_end`. */
+const toolTurn = async (results: Array<{ terminate?: boolean }> = [{}], stopReason = "toolUse", ctx = context()) => {
+  for (const [index, result] of results.entries()) await fire("tool_execution_end", { toolCallId: `call-${index + 1}`, toolName: "read", result: { content: [], ...result }, isError: false }, ctx);
+  await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason }, toolResults: [] }, ctx);
 };
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
@@ -4966,6 +4972,68 @@ test("waste: the session tip is off by default and is appended to the prompt onc
   assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 1, "the trace records the tip delivery once per session");
 });
 
+/** A run whose turn-start reminder is ready (judged, applies) while the run streams; returns the messages sent after it. */
+async function readyReminder(run: () => Promise<void>) {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    nextAnswers = { ...nextAnswers, applies_0: 0.9 };
+    const before = answeredRequests;
+    const sentBefore = sentMessages.length;
+    await fire("before_agent_start", { prompt: "Read the config module" });
+    await fire("agent_start", {});
+    await waitFor(() => answeredRequests > before, "the background rules judgment");
+    await tick();
+    await run();
+    const sent = sentMessages.slice(sentBefore);
+    await runCommand("trace", context({ hasUI: false }));
+    return { sent, trace: sentMessages.at(-1)!.message.content as string };
+  } finally {
+    await rm(rules, { force: true });
+  }
+}
+
+test("background notice: a batch where every result sets terminate gets no steer, and the trace says why", async () => {
+  const { sent, trace } = await readyReminder(async () => {
+    await toolCall("read", { path: "src/config.ts" });
+    await toolTurn([{ terminate: true }, { terminate: true }]);
+    await agentEnd("");
+  });
+  assert.equal(sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0, "no steer, so no model call of its own");
+  assert.match(trace, /rules · turn start · dropped/);
+  assert.match(trace, /every tool result in the batch ended the run/);
+});
+
+test("background notice: one result without terminate in the batch keeps the loop going, so the notice is steered", async () => {
+  const { sent } = await readyReminder(async () => {
+    await toolTurn([{ terminate: true }, {}]);
+  });
+  const delivered = sent.filter(entry => entry.message.customType === "pi-warden-rules");
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0]!.options?.deliverAs, "steer");
+});
+
+test("background notice: a turn with no tool call ends the run, so the notice is dropped, not steered", async () => {
+  const { sent, trace } = await readyReminder(async () => {
+    await toolTurn([], "stop");
+    await agentEnd("done");
+  });
+  assert.equal(sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0);
+  assert.match(trace, /the turn made no tool call/);
+});
+
+test("background notice: an aborted turn drops the notice, and a nested call is not part of the batch", async () => {
+  const aborted = await readyReminder(async () => { await toolTurn([{}], "aborted"); });
+  assert.equal(aborted.sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0);
+  assert.match(aborted.trace, /failed or was aborted/);
+  const nested = await readyReminder(async () => {
+    await fire("tool_execution_end", { toolCallId: "call-1/1", parentToolCallId: "call-1", toolName: "read", result: { content: [] }, isError: false });
+    await toolTurn([{ terminate: true }]);
+  });
+  assert.equal(nested.sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0, "the nested call did not make the batch continue");
+});
+
 test("rules at turn start: the prompt does not wait for the judgment, and the reminder reaches the next tool boundary through the steer path", async () => {
   await curatorConfig();
   const rules = join(temporary, "pi-warden.md");
@@ -4985,8 +5053,10 @@ test("rules at turn start: the prompt does not wait for the judgment, and the re
     await waitFor(() => answeredRequests > before, "the background rules judgment");
     await tick();
     await toolCall("read", { path: "src/config.ts" });
+    assert.equal(sentMessages.length, sentBefore, "a tool call alone delivers nothing: the notice waits for the end of the turn");
+    await toolTurn();
     const delivered = sentMessages.slice(sentBefore);
-    assert.equal(delivered.length, 1, "one message at the tool boundary");
+    assert.equal(delivered.length, 1, "one message when the turn ends and the loop goes on");
     assert.equal(delivered[0]!.message.customType, "pi-warden-rules");
     assert.equal(delivered[0]!.message.content, "Rules that apply to this request:\n- No hardcoded secrets: Source code must not contain passwords or API keys.", "only the rule that passed the threshold is named, heading and first line");
     assert.equal(delivered[0]!.options?.deliverAs, "steer", "the existing steer path carries it, so Pi appends it after the newest message");
