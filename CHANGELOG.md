@@ -4,6 +4,26 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## Unreleased
+
+### Added
+
+- `scripts/steer-calibration.mjs`: the blind-label steer measurement (draw the sample from a copy of the hold log, score the labels, gate the slices). `scripts/steer-ask-probe.mjs` measures a candidate question on the same labels, one request per call.
+- `should_ask` in `scripts/action-candidates.mjs`: a reworded should-proceed question that asks whether any visible instruction covers the call. Recorded as a candidate only (never acted on); its measurement is blocked on the TypeSafe account balance.
+- `eval/reports/2026-10-01-field-usage/`: the field report for 2026-09-16 to 2026-10-01 (1,168 sessions, 53,868 judged actions, 419 holds). It replaces the 2026-09-24 report as the source of the README numbers and the hero image.
+
+### Changed
+
+- `scripts/field-usage.mjs` classifies the steers it did not know: stuck-loop, off-task, security-weakness, open-loop, subagent-report, repeat-note, action-warning, and tool-or-skill reminder messages, and the turn-rules message for a change made by a command. "Other" falls from 239 of 1,834 steers (13.0%) to 10 (0.5%) over 2026-09-16 to 2026-10-01, and from 152 of 473 (32.1%) to 5 (1.1%) over 2026-09-25 to 2026-10-01. The JSON report carries rule counts, not rule names.
+
+### Docs
+
+- `README.md` describes what 1.0 ships: the ask gate, approval on demand, rules at turn start, the local conscience ranking, scratch deletes, credential masking that leaves code values alone, the stricter-only project config, and the hold database (what it keeps, the 90-day prune of allowed rows). A "What it costs" section gives each change's measured effect with its source. A hold no longer reads as needing Jev: the offline floor holds destructive patterns, and Jev adds holds at `irreversible` 0.9 or more. The hero image and the Receipts numbers come from the new field report.
+- `docs/guards.md`: the Action guard step for Jev describes the acting request and the trace-only questions as shipped; Calibration records the ask gate and lean request, and three negative results: the working-memory gate (moved here), the hybrid relevance compaction, and the stale-result stubs.
+- The off-task and should-proceed steers are documented as trace-only, with what `action.offTask.warn`, `action.offTask.steer`, `action.shouldProceed.threshold` and `action.shouldProceed.steer` really change, and the 2026-09-30 blind-label measurement (no slice passes the ship gate) in `docs/guards.md` and `docs/configuration.md`. `README.md` lists `action.shouldProceed.steer` with the keys outside the semver promise. The guards docs name who labelled those 427 calls: one language model, blind to the scores and strata, on the clipped request, plan, context, and call.
+- The claim that 140 intent-mismatch calls were labelled "by hand" is gone: the record (pull request 139) does not say who labelled them. The same for a sample of 14 in the 2026-09-24 field report.
+- `docs/data-handling.md`: the conscience row says candidates are ranked on the machine first and what sends nothing; the hold database row says a held call keeps its summary and an allowed call keeps the judge data. `docs/commands.md`: `/warden status` shows the lifetime hold counts. `docs/extension-authors.md`: `verdict.level` includes `"deny"`.
+
 ## 0.89.1
 
 ### Added
