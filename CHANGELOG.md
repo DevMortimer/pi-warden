@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.86.0
+
 ### Added
 
 - The turn-start rules reminder: before the first model call of each new user message, pi-warden starts one request asking which of the project's rules apply to that request (one question per rule, carrying the request, the task spine, and each rule's heading, text, and `paths:` scope), and the ones that pass the threshold reach the agent as one short message at the next tool boundary, at most three, strongest first. The prompt never waits for the answer; nothing earlier in the context moves, so a warm prompt cache is never invalidated. A judgment that is off, fails, or takes longer than two seconds appends nothing and says so in the trace, and a run that ends before the answer arrives drops the reminder with a trace line. A short continuation or a relayed child report sends no request: the two prompts the conscience's local gate also skips, with the reason traced. `rulesAtTurnStart.enabled` (default true) and `rulesAtTurnStart.threshold` (default 0.3) control it; a project file may make it stricter, never turn it off. Measured on 100 real requests from three projects, labelled by one model: 68.9% of the rules named apply, 80 of 100 requests name at least one rule, p50 278 ms and p90 336 ms for the request itself. See [guards.md → Rules at turn start](docs/guards.md#rules-at-turn-start).
