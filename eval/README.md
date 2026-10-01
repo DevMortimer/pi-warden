@@ -9,18 +9,27 @@
 # A/B benchmark
 
 Measures whether pi-warden improves the code an agent produces, against the honest
-null hypothesis: the same rules handed to the model as prose.
+null hypothesis: the same rules handed to the model as prose. Three cells: `control`
+(rules as prose only), `warden-offline` (pi-warden with Jev judgments off — the
+rules reminder, the offline guards, and credential masking run, nothing is judged),
+and `warden` (pi-warden with judgments on). All three use pi-warden's defaults
+otherwise. The thesis run is pre-registered in `preregistration.md`; the power
+calculation behind its batch size is `power.mjs` (`npm run eval:power`).
 
 - `fixture/`: a zero-dependency repo. `AGENTS.md` carries ten rules as prose;
   `pi-warden.md` carries the same ten for the warden cell. It also ships the traps
   themselves: a `scripts/build.mjs` + manifest that can be made to fail, a
   `scripts/deploy.sh` that writes a local release marker, dead code under
   `experiments/`, and endpoint values in `src/config.js` only.
-- `tasks.mjs`: fifteen single-shot tasks and one decay arc, each with a `family`:
+- `tasks.mjs`: fifteen single-shot tasks, one decay arc, and four multi-turn arcs
+  (t17-clip-arc through t20-ship-arc, each with 5-6 user turns whose first turn only
+  reads the tree, so a project rule matters only after the first turn — the tasks the
+  per-turn rules reminder is for). Each single-shot task has a `family`:
   `rules` (the original five), `project-only` (rules no model can know from training),
   `verification` (the reply's claims vs the checks the runner runs), `blast-radius`
   (a commit, push, deploy, or delete that rule 10 reserves for an explicit request),
-  and `decay` (a twelve-turn arc, run with `--turns`).
+  `decay` (a twelve-turn arc, run with `--turns`), and `multi-turn` (the arcs above,
+  which run as one session whether or not `--turns` is set).
 - `check.mjs`: mechanical rule checker over the agent's diff. Shares no code with the
   guard on purpose: no Jev verdict can influence a score.
 - `verify.mjs`: claim and action scorers. Claims come from the final assistant message
@@ -44,6 +53,13 @@ null hypothesis: the same rules handed to the model as prose.
 - `env.mjs`: the environment a run may see. Credential-named variables whose value
   pi-warden itself would flag are dropped, so an environment dump cannot reach a model
   (`.local/shift-2026-09-18-eval-env-leak.md`).
+- `cost.mjs` + `config.mjs`: dollars per run, agent plus Jev. Agent input, output,
+  cache-read, and cache-write tokens come from the run's session log; Jev requests
+  and input tokens from the run's own pi-typesafe usage ledger; both are priced from
+  the price table in `config.mjs` (per-model prices taken from Pi's model catalog,
+  the source named per entry; a model whose bill is a plan carries list-price
+  equivalents). Reported per run and per cell; a model the table
+  does not price reports tokens with no dollars.
 - `weak-tasks.mjs` + `weak.mjs`: the weak-model suite (`--suite weak`). Eight everyday
   requests, each with one trap and a scripted harm and success check read from the
   run's files, its bare origin, a sandbox (a `sudo` shim that logs and fails, global
@@ -57,7 +73,8 @@ null hypothesis: the same rules handed to the model as prose.
 Run: `npm run eval:ab -- --repeats 3 --concurrency 6 --model <provider/model>`. Each run
 gets its own temp project, its own local bare `origin`, and its own
 `PI_CODING_AGENT_DIR` seeded with your provider credentials and exactly one extension
-(pi-warden, in the warden cell), so the two cells differ by that extension alone.
+(pi-warden, in the two warden cells), so the cells differ by that extension and, for
+the two warden cells, by the one `typesafe` switch that turns Jev judgments on or off.
 Runs are independent, so they run several at a time; `--concurrency` sets how many pi
 processes are in flight. Use `--keep` to leave the temp dirs for inspection and
 `--turns N` to chain a decay arc into one session.
