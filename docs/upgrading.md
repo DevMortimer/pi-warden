@@ -4,7 +4,7 @@ npm's `latest` is 0.74.1. This page lists what changes for you between that rele
 
 ## Settings that are gone
 
-`conscience.loadThreshold` and `learning.adaptiveThresholds` no longer exist. 1.0 does not read them, so a config file that still sets them keeps working and the values have no effect. Delete them when you next edit the file.
+`conscience.loadThreshold` and `learning.adaptiveThresholds` no longer exist. A config file that still sets one keeps loading: 1.0 ignores the key and names it in one config warning, shown once when a session starts and again in `/warden status`. The warning also says what happens now. Delete the keys when you next edit the file.
 
 ## Project files can only tighten
 
