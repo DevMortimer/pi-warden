@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- A/B benchmark tooling, registration v3 (`eval/preregistration.md`): model B is `claude-bridge/claude-sonnet-5-5`; agent dollars come from the providers' price pages instead of Pi's catalog, each DeepSeek call priced by its own timestamp at the peak or off-peak rate (Chinese public holidays off-peak, from the State Council's 2026 notice) and Sonnet 5.5 at Anthropic's list prices; a failed Jev judgment in a `warden` run stops the batch and the run is not counted (`eval/jev-stop.mjs`, exit code 3); `scripts/eval-call-costs.mjs` lists every call of a report with its price window; `npm run eval:power` adds the wall-clock of each batch. Repo tooling; rides along with the next release.
 
 ## 0.86.1
 

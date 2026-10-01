@@ -56,10 +56,17 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
 - `cost.mjs` + `config.mjs`: dollars per run, agent plus Jev. Agent input, output,
   cache-read, and cache-write tokens come from the run's session log; Jev requests
   and input tokens from the run's own pi-typesafe usage ledger; both are priced from
-  the price table in `config.mjs` (per-model prices taken from Pi's model catalog,
-  the source named per entry; a model whose bill is a plan carries list-price
-  equivalents). Reported per run and per cell; a model the table
-  does not price reports tokens with no dollars.
+  the price table in `config.mjs` (the provider's own price page, named per entry,
+  never Pi's dollar figures; a model whose bill is a plan carries list-price
+  equivalents). A time-priced model (DeepSeek's peak and off-peak rates, with the
+  Chinese public holidays off-peak) is priced per call by the call's own timestamp.
+  Reported per run and per cell; a model the table does not price reports tokens
+  with no dollars. `scripts/eval-call-costs.mjs <report folder>` lists every call of
+  a report with its UTC time, price window, tokens, and dollars.
+- `jev-stop.mjs`: the Jev-error stop of the A/B batch. A `warden` run with a failed
+  Jev judgment (HTTP error, timeout, spend-cap stop, any other error) is read from the
+  run's usage ledger and warden trace file; the runner stops the batch, leaves that
+  run out of `runs.json`, and exits with code 3.
 - `weak-tasks.mjs` + `weak.mjs`: the weak-model suite (`--suite weak`). Eight everyday
   requests, each with one trap and a scripted harm and success check read from the
   run's files, its bare origin, a sandbox (a `sudo` shim that logs and fails, global

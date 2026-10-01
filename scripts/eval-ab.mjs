@@ -27,8 +27,15 @@
  * run, nothing is judged), and `warden` (pi-warden with judgments on). `--waste
  * both` replaces the two warden cells as before. Every run also reports its cost in
  * dollars (eval/cost.mjs): agent input, output, cache-read, and cache-write tokens
- * from the session log at the model's prices from eval/config.mjs, plus the run's
- * Jev requests and input tokens.
+ * from the session log at the model's prices from eval/config.mjs (each call at the
+ * price of its own timestamp), plus the run's Jev requests and input tokens.
+ *
+ * Jev-error stop (eval/jev-stop.mjs): when a run of a cell that asks Jev ends with a
+ * failed judgment (HTTP error, timeout, spend-cap stop, any other error), the batch
+ * starts no more runs, that run is left out of runs.json and the report (it is listed
+ * under `stoppedBy`, its evidence folder stays), and the script exits with code 3.
+ * Runs already in flight finish and count. A batch with `--typesafe-cap` spends its
+ * judged-request allowance on purpose and does not apply the rule.
  *
  * Usage:
  *   node scripts/eval-ab.mjs                                  # all tasks, both cells, 1 repeat
@@ -69,6 +76,7 @@ import { filterEnv, filteredNames } from "../eval/env.mjs";
 import { claimAudit, claims, checksRun, finalAssistantText, gitFacts, readSessionEvents, runScript, runTestFile, toolCalls, visibleActions } from "../eval/verify.mjs";
 import { outcomeAxis, wasteAxis } from "../eval/waste.mjs";
 import { runCost } from "../eval/cost.mjs";
+import { jevFailure } from "../eval/jev-stop.mjs";
 import { weakTasks, weakTaskById } from "../eval/weak-tasks.mjs";
 import { buildWeakReport, callsWithResults, judgedRequests, repeatedFailures, snapshot, steersInOrder, traceGuards, turnsOf } from "../eval/weak.mjs";
 
@@ -396,10 +404,9 @@ async function runOnce(task, cell, repeat, allowance = null) {
   const { base, project, agentDir, sessions, baseline } = dirs;
   const env = filterEnv(process.env, { agentDir });
   env.PI_WARDEN_DB = join(base, "holds.db");
-  if (WEAK) {
-    sandboxEnv(env, dirs.sandbox);
-    env.PI_WARDEN_TRACE_DIR = dirs.traceDir;
-  }
+  if (WEAK) sandboxEnv(env, dirs.sandbox);
+  // The trace file tells the Jev-error stop when judgments went off (a spend-cap stop leaves nothing in the ledger).
+  if (WEAK || asksJev(cell)) env.PI_WARDEN_TRACE_DIR = dirs.traceDir;
   // The day cap lives in the run's own ledger, so it bounds every client the run creates.
   if (allowance !== null) env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY = String(Math.max(1, allowance));
   const dropped = filteredNames(process.env, { agentDir });
@@ -422,6 +429,7 @@ async function runArc(task, cell, repeat, allowance = null) {
   const { base, project, agentDir, sessions, baseline } = dirs;
   const env = filterEnv(process.env, { agentDir });
   env.PI_WARDEN_DB = join(base, "holds.db");
+  if (asksJev(cell)) env.PI_WARDEN_TRACE_DIR = dirs.traceDir;
   // The day cap lives in the run's own ledger, so it bounds every client the run creates.
   if (allowance !== null) env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY = String(Math.max(1, allowance));
   const dropped = filteredNames(process.env, { agentDir });
@@ -526,8 +534,9 @@ async function main() {
 
   let done = 0;
   let cursor = 0;
+  let stoppedBy = null;
   const worker = async () => {
-    while (cursor < queue.length) {
+    while (cursor < queue.length && !stoppedBy) {
       const { task, cell, repeat } = queue[cursor++];
       const label = `${task.id} ${cell} r${repeat}`;
       const started = Date.now();
@@ -544,14 +553,24 @@ async function main() {
         budget.reserved -= allowance;
         budget.used += record.weak?.judged ?? allowance;
       }
-      runs.push({ ...record, piExit: pi.code, timedOut: pi.timedOut, seconds: Math.round(pi.seconds) });
-      done++;
-      const summary = record.weak
-        ? `exit=${pi.code}${pi.timedOut ? " TIMEOUT" : ""} harm=${record.weak.harm} success=${record.weak.success} tokens=${record.waste?.totalTokens} calls=${record.waste?.toolCalls} holds=${record.weak.holds.length} steers=${record.weak.steers.length} judged=${record.weak.judged}${TYPESAFE_CAP !== null ? ` (batch ${budget.used}/${TYPESAFE_CAP})` : ""} ${Math.round(pi.seconds)}s`
-        : record.turns
-        ? `turns=${record.turns.length} viols=${record.turns.at(-1)?.violations ?? 0} actions=${record.turns.flatMap((t) => t.visibleActions).length} ${Math.round((Date.now() - started) / 1000)}s`
-        : `exit=${pi.code}${pi.timedOut ? " TIMEOUT" : ""} tests ${record.testsPass}pass/${record.testsFail}fail build=${record.buildOk} viols=${record.violations?.length ?? 0} claims=${record.contradicted?.length ?? 0}false actions=${record.visibleActions?.length ?? 0} ${Math.round(pi.seconds)}s`;
-      process.stdout.write(`[${done}/${queue.length}] ${label} ... ${summary}\n`);
+      // A failed Jev judgment in a run that asks Jev ends the batch and the run is not counted.
+      const jevError = asksJev(cell) && allowance === null
+        ? jevFailure({ agentDir: join(base, "agent-dir"), traceDir: join(base, "trace") })
+        : null;
+      if (jevError) {
+        stoppedBy ??= { task: task.id, cell, repeat, reason: jevError };
+        done++;
+        process.stdout.write(`[${done}/${queue.length}] ${label} ... JEV ERROR, not counted: ${jevError}. The batch stops.\n`);
+      } else {
+        runs.push({ ...record, piExit: pi.code, timedOut: pi.timedOut, seconds: Math.round(pi.seconds) });
+        done++;
+        const summary = record.weak
+          ? `exit=${pi.code}${pi.timedOut ? " TIMEOUT" : ""} harm=${record.weak.harm} success=${record.weak.success} tokens=${record.waste?.totalTokens} calls=${record.waste?.toolCalls} holds=${record.weak.holds.length} steers=${record.weak.steers.length} judged=${record.weak.judged}${TYPESAFE_CAP !== null ? ` (batch ${budget.used}/${TYPESAFE_CAP})` : ""} ${Math.round(pi.seconds)}s`
+          : record.turns
+          ? `turns=${record.turns.length} viols=${record.turns.at(-1)?.violations ?? 0} actions=${record.turns.flatMap((t) => t.visibleActions).length} ${Math.round((Date.now() - started) / 1000)}s`
+          : `exit=${pi.code}${pi.timedOut ? " TIMEOUT" : ""} tests ${record.testsPass}pass/${record.testsFail}fail build=${record.buildOk} viols=${record.violations?.length ?? 0} claims=${record.contradicted?.length ?? 0}false actions=${record.visibleActions?.length ?? 0} ${Math.round(pi.seconds)}s`;
+        process.stdout.write(`[${done}/${queue.length}] ${label} ... ${summary}\n`);
+      }
       try {
         const evidence = join(outDir, "runs", `${task.id}-${cell}-r${repeat}`);
         await mkdir(evidence, { recursive: true });
@@ -572,10 +591,14 @@ async function main() {
   runs.sort((a, b) => (a.task + a.cell + String(a.repeat)).localeCompare(b.task + b.cell + String(b.repeat)));
   const md = WEAK ? buildWeakReport({ runs, stamp, args: values, cap: TYPESAFE_CAP }) : buildReport({ runs, stamp, args: values });
   await writeFile(join(outDir, "report.md"), scrubPaths(md.join("\n")));
-  const shown = JSON.stringify({ stamp, args: { ...values, extension: values.extension?.map((p) => p.split("/").pop()), out: values.out?.split("/").pop() }, runs }, null, 2);
+  const shown = JSON.stringify({ stamp, args: { ...values, extension: values.extension?.map((p) => p.split("/").pop()), out: values.out?.split("/").pop() }, ...(stoppedBy ? { stoppedBy } : {}), runs }, null, 2);
   await writeFile(join(outDir, "runs.json"), scrubPaths(shown));
   console.log(`\nreport: ${join(outDir, "report.md")}`);
   console.log(md.filter((l) => l.startsWith("|") && !l.startsWith("| ---")).join("\n"));
+  if (stoppedBy) {
+    console.error(`\nBATCH STOPPED: Jev error in ${stoppedBy.task} ${stoppedBy.cell} r${stoppedBy.repeat}, not counted: ${stoppedBy.reason}. ${queue.length - runs.length - 1} planned run(s) did not run.`);
+    process.exitCode = 3;
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
