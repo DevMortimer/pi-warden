@@ -8,6 +8,24 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.87.0
+
+### Fixed
+
+- The end-of-run rules check no longer judges changes that git brought in. When HEAD moved during the run (a `git pull`, a merge), a changed file with no uncommitted change at the end, whose content equals its content in a commit the run did not make and that was committed before the run began, is skipped. Edits, uncommitted command changes (`git checkout <old> -- file` included), commits made during the run, and conflicts the agent resolved are still judged. When HEAD does not move, the check adds one `git rev-parse`; after a pull it adds a few git calls, and it saves the per-file diffs of the skipped files.
+- The done-check no longer counts a `write` or `edit` whose path lies outside the project root as a code change.
+- `/warden test` sends one request. It no longer passes `action.traceSample`, so the first judged call of a process is not also sent with the trace sample, and the headless branch that filtered a sampled verdict is gone.
+- A background notice (the turn-start rules reminder, a conscience tip) no longer causes a model call of its own. It waits for `turn_end` and is steered only when the turn ran tool calls and not every result set `terminate`, the one case where Pi's loop makes another call anyway. Otherwise it is dropped and the trace says why, so it never stays in Pi's steering queue for the next run.
+- The test "session scratch: a symlink under /tmp pointing outside the temp directory stays held" passes wherever the checkout lives.
+
+### Changed
+
+- The consent text (`disclosure`) and `docs/data-handling.md` say what is sent now: earlier messages and the rules file content ride only the sampled request (one judged call in twenty, `action.traceSample`); the rules content rides the acting request only while a rule violation is open; the turn-start rules request is not sent for short continuations and relayed child reports; when the request fails, times out, or no rule passes the threshold, it was already sent and nothing is appended.
+
+### Tests
+
+- A `cd` to the home directory after `then`, `do`, and `eval` still holds the relative `rm -rf` that follows.
+
 ## 0.86.1
 
 ### Added
