@@ -6,7 +6,18 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+## 0.88.0
+
+### Added
+
+- Approval on demand. The acting request no longer asks whether the reply approves; a call that is held again under a new user prompt gets one approval request, with the reply and the agent message it answers (`asked`: the newest assistant message before the reply, redacted, its last 1,500 characters). The call is released when `approved` is at least 0.7. Exports: `settleApproval`, `askApproval`, `buildApprovalRequest`, `replyApprovalQuestion`, `describeAsked`, `APPROVAL_THRESHOLD`; `asked` on `Conversation` and `ActionInput`.
+- `scripts/approval-cases.mjs`, `scripts/approval-designs.mjs`, and `scripts/approval-replay.mjs` measure the old question, the shipped one, and a second design that was not shipped, on 30 synthetic cases, 17 held-out cases, and recorded holds. `docs/guards.md` has the tables and the rule that chose the design.
+
+### Changed
+
+- `evaluateAction` with `retryAfterHold` takes the same approval step as the Action guard: the acting request does not carry `approved`; when the final verdict is a hold, one approval request follows with `asked` (optional field of the action), and without a judge or when the request fails a reply that reads as approval stands in. Before, it asked the combined question on the acting request and read no agent message. No exported name changed.
+- Approval requests fall from 90.0 to 0.7 per 1,000 judged calls (measured on recorded sessions since 2026-09-16). Measured on recorded holds and cases, wrong releases fall from 45 to 12 and correct releases rise from 55 to 81 (runs; `docs/guards.md`).
+- The consent text (`disclosure`) and `docs/data-handling.md` say what the approval request sends.
 
 ## 0.87.0
 

@@ -1,5 +1,5 @@
 import type { ActionGuardConfig, LargeOutputConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
-import { evaluateAction, textApproves } from "./guard.js";
+import { evaluateAction, settleApproval } from "./guard.js";
 import type { EvaluateOptions, PreviousAction, ScratchRecords, TaskMessage, Verdict } from "./guard.js";
 import type { TaskSpine } from "./shape.js";
 import type { Judge } from "pi-typesafe";
@@ -22,6 +22,8 @@ export interface Conversation {
   siblings?: readonly ToolCallRef[] | undefined;
   /** The agent's own words in that message (or its latest text under this prompt); shared by the siblings. Explains, never authorizes. */
   plan?: string | undefined;
+  /** The agent message the latest user message answers: the text of the newest assistant message before it. Lets a short or numbered reply be read against what it points at. Explains, never authorizes. */
+  asked?: string | undefined;
 }
 
 export interface InspectOptions {
@@ -53,13 +55,15 @@ interface Prejudged { key: string; verdict: Promise<Verdict>; used: boolean }
 /**
  * The Action guard for one session. `evaluateAction` judges a single call; this module owns what spans calls:
  *
- * - **Hold and approval.** After a hold in steer mode, the next guarded call that runs under a *new* user prompt asks Jev
- *   whether that prompt approves it. The retry rarely repeats the held string byte for byte (a `command -v` dropped, a
- *   different timeout), so approval is judged against the action itself, never matched against the earlier command text.
- *   A re-hold under the reply keeps the original reference prompt; otherwise the reply could never approve anything.
- *   Without a judge, a reply that reads as approval stands in for the question.
+ * - **Hold and approval.** After a hold in steer mode, a guarded call that runs under a *new* user prompt and is held
+ *   again gets one approval request: does that prompt, read against the agent message it answers (`asked`), approve this
+ *   action? A call the verdict lets through sends none. The retry rarely repeats the held string byte for byte (a
+ *   `command -v` dropped, a different timeout), so approval is judged against the action itself, never matched against the
+ *   earlier command text. One approval releases one held call. A re-hold under the reply keeps the original reference
+ *   prompt; otherwise the reply could never approve anything. Without a judge, or when the request fails, a reply that
+ *   reads as approval stands in for the question.
  * - **Sibling prejudging.** Calls of one assistant message are judged as soon as the first of them is inspected, so their
- *   requests go out together. A judgment is used once and only for the input it was made for; an earlier hook may have
+ *   requests go out together; approval requests are made per call, in order. A judgment is used once and only for the input it was made for; an earlier hook may have
  *   changed the call's input, and a stale judgment is discarded, not reused. Prejudgments do not outlive their turn.
  */
 export class ActionGuard {
@@ -70,14 +74,13 @@ export class ActionGuard {
   /** Judges one call. The verdict's `approvedByUser` means a pending hold was released by the user's reply. */
   async inspect(call: ToolCallRef, conversation: Conversation, options: InspectOptions): Promise<Verdict> {
     const { task } = conversation;
-    // A hold happened under an earlier prompt and the user has since replied: ask whether the reply approves this action.
+    // A hold happened under an earlier prompt and the user has since replied: a held call may now be released by that reply.
     const retryAfterHold = this.holdPending && this.lastHoldPrompt !== task;
     const judgeCall = (tool: string, input: Record<string, unknown>, previousActions?: readonly PreviousAction[]) => evaluateAction(
       { tool, input, cwd: options.cwd, task, context: conversation.context, plan: conversation.plan, spine: conversation.spine },
-      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, largeOutput: options.largeOutput, rules: options.rules, retryAfterHold, previousActions, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn, hostPaths: options.hostPaths, traceSample: options.config.traceSample },
+      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, largeOutput: options.largeOutput, rules: options.rules, previousActions, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn, hostPaths: options.hostPaths, traceSample: options.config.traceSample },
     );
-    // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
-    if (options.judge && !retryAfterHold) {
+    if (options.judge) {
       for (const sibling of conversation.siblings ?? []) {
         if (sibling.id === call.id || this.prejudged.has(sibling.id) || !options.config.tools.includes(sibling.tool)) continue;
         const verdict = judgeCall(sibling.tool, sibling.input);
@@ -87,14 +90,10 @@ export class ActionGuard {
     }
     const key = JSON.stringify(call.input);
     const ready = this.prejudged.get(call.id);
-    const pending = ready && !ready.used && ready.key === key && !retryAfterHold ? ready.verdict : judgeCall(call.tool, call.input, options.previousActions);
+    const pending = ready && !ready.used && ready.key === key ? ready.verdict : judgeCall(call.tool, call.input, options.previousActions);
     this.prejudged.set(call.id, { key, verdict: pending, used: true });
     const verdict = await pending;
-    if (retryAfterHold && !options.judge && verdict.level === "confirm" && textApproves(task)) {
-      verdict.level = "allow";
-      verdict.approvedByUser = true;
-      verdict.reasons = ["user approved in the latest message", ...verdict.reasons];
-    }
+    if (retryAfterHold && verdict.level === "confirm") await settleApproval(verdict, task, conversation.asked, { judge: options.judge, timeoutMs: options.config.timeoutMs, signal: options.signal });
     if (verdict.approvedByUser) this.holdPending = false;
     return verdict;
   }

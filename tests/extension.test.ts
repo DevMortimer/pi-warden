@@ -12,7 +12,7 @@ import { initSchema, queryHoldsForProject } from "../src/learning.js";
 import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
 import { defaultConfig } from "../src/config.js";
 import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
-import { _testSetIndexRunning, assistantPlan } from "../src/extension.js";
+import { _testSetIndexRunning, askedBeforeReply, assistantPlan } from "../src/extension.js";
 import { SHELL_RULES_CHECKS } from "../src/turn-rules.js";
 import { indexPath } from "../src/index-cmd.js";
 
@@ -5641,4 +5641,33 @@ test("context filter: a failed judge keeps the excerpt and counts the fallback",
   } finally { globalThis.fetch = realFetch; }
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /fallbacks: (?:error|timeout) 1\./);
+});
+
+/** A context whose branch is `entries`; only `askedBeforeReply` reads it. */
+const askedOf = (...entries: Array<Record<string, unknown>>) => askedBeforeReply({ sessionManager: { getBranch: () => entries } } as unknown as ExtensionContext);
+const userEntry = (text: string) => ({ type: "message", message: { role: "user", content: text } });
+
+test("asked: the text of the assistant message before the latest user message, redacted and clipped to its last 1500 characters", () => {
+  const token = `ghp_${"a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"}`;
+  const filler = "x".repeat(1800);
+  const asked = askedOf(
+    userEntry("first request"),
+    assistantEntry({ type: "text", text: "An older message." }),
+    userEntry("clean the build"),
+    assistantEntry({ type: "text", text: `${filler} token ${token}` }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }, { type: "text", text: "Which one?\n1. delete the folder?\n2. keep it?" }),
+    userEntry("1. yes\n2. no"),
+  );
+  assert.ok(asked && asked.length <= 1500);
+  assert.ok(!asked.includes(token), "a token in the message is masked");
+  assert.match(asked, /\[redacted\]/);
+  assert.match(asked, /Which one\?\n1\. delete the folder\?\n2\. keep it\?$/, "the end of the message is kept");
+  assert.ok(!asked.includes("An older message"));
+  assert.ok(!asked.startsWith("x".repeat(1600)), "the head is what is clipped");
+});
+
+test("asked: no assistant message before the latest user message, or a message with no text, gives nothing", () => {
+  assert.equal(askedOf(userEntry("clean the build")), undefined);
+  assert.equal(askedOf(assistantEntry({ type: "text", text: "Earlier." }), userEntry("a"), assistantEntry({ type: "toolCall", id: "c1", name: "bash", arguments: {} }), userEntry("b")), undefined);
+  assert.equal(askedOf(assistantEntry({ type: "text", text: "Earlier." }), userEntry("a"), userEntry("b")), undefined, "the message before the earlier prompt is not what this reply answers");
+  assert.equal(askedOf(assistantEntry({ type: "text", text: "Delete it?" }), userEntry("yes"), assistantEntry({ type: "toolCall", id: "c2", name: "bash", arguments: {} }), { type: "message", message: { role: "toolResult", toolCallId: "c2", toolName: "bash", content: [] } }), "Delete it?", "calls made after the reply do not hide it");
 });
