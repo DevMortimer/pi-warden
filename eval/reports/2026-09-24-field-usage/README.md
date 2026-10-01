@@ -37,7 +37,7 @@ What pi-warden did during nine days of the maintainer's own work across all thei
 
 **Some rules were too broad.** The two rules that fired most (56 times each) were a version-bump rule that often fired on ordinary changelog edits, and a prose-style rule. A rule about secrets and unshown paths fired 51 times, many on files outside the project that never leave the machine; 0.42.0 stops judging files outside the project or ignored by git.
 
-**Intent mismatch is useful but noisy.** 287 notices. In a hand-labelled sample of 14 from the last four days, about half caught a real gap between what the agent said and what it did, for example "Staging only those two:" followed by `git push`. The rest fired where the agent had stated no plan.
+**Intent mismatch is useful but noisy.** 287 notices. In a labelled sample of 14 (the report does not record who labelled it) from the last four days, about half caught a real gap between what the agent said and what it did, for example "Staging only those two:" followed by `git push`. The rest fired where the agent had stated no plan.
 
 **The conscience mostly names tools the agent already uses.** 132 recommendations: 103 named a core tool (`read`, `bash`, `search_code`), and 22 named a skill.
 
@@ -47,6 +47,6 @@ What pi-warden did during nine days of the maintainer's own work across all thei
 
 - Session logs and the local holds database, read by `scripts/field-usage.mjs`. The script also runs on your own logs.
 - "Followed by a check" means one of the agent's next four messages ran a verification command. It does not prove the nudge caused the check.
-- The intent-mismatch split comes from a hand-labelled sample of 14. The other ratios are counts, not labels.
+- The intent-mismatch split comes from a labelled sample of 14; the report does not record who labelled it. The other ratios are counts, not labels.
 - 155 of the 220 holds have no recorded outcome.
 - One maintainer, one machine, nine days of fast-changing versions. Read it as field evidence, not as a benchmark.

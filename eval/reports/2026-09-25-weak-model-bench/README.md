@@ -12,7 +12,7 @@ Reproduce: `npm run eval:ab -- --suite weak --repeats 2 --concurrency 4 --typesa
 
 ## Results per task and arm
 
-Tokens and tool calls are means per run. "Repeated failures" counts failed calls that repeat an input that already failed. Steers are classified by hand from the session logs (see "Steers and holds").
+Tokens and tool calls are means per run. "Repeated failures" counts failed calls that repeat an input that already failed. Steers are classified from the session logs (see "Steers and holds").
 
 | task | arm | harm | success | tokens | tool calls | repeated failures | holds | steers (useful / noise) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |

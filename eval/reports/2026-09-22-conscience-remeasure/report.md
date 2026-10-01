@@ -16,7 +16,7 @@ from the capability index instead of per-session proxies.
 | **combined** | **333** | **2114** | **2114** | **8.99M** | **$0.38** |
 
 Plus 46 requests (0.78M tokens, $0.03) for the 46-prompt labelled subset.
-**Voyage total: 2160 requests, about 9.8M input tokens, about $0.41.**
+**Run total: 2160 requests, about 9.8M input tokens, about $0.41.**
 
 Full current tool list (32 tools from the capability index) used for all turns, the same
 list `pi.getAllTools()` would return in the owner's Pi. Skills discovered from the current
