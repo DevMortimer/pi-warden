@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- `scripts/stale-replay.mjs`, an offline replay of recorded sessions that measures stubbing tool results a later call made out of date, in three classes and under two price models, and `src/stale-results.ts`, the rule engine it measures (not used by the extension). The gate failed: no class saves input cost for the median session, so no switch ships. See [guards.md → Stale-result stubs](docs/guards.md#stale-result-stubs-2026-10-01-gate-failed).
 
 ## 0.86.0
 
