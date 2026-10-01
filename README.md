@@ -122,6 +122,8 @@ Catch errors at the handler and return a message a user can act on.
 
 Each `#` heading is one rule. Every write and edit is judged against it in about a quarter of a second by [Jev](https://typesafe.ai), a model that returns a probability, not prose. No `pi-warden.md`? Your `AGENTS.md`, `CLAUDE.md`, or `README.md` is used instead.
 
+Coming from 0.74.1? See [Upgrading](docs/upgrading.md).
+
 ## Receipts
 
 - **Rules:** in 150 paired agent runs (four batches, `eval/reports/2026-09-18T00-*`), the agent without pi-warden broke a project rule in **6** of 150 runs. With it: **0** of 150.
