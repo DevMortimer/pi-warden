@@ -75,17 +75,80 @@ async function workTree(cwd: string): Promise<string | undefined> {
   }
 }
 
-export type SnapshotResult = { tree: string; reason?: undefined } | { tree?: undefined; reason: string };
+/** `head` is the commit HEAD named at the start (absent in a repository with no commit); `startedAt` is the start time in ms. */
+export type SnapshotResult = { tree: string; head?: string | undefined; startedAt: number; reason?: undefined } | { tree?: undefined; reason: string };
 
 /** The run's baseline; `reason` says why turn rules are skipped this run and earns one trace line in the caller. */
 export async function snapshotTree(cwd: string): Promise<SnapshotResult> {
+  const startedAt = Date.now();
   try {
     if ((await git(["rev-parse", "--is-inside-work-tree"], cwd, 5000)).trim() !== "true") return { reason: "not a git repository" };
   } catch {
     return { reason: "not a git repository" };
   }
+  const head = await commitOf("HEAD", cwd);
   const tree = await workTree(cwd);
-  return tree ? { tree } : { reason: "the git snapshot failed" };
+  return tree ? { tree, head, startedAt } : { reason: "the git snapshot failed" };
+}
+
+async function commitOf(ref: string, cwd: string): Promise<string | undefined> {
+  try {
+    const id = (await git(["rev-parse", "--verify", "-q", `${ref}^{commit}`], cwd, 5000)).trim();
+    return /^[0-9a-f]{40,64}$/.test(id) ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Where the run started: the HEAD commit and the time, so changes git brought in during the run are not the agent's. */
+export interface RunStart {
+  head: string | undefined;
+  startedAt: number;
+}
+
+/** Runs `git cat-file --batch-check` over `lines` and returns one answer line per input line. */
+function batchCheck(lines: readonly string[], cwd: string): Promise<string[]> {
+  return new Promise((resolveLines, reject) => {
+    const child = execFile("git", ["cat-file", "--batch-check"], { cwd, timeout: GIT_TIMEOUT_MS, windowsHide: true, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }, (error, stdout) => {
+      if (error) reject(error);
+      else resolveLines(stdout.split("\n").slice(0, lines.length));
+    });
+    child.stdin?.on("error", () => { /* the callback reports the failure */ });
+    child.stdin?.end(`${lines.join("\n")}\n`);
+  });
+}
+
+/**
+ * The changed files that git itself brought in: HEAD moved during the run (a pull, a merge), and the file has no
+ * uncommitted change at the end and holds, byte for byte, its content in a commit the end HEAD reaches, the start
+ * HEAD does not reach, and that was committed before the run began. A file the agent edited, changed with an
+ * uncommitted command (`git checkout <old> -- file` included), or committed in the run is never in this set.
+ */
+async function broughtByGit(cwd: string, start: RunStart, endTree: string, paths: readonly string[]): Promise<Set<string>> {
+  const brought = new Set<string>();
+  if (!start.head || !paths.length) return brought;
+  try {
+    const endHead = await commitOf("HEAD", cwd);
+    if (!endHead || endHead === start.head) return brought;
+    // `--before` keeps a commit whose committer date is at or before the stamp; one second earlier makes it strict.
+    const before = Math.floor(start.startedAt / 1000) - 1;
+    const older = (await git(["rev-list", endHead, `^${start.head}`, `--before=${before} +0000`], cwd)).split("\n").filter(Boolean);
+    if (!older.length) return brought;
+    const uncommitted = new Set((await git(["diff", "--name-only", "--no-renames", "-z", endHead, endTree, "--"], cwd)).split("\0").filter(Boolean));
+    const clean = paths.filter(path => !uncommitted.has(path));
+    if (!clean.length) return brought;
+    const probes = clean.flatMap(path => [`${endHead}:${path}`, ...older.map(commit => `${commit}:${path}`)]);
+    const answers = await batchCheck(probes, cwd);
+    const stride = older.length + 1;
+    clean.forEach((path, row) => {
+      const atEnd = answers[row * stride];
+      if (!atEnd) return;
+      if (older.some((_, column) => answers[row * stride + 1 + column] === atEnd)) brought.add(path);
+    });
+  } catch {
+    // On any git failure nothing is skipped: the file is judged, as before.
+  }
+  return brought;
 }
 
 export interface TurnFileDiff {
@@ -110,17 +173,20 @@ export interface TurnDiff {
  * in total at `maxChars` (the `rules.maxChars` cap), each cut named. Untracked non-ignored files are in both trees, so
  * they appear here like any other change. Undefined when the end-of-run snapshot fails.
  */
-export async function diffSince(cwd: string, startTree: string, maxChars: number): Promise<TurnDiff | undefined> {
+export async function diffSince(cwd: string, startTree: string, maxChars: number, start?: RunStart): Promise<TurnDiff | undefined> {
   const endTree = await workTree(cwd);
   if (!endTree) return undefined;
   let names: string[];
   try { names = (await git(["diff", "--name-status", "--no-renames", "-z", startTree, endTree, "--"], cwd)).split("\0"); } catch { return undefined; }
   const files: TurnFileDiff[] = [];
   const cuts: string[] = [];
+  const candidates: string[] = [];
+  for (let index = 0; index + 1 < names.length; index += 2) if (names[index + 1]) candidates.push(names[index + 1]!);
+  const brought = start ? await broughtByGit(cwd, start, endTree, candidates) : new Set<string>();
   for (let index = 0; index + 1 < names.length; index += 2) {
     const status = names[index]!.slice(0, 1);
     const path = names[index + 1]!;
-    if (!path) continue;
+    if (!path || brought.has(path)) continue;
     let diff: string;
     try { diff = await git(["diff", "--no-ext-diff", "--no-renames", startTree, endTree, "--", path], cwd); } catch { continue; }
     if (!diff.trim()) continue;
@@ -207,6 +273,8 @@ export interface TurnRunOptions {
   task?: string | undefined;
   /** The snapshot tree taken at the start of the run. */
   startTree: string;
+  /** The HEAD commit and the time at the start of the run; changes a pull or a merge brought in are not judged. */
+  start?: RunStart | undefined;
   /** Project-relative paths a `write`, `edit`, or literal shell write already judged during this run. */
   alreadyJudged: ReadonlySet<string>;
 }
@@ -228,8 +296,8 @@ export function unjudgedFiles(diff: TurnDiff, alreadyJudged: ReadonlySet<string>
 }
 
 export async function evaluateTurnRun(options: TurnRunOptions): Promise<TurnRunResult> {
-  const { cwd, config, set, judge, timeoutMs, signal, task, startTree, alreadyJudged } = options;
-  const diff = await diffSince(cwd, startTree, config.maxChars);
+  const { cwd, config, set, judge, timeoutMs, signal, task, startTree, start, alreadyJudged } = options;
+  const diff = await diffSince(cwd, startTree, config.maxChars, start);
   if (!diff) return { verdicts: [], cuts: [], skips: [], skipped: "the end-of-run git snapshot failed" };
   if (!diff.files.length) return { verdicts: [], cuts: diff.cuts, skips: [] };
   const turnRules = set ? turnRulesFor(set).slice(0, MAX_RULES) : [];

@@ -2583,7 +2583,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       if (!snapshot.tree) {
         if (set && turnRulesFor(set).length) record(ctx, config, "rules", `warden · rules · turn rules skipped this run: ${snapshot.reason}`, ["trigger: agent_end", "no working-tree snapshot: the end-of-run pass will not run this turn rules check"]);
       } else {
-        const turnRun = await evaluateTurnRun({ cwd: ctx.cwd, config: config.rules, set, judge, timeoutMs: config.timeoutMs, signal: ctx.signal, task: latestUserPrompt(ctx), startTree: snapshot.tree, alreadyJudged: turnJudged });
+        const turnRun = await evaluateTurnRun({ cwd: ctx.cwd, config: config.rules, set, judge, timeoutMs: config.timeoutMs, signal: ctx.signal, task: latestUserPrompt(ctx), startTree: snapshot.tree, start: { head: snapshot.head, startedAt: snapshot.startedAt }, alreadyJudged: turnJudged });
         if (turnRun.skipped) {
           record(ctx, config, "rules", `warden · rules · end-of-run pass skipped: ${turnRun.skipped}`, ["trigger: agent_end"]);
         }
