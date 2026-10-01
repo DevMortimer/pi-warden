@@ -45,6 +45,10 @@ export interface ActionGuardConfig {
   tools: string[];
   /** When TypeSafe cannot answer (timeout, outage, budget), allow the call with a warning instead of asking. */
   failOpen: boolean;
+  /** Whether a call whose answer cannot change what the agent sees is decided offline. On by default; the pattern pass and the floor always run. */
+  ask: { enabled: boolean };
+  /** Fraction of judged calls that also asks the trace-only questions (off-task, scope, should-proceed) in a second request, so the recorded signal keeps coming. 0 disables it. */
+  traceSample: number;
   /** Per-request TypeSafe timeout. The call is judged as an error after this. */
   timeoutMs: number;
   irreversible: Threshold;
@@ -527,6 +531,8 @@ export function defaultConfig(): WardenConfig {
       enabled: true,
       tools: [...COMMAND_TOOLS, "write", "edit"],
       failOpen: true,
+      ask: { enabled: true },
+      traceSample: 0.05,
       timeoutMs: 5000,
       // 0.9 holds: below it the judge is wrong one call in two to one in seven, and the 0.7 to 0.9 band held no call the user regretted.
       irreversible: { warn: 0.5, confirm: 0.9 },
@@ -841,11 +847,14 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
   })() : threshold(raw.irreversible, base.irreversible);
   let failOpen = boolean(raw.failOpen, base.failOpen);
   if (project && failOpen && !base.failOpen) { warnings.push(projectIgnored("action.failOpen", true, false)); failOpen = false; }
+  const rawAsk = isObject(raw.ask) ? raw.ask : {};
   const shouldProceed = isObject(raw.shouldProceed) ? raw.shouldProceed : {};
   return {
     enabled: project ? projectSwitch("action.enabled", raw.enabled, base.enabled, warnings) : boolean(raw.enabled, base.enabled),
     tools,
     failOpen,
+    ask: { enabled: project ? projectSwitch("action.ask.enabled", rawAsk.enabled, base.ask.enabled, warnings) : boolean(rawAsk.enabled, base.ask.enabled) },
+    traceSample: probability(raw.traceSample, base.traceSample),
     timeoutMs,
     irreversible,
     offTask: offTaskThreshold(raw.offTask, base.offTask),

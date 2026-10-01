@@ -28,8 +28,10 @@ export type OutcomeVia = "retry" | "dialog" | "next prompt" | "jev" | "text" | "
 
 export interface CallScores {
   irreversible: number;
-  offTask: number;
-  scope: ScopeLabel;
+  /** Absent when the trace-only questions were not asked on this call. */
+  offTask?: number;
+  /** Absent when the trace-only questions were not asked on this call. */
+  scope?: ScopeLabel;
   mutates?: number;
   approved?: number;
   intentMismatch?: number;
@@ -110,7 +112,9 @@ export function mutatingCall(verdict: Verdict): boolean {
 function scoresOf(verdict: Verdict): CallScores | undefined {
   const { judgment } = verdict;
   if (!judgment) return undefined;
-  const scores: CallScores = { irreversible: judgment.irreversible, offTask: judgment.offTask, scope: judgment.scope };
+  const scores: CallScores = { irreversible: judgment.irreversible };
+  if (judgment.offTask !== undefined) scores.offTask = judgment.offTask;
+  if (judgment.scope !== undefined) scores.scope = judgment.scope;
   if (judgment.mutates !== undefined) scores.mutates = judgment.mutates;
   if (judgment.approved !== undefined) scores.approved = judgment.approved;
   if (judgment.intentMismatch !== undefined) scores.intentMismatch = judgment.intentMismatch;
