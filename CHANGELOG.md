@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 0.89.0
+
 ### Changed
 
 - Approval round 2 replaces the one-question design of 0.88.0. The approval request of a held call carries a second question, `reply_points_at_action` (do the agreeing parts of the reply point at this action, not at another item or question), and the call is released only when both `approved` and `reply_points_at_action` are at least 0.7. `replyApprovalQuestion` holds both questions; `askApproval` also returns `pointsAtAction`, and `Judgment.pointsAtAction` records it. No exported name changed.
