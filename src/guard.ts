@@ -131,8 +131,6 @@ export interface Judgment {
   scopeConfidence?: number;
   /** P(the latest user message approves this exact action); only asked when a previously held call is retried. */
   approved?: number;
-  /** P(the agreeing parts of the reply point at this action, not at another item or question); asked with `approved`. */
-  pointsAtAction?: number;
   /** P(the latest user message regrets an allowed call of the previous turn); asked once per prompt, on its first action request. */
   regretted?: number;
   /** The id of the regretted previous action when several were offered. */
@@ -2505,9 +2503,8 @@ export const approvalQuestion = {
 };
 
 /**
- * The approval questions a held call gets, asked in their own request (`askApproval`) and never on the acting request. They
- * read `asked`, the agent's words the reply answers, only to resolve what a short or numbered reply points at. A call is
- * released only when both reach `APPROVAL_THRESHOLD`.
+ * The approval question a held call gets, asked in its own request (`askApproval`) and never on the acting request. It
+ * reads `asked`, the agent message the reply answers, only to resolve what a short or numbered reply points at.
  */
 export const replyApprovalQuestion = {
   approved: noul(
@@ -2517,16 +2514,9 @@ export const replyApprovalQuestion = {
       false: "No: `task` declines, asks a question, agrees to something else, or does not address this action, or the only sign of approval is in `asked`.",
     },
   ),
-  reply_points_at_action: noul(
-    "Look only at the parts of `task` that agree: a yes, an ok, a go-ahead, or an item number with an agreeing answer. Do they point at `action`? An item number points at the item with that number in `asked`. An agreement without a number points at the question `asked` ends with, or at the plan `asked` proposes as a whole. Words in `task` that name or describe this action point at it directly. Answer no when the agreeing parts point at a different item or question, or when nothing in `task` or `asked` connects them to this action.",
-    {
-      true: "Yes: the agreeing parts of `task` point at `action`.",
-      false: "No: the agreeing parts of `task` point at a different item or question, or nothing in `task` or `asked` connects them to this action.",
-    },
-  ),
 };
 
-/** The agent's words a reply answers, as they leave the machine: redacted, then the last `ASKED_LIMIT` characters, because the question is usually at the end. */
+/** The agent message a reply answers, as it leaves the machine: redacted, then the last `ASKED_LIMIT` characters, because the question is usually at the end. */
 export function describeAsked(text: string | undefined): string | undefined {
   const clean = text?.trim() ? redact(text.trim()) : "";
   return clean ? clean.slice(-ASKED_LIMIT) : undefined;
@@ -2545,22 +2535,20 @@ export function buildApprovalRequest(summary: ActionSummary, task: string | unde
   };
 }
 
-export type ApprovalAnswer = { ok: true; approved: number; pointsAtAction: number; model: string; elapsedMs: number } | { ok: false; error: string; errorCode?: IntegrationErrorCode };
+export type ApprovalAnswer = { ok: true; approved: number; model: string; elapsedMs: number } | { ok: false; error: string; errorCode?: IntegrationErrorCode };
 
 /** One approval request for a held call. A failed request returns the error; the caller decides what the offline reading says. */
 export async function askApproval(judge: Judge, summary: ActionSummary, task: string | undefined, asked: string | undefined, reasons: readonly string[], options: { timeoutMs: number; signal?: AbortSignal | undefined }): Promise<ApprovalAnswer> {
   const result = await ask(judge, buildApprovalRequest(summary, task, asked, reasons), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { ok: false, error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
-  const answers = result.answers as unknown as { approved?: { noul?: number }; reply_points_at_action?: { noul?: number } };
-  const approved = answers.approved?.noul;
-  const pointsAtAction = answers.reply_points_at_action?.noul;
-  if (typeof approved !== "number" || typeof pointsAtAction !== "number") return { ok: false, error: "The approval answer was missing." };
-  return { ok: true, approved, pointsAtAction, model: result.model, elapsedMs: result.elapsedMs };
+  const approved = (result.answers as unknown as { approved?: { noul?: number } }).approved?.noul;
+  if (typeof approved !== "number") return { ok: false, error: "The approval answer was missing." };
+  return { ok: true, approved, model: result.model, elapsedMs: result.elapsedMs };
 }
 
 /**
- * Settles one held call under the user's reply: one approval request, and the call is released only when `approved` and
- * `reply_points_at_action` both reach `APPROVAL_THRESHOLD`. Without a judge, or when the request fails, the offline reading
+ * Settles one held call under the user's reply: one approval request, and the call is released when `approved` reaches
+ * `APPROVAL_THRESHOLD`. Without a judge, or when the request fails, the offline reading
  * of the reply (`textApproves`) stands in; a failure alone never releases the call. The Action guard and `evaluateAction`
  * with `retryAfterHold` both take this step.
  */
@@ -2568,8 +2556,8 @@ export async function settleApproval(verdict: Verdict, task: string | undefined,
   if (options.judge) {
     const answer = await askApproval(options.judge, verdict.summary, task, asked, verdict.reasons, { timeoutMs: options.timeoutMs, signal: options.signal });
     if (answer.ok) {
-      if (verdict.judgment) { verdict.judgment.approved = answer.approved; verdict.judgment.pointsAtAction = answer.pointsAtAction; }
-      if (answer.approved >= APPROVAL_THRESHOLD && answer.pointsAtAction >= APPROVAL_THRESHOLD) releaseHeld(verdict, `user approved in the latest message (${answer.approved.toFixed(2)}, points at the action ${answer.pointsAtAction.toFixed(2)})`);
+      if (verdict.judgment) verdict.judgment.approved = answer.approved;
+      if (answer.approved >= APPROVAL_THRESHOLD) releaseHeld(verdict, `user approved in the latest message (${answer.approved.toFixed(2)})`);
       return;
     }
     verdict.approvalError = answer.error;
@@ -2684,7 +2672,7 @@ function traceSampled(rate: number | undefined): boolean {
 
 const percent = (value: number) => value.toFixed(2);
 export const APPROVAL_THRESHOLD = 0.7;
-export const ASKED_LIMIT = 3000;
+const ASKED_LIMIT = 1500;
 const APPROVAL_REASON_LIMIT = 200;
 const PREVIOUS_ACTIONS_LIMIT = 6;
 /** P(visible) at or above this counts the action as seen outside the working tree. */
