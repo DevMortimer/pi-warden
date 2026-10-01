@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1088,13 +1088,16 @@ test("session scratch: mkdir -p of a directory that already existed records noth
 }));
 
 test("session scratch: a symlink under /tmp pointing outside the temp directory stays held", async () => withScratchBase(async base => {
+  // A real directory that is outside every temp root wherever the checkout lives (the working directory may be under /tmp).
+  const outside = [homedir(), "/usr", "/opt"].map(path => realpathSync(path)).find(path => ![realpathSync(tmpdir()), "/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"].some(root => path === root || path.startsWith(`${root}/`)))!;
+  assert.ok(outside, "a directory outside the temp roots exists");
   const dir = join(base, "dir");
   await runCall("bash", { command: `mkdir -p ${dir}` }, () => mkdir(dir));
   const inside = join(dir, "out");
-  await symlink(process.cwd(), inside);
+  await symlink(outside, inside);
   assert.equal((await toolCall("bash", { command: `rm -rf ${inside}` }))?.block, true, "a link inside a recorded directory resolves outside");
   const printed = join(base, "link");
-  await runCall("bash", { command: `ln -s ${process.cwd()} ${printed} && echo ${printed}` }, () => symlink(process.cwd(), printed), `${printed}\n`);
+  await runCall("bash", { command: `ln -s ${outside} ${printed} && echo ${printed}` }, () => symlink(outside, printed), `${printed}\n`);
   assert.equal((await toolCall("bash", { command: `rm -rf ${printed}` }))?.block, true, "a printed link resolves outside and is not recorded");
 }));
 
