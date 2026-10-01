@@ -521,7 +521,7 @@ test("action.shouldProceed.hold, the deprecated name of threshold, still sets it
   assert.deepEqual(completeConfig(stale as never).config.action.shouldProceed, { threshold: 0.45, steer: true });
 });
 
-test("a config file that still sets the removed keys loads cleanly", async () => {
+test("a config file that still sets the removed keys loads, ignores them, and warns once for each of the two documented keys", async () => {
   const path = userConfigPath();
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, JSON.stringify({
@@ -533,7 +533,9 @@ test("a config file that still sets the removed keys loads cleanly", async () =>
     assert.deepEqual(config.learning, { patternAnalysis: false, retentionDays: 30, allowedRetentionDays: 90 }, "the removed keys are gone; the allowed-call retention keeps its default");
     assert.equal("loadThreshold" in config.conscience, false);
     assert.equal(config.conscience.recommendThreshold, 0.9, "the rest of the section still applies");
-    assert.deepEqual(config.warnings, []);
+    assert.equal(config.warnings.length, 2, "one warning for conscience.loadThreshold and one for learning.adaptiveThresholds; the two undocumented keys give none");
+    assert.ok(config.warnings.some(warning => warning.startsWith("conscience.loadThreshold was removed in 1.0")));
+    assert.ok(config.warnings.some(warning => warning.startsWith("learning.adaptiveThresholds was removed in 1.0")));
   } finally {
     await rm(path, { force: true });
   }
@@ -546,4 +548,24 @@ test("an arming rule with no action is still ignored, now with one config warnin
   ] } });
   assert.deepEqual(config.action.armingRules.map(rule => rule.id), ["kept"]);
   assert.deepEqual(config.warnings, ['arming rule "no-action": has no action and is ignored; set action to confirm, hold, or block']);
+});
+
+test("removed keys: conscience.loadThreshold and learning.adaptiveThresholds each give one warning, from the user file and from a project file", () => {
+  const removed = [
+    { section: "conscience", key: "loadThreshold", value: 0.9, now: /no score loads a skill by itself/ },
+    { section: "learning", key: "adaptiveThresholds", value: true, now: /\/warden recommend suggests changes/ },
+  ] as const;
+  for (const { section, key, value, now } of removed) {
+    const user = applyUserOverrides(defaultConfig(), { [section]: { [key]: value } });
+    assert.equal(user.warnings.length, 1, `${key}: one warning from the user file`);
+    assert.match(user.warnings[0]!, new RegExp(`^${section}\\.${key} was removed in 1\\.0 and is ignored; `));
+    assert.match(user.warnings[0]!, now);
+    const project = applyProjectOverrides(defaultConfig(), { [section]: { [key]: value } });
+    assert.equal(project.warnings.length, 1, `${key}: one warning from a project file`);
+    assert.match(project.warnings[0]!, new RegExp(`^project file: ${section}\\.${key} was removed in 1\\.0 and is ignored; `));
+  }
+  const both = applyUserOverrides(defaultConfig(), { conscience: { loadThreshold: 1 }, learning: { adaptiveThresholds: false } });
+  assert.equal(both.warnings.length, 2, "two keys, two warnings");
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { conscience: { recommendThreshold: 0.9 }, learning: { patternAnalysis: false } }).warnings, [], "a config without them gives none");
+  assert.deepEqual(applyProjectOverrides(defaultConfig(), { conscience: { enabled: true }, learning: {} }).warnings, []);
 });

@@ -1069,10 +1069,25 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
   };
 }
 
+/** Settings 0.74.1 documented and 1.0 removed: no code reads them. One warning per key found in a file, saying what happens now. */
+const REMOVED_KEYS: ReadonlyArray<{ section: "conscience" | "learning"; key: string; now: string }> = [
+  { section: "conscience", key: "loadThreshold", now: "no score loads a skill by itself; the conscience names a skill and asks the agent to load it, and conscience.skills.mode is the only switch for loading" },
+  { section: "learning", key: "adaptiveThresholds", now: "thresholds never change on their own; /warden recommend suggests changes from your hold history and you apply them" },
+];
+
+function removedKeyWarnings(raw: Json, source: "user" | "project"): string[] {
+  const warnings: string[] = [];
+  for (const { section, key, now } of REMOVED_KEYS) {
+    const group = raw[section];
+    if (isObject(group) && key in group) warnings.push(`${source === "project" ? "project file: " : ""}${section}.${key} was removed in 1.0 and is ignored; ${now}`);
+  }
+  return warnings;
+}
+
 /** Unknown keys and invalid values fall back to the base; nothing throws on a malformed file. */
 export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConfig {
   if (!isObject(raw)) return base;
-  const warnings: string[] = [];
+  const warnings: string[] = removedKeyWarnings(raw, "user");
   const shared = applyShared(base, raw);
   const backend = resolveJudgmentBackend(raw.typesafeBackend);
   const guards = applyGuards(base, raw, shared.timeoutMs, "user", warnings);
@@ -1197,7 +1212,7 @@ function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig
  */
 export function applyProjectOverrides(base: WardenConfig, raw: unknown): WardenConfig {
   if (!isObject(raw)) return base;
-  const warnings: string[] = [];
+  const warnings: string[] = removedKeyWarnings(raw, "project");
   const enabled = projectSwitch("enabled", raw.enabled, base.enabled, warnings);
   const guards = applyGuards(base, raw, base.timeoutMs, "project", warnings);
   return { ...base, enabled, ...guards, prefs: applyPrefs(base.prefs, raw.prefs), warnings: [...(base.warnings ?? []), ...warnings] };
