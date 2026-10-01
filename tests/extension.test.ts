@@ -227,7 +227,7 @@ before(async () => {
     const answers: Record<string, unknown> = {};
     for (const [id, question] of Object.entries(body.questions)) {
       const value = nextAnswers[id];
-      if (question.type === "noul") answers[id] = { type: "noul", noul: typeof value === "number" ? value : (id === "should_proceed" ? 1.0 : 0.1) };
+      if (question.type === "noul") answers[id] = { type: "noul", noul: typeof value === "number" ? value : (id === "should_proceed" || id === "reply_points_at_action" ? 1.0 : 0.1) };
       else if (question.type === "choice") {
         const keys = Object.keys(question.criteria as Record<string, unknown>);
         const pick = typeof value === "string" ? value : keys[0]!;
@@ -5647,22 +5647,47 @@ test("context filter: a failed judge keeps the excerpt and counts the fallback",
 const askedOf = (...entries: Array<Record<string, unknown>>) => askedBeforeReply({ sessionManager: { getBranch: () => entries } } as unknown as ExtensionContext);
 const userEntry = (text: string) => ({ type: "message", message: { role: "user", content: text } });
 
-test("asked: the text of the assistant message before the latest user message, redacted and clipped to its last 1500 characters", () => {
+test("asked: the text of every assistant message of the turn before the latest user message, in order, redacted and clipped to the last 3000 characters", () => {
   const token = `ghp_${"a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"}`;
-  const filler = "x".repeat(1800);
+  const filler = "x".repeat(3500);
   const asked = askedOf(
     userEntry("first request"),
     assistantEntry({ type: "text", text: "An older message." }),
     userEntry("clean the build"),
-    assistantEntry({ type: "text", text: `${filler} token ${token}` }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }, { type: "text", text: "Which one?\n1. delete the folder?\n2. keep it?" }),
+    assistantEntry({ type: "text", text: `HEAD-MARKER ${filler} token ${token}` }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }),
+    assistantEntry({ type: "text", text: "Which one?\n1. delete the folder?\n2. keep it?" }),
     userEntry("1. yes\n2. no"),
   );
-  assert.ok(asked && asked.length <= 1500);
+  assert.ok(asked && asked.length <= 3000);
   assert.ok(!asked.includes(token), "a token in the message is masked");
   assert.match(asked, /\[redacted\]/);
-  assert.match(asked, /Which one\?\n1\. delete the folder\?\n2\. keep it\?$/, "the end of the message is kept");
-  assert.ok(!asked.includes("An older message"));
-  assert.ok(!asked.startsWith("x".repeat(1600)), "the head is what is clipped");
+  assert.match(asked, /\[redacted\]\n\nWhich one\?\n1\. delete the folder\?\n2\. keep it\?$/, "the messages are joined in order and the end is kept");
+  assert.ok(!asked.includes("An older message"), "a message before the previous user message is not part of the turn");
+  assert.equal(asked.length, 3000);
+  assert.ok(!asked.includes("HEAD-MARKER"), "the head is what is clipped");
+});
+
+test("asked: several assistant messages are joined oldest first; a newest message with only tool calls does not hide the explanation before it", () => {
+  assert.equal(
+    askedOf(
+      userEntry("clean the build"),
+      assistantEntry({ type: "text", text: "Option A deletes build/." }),
+      assistantEntry({ type: "text", text: "Option B keeps it. Which one?" }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }),
+      userEntry("A"),
+    ),
+    "Option A deletes build/.\n\nOption B keeps it. Which one?",
+  );
+  assert.equal(
+    askedOf(
+      userEntry("clean the build"),
+      assistantEntry({ type: "text", text: "I will delete build/. OK?" }),
+      assistantEntry({ type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }),
+      { type: "message", message: { role: "toolResult", toolCallId: "c1", toolName: "bash", content: [] } },
+      assistantEntry({ type: "toolCall", id: "c2", name: "bash", arguments: { command: "ls build" } }),
+      userEntry("yes"),
+    ),
+    "I will delete build/. OK?",
+  );
 });
 
 test("asked: no assistant message before the latest user message, or a message with no text, gives nothing", () => {
