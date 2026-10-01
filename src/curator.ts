@@ -1,9 +1,10 @@
 /**
  * The turn-start curator: before the first model call of a new user message, one small Jev request starts asking which
  * of the project's rules apply to that request. It runs in the background, so the prompt never waits for it; when the
- * answer arrives during the run, the rules that apply are delivered at the next tool boundary through the steer path as
- * one short message appended after the newest message. The rules file is judged offline by the rules guard otherwise;
- * this is the one place the whole rule set is read against the request itself, which is what makes a rule that governs
+ * answer arrives during the run, the rules that apply are delivered through the steer path as one short message appended
+ * after the newest message, at the end of a turn whose loop continues (a turn with tool calls where not every result
+ * ended the run); a turn with no tool call, a failed or aborted turn, and a run that ends first drop it. The rules file
+ * is judged offline by the rules guard otherwise; this is the one place the whole rule set is read against the request itself, which is what makes a rule that governs
  * the turn's work visible while the turn is still running.
  *
  * The delivery appends after the newest message, so it never edits an earlier message and never invalidates a warm

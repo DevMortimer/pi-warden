@@ -8,6 +8,31 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.87.0
+
+### Fixed
+
+- The end-of-run rules check no longer judges changes that git brought in. When HEAD moved during the run (a `git pull`, a merge), a changed file with no uncommitted change at the end, whose content equals its content in a commit the run did not make and that was committed before the run began, is skipped. Edits, uncommitted command changes (`git checkout <old> -- file` included), commits made during the run, and conflicts the agent resolved are still judged. When HEAD does not move, the check adds one `git rev-parse`; after a pull it adds a few git calls, and it saves the per-file diffs of the skipped files.
+- The done-check no longer counts a `write` or `edit` whose path lies outside the project root as a code change.
+- `/warden test` sends one request. It no longer passes `action.traceSample`, so the first judged call of a process is not also sent with the trace sample, and the headless branch that filtered a sampled verdict is gone.
+- A background notice (the turn-start rules reminder, a conscience tip) no longer causes a model call of its own. It waits for `turn_end` and is steered only when the turn ran tool calls and not every result set `terminate`, the one case where Pi's loop makes another call anyway. Otherwise it is dropped and the trace says why, so it never stays in Pi's steering queue for the next run.
+- The test "session scratch: a symlink under /tmp pointing outside the temp directory stays held" passes wherever the checkout lives.
+- A background notice is no longer dropped on a host that does not send `tool_execution_end`. The turn's tool-call count now comes from `turn_end` (`toolResults`, or the tool calls in the assistant message when that field is absent); `tool_execution_end` is read only for `terminate`, and a batch counts as terminated only when the host reported a result for every call and every result set `terminate`.
+- The git-brought filter of the end-of-run rules check no longer swallows a git failure. The failure reaches the run-end trace, which says the filter failed, gives the error message, and says that every changed file was judged.
+- The git-brought filter probes at most 20,000 file × commit pairs. With more, only the newest commits that fit are probed and the trace says the filter was cut; the newest commits find almost every match. Measured with 300 files and 1,000 older commits, the run-end diff takes about 0.3 s instead of about 2.3 s.
+
+### Changed
+
+- The consent text (`disclosure`) and `docs/data-handling.md` say what is sent now: earlier messages and the rules file content ride only the sampled request (one judged call in twenty, `action.traceSample`); the rules content rides the acting request only while a rule violation is open; the turn-start rules request is not sent for short continuations and relayed child reports; when the request fails, times out, or no rule passes the threshold, it was already sent and nothing is appended.
+- The text of the turn-start rules reminder, the conscience tip, `docs/configuration.md`, and `docs/guards.md` says when a notice is delivered: at the end of a turn whose loop continues, and dropped for a turn with no tool call, a batch where every result ended the run, a failed or aborted turn, and a run that ends first. The trace line no longer says "next tool boundary".
+- `docs/configuration.md` and `docs/guards.md` say what the action request carries: earlier messages and the rules content ride only the trace sample (one judged call in twenty, `action.traceSample`), and the rules content rides the acting request only while a violation is open.
+
+### Tests
+
+- A `cd` to the home directory after `then`, `do`, and `eval` still holds the relative `rm -rf` that follows.
+- The host test counts the new `tool_execution_end` hook (15 hooks).
+- New tests cover a host that sends `turn_end` with tool results and no `tool_execution_end`, the tool-call fallback to the assistant message, a `terminate` result for only some calls, a git failure in the filter (unit and run-end trace), and the probe-limit cut.
+
 ## 0.86.1
 
 ### Added

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
@@ -287,6 +289,17 @@ test("buildStuckRequest sends numbered attempts with outcomes and a task", () =>
     { n: 2, tool: "edit", call: "edit a.ts", outcome: "ok", output: "ok" },
   ]);
   assert.deepEqual(Object.keys(request.questions).sort(), ["approach_change", "progress", "same_strategy"]);
+});
+
+test("classifyToolResult: a write or edit outside the project root is not a code change, one inside is", () => {
+  const cwd = join(tmpdir(), "project");
+  assert.equal(classifyToolResult("write", { path: join(tmpdir(), "notes.md"), content: "" }, false, undefined, cwd), "unknown");
+  assert.equal(classifyToolResult("edit", { path: "../elsewhere/a.ts", edits: [] }, false, undefined, cwd), "unknown");
+  assert.equal(classifyToolResult("write", { file_path: join(tmpdir(), "x", "y.ts"), content: "" }, false, undefined, cwd), "unknown");
+  assert.equal(classifyToolResult("write", { path: join(cwd, "src", "a.ts"), content: "" }, false, undefined, cwd), "mutation");
+  assert.equal(classifyToolResult("edit", { path: "src/a.ts", edits: [] }, false, undefined, cwd), "mutation");
+  assert.equal(classifyToolResult("write", { path: "..foo/a.ts", content: "" }, false, undefined, cwd), "mutation", "a name that starts with two dots stays inside");
+  assert.equal(classifyToolResult("write", { path: join(tmpdir(), "notes.md"), content: "" }, false), "mutation", "with no project root the call counts, as before");
 });
 
 test("classifyToolResult separates reads, mutations, and checks", () => {

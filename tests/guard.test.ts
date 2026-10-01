@@ -521,6 +521,18 @@ test("effective directory: a keyword before a cd counts, and an unread change ho
   for (const command of held) assert.deepEqual(rmIds(command), ["rm-recursive-dangerous-target"], command);
 });
 
+test("effective directory: a cd to the home directory after then, do, or eval still holds the relative rm", async () => {
+  for (const command of [
+    "if cd ~; then rm -rf projects; fi",
+    "while cd ~; do rm -rf projects; break; done",
+    "cd /tmp/x && eval cd ~ && rm -rf projects",
+  ]) {
+    assert.deepEqual(rmIds(command), ["rm-recursive-dangerous-target"], `${command}: the target is read against the home directory`);
+    const verdict = await evaluateAction({ tool: "bash", input: { command }, cwd }, { config: judgedAction() });
+    assert.equal(verdict.level, "confirm", `${command}: the call is held`);
+  }
+});
+
 test("temp classification: a path that cannot be temp is classified without a file-system call", () => {
   const spy = spyOnFileSystem();
   try {
