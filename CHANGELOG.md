@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 0.90.0
+
 ### Changed
 
 - A config file that still sets `conscience.loadThreshold` or `learning.adaptiveThresholds` (documented in 0.74.1, removed since) now gets one config warning per key, from the user file and from a project file. The warning says the key was removed in 1.0 and is ignored, and what happens now. The key still has no effect. `docs/configuration.md` has a "Removed in 1.0" note.
