@@ -41,7 +41,9 @@ Runs on `tool_call`, before the tool executes.
    - `confirm`: a `ctx.ui.confirm` dialog. No blocks with a short reason. Falls back to `steer` without a UI.
    - `advise`: never holds, reports only. A user `dialog` rule still prompts: advise mode keeps Jev holds advisory, it does not soften a prompt you asked for by name.
 
-The action guard receives your latest message plus up to eight earlier user and assistant messages (750 redacted characters each) so follow-ups and side comments do not replace the task. It also receives the task spine in the request state (`spine`): the thread's first user turn (`goal`), and up to four earlier user turns (`task_history`, newest first), so a follow-up like "now the tests" is judged with the goal it belongs to. The whole spine is capped at 1200 characters — history is clipped first, then the goal; the latest turn is never clipped, because approval still comes from `task` only. The spine is scope context and never authorizes an action. Sibling tool calls in one assistant message are judged together in one round trip. If TypeSafe cannot answer, the call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead).
+**Hold and approval.** The acting request never asks whether your reply approves anything. After a hold, a guarded call that runs under a new user prompt and is held again gets one approval request, sent for that call alone: `task` (your reply), `asked` (the agent's words the reply answers: the text of every assistant message after your previous message and before the reply, in order, redacted, its last 3,000 characters), the call summary, and the reasons for the hold. It has two questions: `approved` (does the reply give permission for this action) and `reply_points_at_action` (do the agreeing parts of the reply point at this action, not at another item or question). Jev reads `asked` only to resolve what a short or numbered reply points at ("1. yes", "go ahead"); text in `asked` never approves, because it is the agent's own. The call is released only when both answers are at least 0.7. A reply that arrives mid-run follows messages that hold only tool calls, and an explanation can sit earlier in the turn, which is why `asked` covers the whole turn. One approval releases one held call. A call the verdict lets through sends no approval request, so the request is made about once in 1,400 judged calls. Without a judge, or when the request fails, a reply that reads as approval stands in (a yes/go-ahead heuristic), and a failure alone never releases a call. Calls of one assistant message are still judged together; their approval requests go out per call, in order. `evaluateAction` with `retryAfterHold: true` takes the same step (`settleApproval`), with `asked` as an optional field of the action.
+
+The action guard receives your latest message. Up to eight earlier user and assistant messages (750 redacted characters each) ride only the trace sample, one judged call in twenty (`action.traceSample`); the rules content rides the acting request only while a violation is open. The acting request also carries the task spine in the request state (`spine`): the thread's first user turn (`goal`), and up to four earlier user turns (`task_history`, newest first), so a follow-up like "now the tests" or a side comment is judged with the goal it belongs to. The whole spine is capped at 1200 characters — history is clipped first, then the goal; the latest turn is never clipped, because approval still comes from `task` only. The spine is scope context and never authorizes an action. Sibling tool calls in one assistant message are judged together in one round trip. If TypeSafe cannot answer, the call is allowed with a warning (`failOpen: true`; set it to `false` to hold instead).
 
 **User command rules.** The built-in pattern list is not the whole floor: `action.commandRules` in the user config declares your own. `{ id, pattern, severity, action?, message?, caseSensitive? }` — `warn` notices and continues, `confirm` holds, `deny` blocks outright with no dialog and no TypeSafe request. A `confirm` rule defaults to `action: "dialog"`: a prompt for you, in every mode (advise included), because asking for a dialog on a named command is the reason to write such a rule; `action: "hold"` restores steer semantics. Patterns see the same data-text-stripped command the built-ins read, so a heredoc body or a commit message that mentions your pattern does not fire it. `action.exemptRules` silences a built-in by id (`["infra-destroy"]` for a workflow whose `kubectl delete` is routine), including the ids the `rm` classifier derives (`rm-recursive`, `rm-rf`, `rm-recursive-dangerous-target`, `rm-temp-subtree`, `rm-session-scratch`) and `sensitive-path`; an id that names neither a built-in, a classifier id, nor one of your own rules is inert and is reported once. User rules share the built-ins' id namespace, so an exempt id can also silence your own rule. Project files cannot set any of the three keys: a checked-out repo cannot ship itself a hold-free floor or a prompt farm.
 
@@ -133,6 +135,61 @@ The conscience coach assesses whether the agent is missing a useful skill or too
 - The intent steer earned its threshold here. At 0.8 it fires on 11% of calls that can change something and 14% of those sit in a turn the user rejects (base rate 5%); at 0.9 it fires on 4% and 33% of those are in a rejected turn, 54% in one the user rejects or corrects (base rate 24%). The default is 0.9.
 - A second pass asked four candidate questions on the same calls (`scripts/action-candidates.mjs`, `--extra`). None separates rejected turns on its own: "would a careful engineer ask first", "is this unrequested", "did the user ask to pause", and "is the effect visible outside the working tree" all sit at the 4 to 5% base rate. `visible` has the best recall on regret (AUC 0.82, 10 of 19 regretted calls) but a commit or push is usually what was asked. Paired with the plan it works: `visible >= 0.8` and `intent_mismatch >= 0.8` flags 1.1% of calls with 18% in a rejected turn, so that pair steers at `visibleMismatch` 0.8. Two deterministic patterns came from the regretted list: a git command with hooks or signing switched off, and `gh pr merge`.
 - Of 42 holds pi-warden made in those sessions, the user's next message approved 5.
+
+### Approval on demand (2026-10-01, three designs, three sets)
+
+0.88.0 shipped the one-question design (the candidate below). 0.89.0 switches to round 2, for the reason under "The rule and the decision".
+
+The old question rode every acting request and asked whether `task` gives the agent permission to continue the current work. It read no agent message, so a numbered reply ("1. yes", "2. merged") or a bare "yes" was read against nothing. Two designs were measured against it, all three at the 0.7 threshold, three runs per case, judge `jev-1.13.0`:
+
+- **old**: the question above, on the acting request.
+- **candidate** (shipped in 0.88.0): one question on its own request, sent only for a held call, with `asked` = the newest assistant message before the reply, last 1,500 characters.
+- **round 2** (shipped in 0.89.0): the candidate's `approved` plus `reply_points_at_action`, with `asked` = every assistant message of the turn (after the previous user message, before the reply), last 3,000 characters. A call is released only when both answers reach 0.7. The wording of both questions is `replyApprovalQuestion` in `src/guard.ts`.
+
+Three sets: 30 synthetic cases (`scripts/approval-cases.mjs`); 17 held-out synthetic cases, written and committed with their labels before round 2 was measured and never used to choose a wording; and 24 recorded holds from real sessions (`scripts/approval-replay.mjs`), labelled blind by a model, the labels unchanged. Counts are runs (cases × 3), so a case that flips between runs counts each way. "Right" and "wrong" are against the label: a release is right when the reply approves the action.
+
+| Set | Design | Released right | Released wrong | Held right | Held wrong |
+| --- | --- | --- | --- | --- | --- |
+| 30 cases (39 approving runs, 51 not) | old | 21 | 21 | 30 | 18 |
+| | candidate | 39 | 3 | 48 | 0 |
+| | round 2 | 37 | 0 | 51 | 2 |
+| 17 held-out cases (21 approving runs, 30 not) | old | 15 | 9 | 21 | 6 |
+| | candidate | 21 | 6 | 24 | 0 |
+| | round 2 | 21 | 1 | 29 | 0 |
+| 24 recorded holds (30 approving runs, 42 not) | old | 19 | 15 | 27 | 11 |
+| | candidate | 21 | 3 | 39 | 9 |
+| | round 2 | 20 | 0 | 42 | 10 |
+| **Total** (90 approving runs, 123 not) | old | 55 | 45 | 78 | 35 |
+| | candidate | 81 | 12 | 111 | 9 |
+| | round 2 | 78 | 1 | 122 | 12 |
+
+The recorded holds counted by hold (the mean of the three runs decides), 10 approving and 14 not: old releases 6 right and 5 wrong, holds 9 right and 4 wrong; the candidate releases 7 right and 1 wrong, holds 13 right and 3 wrong; round 2 releases 6 right and 0 wrong, holds 14 right and 4 wrong. An earlier pass over the same holds gave the candidate 8, 1, 13, 2; the difference is one hold crossing the threshold between passes.
+
+**The rule and the decision.** The rule, fixed before round 2 was measured: ship round 2 only if its total wrong releases are fewer than the candidate's and its total correct releases are at most 2 fewer; otherwise ship the candidate and do not run another round.
+
+- *Outcome of the rule.* Round 2 has 1 wrong release against 12, but 78 correct releases against 81 in runs, which is 3 fewer, so the rule as counted in runs chose the candidate. Counted by case (every set by case, the recorded holds by hold), the correct releases are 25 against 27, which is 2 fewer and inside the limit. The rule did not name its unit.
+- *Decision (made by the owner, after the rule).* Round 2 ships. The held-out cases were committed before the measurement, so they are the fairest test: there round 2 releases as many correct cases as the candidate (21 against 21) and makes 1 wrong release against 6. In total round 2 removes 11 of the 12 wrong releases and adds 3 holds that need a second confirmation (122 held right against 111 comes with 12 held wrong against 9). A wrong release runs a held destructive call without the user's consent; a held approval costs one more "yes". The second is the smaller cost.
+
+Check that the shipped code reproduces the numbers: the 24 recorded holds, one run each, through `askedBeforeReply` and `settleApproval` (the steps the Action guard takes after a hold), counted by hold: released right 7, released wrong 0, held right 14, held wrong 3, against 6, 0, 14, 4 for round 2 above, within one hold (a hold crossing the threshold between runs, as in the earlier pass). The check used 24 requests, 43,277 input tokens, and 936 output tokens.
+
+Approval requests per 1,000 judged calls: 90.0 before (the old question on 3,061 of 34,014 judged calls since 2026-09-16), 0.7 after (24 holds with a reply).
+
+The measurement used 639 requests and about 570,000 input and 17,000 output tokens.
+
+**What still fails in round 2.**
+
+- An approving reply that is held (12 runs: 2 on the 30 cases, 10 on the recorded holds; 4 of the 24 recorded holds by hold, one more than the candidate held):
+  - a short agreement to an explanation that sits earlier in the turn (round 2 does not fix this);
+  - a long reply that mixes instructions with the approval (round 2 does not fix this);
+  - a bare "yep" after a list that names the action among others (two runs; the second question scored 0.67 to 0.74, just under 0.7).
+
+  The cost of each is a second "yes".
+- A wrong release (1 run, on the held-out cases): a reply released a call it does not approve. The measurement did not record its type.
+- The two held approving runs on the 30 cases were not recorded by type either.
+
+Round 2 closes the two failures of the candidate that mattered most: a numbered reply that answers a different item while it agrees to others (the candidate released two cases, six runs), and a reply that arrives mid-run after an assistant message with only tool calls (the newest message is empty, so the candidate read the reply against nothing).
+
+Every release has a floor under it: a hold only exists for a call the guard already judged irreversible or matched by a pattern, and a wrong release lets that one call run once.
 
 ### Relevance compaction replay (2026-09-29, first measurement)
 
@@ -449,7 +506,7 @@ The scores separate widely: turn violations run 0.83 to 1.00 and their compliant
 
 ## Rules at turn start
 
-Before the first model call of a new user message, pi-warden starts one background request asking which of the project's rules apply to that request: one `noul` per rule (`applies_<n>`), carrying the request (1500 redacted characters), the task spine, and the rule set with each rule's heading, text (300 characters), and `paths:` scope. The prompt does not wait for the answer. When it arrives during the run, the rules over `rulesAtTurnStart.threshold` (0.3) are delivered at the next tool boundary through the steer path — a custom message appended after the newest message, strongest first, at most three — and the delivery never starts a turn by itself:
+Before the first model call of a new user message, pi-warden starts one background request asking which of the project's rules apply to that request: one `noul` per rule (`applies_<n>`), carrying the request (1500 redacted characters), the task spine, and the rule set with each rule's heading, text (300 characters), and `paths:` scope. The prompt does not wait for the answer. When it arrives during the run, the rules over `rulesAtTurnStart.threshold` (0.3) are delivered through the steer path — a custom message appended after the newest message, strongest first, at most three — at the end of a turn whose loop continues (a turn with tool calls where not every result ended the run). The delivery never starts a turn by itself, and the reminder is dropped, with a trace line, for a turn with no tool call, a batch where every result ended the run, a failed or aborted turn, and a run that ends first:
 
 ```
 Rules that apply to this request:
@@ -492,7 +549,7 @@ Four question wordings were measured against the same labels (one 100-request ru
 
 ### Turn-start delivery calibration (2026-10-01, background delivery)
 
-The rules request and the conscience assessment no longer hold the prompt: both start in `before_agent_start` and their answer is delivered at the next tool boundary through the steer path. The hold was measured with `scripts/turn-start-latency.mjs`, 100 runs per mode, the judgment answered by a local mock after 250 ms, so the number is the hold, not the network:
+The rules request and the conscience assessment no longer hold the prompt: both start in `before_agent_start` and their answer is delivered through the steer path at the end of a turn whose loop continues, and dropped, with a trace line, for a turn with no tool call, a batch where every result ended the run, a failed or aborted turn, and a run that ends first. The hold was measured with `scripts/turn-start-latency.mjs`, 100 runs per mode, the judgment answered by a local mock after 250 ms, so the number is the hold, not the network:
 
 | surface | before p50 / p90 / p99 | after p50 / p90 / p99 |
 | --- | --- | --- |

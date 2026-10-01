@@ -25,7 +25,7 @@ What spans calls in a session lives in `ActionGuard` (hold, reply, retry approva
 
 From 1.0, semver covers exactly these exports of the package root (`pi-warden`), together with the types of their parameters and results:
 
-- Action guard: `evaluateAction`, `ActionGuard`, `describeAction`, `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `formatVerdict`, and the question sets `questions`, `intentQuestion`, `visibleQuestion`, `slopQuestions`, `approvalQuestion`, `securityQuestion`, `regretQuestions`.
+- Action guard: `evaluateAction`, `ActionGuard`, `describeAction`, `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `formatVerdict`, and the question sets `questions`, `intentQuestion`, `visibleQuestion`, `slopQuestions`, `approvalQuestion`, `securityQuestion`, `regretQuestions`, and the approval step for a held call: `settleApproval`, `askApproval`, `buildApprovalRequest`, `replyApprovalQuestion`, `describeAsked`, `APPROVAL_THRESHOLD`. `replyApprovalQuestion` holds both questions of the approval request, `approved` and `reply_points_at_action`; a call is released only when both reach `APPROVAL_THRESHOLD`, and `askApproval` returns both scores (`approved`, `pointsAtAction`; also `Judgment.pointsAtAction`). `ActionGuard` and `evaluateAction` with `retryAfterHold` both call `settleApproval`; the field `asked` of `Conversation` and of `ActionInput` is the agent's words the user's reply answers: the text of every assistant message of the turn before it, in order, last 3,000 characters.
 - Rules: `evaluateRules`, `RuleStore`, `RulesGuard`, `parseRules`, `matchGlob`.
 - Redaction: `redact`, `syntheticish`, `partitionSecrets`.
 - Stuck detector: `AttemptWindow`, `makeAttempt`, `evaluateStuck`.

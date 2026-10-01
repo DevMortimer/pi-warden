@@ -10,7 +10,7 @@ import { defaultConfig } from "../src/config.js";
 import type { RulesConfig } from "../src/config.js";
 import { editRulesFor, evaluateRules, formatRuleSetDetails, parseRules, RuleStore, skipReason, turnRulesFor } from "../src/rules.js";
 import type { Rule } from "../src/rules.js";
-import { diffSince, evaluateTurnRun, snapshotTree, turnSteer, TURN_PATH } from "../src/turn-rules.js";
+import { BROUGHT_PROBE_LIMIT, diffSince, evaluateTurnRun, snapshotTree, turnSteer, TURN_PATH } from "../src/turn-rules.js";
 
 let repo: string;
 let notRepo: string;
@@ -228,4 +228,158 @@ test("turnSteer: one steer covers the turn verdict and the missed files; no find
   assert.match(steer, /the change to src\/a\.ts \(made by a command, not an edit\)/);
   assert.equal(steer.split("pi-warden:").length, 2, "one steer for the run");
   assert.equal(turnSteer([{ ...turn, findings: [] }], new Map()), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Changes git brought in during the run are not the agent's.
+
+const OLD = "2020-01-01T00:00:00Z";
+
+/** A fresh repository with one seed commit, a committer-date-aware `git`, and the run-end diff against a start snapshot. */
+async function scene() {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-brought-"));
+  const run = (args: string[], date?: string) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
+    cwd: dir, stdio: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...(date ? { GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date } : {}) },
+  }).toString();
+  run(["init", "-q", "-b", "main"]);
+  await writeFile(join(dir, "README.md"), "readme\n");
+  await writeFile(join(dir, "CHANGELOG.md"), "# Changelog\n");
+  run(["add", "."]);
+  run(["commit", "-q", "-m", "seed"], OLD);
+  const diffPaths = async (start: Awaited<ReturnType<typeof snapshotTree>>) => {
+    assert.ok(start.tree);
+    const diff = await diffSince(dir, start.tree, 8000, { head: start.head, startedAt: start.startedAt });
+    return diff!.files.map(file => file.path).sort();
+  };
+  return { dir, run, diffPaths, cleanup: () => rm(dir, { recursive: true, force: true }) };
+}
+
+test("diffSince: a fast-forward pull of an older commit gives no verdict for its files", async () => {
+  const s = await scene();
+  try {
+    s.run(["checkout", "-q", "-b", "upstream"]);
+    await writeFile(join(s.dir, "CHANGELOG.md"), "# Changelog\n## 1.2.0\n");
+    s.run(["commit", "-q", "-am", "bump"], OLD);
+    s.run(["checkout", "-q", "main"]);
+    const start = await snapshotTree(s.dir);
+    s.run(["merge", "-q", "--ff-only", "upstream"]);
+    assert.deepEqual(await s.diffPaths(start), []);
+    const diff = await diffSince(s.dir, start.tree!, 8000);
+    assert.deepEqual(diff!.files.map(file => file.path), ["CHANGELOG.md"], "without the start HEAD the pulled file counts, as before");
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: a merge of an older branch without conflicts gives no verdict for its files", async () => {
+  const s = await scene();
+  try {
+    s.run(["checkout", "-q", "-b", "feature"]);
+    await writeFile(join(s.dir, "feature.txt"), "feature\n");
+    s.run(["add", "feature.txt"]);
+    s.run(["commit", "-q", "-m", "feature"], OLD);
+    s.run(["checkout", "-q", "main"]);
+    await writeFile(join(s.dir, "README.md"), "readme two\n");
+    s.run(["commit", "-q", "-am", "main work"], OLD);
+    const start = await snapshotTree(s.dir);
+    s.run(["merge", "-q", "--no-ff", "-m", "Merge feature", "feature"]);
+    assert.deepEqual(await s.diffPaths(start), []);
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: a commit made during the run that bumps the version and changes src is still judged", async () => {
+  const s = await scene();
+  try {
+    s.run(["checkout", "-q", "-b", "upstream"]);
+    await writeFile(join(s.dir, "pulled.txt"), "pulled\n");
+    s.run(["add", "pulled.txt"]);
+    s.run(["commit", "-q", "-m", "pulled"], OLD);
+    s.run(["checkout", "-q", "main"]);
+    const start = await snapshotTree(s.dir);
+    s.run(["merge", "-q", "--ff-only", "upstream"]);
+    await writeFile(join(s.dir, "CHANGELOG.md"), "# Changelog\n## 9.9.9\n");
+    await writeFile(join(s.dir, "src.ts"), "export const x = 1;\n");
+    s.run(["add", "."]);
+    s.run(["commit", "-q", "-m", "bump version"]);
+    assert.deepEqual(await s.diffPaths(start), ["CHANGELOG.md", "src.ts"], "the agent's commit is judged, the pulled file is not");
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: a pull together with an uncommitted change judges only that change", async () => {
+  const s = await scene();
+  try {
+    s.run(["checkout", "-q", "-b", "upstream"]);
+    await writeFile(join(s.dir, "CHANGELOG.md"), "# Changelog\n## 1.2.0\n");
+    await writeFile(join(s.dir, "pulled.txt"), "pulled\n");
+    s.run(["add", "."]);
+    s.run(["commit", "-q", "-m", "pulled"], OLD);
+    s.run(["checkout", "-q", "main"]);
+    const start = await snapshotTree(s.dir);
+    s.run(["merge", "-q", "--ff-only", "upstream"]);
+    await writeFile(join(s.dir, "README.md"), "edited by the agent\n");
+    await writeFile(join(s.dir, "untracked.txt"), "new\n");
+    assert.deepEqual(await s.diffPaths(start), ["README.md", "untracked.txt"]);
+    await writeFile(join(s.dir, "pulled.txt"), "pulled, then edited\n");
+    assert.deepEqual(await s.diffPaths(start), ["README.md", "pulled.txt", "untracked.txt"], "an uncommitted edit of a pulled file is judged");
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: git checkout <old> -- file is still judged, and so is a conflict the agent resolved", async () => {
+  const s = await scene();
+  try {
+    s.run(["checkout", "-q", "-b", "old"]);
+    await writeFile(join(s.dir, "README.md"), "from the old branch\n");
+    s.run(["commit", "-q", "-am", "old readme"], OLD);
+    s.run(["checkout", "-q", "main"]);
+    await writeFile(join(s.dir, "README.md"), "from main\n");
+    s.run(["commit", "-q", "-am", "main readme"], OLD);
+    const start = await snapshotTree(s.dir);
+    s.run(["checkout", "old", "--", "README.md"]);
+    assert.deepEqual(await s.diffPaths(start), ["README.md"], "the old content came by a command, not by a pull");
+    s.run(["checkout", "main", "--", "README.md"]);
+    assert.throws(() => s.run(["merge", "-q", "old"]));
+    await writeFile(join(s.dir, "README.md"), "resolved by hand\n");
+    s.run(["add", "README.md"]);
+    s.run(["commit", "-q", "-m", "Merge old"]);
+    assert.deepEqual(await s.diffPaths(start), ["README.md"], "a resolved conflict is the agent's work");
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: a git failure in the brought filter is returned in the notes and every file is judged", async () => {
+  const s = await scene();
+  try {
+    s.run(["checkout", "-q", "-b", "upstream"]);
+    await writeFile(join(s.dir, "CHANGELOG.md"), "# Changelog\n## 1.2.0\n");
+    s.run(["commit", "-q", "-am", "bump"], OLD);
+    s.run(["checkout", "-q", "main"]);
+    const start = await snapshotTree(s.dir);
+    assert.ok(start.tree);
+    s.run(["merge", "-q", "--ff-only", "upstream"]);
+    const diff = await diffSince(s.dir, start.tree!, 8000, { head: "0".repeat(40), startedAt: start.startedAt });
+    assert.deepEqual(diff!.files.map(file => file.path), ["CHANGELOG.md"], "the filter failed, so the pulled file is judged");
+    assert.equal(diff!.notes.length, 1);
+    assert.match(diff!.notes[0]!, /^git-brought filter failed: .+; every changed file was judged$/);
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: over the probe limit only the newest commits are probed, and the cut is named in the notes", async () => {
+  const s = await scene();
+  try {
+    // One commit per file, oldest first; the files are 10 and the commits are more than the limit allows per file.
+    const files = 10;
+    const commits = Math.floor(BROUGHT_PROBE_LIMIT / files) + 50;
+    s.run(["checkout", "-q", "-b", "upstream"]);
+    const stream: string[] = [];
+    for (let index = 0; index < commits; index++) {
+      const content = `content ${index}\n`;
+      stream.push(`commit refs/heads/upstream\ncommitter t <t@example.com> ${1577836800 + index} +0000\ndata 1\nc\n${index === 0 ? "from refs/heads/main\n" : ""}M 100644 inline f${index % files}.txt\ndata ${content.length}\n${content}\n`);
+    }
+    execFileSync("git", ["fast-import", "--force", "--quiet"], { cwd: s.dir, input: stream.join("") });
+    s.run(["checkout", "-q", "main"]);
+    const start = await snapshotTree(s.dir);
+    assert.ok(start.tree);
+    s.run(["merge", "-q", "--ff-only", "upstream"]);
+    const diff = await diffSince(s.dir, start.tree!, 8000, { head: start.head, startedAt: start.startedAt });
+    assert.deepEqual(diff!.files, [], "the newest commits hold the current content of every file, so all are still found as brought");
+    assert.equal(diff!.notes.length, 1);
+    assert.match(diff!.notes[0]!, new RegExp(`^git-brought filter cut: ${files} files × ${commits} older commits is over the ${BROUGHT_PROBE_LIMIT}-probe limit, so only the newest ${BROUGHT_PROBE_LIMIT / files} commits were probed$`));
+  } finally { await s.cleanup(); }
 });

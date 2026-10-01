@@ -12,6 +12,52 @@ How to keep this current: add the entry in the same pull request as the change, 
 - A/B batch scheduling (`eval/batch.mjs`, `scripts/eval-ab.mjs`), pre-registration v3 revised before any batch run: the queue runs in blocks (one per task x repeat, repeat by repeat) with the cell order of each block shuffled by a seeded generator (`--seed`) and the block's runs dispatched one after another, so paired runs share a price window and the machine's load; `--resume DIR` continues a stopped batch from its `runs.json`, which is now rewritten after every run; a run that fails on an agent-model API error is re-run after 1 and 5 minutes, then recorded with `infraError` and its whole block left out of the metrics, and 5 such failures in a row stop the batch (exit code 4); a Jev request still in flight when a run's process exits no longer stops the batch (recorded as `abandonedJevRequests`); `--jev-usd-cap N` stops the batch at N Jev dollars (exit code 3); the launch commands run under `caffeinate -i`. Repo tooling; rides along with the next release.
 - A/B batch corrections, registration v3 corrected before any batch run: a run is an infrastructure failure only when it ended on the error (its last assistant message, or the last of any turn, stopped on an error, or pi exited before any assistant message); an error pi retried and got past is a valid run, counted as `providerErrorsRecovered`; after an exit-4 stop all 5 runs of the streak run again on resume (an isolated failure stays excluded); a run killed at the timeout with an unreadable Jev ledger has an unknown Jev cost, so it leaves the dollar metric only and the report counts it; `--resume` refuses `--typesafe-cap`; `buildReport` and `buildWeakReport` drop excluded blocks themselves. Repo tooling; rides along with the next release.
 
+## 0.89.0
+
+### Changed
+
+- Approval round 2 replaces the one-question design of 0.88.0. The approval request of a held call carries a second question, `reply_points_at_action` (do the agreeing parts of the reply point at this action, not at another item or question), and the call is released only when both `approved` and `reply_points_at_action` are at least 0.7. `replyApprovalQuestion` holds both questions; `askApproval` also returns `pointsAtAction`, and `Judgment.pointsAtAction` records it. No exported name changed.
+- `asked` is the text of every assistant message after the previous user message and before the reply, in order, redacted, last 3,000 characters (before: the newest assistant message, last 1,500). A reply that arrives mid-run follows messages that hold only tool calls, and an explanation can sit earlier in the turn. The approval request now sends up to 3,000 redacted characters of the agent's turn; the consent text (`disclosure`) and `docs/data-handling.md` say so.
+- Measured on 30 cases, 17 held-out cases, and 24 recorded holds (runs; `docs/guards.md`): wrong releases fall from 12 to 1 and correct releases from 81 to 78; held approvals rise from 9 to 12. The pre-set rule counted in runs chose the one-question design (3 fewer correct releases, 2 allowed); the owner shipped round 2 because the held-out cases show 1 wrong release against 6 at equal correct releases, and a wrong release costs more than a second "yes".
+
+## 0.88.0
+
+### Added
+
+- Approval on demand. The acting request no longer asks whether the reply approves; a call that is held again under a new user prompt gets one approval request, with the reply and the agent message it answers (`asked`: the newest assistant message before the reply, redacted, its last 1,500 characters). The call is released when `approved` is at least 0.7. Exports: `settleApproval`, `askApproval`, `buildApprovalRequest`, `replyApprovalQuestion`, `describeAsked`, `APPROVAL_THRESHOLD`; `asked` on `Conversation` and `ActionInput`.
+- `scripts/approval-cases.mjs`, `scripts/approval-designs.mjs`, and `scripts/approval-replay.mjs` measure the old question, the shipped one, and a second design that was not shipped, on 30 synthetic cases, 17 held-out cases, and recorded holds. `docs/guards.md` has the tables and the rule that chose the design.
+
+### Changed
+
+- `evaluateAction` with `retryAfterHold` takes the same approval step as the Action guard: the acting request does not carry `approved`; when the final verdict is a hold, one approval request follows with `asked` (optional field of the action), and without a judge or when the request fails a reply that reads as approval stands in. Before, it asked the combined question on the acting request and read no agent message. No exported name changed.
+- Approval requests fall from 90.0 to 0.7 per 1,000 judged calls (measured on recorded sessions since 2026-09-16). Measured on recorded holds and cases, wrong releases fall from 45 to 12 and correct releases rise from 55 to 81 (runs; `docs/guards.md`).
+- The consent text (`disclosure`) and `docs/data-handling.md` say what the approval request sends.
+
+## 0.87.0
+
+### Fixed
+
+- The end-of-run rules check no longer judges changes that git brought in. When HEAD moved during the run (a `git pull`, a merge), a changed file with no uncommitted change at the end, whose content equals its content in a commit the run did not make and that was committed before the run began, is skipped. Edits, uncommitted command changes (`git checkout <old> -- file` included), commits made during the run, and conflicts the agent resolved are still judged. When HEAD does not move, the check adds one `git rev-parse`; after a pull it adds a few git calls, and it saves the per-file diffs of the skipped files.
+- The done-check no longer counts a `write` or `edit` whose path lies outside the project root as a code change.
+- `/warden test` sends one request. It no longer passes `action.traceSample`, so the first judged call of a process is not also sent with the trace sample, and the headless branch that filtered a sampled verdict is gone.
+- A background notice (the turn-start rules reminder, a conscience tip) no longer causes a model call of its own. It waits for `turn_end` and is steered only when the turn ran tool calls and not every result set `terminate`, the one case where Pi's loop makes another call anyway. Otherwise it is dropped and the trace says why, so it never stays in Pi's steering queue for the next run.
+- The test "session scratch: a symlink under /tmp pointing outside the temp directory stays held" passes wherever the checkout lives.
+- A background notice is no longer dropped on a host that does not send `tool_execution_end`. The turn's tool-call count now comes from `turn_end` (`toolResults`, or the tool calls in the assistant message when that field is absent); `tool_execution_end` is read only for `terminate`, and a batch counts as terminated only when the host reported a result for every call and every result set `terminate`.
+- The git-brought filter of the end-of-run rules check no longer swallows a git failure. The failure reaches the run-end trace, which says the filter failed, gives the error message, and says that every changed file was judged.
+- The git-brought filter probes at most 20,000 file × commit pairs. With more, only the newest commits that fit are probed and the trace says the filter was cut; the newest commits find almost every match. Measured with 300 files and 1,000 older commits, the run-end diff takes about 0.3 s instead of about 2.3 s.
+
+### Changed
+
+- The consent text (`disclosure`) and `docs/data-handling.md` say what is sent now: earlier messages and the rules file content ride only the sampled request (one judged call in twenty, `action.traceSample`); the rules content rides the acting request only while a rule violation is open; the turn-start rules request is not sent for short continuations and relayed child reports; when the request fails, times out, or no rule passes the threshold, it was already sent and nothing is appended.
+- The text of the turn-start rules reminder, the conscience tip, `docs/configuration.md`, and `docs/guards.md` says when a notice is delivered: at the end of a turn whose loop continues, and dropped for a turn with no tool call, a batch where every result ended the run, a failed or aborted turn, and a run that ends first. The trace line no longer says "next tool boundary".
+- `docs/configuration.md` and `docs/guards.md` say what the action request carries: earlier messages and the rules content ride only the trace sample (one judged call in twenty, `action.traceSample`), and the rules content rides the acting request only while a violation is open.
+
+### Tests
+
+- A `cd` to the home directory after `then`, `do`, and `eval` still holds the relative `rm -rf` that follows.
+- The host test counts the new `tool_execution_end` hook (15 hooks).
+- New tests cover a host that sends `turn_end` with tool results and no `tool_execution_end`, the tool-call fallback to the assistant message, a `terminate` result for only some calls, a git failure in the filter (unit and run-end trace), and the probe-limit cut.
+
 ## 0.86.1
 
 ### Added

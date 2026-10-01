@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,7 +12,7 @@ import { initSchema, queryHoldsForProject } from "../src/learning.js";
 import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
 import { defaultConfig } from "../src/config.js";
 import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
-import { _testSetIndexRunning, assistantPlan } from "../src/extension.js";
+import { _testSetIndexRunning, askedBeforeReply, assistantPlan } from "../src/extension.js";
 import { SHELL_RULES_CHECKS } from "../src/turn-rules.js";
 import { indexPath } from "../src/index-cmd.js";
 
@@ -118,8 +118,8 @@ const toolResult = (toolName: string, input: Record<string, unknown>, output: st
   fire("tool_result", { toolName, toolCallId: "call-1", input, content: [{ type: "text", text: output }], isError: failed, details: toolName === "bash" ? { exitCode: failed ? 1 : 0 } : undefined }, ctx);
 const agentEnd = (finalText: string, ctx = context()) => fire("agent_end", { messages: [{ role: "user", content: prompt ?? "" }, { role: "assistant", content: [{ type: "text", text: finalText }], stopReason: "stop" }] }, ctx);
 const newPrompt = (text: string, ctx = context()) => { prompt = text; return fire("before_agent_start", { prompt: text }, ctx).then(() => fire("agent_start", {}, ctx)); };
-/** Fire before_agent_start with skills in systemPromptOptions, let the background assessment settle, and reach the next
- * tool boundary, which is where a passing tip is delivered. The delivered tip comes back in the hook's old message
+/** Fire before_agent_start with skills in systemPromptOptions, let the background assessment settle, and reach the
+ * end of a turn whose loop continues, which is where a passing tip is delivered. The delivered tip comes back in the hook's old message
  * shape, so a test reads delivery the same way it reads a refusal. */
 const promptWithSkills = async (text: string, skills: Array<{ name: string; description: string; filePath: string; baseDir: string; sourceInfo: { path: string; source: string; scope: string; origin: string }; disableModelInvocation: boolean }>, ctx = context()) => {
   prompt = text;
@@ -127,8 +127,14 @@ const promptWithSkills = async (text: string, skills: Array<{ name: string; desc
   await fire("before_agent_start", { prompt: text, systemPromptOptions: { cwd: temporary, skills } }, ctx);
   await settleBackground();
   await toolCall("read", { path: "src/index.ts" }, ctx);
+  await toolTurn([{}], "toolUse", ctx);
   const delivered = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience");
   return delivered.length > before ? { message: delivered.at(-1)!.message } : undefined;
+};
+/** The end of a turn that ran `results.length` tool calls: Pi emits each call's `tool_execution_end`, then `turn_end`. */
+const toolTurn = async (results: Array<{ terminate?: boolean }> = [{}], stopReason = "toolUse", ctx = context()) => {
+  for (const [index, result] of results.entries()) await fire("tool_execution_end", { toolCallId: `call-${index + 1}`, toolName: "read", result: { content: [], ...result }, isError: false }, ctx);
+  await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason }, toolResults: results.map((_, index) => ({ role: "toolResult", toolCallId: `call-${index + 1}` })) }, ctx);
 };
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
@@ -221,7 +227,7 @@ before(async () => {
     const answers: Record<string, unknown> = {};
     for (const [id, question] of Object.entries(body.questions)) {
       const value = nextAnswers[id];
-      if (question.type === "noul") answers[id] = { type: "noul", noul: typeof value === "number" ? value : (id === "should_proceed" ? 1.0 : 0.1) };
+      if (question.type === "noul") answers[id] = { type: "noul", noul: typeof value === "number" ? value : (id === "should_proceed" || id === "reply_points_at_action" ? 1.0 : 0.1) };
       else if (question.type === "choice") {
         const keys = Object.keys(question.criteria as Record<string, unknown>);
         const pick = typeof value === "string" ? value : keys[0]!;
@@ -336,7 +342,11 @@ test("action rules context is disclosed, rides the request only while a violatio
     assert.equal(off?.state.rulesSource, undefined);
 
     const { disclosure } = await import("../src/extension.js");
-    assert.match(disclosure, /unless the rules guard is off/i);
+    assert.match(disclosure, /unless the rules guard is on/i);
+    assert.match(disclosure, /one judged action call in twenty .*up to eight redacted earlier user\/assistant text messages and the resolved active rules file content/i, "earlier messages and the rules content ride the sample");
+    assert.match(disclosure, /only while a rule violation is open/i);
+    assert.match(disclosure, /short continuation or a relayed child report, which send nothing/i);
+    assert.doesNotMatch(disclosure, /with every action request/i);
   } finally { await rm(rulesFile); }
 });
 
@@ -1084,13 +1094,16 @@ test("session scratch: mkdir -p of a directory that already existed records noth
 }));
 
 test("session scratch: a symlink under /tmp pointing outside the temp directory stays held", async () => withScratchBase(async base => {
+  // A real directory that is outside every temp root wherever the checkout lives (the working directory may be under /tmp).
+  const outside = [homedir(), "/usr", "/opt"].map(path => realpathSync(path)).find(path => ![realpathSync(tmpdir()), "/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"].some(root => path === root || path.startsWith(`${root}/`)))!;
+  assert.ok(outside, "a directory outside the temp roots exists");
   const dir = join(base, "dir");
   await runCall("bash", { command: `mkdir -p ${dir}` }, () => mkdir(dir));
   const inside = join(dir, "out");
-  await symlink(process.cwd(), inside);
+  await symlink(outside, inside);
   assert.equal((await toolCall("bash", { command: `rm -rf ${inside}` }))?.block, true, "a link inside a recorded directory resolves outside");
   const printed = join(base, "link");
-  await runCall("bash", { command: `ln -s ${process.cwd()} ${printed} && echo ${printed}` }, () => symlink(process.cwd(), printed), `${printed}\n`);
+  await runCall("bash", { command: `ln -s ${outside} ${printed} && echo ${printed}` }, () => symlink(outside, printed), `${printed}\n`);
   assert.equal((await toolCall("bash", { command: `rm -rf ${printed}` }))?.block, true, "a printed link resolves outside and is not recorded");
 }));
 
@@ -1283,29 +1296,15 @@ test("trace-only off-task removes only its structured reason from mixed headless
   assert.doesNotMatch(delivered, /off-task 0\.95 \(unrelated to the request/, "no mixed delivery carries the trace-only reason");
 });
 
-test("headless /warden test filters trace-only off-task delivery but keeps the full trace", async () => {
+test("/warden test as the first judged call sends exactly one request, with no trace sample", async () => {
   await writeConfig(JSON.stringify({ typesafe: true, action: { traceSample: 1 }, ...STACK_BAR }));
-  const headless = context({ hasUI: false });
   nextAnswers = { irreversible: 0.95, off_task: 0.95, scope: "unrelated", mutates: 0.95 };
 
-  await runCommand("test", headless);
+  await runCommand("test", context({ hasUI: false }));
 
-  const delivered = sentMessages.map(({ message }) => message.content).join("\n");
-  assert.ok(sentMessages.length >= 1, "filtering one reason does not silence the synthetic report");
-  assert.match(delivered, /irreversible 0\.95/, "the independent risk still reaches the agent");
-  assert.match(delivered, /warden · bash · irreversible 0\.95 ·/, "the formatted summary retains the independent judgment, not just its reason");
-  assert.doesNotMatch(delivered, /off[- ]task/i, "no trace-only off-task diagnostic reaches the agent-visible report");
-  assert.doesNotMatch(delivered, /trace-only/);
-  assert.doesNotMatch(delivered, /unrelated/, "the trace-only scope token is hidden too");
-
-  await runCommand("trace", headless);
-  const trace = sentMessages.at(-1)!.message.content;
-  assert.match(trace, /irreversible 0\.95/, "the trace keeps the independent risk");
-  assert.match(trace, /off-task 0\.95 \(unrelated to the request; trace-only until AUC clears 0\.51\)/, "the trace keeps the off-task diagnostic");
-  assert.match(trace, /jev: irreversible 0\.95 · off-task 0\.95 · unrelated \(0\.80\).*jev-1\.13\.0/, "the trace retains the complete judgment");
-
-  await runCommand("test");
-  assert.ok(notices.some(notice => /warden · bash · irreversible 0\.95 · off-task 0\.95 · unrelated/.test(notice.text)), "interactive diagnostics still render the full judgment");
+  assert.equal(requests.length, 1, "one synthetic request, even with every call sampled");
+  assert.ok(!("off_task" in requests[0]!.questions) && !("scope" in requests[0]!.questions), "the trace-only questions are not asked");
+  assert.deepEqual(requests[0]!.state.context, [], "no earlier messages ride along");
 });
 
 test("trace-only off-task does not soften an independent confirm decision", async () => {
@@ -3127,7 +3126,7 @@ test("conscience: no-tool lifecycle fixture for recommend mode", async () => {
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "the tip is delivered at the next tool boundary in recommend mode");
+  assert.ok(result?.message, "the tip is delivered at the end of a turn whose loop continues in recommend mode");
   assert.match(result!.message!.content, /impeccable/i, "the message should recommend the impeccable skill");
   assert.match(result!.message!.content, /Consider using/, "the message should suggest consideration");
 });
@@ -3151,7 +3150,7 @@ test("conscience: no-tool lifecycle fixture for load mode", async () => {
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "the loaded skill body is delivered at the next tool boundary in load mode");
+  assert.ok(result?.message, "the loaded skill body is delivered at the end of a turn whose loop continues in load mode");
   assert.ok(result!.message!.content.length > 100, "load mode should supply the full skill body");
   assert.match(result!.message!.content, /impeccable/);
 });
@@ -3184,7 +3183,7 @@ test("conscience: a lowered threshold delivers one tip at the next tool boundary
   const result = await promptWithSkills("design a landing page", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "the tip is delivered at the next tool boundary");
+  assert.ok(result?.message, "the tip is delivered at the end of a turn whose loop continues");
   assert.equal(result!.message!.customType, "pi-warden-conscience");
   assert.match(result!.message!.content, /impeccable/);
   const delivered = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience");
@@ -4973,7 +4972,93 @@ test("waste: the session tip is off by default and is appended to the prompt onc
   assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 1, "the trace records the tip delivery once per session");
 });
 
-test("rules at turn start: the prompt does not wait for the judgment, and the reminder reaches the next tool boundary through the steer path", async () => {
+/** A run whose turn-start reminder is ready (judged, applies) while the run streams; returns the messages sent after it. */
+async function readyReminder(run: () => Promise<void>) {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    nextAnswers = { ...nextAnswers, applies_0: 0.9 };
+    const before = answeredRequests;
+    const sentBefore = sentMessages.length;
+    await fire("before_agent_start", { prompt: "Read the config module" });
+    await fire("agent_start", {});
+    await waitFor(() => answeredRequests > before, "the background rules judgment");
+    await tick();
+    await run();
+    const sent = sentMessages.slice(sentBefore);
+    await runCommand("trace", context({ hasUI: false }));
+    return { sent, trace: sentMessages.at(-1)!.message.content as string };
+  } finally {
+    await rm(rules, { force: true });
+  }
+}
+
+test("background notice: a batch where every result sets terminate gets no steer, and the trace says why", async () => {
+  const { sent, trace } = await readyReminder(async () => {
+    await toolCall("read", { path: "src/config.ts" });
+    await toolTurn([{ terminate: true }, { terminate: true }]);
+    await agentEnd("");
+  });
+  assert.equal(sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0, "no steer, so no model call of its own");
+  assert.match(trace, /rules · turn start · dropped/);
+  assert.match(trace, /every tool result in the batch ended the run/);
+});
+
+test("background notice: one result without terminate in the batch keeps the loop going, so the notice is steered", async () => {
+  const { sent } = await readyReminder(async () => {
+    await toolTurn([{ terminate: true }, {}]);
+  });
+  const delivered = sent.filter(entry => entry.message.customType === "pi-warden-rules");
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0]!.options?.deliverAs, "steer");
+});
+
+test("background notice: a turn with no tool call ends the run, so the notice is dropped, not steered", async () => {
+  const { sent, trace } = await readyReminder(async () => {
+    await toolTurn([], "stop");
+    await agentEnd("done");
+  });
+  assert.equal(sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0);
+  assert.match(trace, /the turn made no tool call/);
+});
+
+test("background notice: a host that sends turn_end with tool results and no tool_execution_end still delivers the notice", async () => {
+  const { sent } = await readyReminder(async () => {
+    await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason: "toolUse" }, toolResults: [{ role: "toolResult" }, { role: "toolResult" }] });
+  });
+  const delivered = sent.filter(entry => entry.message.customType === "pi-warden-rules");
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0]!.options?.deliverAs, "steer");
+});
+
+test("background notice: without toolResults on turn_end the tool calls in the assistant message are counted", async () => {
+  const { sent } = await readyReminder(async () => {
+    await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason: "toolUse", content: [{ type: "text", text: "reading" }, { type: "toolCall", id: "call-1", name: "read", arguments: {} }] } });
+  });
+  assert.equal(sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 1);
+});
+
+test("background notice: a terminate result for only some of the calls keeps the loop going", async () => {
+  const { sent } = await readyReminder(async () => {
+    await fire("tool_execution_end", { toolCallId: "call-1", toolName: "read", result: { content: [], terminate: true }, isError: false });
+    await fire("turn_end", { turnIndex: 1, message: { role: "assistant", stopReason: "toolUse" }, toolResults: [{ role: "toolResult" }, { role: "toolResult" }] });
+  });
+  assert.equal(sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 1);
+});
+
+test("background notice: an aborted turn drops the notice, and a nested call is not part of the batch", async () => {
+  const aborted = await readyReminder(async () => { await toolTurn([{}], "aborted"); });
+  assert.equal(aborted.sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0);
+  assert.match(aborted.trace, /failed or was aborted/);
+  const nested = await readyReminder(async () => {
+    await fire("tool_execution_end", { toolCallId: "call-1/1", parentToolCallId: "call-1", toolName: "read", result: { content: [] }, isError: false });
+    await toolTurn([{ terminate: true }]);
+  });
+  assert.equal(nested.sent.filter(entry => entry.message.customType === "pi-warden-rules").length, 0, "the nested call did not make the batch continue");
+});
+
+test("rules at turn start: the prompt does not wait for the judgment, and the reminder is steered at the end of a turn whose loop continues", async () => {
   await curatorConfig();
   const rules = join(temporary, "pi-warden.md");
   await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n\n# House prose\nNo em-dashes in documents.\n");
@@ -4986,14 +5071,16 @@ test("rules at turn start: the prompt does not wait for the judgment, and the re
     const result = await fire("before_agent_start", { prompt: "Read the config module and tighten the retry default" });
     const held = Date.now() - started;
     assert.equal(result, undefined, "nothing rides back from before_agent_start");
-    assert.equal(sentMessages.length, sentBefore, "nothing is delivered before a tool boundary");
+    assert.equal(sentMessages.length, sentBefore, "nothing is delivered before the end of a turn");
     assert.ok(held < 250, `before_agent_start held the prompt ${held} ms while the judge was still thinking`);
     releaseJudge?.();
     await waitFor(() => answeredRequests > before, "the background rules judgment");
     await tick();
     await toolCall("read", { path: "src/config.ts" });
+    assert.equal(sentMessages.length, sentBefore, "a tool call alone delivers nothing: the notice waits for the end of the turn");
+    await toolTurn();
     const delivered = sentMessages.slice(sentBefore);
-    assert.equal(delivered.length, 1, "one message at the tool boundary");
+    assert.equal(delivered.length, 1, "one message when the turn ends and the loop goes on");
     assert.equal(delivered[0]!.message.customType, "pi-warden-rules");
     assert.equal(delivered[0]!.message.content, "Rules that apply to this request:\n- No hardcoded secrets: Source code must not contain passwords or API keys.", "only the rule that passed the threshold is named, heading and first line");
     assert.equal(delivered[0]!.options?.deliverAs, "steer", "the existing steer path carries it, so Pi appends it after the newest message");
@@ -5003,7 +5090,7 @@ test("rules at turn start: the prompt does not wait for the judgment, and the re
     assert.deepEqual(state.rules.map(rule => rule.rule), ["No hardcoded secrets", "House prose"], "every rule is asked about, so the ones left out are left out on the answer");
     assert.ok(!("task" in state), "the curator's own state is the request and the rules, not an action summary");
     await runCommand("trace", context({ hasUI: false }));
-    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · 1 rule delivered at the next tool boundary/);
+    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · 1 rule delivered at the end of a turn whose loop continued/);
   } finally {
     await rm(rules, { force: true });
   }
@@ -5069,7 +5156,7 @@ test("rules at turn start: a run that ends before delivery drops the reminder an
     await runCommand("trace", context({ hasUI: false }));
     assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · dropped/);
     assert.match(sentMessages.at(-1)!.message.content, /run ended before the answer arrived/);
-    // The other order: the answer lands during the run and no tool boundary follows before the end.
+    // The other order: the answer lands during the run and no continuing turn ends before the run does.
     const queued = answeredRequests;
     await fire("before_agent_start", { prompt: "Read the config module" });
     await fire("agent_start", {});
@@ -5301,7 +5388,7 @@ const steersOnly = () => sentMessages.filter(message => message.message.customTy
  * A git on PATH whose `add` marks when it finished, and whose `write-tree` can wait for a release file. Ordering goes
  * through real git work: the loader gives the extension its own module instance, so a module seam cannot see its state.
  */
-const snapshotGuard = async (holdTree: boolean) => {
+const snapshotGuard = async (holdTree: boolean, failRevList = false) => {
   const bin = await mkdtemp(join(temporary, "git-guard-"));
   const realGit = execFileSync("sh", ["-c", "command -v git"]).toString().trim();
   const marker = (name: string) => join(bin, name);
@@ -5312,6 +5399,7 @@ const snapshotGuard = async (holdTree: boolean) => {
     `  touch "${marker("added")}"`,
     "  exit 0",
     "fi",
+    ...(failRevList ? ['if [ "$1" = "rev-list" ]; then echo "fatal: rev-list broke" >&2; exit 128; fi'] : []),
     ...(holdTree ? [
       `if [ "$1" = "write-tree" ] && [ ! -e "${marker("released")}" ]; then`,
       "  i=0",
@@ -5361,6 +5449,28 @@ test("turn rules: one end-of-run steer covers the run's diff and the files no pe
     await agentEnd("You're welcome.", context({ cwd: repo }));
     assert.equal(requests.filter(request => !Object.keys(request.questions).some(name => name.startsWith("applies_"))).length, 0);
     assert.equal(steersOnly().length, 0);
+  } finally {
+    guard.restore();
+  }
+});
+
+test("turn rules: a git failure in the git-brought filter is traced with its message, and every changed file is judged", async () => {
+  const repo = await turnRepo(TURN_RULES_MD);
+  await turnConfig();
+  await sessionStart(context({ cwd: repo }));
+  const guard = await snapshotGuard(false, true);
+  try {
+    await newPrompt("rename alpha to beta", context({ cwd: repo }));
+    await afterBaseline(guard);
+    // HEAD moves during the run, so the filter runs; its `git rev-list` fails.
+    await writeFile(join(repo, "app.txt"), "beta\n");
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-am", "rename"], { cwd: repo, stdio: "pipe" });
+    requests.length = 0;
+    nextAnswers = { ...nextAnswers, "turn_the-change-stays-inside-the-task": "ok" };
+    await agentEnd("Done.", context({ cwd: repo }));
+    assert.ok(requests.some(request => Object.keys(request.questions).some(name => name.startsWith("turn_"))), "the changed file was judged");
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /rules · git-brought filter failed: .*rev-list broke.*; every changed file was judged/);
   } finally {
     guard.restore();
   }
@@ -5531,4 +5641,58 @@ test("context filter: a failed judge keeps the excerpt and counts the fallback",
   } finally { globalThis.fetch = realFetch; }
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /fallbacks: (?:error|timeout) 1\./);
+});
+
+/** A context whose branch is `entries`; only `askedBeforeReply` reads it. */
+const askedOf = (...entries: Array<Record<string, unknown>>) => askedBeforeReply({ sessionManager: { getBranch: () => entries } } as unknown as ExtensionContext);
+const userEntry = (text: string) => ({ type: "message", message: { role: "user", content: text } });
+
+test("asked: the text of every assistant message of the turn before the latest user message, in order, redacted and clipped to the last 3000 characters", () => {
+  const token = `ghp_${"a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"}`;
+  const filler = "x".repeat(3500);
+  const asked = askedOf(
+    userEntry("first request"),
+    assistantEntry({ type: "text", text: "An older message." }),
+    userEntry("clean the build"),
+    assistantEntry({ type: "text", text: `HEAD-MARKER ${filler} token ${token}` }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }),
+    assistantEntry({ type: "text", text: "Which one?\n1. delete the folder?\n2. keep it?" }),
+    userEntry("1. yes\n2. no"),
+  );
+  assert.ok(asked && asked.length <= 3000);
+  assert.ok(!asked.includes(token), "a token in the message is masked");
+  assert.match(asked, /\[redacted\]/);
+  assert.match(asked, /\[redacted\]\n\nWhich one\?\n1\. delete the folder\?\n2\. keep it\?$/, "the messages are joined in order and the end is kept");
+  assert.ok(!asked.includes("An older message"), "a message before the previous user message is not part of the turn");
+  assert.equal(asked.length, 3000);
+  assert.ok(!asked.includes("HEAD-MARKER"), "the head is what is clipped");
+});
+
+test("asked: several assistant messages are joined oldest first; a newest message with only tool calls does not hide the explanation before it", () => {
+  assert.equal(
+    askedOf(
+      userEntry("clean the build"),
+      assistantEntry({ type: "text", text: "Option A deletes build/." }),
+      assistantEntry({ type: "text", text: "Option B keeps it. Which one?" }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }),
+      userEntry("A"),
+    ),
+    "Option A deletes build/.\n\nOption B keeps it. Which one?",
+  );
+  assert.equal(
+    askedOf(
+      userEntry("clean the build"),
+      assistantEntry({ type: "text", text: "I will delete build/. OK?" }),
+      assistantEntry({ type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }),
+      { type: "message", message: { role: "toolResult", toolCallId: "c1", toolName: "bash", content: [] } },
+      assistantEntry({ type: "toolCall", id: "c2", name: "bash", arguments: { command: "ls build" } }),
+      userEntry("yes"),
+    ),
+    "I will delete build/. OK?",
+  );
+});
+
+test("asked: no assistant message before the latest user message, or a message with no text, gives nothing", () => {
+  assert.equal(askedOf(userEntry("clean the build")), undefined);
+  assert.equal(askedOf(assistantEntry({ type: "text", text: "Earlier." }), userEntry("a"), assistantEntry({ type: "toolCall", id: "c1", name: "bash", arguments: {} }), userEntry("b")), undefined);
+  assert.equal(askedOf(assistantEntry({ type: "text", text: "Earlier." }), userEntry("a"), userEntry("b")), undefined, "the message before the earlier prompt is not what this reply answers");
+  assert.equal(askedOf(assistantEntry({ type: "text", text: "Delete it?" }), userEntry("yes"), assistantEntry({ type: "toolCall", id: "c2", name: "bash", arguments: {} }), { type: "message", message: { role: "toolResult", toolCallId: "c2", toolName: "bash", content: [] } }), "Delete it?", "calls made after the reply do not hide it");
 });
