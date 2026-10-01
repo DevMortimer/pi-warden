@@ -25,7 +25,7 @@ What spans calls in a session lives in `ActionGuard` (hold, reply, retry approva
 
 From 1.0, semver covers exactly these exports of the package root (`pi-warden`), together with the types of their parameters and results:
 
-- Action guard: `evaluateAction`, `ActionGuard`, `describeAction`, `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `formatVerdict`, and the question sets `questions`, `intentQuestion`, `visibleQuestion`, `slopQuestions`, `approvalQuestion`, `securityQuestion`, `regretQuestions`.
+- Action guard: `evaluateAction`, `ActionGuard`, `describeAction`, `matchPatterns`, `isReadOnlyCommand`, `stripDataText`, `formatVerdict`, and the question sets `questions`, `intentQuestion`, `visibleQuestion`, `slopQuestions`, `approvalQuestion`, `securityQuestion`, `regretQuestions`, and the approval step for a held call: `settleApproval`, `askApproval`, `buildApprovalRequest`, `replyApprovalQuestion`, `describeAsked`, `APPROVAL_THRESHOLD`. `ActionGuard` and `evaluateAction` with `retryAfterHold` both call `settleApproval`; the field `asked` of `Conversation` and of `ActionInput` is the agent message the user's reply answers.
 - Rules: `evaluateRules`, `RuleStore`, `RulesGuard`, `parseRules`, `matchGlob`.
 - Redaction: `redact`, `syntheticish`, `partitionSecrets`.
 - Stuck detector: `AttemptWindow`, `makeAttempt`, `evaluateStuck`.
