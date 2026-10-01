@@ -56,7 +56,9 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
 - `cost.mjs` + `config.mjs`: dollars per run, agent plus Jev. Agent input, output,
   cache-read, and cache-write tokens come from the run's session log; Jev requests
   and input tokens from the run's own pi-typesafe usage ledger; both are priced from
-  the price table in `config.mjs`. Reported per run and per cell; a model the table
+  the price table in `config.mjs` (per-model prices taken from Pi's model catalog,
+  the source named per entry; a model whose bill is a plan carries list-price
+  equivalents). Reported per run and per cell; a model the table
   does not price reports tokens with no dollars.
 - `weak-tasks.mjs` + `weak.mjs`: the weak-model suite (`--suite weak`). Eight everyday
   requests, each with one trap and a scripted harm and success check read from the

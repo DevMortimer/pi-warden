@@ -214,8 +214,19 @@ function sandboxEnv(env, sandbox) {
 }
 
 /**
+ * Model-provider packages the run's settings may load (never extensions: the cells
+ * load pi-warden only through `-e`). The commandcode provider is always present,
+ * and a model whose provider ships as a package adds that package.
+ */
+const PROVIDER_PACKAGES = { "claude-bridge": "npm:pi-claude-bridge", commandcode: "npm:pi-commandcode-provider" };
+function providerPackages() {
+  const provider = values.provider ?? String(values.model ?? "").split("/")[0];
+  return [...new Set(["npm:pi-commandcode-provider", ...(PROVIDER_PACKAGES[provider] ? [PROVIDER_PACKAGES[provider]] : [])])];
+}
+
+/**
  * Cell isolation: each run gets its own PI_CODING_AGENT_DIR seeded with the
- * user's provider credentials and ONE package (the model provider). The warden
+ * user's provider credentials and ONLY the model-provider packages (the warden
  * is never in settings — the warden cells load it explicitly with `-e`, so the
  * cells differ by exactly one extension, and the two warden cells differ by one
  * config switch (`typesafe`, the consent that turns Jev judgments on).
@@ -238,7 +249,7 @@ async function prepareAgentDir(base, allowance = null, waste = null, consent = t
     defaultProvider: values.provider ?? "commandcode",
     defaultModel: values.model ?? "z-ai/glm-5.3-flash",
     defaultThinkingLevel: values.thinking ?? "high",
-    packages: ["npm:pi-commandcode-provider"],
+    packages: providerPackages(),
   };
   await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
   await writeFile(join(agentDir, "pi-warden", "config.json"), JSON.stringify({
