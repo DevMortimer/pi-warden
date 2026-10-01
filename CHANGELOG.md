@@ -25,6 +25,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Tests
 
 - A `cd` to the home directory after `then`, `do`, and `eval` still holds the relative `rm -rf` that follows.
+- The host test counts the new `tool_execution_end` hook (15 hooks).
 
 ## 0.86.1
 
