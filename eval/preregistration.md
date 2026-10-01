@@ -384,4 +384,10 @@ outcome to choose the concurrency, the timeouts, or the sizes.
 
 ## Corrections
 
-None yet.
+1. 2026-10-01, about 25 minutes after the model-A batch started, before any outcome of a v4
+   batch was read. The Batch section says the smoke runs were read for timings only and that
+   no outcome was read. That is not exact: while the timings were read, the outcome lines of
+   the first model-A smoke log were seen by accident. No choice used them: the concurrency,
+   the timeouts, and the sizes come from the timing tables in the Batch section, and the smoke
+   runs stay out of the analysis. While the batches run, progress checks read run counts,
+   timings, stops, and infrastructure failures only, and no decision uses an outcome.
