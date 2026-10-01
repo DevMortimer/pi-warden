@@ -103,3 +103,18 @@ test("a call with no timestamp, or an unknown model, leaves the dollars null and
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the subscription models are priced as equivalents: model 1 at DeepSeek's rates by timestamp, model 2 at Xiaomi's MiMo-V2.5 price", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eval-cost-"));
+  try {
+    const one = runCost({ events, agentDir: dir, model: "cheapestinference/deepseek-v4.1-flash" });
+    assert.equal(one.agentUsd, runCost({ events, agentDir: dir, model: A }).agentUsd, "the same table as A, by each call's timestamp");
+    assert.deepEqual(one.windows, { peak: { calls: 1, usd: 0.3 }, "off-peak": { calls: 1, usd: 0.753 } });
+    const two = runCost({ events, agentDir: dir, model: "cheapestinference/mimo-v2.5" });
+    // 2M input at $0.14, 1M output at $0.28, 1M cache hits at $0.0028.
+    assert.equal(two.agentUsd, 0.5628);
+    assert.deepEqual(two.windows, { flat: { calls: 2, usd: 0.5628 } });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

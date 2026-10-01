@@ -4,6 +4,15 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## Unreleased
+
+### Added
+
+- A/B benchmark tooling, registration v4 (`eval/preregistration.md`): the run moves to the CheapestInference flat-rate subscription with no paid agent model (`cheapestinference/deepseek-v4.1-flash`, then `cheapestinference/mimo-v2.5`), the models run one after the other at concurrency 3, the repeats (6 and 7) are sized from the smoke timings to about 24 hours each, and the Jev cap is $3 per model. The stopped v3 batches are named as a stopped pilot and never analysed.
+- A stall rule for batch runs (`eval/stall.mjs`, `--stall-min`, default 15): a pi process whose session log shows no new assistant message or tool result for that long is killed, and the run is an infrastructure failure, re-run and excluded like an API error. `--arc-timeout-min` sets the timeout of one turn of a multi-turn run.
+- Equivalent dollars for the subscription models (`eval/config.mjs`): `cheapestinference/deepseek-v4.1-flash` at DeepSeek's `deepseek-flash` rates by call timestamp, `cheapestinference/mimo-v2.5` at Xiaomi's official MiMo-V2.5 price.
+- `scripts/eval-timing.mjs`: per-run wall time, per-call queue wait and generation time, and runs per hour of a batch folder, from timings only; `node eval/power.mjs --registered R1,R2` prints the power at the registered sizes.
+
 ## 0.89.1
 
 ### Added

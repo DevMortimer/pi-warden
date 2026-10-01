@@ -61,7 +61,7 @@ export function shuffledCells(cells: string[], seed: number, taskId: string, rep
 export function blockOrder(input: { taskIds: string[]; cells: string[]; repeats: number; seed: number }): Block[];
 export function firstRuns(blocks: Block[], count: number): Block[];
 export function runKey(run: { task: string; cell: string; repeat: number }): string;
-export function infraReason(events: unknown[], run?: { timedOut?: boolean; code?: number | null; err?: string }): string | null;
+export function infraReason(events: unknown[], run?: { timedOut?: boolean; code?: number | null; err?: string; stalled?: boolean }): string | null;
 export function recoveredErrors(events: unknown[]): number;
 export function markExclusions(runs: BatchRun[]): BatchRun[];
 export function metricRuns(runs: BatchRun[]): BatchRun[];

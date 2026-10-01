@@ -78,7 +78,10 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
   retried and got past is a valid run, counted as `providerErrorsRecovered`) is re-run
   after 1 and 5 minutes (`--retry-delays 60,300`) and then
   recorded with `infraError`, its whole block flagged `excludedBlock` and left out of
-  the report's metrics; 5 such failures in a row stop the batch with exit code 4, and all 5 run again on
+  the report's metrics; a run whose session log shows no new assistant message or tool
+  result for `--stall-min` minutes (default 15; `stall.mjs`) is killed as stalled and is
+  such a failure too, and `--arc-timeout-min` is the timeout of one turn of a multi-turn
+  run (default `--timeout-min`); 5 such failures in a row stop the batch with exit code 4, and all 5 run again on
   resume;
   `--jev-usd-cap N` stops the batch at N Jev dollars with exit code 3. Both stops
   resume with `--resume`, which refuses `--typesafe-cap`. A run killed at the timeout
@@ -99,9 +102,14 @@ Run: `npm run eval:ab -- --repeats 3 --concurrency 6 --model <provider/model>`. 
 batch runs under `caffeinate -i`, with a Jev dollar cap, and resumes after a stop:
 
 ```
-caffeinate -i node scripts/eval-ab.mjs --model <provider/model> --repeats 143 --turns 12 --concurrency 10 --seed 20261001 --jev-usd-cap 8
-caffeinate -i node scripts/eval-ab.mjs --resume eval/reports/<batch folder> --concurrency 10 --jev-usd-cap 8
+caffeinate -i node scripts/eval-ab.mjs --model <provider/model> --repeats 6 --turns 12 --concurrency 3 --seed 20261001 --stall-min 15 --jev-usd-cap 3 --out <batch folder>
+caffeinate -i node scripts/eval-ab.mjs --resume <batch folder> --concurrency 3 --jev-usd-cap 3
 ```
+
+A batch on the CheapestInference subscription adds `--extension ~/.pi/agent/extensions/cheapest-inference.ts`
+(also on a resume) and `PI_CHEAPEST_QUEUE_DEBUG=1`. `scripts/eval-timing.mjs <batch folder>`
+then prints per-run wall time and the per-call queue wait and generation time from the
+queue lines in each run's stderr log, and runs per hour; it reads timings, never outcomes.
 
 Exit codes: 0 finished, 2 bad arguments, 3 stopped by a Jev error or the Jev cap, 4
 stopped by 5 infrastructure failures in a row, 130 interrupted.

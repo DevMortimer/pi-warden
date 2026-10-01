@@ -12,6 +12,10 @@
  *   A = `deepseek/deepseek-flash` (DeepSeek V4.1 Flash): billed per token, and
  *       DeepSeek prices by the hour of the call. Each model call is priced at the
  *       peak or the off-peak rate by its own timestamp (see `deepseekWindow`).
+ *   The v4 registration runs two models on the owner's flat-rate CheapestInference
+ *   subscription (no per-token bill), priced as equivalents: `cheapestinference/
+ *   deepseek-v4.1-flash` at DeepSeek's own deepseek-flash rates by timestamp (as A),
+ *   `cheapestinference/mimo-v2.5` at Xiaomi's official MiMo-V2.5 price.
  *   B = `claude-bridge/claude-sonnet-5-5` (Claude Sonnet 5.5): runs on a plan with
  *       no per-token bill, so its dollars are Anthropic's published list prices as
  *       an equivalent for comparison, not billed spend. Quota use is judged from
@@ -26,6 +30,7 @@
 export const PRICE_SOURCES = {
   deepseek: "DeepSeek API docs, Models & Pricing: https://api-docs.deepseek.com/quick_start/pricing (read 2026-10-01)",
   anthropic: "Anthropic Claude API docs, Pricing: https://docs.claude.com/en/docs/about-claude/pricing (read 2026-10-01)",
+  xiaomi: "Xiaomi MiMo API Open Platform, API Pricing (MiMo-V2.5, pay as you go): https://mimo.mi.com/docs/price/pay-as-you-go (read 2026-10-01)",
   holidays: "General Office of the State Council of China, notice on the 2026 public holiday arrangements (国办发明电〔2025〕7号, 2025-11-04): https://www.gov.cn/gongbao/2025/issue_12406/202511/content_7048922.html",
 };
 
@@ -73,8 +78,31 @@ export function deepseekWindow(atMs) {
 const DEEPSEEK_FLASH_PEAK = { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 };
 const half = (rates) => Object.fromEntries(Object.entries(rates).map(([k, v]) => [k, v / 2]));
 
+/**
+ * Xiaomi's official MiMo-V2.5 price, per 1M tokens: input (cache miss) $0.14, input
+ * (cache hit) $0.0028, output $0.28. Xiaomi lists no separate cache-write price, so a
+ * token that is written to the cache is a cache miss and costs the input price.
+ */
+const MIMO_V25 = { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0.14 };
+
 /** Agent prices per 1M tokens: input, output, cacheRead, cacheWrite. */
 export const PRICES = {
+  // The CheapestInference subscription bills nothing per token, so the two models served
+  // through it are priced as equivalents: model 1 at DeepSeek's own `deepseek-flash` rates
+  // by the call's timestamp (the same table as above), model 2 at Xiaomi's MiMo-V2.5 price.
+  "cheapestinference/deepseek-v4.1-flash": {
+    peak: DEEPSEEK_FLASH_PEAK,
+    "off-peak": half(DEEPSEEK_FLASH_PEAK),
+    window: deepseekWindow,
+    source: PRICE_SOURCES.deepseek,
+    holidaySource: PRICE_SOURCES.holidays,
+    billed: false,
+  },
+  "cheapestinference/mimo-v2.5": {
+    flat: MIMO_V25,
+    source: PRICE_SOURCES.xiaomi,
+    billed: false,
+  },
   "deepseek/deepseek-flash": {
     peak: DEEPSEEK_FLASH_PEAK,
     "off-peak": half(DEEPSEEK_FLASH_PEAK), // 0.15 / 0.60 / 0.003 as the page lists

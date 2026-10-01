@@ -84,9 +84,11 @@ export const runKey = (run) => `${run.task}|${run.cell}|${run.repeat}`;
  * stopped on an error (a rate limit, an overload, a 5xx), or pi exited before any
  * assistant message. An error pi retried and then got past is a valid run
  * (`recoveredErrors` counts it). A timeout is the agent not finishing and stays a
- * task outcome. For a multi-turn run the caller passes one turn's events at a time.
+ * task outcome. A run killed by the stall rule (eval/stall.mjs) is an infrastructure
+ * failure, retried and excluded like an API error. For a multi-turn run the caller passes one turn's events at a time.
  */
-export function infraReason(events, { timedOut = false, code = null, err = "" } = {}) {
+export function infraReason(events, { timedOut = false, code = null, err = "", stalled = false } = {}) {
+  if (stalled) return "stalled: no new assistant message or tool result in the session for the stall limit; the run was killed";
   const assistants = events.filter((e) => e.message?.role === "assistant");
   const last = assistants.at(-1);
   if (last?.message.stopReason === "error") return `agent model API error: ${String(last.message.errorMessage ?? "stopReason error").replace(/\s+/g, " ").slice(0, 200)}`;

@@ -47,6 +47,12 @@
  * failures in a row stop the batch with exit code 4; those runs are dropped and run
  * again on resume. A timeout is a task outcome.
  *
+ * Stall rule (eval/stall.mjs): a pi process whose session log shows no new assistant
+ * message and no new tool result for `--stall-min` minutes (default 15) is killed. The run is an
+ * infrastructure failure (`infraError` starting "stalled"), re-run and excluded like an API
+ * error. `--timeout-min` is the timeout of a single-shot run; `--arc-timeout-min` the timeout
+ * of one turn of a multi-turn run (default: `--timeout-min`).
+ *
  * Jev-error stop (eval/jev-stop.mjs): when a run of a cell that asks Jev ends with a
  * failed judgment (a failed request in its ledger, or a fallback in its warden trace:
  * TypeSafe unavailable, judgments off, a spend-cap stop), the batch starts no more
@@ -104,6 +110,7 @@ import { claimAudit, claims, checksRun, finalAssistantText, gitFacts, readSessio
 import { outcomeAxis, wasteAxis } from "../eval/waste.mjs";
 import { jevDollars, jevUsage, runCost } from "../eval/cost.mjs";
 import { abandonedJevRequests, jevFailure } from "../eval/jev-stop.mjs";
+import { createStallWatch, progressCount } from "../eval/stall.mjs";
 import { DEFAULT_SEED, RETRY_DELAYS_MS, blockOrder, firstRuns, infraReason, infraSection, infraCounts, markExclusions, recoveredErrors, runBatch, runKey } from "../eval/batch.mjs";
 import { weakTasks, weakTaskById } from "../eval/weak-tasks.mjs";
 import { buildWeakReport, callsWithResults, judgedRequests, repeatedFailures, snapshot, steersInOrder, traceGuards, turnsOf } from "../eval/weak.mjs";
@@ -129,6 +136,8 @@ const { values: cli } = parseArgs({
     model: { type: "string" },
     thinking: { type: "string" },
     "timeout-min": { type: "string" },
+    "arc-timeout-min": { type: "string" },
+    "stall-min": { type: "string" },
     "retry-delays": { type: "string" },
     seed: { type: "string" },
     resume: { type: "string" },
@@ -139,8 +148,8 @@ const { values: cli } = parseArgs({
 });
 
 /** The flags that define a batch: a resumed batch takes them from its runs.json and refuses a different value. */
-const PLAN_KEYS = ["repeats", "tasks", "suite", "waste", "typesafe-cap", "provider", "model", "thinking", "turns", "seed", "timeout-min"];
-const PLAN_DEFAULTS = { repeats: "1", suite: "ab", "timeout-min": "12", seed: String(DEFAULT_SEED) };
+const PLAN_KEYS = ["repeats", "tasks", "suite", "waste", "typesafe-cap", "provider", "model", "thinking", "turns", "seed", "timeout-min", "arc-timeout-min", "stall-min"];
+const PLAN_DEFAULTS = { repeats: "1", suite: "ab", "timeout-min": "12", "stall-min": "15", seed: String(DEFAULT_SEED) };
 const RESUME_DIR = cli.resume ? resolve(cli.resume) : null;
 let stored = null;
 if (RESUME_DIR) {
@@ -183,6 +192,11 @@ const REPEATS = Math.max(1, Number(values.repeats));
 const CONCURRENCY = Math.max(1, Number(values.concurrency));
 const TURNS = values.turns ? Math.max(1, Number(values.turns)) : 0;
 const TIMEOUT_MS = Number(values["timeout-min"]) * 60_000;
+// One turn of a multi-turn run has its own timeout; it defaults to the single-shot one.
+const ARC_TIMEOUT_MS = (values["arc-timeout-min"] ? Number(values["arc-timeout-min"]) : Number(values["timeout-min"])) * 60_000;
+// The stall rule (eval/stall.mjs): no new assistant message or tool result for this long kills the run.
+const STALL_MS = Number(values["stall-min"]) * 60_000;
+const STALL_POLL_MS = Math.min(10_000, Math.max(200, STALL_MS / 4));
 if (!["ab", "weak"].includes(values.suite)) {
   console.error(`Unknown suite ${values.suite}. Available: ab, weak`);
   process.exit(2);
@@ -355,6 +369,7 @@ let interrupted = false;
 function runPi(project, agentDir, sessionDir, prompt, cell, env, extra = [], timeoutMs = TIMEOUT_MS) {
   return new Promise((resolveP) => {
     const started = Date.now();
+    const watch = createStallWatch({ stallMs: STALL_MS, now: started, count: progressCount(readSessionEvents(sessionDir)) });
     const child = spawn("pi", [...piArgs(cell, sessionDir, extra), "--", prompt], {
       cwd: project,
       env,
@@ -363,13 +378,18 @@ function runPi(project, agentDir, sessionDir, prompt, cell, env, extra = [], tim
     children.add(child);
     let out = "", err = "";
     let timedOut = false;
+    let stalled = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    const poll = setInterval(() => {
+      if (watch.check(progressCount(readSessionEvents(sessionDir)), Date.now())) { stalled = true; child.kill("SIGKILL"); }
+    }, STALL_POLL_MS);
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("close", (code) => {
       children.delete(child);
       clearTimeout(timer);
-      resolveP({ code, out, err, timedOut, seconds: (Date.now() - started) / 1000 });
+      clearInterval(poll);
+      resolveP({ code, out, err, timedOut: timedOut && !stalled, stalled, seconds: (Date.now() - started) / 1000 });
     });
   });
 }
@@ -523,17 +543,19 @@ async function runArc(task, cell, repeat, allowance = null) {
   let previousSteers = 0;
   let seen = 0;
   let recovered = 0;
+  let stderr = "";
   try {
     for (let i = 0; i < prompts.length; i++) {
-      const pi = await runPi(project, agentDir, sessions, prompts[i], cell, env, i === 0 ? [] : ["-c"]);
+      const pi = await runPi(project, agentDir, sessions, prompts[i], cell, env, i === 0 ? [] : ["-c"], ARC_TIMEOUT_MS);
       if (interrupted) return { aborted: true, pi, base, checks };
+      stderr += pi.err;
       const events = readSessionEvents(sessions);
       // Only this turn's messages count: an earlier turn's reply says nothing about this pi process.
       const turnEvents = events.slice(seen);
       const infra = infraReason(turnEvents, pi);
       seen = events.length;
       recovered += recoveredErrors(turnEvents);
-      if (infra) return { infra: `turn ${i + 1}: ${infra}`, pi: { ...pi, seconds: turns.reduce((t, x) => t + x.seconds, 0) + pi.seconds }, base, checks };
+      if (infra) return { infra: `turn ${i + 1}: ${infra}`, pi: { ...pi, err: stderr, seconds: turns.reduce((t, x) => t + x.seconds, 0) + pi.seconds }, base, checks };
       const calls = toolCalls(events);
       const text = finalAssistantText(events);
       const found = claims(text);
@@ -565,7 +587,7 @@ async function runArc(task, cell, repeat, allowance = null) {
     });
     return {
       record: { ...scored, turns },
-      pi: { code: 0, timedOut: turns.some((t) => t.timedOut), seconds: turns.reduce((s, t) => s + t.seconds, 0), out: "", err: "" },
+      pi: { code: 0, timedOut: turns.some((t) => t.timedOut), seconds: turns.reduce((s, t) => s + t.seconds, 0), out: "", err: stderr },
       base, checks,
     };
   } catch (error) {
@@ -681,7 +703,7 @@ async function main() {
       return { aborted: true, jevUsd };
     }
     // A failed Jev judgment in a run that asks Jev ends the batch and the run is not counted.
-    const jevError = asksJev(cell) && allowance === null ? jevFailure({ agentDir, traceDir: join(base, "trace"), killed: pi.timedOut }) : null;
+    const jevError = asksJev(cell) && allowance === null ? jevFailure({ agentDir, traceDir: join(base, "trace"), killed: pi.timedOut || pi.stalled }) : null;
     const full = record ? {
       ...record, startedAt, piExit: pi.code, timedOut: pi.timedOut, seconds: Math.round(pi.seconds),
       ...(asksJev(cell) ? { abandonedJevRequests: abandonedJevRequests(agentDir) } : {}),

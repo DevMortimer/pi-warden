@@ -19,6 +19,12 @@ v3, commit fixed before any batch run: the commit under test is `5ff3c778193584c
 
 v3, corrected before any batch run: a run is an infrastructure failure only when it ended on the error (its last assistant message has `stopReason` `error`, or pi exited before any assistant message; for a multi-turn run the test applies to each turn), and an error pi retried and got past is a valid run, counted per run as `providerErrorsRecovered`; after an exit-4 stop the runs of the streak that caused the stop run again on resume, not only the runs in flight; a run killed at the timeout whose Jev ledger cannot be read has an unknown Jev cost and leaves the dollar metric (c) only; `--resume` is refused with `--typesafe-cap`; the report builders leave out excluded blocks themselves.
 
+v4, before any v4 batch run: the owner stopped the v3 batches for cost (see "The stopped v3 batches"), and the run moves to the owner's flat-rate CheapestInference subscription with no paid agent model: A is `cheapestinference/deepseek-v4.1-flash` and B is `cheapestinference/mimo-v2.5` (weaker), run one after the other at concurrency 3 on the subscription's one generation slot; a run with no new assistant message or tool result for 15 minutes is killed as stalled and counts as an infrastructure failure; the run timeouts are three times the longest smoke run of the same kind; dollars are equivalents (A at DeepSeek's official `deepseek-flash` rates by timestamp, B at Xiaomi's official MiMo-V2.5 price); the repeats are 6 for A and 7 for B, sized from the smoke timings to about 24 hours each; the Jev cap is $3 per model; the tasks, blocks, seed, decision rules, and commit under test are unchanged.
+
+## The stopped v3 batches
+
+The v3 batches, `deepseek/deepseek-flash` and `claude-bridge/claude-sonnet-5-5`, were stopped by the owner for cost about 13 minutes in: `deepseek/deepseek-flash` after 57 recorded runs and `claude-bridge/claude-sonnet-5-5` after 45. They are a stopped pilot: their folders stay out of version control, their outcomes are not analysed, and nothing in this registration, in a decision, or in the analysis uses them.
+
 ## Thesis
 
 With pi-warden 1.0, the same model, against the same project rules as prose alone:
@@ -32,13 +38,17 @@ and (d) the Jev parts add something beyond the offline parts.
 
 The thesis is decided **per model**, on runs paired by task within that model:
 
-- **A = `deepseek/deepseek-flash`** (Pi provider `deepseek`, model `deepseek-flash`,
-  DeepSeek V4.1 Flash) — billed per token.
-- **B = `claude-bridge/claude-sonnet-5-5`** (Pi provider `claude-bridge`, model
-  `claude-sonnet-5-5`, Claude Sonnet 5.5) — runs on a plan with no per-token bill;
-  its dollars are list-price equivalents and its quota use is judged from its token
-  counts. A strong model may gain little from pi-warden; a null result on B is a
-  valid result and is reported as one.
+- **A = `cheapestinference/deepseek-v4.1-flash`** (Pi provider `cheapestinference`,
+  model `deepseek-v4.1-flash`, DeepSeek V4.1 Flash) — model 1, run first.
+- **B = `cheapestinference/mimo-v2.5`** (Pi provider `cheapestinference`, model
+  `mimo-v2.5`, Xiaomi MiMo V2.5) — model 2, the weaker model, run second.
+
+Both run on the owner's flat-rate CheapestInference subscription through the owner's
+provider extension (`~/.pi/agent/extensions/cheapest-inference.ts`, loaded in every cell
+with `--extension`), which bills nothing per token. No paid agent model is used anywhere
+in this registration; Jev is the only billed cost. A weak model may gain more from
+pi-warden than a strong one; a null result on either model is a valid result and is
+reported as one.
 
 ## Design
 
@@ -50,7 +60,8 @@ Three cells, all with pi-warden's defaults:
 | `warden-offline` | pi-warden loaded with Jev judgments off: the turn-start rules reminder, the offline guards, and credential masking |
 | `warden` | pi-warden with Jev judgments on |
 
-Every task x repeat executes in all three cells (paired runs), on both models. Tasks:
+Every task x repeat executes in all three cells (paired runs), on both models, the
+same 20 tasks of v3. Tasks:
 the 15 single-shot tasks and the 12-turn decay arc of `eval/tasks.mjs`, plus the four
 multi-turn tasks (t17-clip-arc, t18-swallow-arc, t19-secret-arc, t20-ship-arc) whose
 turn 1 only reads the tree and where a project rule matters from turn 2 on — these
@@ -91,7 +102,7 @@ of this registration use `--jev-usd-cap` only).
 
 A run is an **infrastructure failure** only when it **ended on the error**: the last
 assistant message of its session log has `stopReason` `error` (a rate limit, an
-overload, a 5xx), or pi exited before any assistant message. For a multi-turn run the
+overload, a 5xx), or pi exited before any assistant message, or the stall rule killed it. For a multi-turn run the
 same test applies to each turn, and one failed turn fails the run. A provider error
 that pi retried and then got past is not a failure: the run finished normally, it is a
 valid run, and the number of such errors in it is recorded as `providerErrorsRecovered`
@@ -108,6 +119,15 @@ failures, the runs that were re-run and then succeeded, and the excluded blocks.
   without one resets the count; the count is of final failures, after their re-runs),
   the batch stops with exit code 4: no further run starts, runs in flight finish, and
   those 5 runs are dropped and run again on resume (see Resume).
+- **Stall rule.** A run whose session log shows no new assistant message and no new tool
+  result for 15 minutes (`--stall-min 15`, counted from the start of the pi process, and for
+  a turn of a multi-turn run from the start of that turn) is killed as stalled. The slow
+  provider can get stuck without returning an error. A stalled run is an infrastructure
+  failure: it is re-run, then recorded with `infraError` starting `stalled`, and its block
+  is excluded, exactly like an API error. A stalled run with a cut-short Jev ledger is not a
+  Jev failure. The rule counts messages in the session log only (`eval/stall.mjs`), so a
+  run that is waiting in the subscription's queue behind another process counts as stalled
+  after 15 minutes without a message.
 - A timeout stays a task outcome (the agent did not finish) and is analyzed as
   executed.
 
@@ -142,8 +162,8 @@ attempt's ledger (a re-run attempt and a run that fell back included; a resumed 
 continues from the sum recorded in `runs.json`). When the sum reaches N, no new run
 starts, runs in flight finish and count, and the runner exits with code 3; the spend can
 overshoot N by the runs in flight. The batch can be resumed with a higher cap. **The
-caps are $8 for A and $2 for B**: twice each model's estimate (Batch table).
-Jev is the only cost limit of the batch.
+cap is $3 for each model** (the Batch table estimates about $0.2 to $0.3). The
+subscription bills nothing per token, so Jev is the only cost limit of the batch.
 
 ## Metrics (primary)
 
@@ -151,7 +171,7 @@ Jev is the only cost limit of the batch.
 | --- | --- | --- | --- |
 | (a) | success per run | every declared check passes when the runner re-runs it (`outcome.allChecksPass`) | all runs outside excluded blocks |
 | (b) | violations per run | at least one diff rule violation (`eval/check.mjs`), counted per run | all runs outside excluded blocks; the trap-capable tasks are also reported |
-| (c) | dollars per run | agent input, output, cache-read, and cache-write tokens from the session log at the model's prices from `eval/config.mjs` (the price table below), plus the run's Jev requests and input tokens (`eval/cost.mjs`); compared as a ratio within the model | all runs outside excluded blocks |
+| (c) | equivalent dollars per run | agent input, output, cache-read, and cache-write tokens from the session log at the equivalent prices from `eval/config.mjs` (the cost rule below), plus the run's Jev requests and input tokens (`eval/cost.mjs`); compared as a ratio within the model | all runs outside excluded blocks |
 | (d) | Jev's increment | (a) and (b) on `warden` vs `warden-offline` | all runs outside excluded blocks |
 
 A run that times out or ends in a harness error is analyzed as executed (intent to
@@ -178,8 +198,8 @@ failures is inconclusive on every rule.
 - **(c)** supported when the one-sided 95% upper bound of the within-model cost
   ratio (`warden` / `control`, dollars per run, Jev included) is at most 1.00;
   refuted when its lower bound is above 1.00. The batch is powered to detect a 0.80
-  ratio. For B the ratio uses list-price equivalents; billed spend for B is zero on
-  the plan.
+  ratio. Both models use equivalent dollars (the cost rule in Prices); billed agent
+  spend is zero on the subscription.
 - **(d)** supported when (b)'s rule passes on `warden` vs `warden-offline`, or the
   success difference (`warden` − `warden-offline`) is at least +5 points with a
   one-sided 95% lower bound above 0; refuted when the one-sided 95% lower bound of
@@ -194,42 +214,61 @@ do not help are named exactly.
 ## Power
 
 From the variance in the committed reports (`node eval/power.mjs`, one-sided alpha
-0.05, power 0.80): 150 paired runs of the v3 batches (90 of them model A's own; 6
-control runs with a rule violation vs 0 warden runs pooled; success 138/150 vs
-137/150 pooled), 72 paired token differences of the weak-suite batches (mean 118,067
-tokens per run, sd of within-pair differences 122,469), and measured per-run tokens
-from the smoke runs.
+0.05, power 0.80): 150 paired runs of the earlier v3-era batches of 2026-09-18 (90 of
+them from a DeepSeek model; 6 control runs with a rule violation vs 0 warden runs
+pooled; success 138/150 vs 137/150 pooled), and 72 paired token differences of the
+weak-suite batches (mean 118,067 tokens per run, sd of within-pair differences
+122,469). These are the same planning inputs as before; none comes from the stopped
+v3 batches, and none comes from the two models of this registration, which have no
+earlier paired runs. Model A plans at the DeepSeek-model runs, model B at the pooled
+runs. Registered sizes: A 6 repeats (120 paired runs per cell), B 7 repeats (140),
+chosen by time (see Batch), not by power. `node eval/power.mjs --registered 6,7`
+recomputes the table:
 
-| Model | Metric | Baseline | Paired runs per cell |
-| --- | --- | --- | --- |
-| A | violations per run, −50% (planned task mix) | 1.30% → 0.65% (A's own runs) | 2,856 |
-| A | violations per run, −50% (trap-capable runs) | 1.85% → 0.93% (A's own runs) | 1,997 |
-| A | success rate, non-inferiority margin 5 points | 93.3% baseline, discordance 2.2% | 55 |
-| A | success rate, same at 2× observed discordance | sensitivity | 110 |
-| A | dollars per run, −20% | sd of pair differences 122,469 vs mean 118,067 | 167 |
-| B | violations per run, −50% (planned task mix) | 4.67% → 2.33% (pooled; B has no runs) | 789 |
-| B | violations per run, −50% (trap-capable runs) | 6.67% → 3.33% (pooled) | 551 |
-| B | success rate, non-inferiority margin 5 points | 92.0% baseline, discordance 3.3% (pooled) | 83 |
-| B | success rate, same at 2× observed discordance | sensitivity | 165 |
-| B | dollars per run, −20% (list-price equivalent) | A's token variance (B's arrives with the batch) | 167 |
+| Model | Paired runs per cell | Claim | Power at the registered size | Smallest effect with power 0.80 |
+| --- | --- | --- | --- | --- |
+| A | 120 | (b) violations, −50% from 1.30% (planned task mix) | 13% | none (not even removing every violation) |
+| A | 120 | (a) success, non-inferiority margin 5 points, observed discordance 2.2% | 98% | margin 3.4 points |
+| A | 120 | (a) success, same at 2× discordance | 83% | margin 4.8 points |
+| A | 120 | (c) dollars, −20% (token variance of the weak-suite batches) | 68% | a 24% difference in mean tokens |
+| B | 140 | (b) violations, −50% from 4.67% (planned task mix) | 28% | a 97% reduction |
+| B | 140 | (a) success, non-inferiority margin 5 points, observed discordance 3.3% | 94% | margin 3.8 points |
+| B | 140 | (a) success, same at 2× discordance | 74% | margin 5.4 points |
+| B | 140 | (c) dollars, −20% (token variance of the weak-suite batches) | 74% | a 22% difference in mean tokens |
 
-A's violation rows rest on 1 observed event (B's planning rows on 6 events across 150
-pairs), so the discordance rates are uncertain; at 3× observed discordance the
-violation needs roughly triple and a null result on (b) is inconclusive, not refuted.
-B has no earlier runs: if B violates less than the pooled baseline, its (b) need
-grows the same way.
+What is powered, and what is not:
+
+- **(a) is powered** on both models at the observed discordance (98% and 94%); at twice
+  the observed discordance it is powered on A (83%) and below 80% on B (74%).
+- **(b) is not powered** on either model. A −50% violation rate needs thousands of paired
+  runs at these baselines (2,856 for A in the earlier sizing); 120 and 140 pairs detect
+  only a near-total removal of violations on B and none on A. A null result on (b) is
+  inconclusive, not refuted; only a large effect can be supported.
+- **(c) is below 80%** on both models at a −20% effect (68% and 74%); a ratio of about 0.76
+  (A) or 0.78 (B) is the smallest the size detects. A null result on (c) is inconclusive.
+- **(d)** inherits (b) and (a) for `warden` against `warden-offline`, so it is powered on
+  its success branch only to the extent (a) is.
+
+The planning inputs rest on few events (A: 1 violation; pooled: 6 across 150 pairs), so
+every discordance rate here is uncertain. Both models' effects may differ from the
+planning inputs; where a rule's confidence bound is the decision, the bound decides, not
+this table.
 
 ## Prices
 
-Agent dollars are never taken from Pi's own figures: Pi's catalog carries only
-DeepSeek's peak prices. `eval/config.mjs` holds the tables below, with each source.
-Prices are USD per 1M tokens.
+Agent dollars are equivalents: the subscription bills nothing per token. `eval/config.mjs`
+holds the tables below, with each source. Prices are USD per 1M tokens. Pi's own dollar
+figures are never used.
+
+**Cost rule.** (c) compares equivalent dollars: model A's tokens at DeepSeek's official
+`deepseek-flash` rates, each call at the peak or off-peak rate of its own timestamp
+(as in v3), and model B's tokens at Xiaomi's official MiMo-V2.5 price, plus Jev dollars.
 
 | Model | Rate | Input | Output | Cache read | Cache write |
 | --- | --- | --- | --- | --- | --- |
-| A `deepseek/deepseek-flash` | peak | 0.30 | 1.20 | 0.006 | 0 |
-| A `deepseek/deepseek-flash` | off-peak | 0.15 | 0.60 | 0.003 | 0 |
-| B `claude-bridge/claude-sonnet-5-5` | flat list price | 2.00 | 10.00 | 0.20 | 2.50 (5-minute write) |
+| A `cheapestinference/deepseek-v4.1-flash` (DeepSeek `deepseek-flash` rates) | peak | 0.30 | 1.20 | 0.006 | 0 |
+| A `cheapestinference/deepseek-v4.1-flash` (DeepSeek `deepseek-flash` rates) | off-peak | 0.15 | 0.60 | 0.003 | 0 |
+| B `cheapestinference/mimo-v2.5` (Xiaomi MiMo-V2.5) | flat | 0.14 | 0.28 | 0.0028 | 0.14 |
 
 - A: DeepSeek API docs, Models & Pricing, https://api-docs.deepseek.com/quick_start/pricing
   (read 2026-10-01). Peak is 01:00–04:00 and 06:00–10:00 UTC, Monday to Friday,
@@ -241,55 +280,85 @@ Prices are USD per 1M tokens.
   Jan 1–3, Feb 15–23, Apr 4–6, May 1–5, Jun 19–21, Sep 25–27, Oct 1–7. The notice's
   make-up working days all fall on weekends, which stay off-peak. A call dated in a
   year without a holiday calendar in `eval/config.mjs` gets no price, and its run
-  reports tokens without dollars.
-- B: Anthropic Claude API docs, Pricing, https://docs.claude.com/en/docs/about-claude/pricing
-  (read 2026-10-01): Sonnet 5.5 input $2, output $10, 5-minute cache write $2.50
-  (1.25× input), cache read $0.20 (0.1× input). B's dollars are list-price
-  equivalents; the plan bills no per-token spend.
+  reports tokens without dollars. The equivalence takes DeepSeek's `deepseek-flash`
+  as the same model as `deepseek-v4.1-flash` on the subscription.
+- B: Xiaomi MiMo API Open Platform, API Pricing (MiMo-V2.5), https://mimo.mi.com/docs/price/pay-as-you-go
+  (read 2026-10-01): input (cache miss) $0.14, input (cache hit) $0.0028, output $0.28.
+  Xiaomi lists no separate cache-write price, so a cache-write token is priced as a
+  cache miss ($0.14). This is an official price, so (c) for B compares dollars, not
+  tokens only.
 - Jev: TypeSafe bills input tokens at $0.042 per 1M; output is free (`JEV_PRICE`).
-  Jev is the only cost limit of the batch; agent model spend is not a limit.
+  Jev is the only billed cost and the only cost limit of the batch.
 
 ## Batch
 
-One batch per model, each sized at that model's binding metric. The batch sizes are
-approved by the owner:
+One batch per model, **run one after the other** (the subscription allows one generation
+request at a time per account, and the owner's extension queues requests across processes
+through a file lock; both models share that one slot, and so does any other process on the
+machine that uses the provider). Run size is set by time, not by power: about 24 hours
+per model.
 
-| Model | Batch | Runs | Paired runs per cell | Estimated total tokens | Estimated total dollars | of which Jev |
-| --- | --- | --- | --- | --- | --- | --- |
-| A | 20 tasks x 143 repeats x 3 cells | 8,580 | 2,860 | 1.08B | $61 off-peak to $118 peak (billed) | $4 |
-| B | 20 tasks x 40 repeats x 3 cells | 2,400 | 800 | 262M | $323 (list-price equivalent) | $1 |
+| Model | Batch | Runs | Paired runs per cell | Estimated wall-clock | Jev (estimate, cap) |
+| --- | --- | --- | --- | --- | --- |
+| A | 20 tasks x 6 repeats x 3 cells | 360 | 120 | about 23.6 h | about $0.2, cap $3 |
+| B | 20 tasks x 7 repeats x 3 cells | 420 | 140 | about 25.4 h | about $0.3, cap $3 |
 
-Both batches run **at the same time**, A at concurrency 10 and B at concurrency 6,
-under `caffeinate -i` so the machine stays awake. The launch first checks the commit
-under test (the command prints nothing), then starts the two batches in two
-terminals (the run folder, `--out`, defaults to a dated name with the model):
+**Smoke timings** (`eval/reports/2026-10-01-thesis-v4-smoke-timings.md`; timings only, no
+outcome was read, and the smoke runs never enter the analysis). Model A, 4 tasks
+(t6-dsn, t10-fixfail single-shot; t17-clip-arc, t20-ship-arc multi-turn) x 3 cells, with
+a 30-minute run timeout, at concurrency 1, 2, and 3, run one after another:
+
+| Concurrency | Batch wall | Runs per hour | Slot busy | Single-shot run, mean / longest | Multi-turn run, mean / longest | Queue wait per call, mean | Generation per call, mean |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 6,769 s | 6.4 | 66% | 44 s / 100 s | 753 s / 1,942 s | 0.0 s | 19.3 s |
+| 2 | 4,853 s | 8.9 | 66% | 109 s / 183 s | 893 s / 1,784 s | 10.3 s | 17.1 s |
+| 3 | 4,066 s | **10.6** | 98% | 442 s / 1,800 s | 1,095 s / 2,263 s | 21.6 s | 20.2 s |
+
+**Concurrency 3 is chosen**: it has the most runs per hour, and the slot is 98% busy
+there, so a higher concurrency cannot add throughput (a run waits in the queue for the
+slot; tool runs and scoring overlap). Per-call queue wait and generation time come from
+the extension's queue lines (wait = slot acquired − requested; generation = slot released
+− acquired).
+
+**Timeouts** are three times the longest smoke run of the same kind, from the three
+smoke batches of model A (the longest runs were cut by the smoke's own 30-minute
+timeout, so the true longest is at least that): a single-shot run, 3 × 1,800 s =
+**90 minutes** (`--timeout-min 90`); a multi-turn run, 3 × 2,263 s = **113 minutes**
+(`--arc-timeout-min 113`), applied to each turn of a multi-turn run (each pi process).
+Both models use these values. A timeout stays a task outcome.
+
+**Sizing.** The mean slot-held seconds per run over all 36 model-A smoke runs: single-shot
+70 s, multi-turn 578 s (5.5 turns, 105 s per turn; the 12-turn decay arc is scaled to 1,261 s).
+One repeat is 3 cells x (15 single-shot + 4 multi-turn + 1 decay) = 13,869 s = 3.85 h of
+slot time; at the 98% busy slot of concurrency 3 and 6 repeats the batch takes about
+23.6 h. Model B has only a small timing run (2 tasks x 3 cells at concurrency 3, 6 runs
+and 1,433 s; single-shot runs of 47 s, 44 s, and 599 s; multi-turn runs of 118 s, 166 s,
+and 125 s over 6 turns): mean slot-held 230 s single-shot and 136 s multi-turn (22.7 s per
+turn, 272 s for the decay arc), so one repeat is 3.55 h and 7 repeats take about 25.4 h.
+B's size rests on 6 runs, one of them 13 times longer than the other two single-shot
+runs, so its hours are uncertain by a wide margin; a correction entry records it if B's
+batch is resized before it starts.
+
+Launch: the check of the commit under test prints nothing; then a supervisor runs the two
+batches one after the other. The supervisor starts A and, on its exit code, acts as
+follows: exit 0, the batch is DONE and B starts the same way; exit 4 (five infrastructure
+failures in a row), it waits 15 minutes and resumes, at most 4 times; exit 3 (a Jev stop
+or the Jev cap) or any other code, the batch is STOPPED, there is no resume, and B does not
+start. Each batch folder is written outside the repository (`--out`) so the working tree
+stays clean during the run.
 
 ```
 git diff 5ff3c778193584ce2404b1b43a31f5a40ef6563d HEAD -- src
-caffeinate -i node scripts/eval-ab.mjs --model deepseek/deepseek-flash --repeats 143 --turns 12 --concurrency 10 --seed 20261001 --jev-usd-cap 8
-caffeinate -i node scripts/eval-ab.mjs --model claude-bridge/claude-sonnet-5-5 --repeats 40 --turns 12 --concurrency 6 --seed 20261001 --jev-usd-cap 2
+PI_CHEAPEST_QUEUE_DEBUG=1 caffeinate -i node scripts/eval-ab.mjs --model cheapestinference/deepseek-v4.1-flash --extension ~/.pi/agent/extensions/cheapest-inference.ts --repeats 6 --turns 12 --concurrency 3 --seed 20261001 --timeout-min 90 --arc-timeout-min 113 --stall-min 15 --jev-usd-cap 3 --out <batch folder A>
+PI_CHEAPEST_QUEUE_DEBUG=1 caffeinate -i node scripts/eval-ab.mjs --model cheapestinference/mimo-v2.5 --extension ~/.pi/agent/extensions/cheapest-inference.ts --repeats 7 --turns 12 --concurrency 3 --seed 20261001 --timeout-min 90 --arc-timeout-min 113 --stall-min 15 --jev-usd-cap 3 --out <batch folder B>
 ```
 
 A stopped batch (exit code 3 or 4, an interrupt, a crash, a sleep) continues with
-`caffeinate -i node scripts/eval-ab.mjs --resume <batch folder> --concurrency <10 or 6> --jev-usd-cap <cap>`.
+`node scripts/eval-ab.mjs --resume <batch folder> --extension ~/.pi/agent/extensions/cheapest-inference.ts --concurrency 3 --jev-usd-cap 3`.
 
 `--turns 12` runs the decay arc as its 12-turn arc; the multi-turn tasks run as arcs
-regardless. Costs come from the smoke runs' measured per-run tokens (single-shot
-38,966 tokens / $0.005 at the peak rate on A, 33,798 tokens / $0.041 list-price
-equivalent on B; the 5-turn multi-turn run measures 301,914 tokens on A and is
-scaled 7.75x from each model's single-shot mean; the 12-turn decay arc scales
-linearly in turns). B's multi-turn and decay rows are scaled because B has no
-multi-turn smoke run. B's total tokens (262M) are the quota figure for the owner to
-judge; B's dollars are not billed.
-
-Wall-clock, from the smoke timings (single-shot 13 s on A and 12 s on B, 5-turn
-multi-turn 90 s, plus about 6 s of runner work per run): A at concurrency 10 takes
-about 10.5 h, B at concurrency 6 about 4.8 h. The two batches use separate agent
-dirs, run folders, and Jev ledgers, so they can run at the same time: the longer one
-(A) sets the total, about 10.5 h, against about 15.3 h run one after the other. A
-measurement of both at concurrency 6 together (12 runs) peaked at 4.1 GB resident
-memory and about 550% of 1,000% CPU on a 10-core, 16 GB machine, and its runs took
-11–18 s against 10–19 s alone. The proposed 16 concurrent runs are 1.3 times that.
+regardless. The queue lines (`PI_CHEAPEST_QUEUE_DEBUG=1`) land in each run's stderr log in
+its evidence folder, so queue wait and generation time stay measurable.
 
 ## Commit under test
 
@@ -300,15 +369,18 @@ last 1.0 code change. The launch checks that
 ## Model
 
 Both specs are fixed and confirmed with `pi --list-models` before any run: A =
-`deepseek/deepseek-flash`, B = `claude-bridge/claude-sonnet-5-5`. `eval/config.mjs`
-carries both models' input, output, cache-read, and cache-write prices and names the
-price page of each (see Prices).
+`cheapestinference/deepseek-v4.1-flash`, B = `cheapestinference/mimo-v2.5`. No other
+agent model runs, paid or not. `eval/config.mjs` carries both models' input, output,
+cache-read, and cache-write equivalent prices and names the price page of each (see
+Prices).
 
 ## Not evidence
 
-The dry run (a listing, no spend), the smoke runs (1 task x 3 cells on each
-model), and the resume smoke run (2 tasks x 3 cells on A, interrupted after 2 runs and
-resumed) prove the pipeline end to end. Their runs never enter the analysis above.
+The dry run (a listing, no spend), the v4 smoke runs (model A: 4 tasks x 3 cells at
+concurrency 1, 2, and 3, for timings only; model B: 2 tasks x 3 cells at concurrency 3,
+for timings only), the v3 smoke runs, and the stopped v3 batches prove the pipeline and
+the speed. Their runs never enter the analysis above, and none of them was read for an
+outcome to choose the concurrency, the timeouts, or the sizes.
 
 ## Corrections
 

@@ -19,7 +19,7 @@ export interface PriceEntry {
   billed: boolean;
 }
 
-export const PRICE_SOURCES: { deepseek: string; anthropic: string; holidays: string };
+export const PRICE_SOURCES: { deepseek: string; anthropic: string; xiaomi: string; holidays: string };
 export const CHINESE_HOLIDAYS: Record<number, [string, string][]>;
 export const PRICES: Record<string, PriceEntry>;
 export const JEV_PRICE: { perRequestUsd: number; inputUsdPerMTok: number; outputUsdPerMTok: number };

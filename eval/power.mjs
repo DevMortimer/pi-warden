@@ -30,7 +30,11 @@
  *     s_d = the standard deviation of within-pair token differences, delta = 0.20
  *     of the mean per-run tokens.
  *
- * Usage: node eval/power.mjs
+ * `--registered R1,R2` prints the v4 table instead: the power each primary metric has
+ * at the registered repeats of model 1 and model 2 (paired runs per cell = 20 x repeats),
+ * at the same planning inputs, and the smallest effect each size can detect.
+ *
+ * Usage: node eval/power.mjs [--registered R1,R2]
  */
 
 import { readFileSync } from "node:fs";
@@ -43,6 +47,7 @@ const REPORTS = join(ROOT, "eval", "reports");
 
 const Z_A = 1.6448536269514722; // one-sided 0.05
 const Z_B = 0.8416212335729143; // power 0.80
+const Z_A_B = Z_A + Z_B;
 
 const runsOf = (name) => JSON.parse(readFileSync(join(REPORTS, name, "runs.json"), "utf8")).runs;
 
@@ -301,4 +306,55 @@ out.push("");
 out.push("The violation rows rest on 6 events across 150 pairs (A: 1 event), so the");
 out.push("discordance rate is uncertain; at 3x observed discordance the violation needs");
 out.push("roughly triple and a null result on (b) is inconclusive, not refuted.");
-console.log(out.join("\n"));
+
+// ---- v4: power at the registered sizes ------------------------------------------
+
+/** Standard normal CDF (Abramowitz-Stegun 7.1.26 on erf; absolute error below 1.5e-7). */
+function phi(x) {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x) / Math.SQRT2);
+  const erf = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-(x * x) / 2);
+  return x >= 0 ? 0.5 * (1 + erf) : 0.5 * (1 - erf);
+}
+/** Power of a paired binary test at n pairs: true difference d, discordance q. */
+const powerBinary = (n, d, q) => phi(d * Math.sqrt(n / (q - d * d)) - Z_A);
+/** Power of the non-inferiority test at zero true difference: margin m, discordance q. */
+const powerNonInferiority = (n, m, q) => phi(m * Math.sqrt(n / q) - Z_A);
+/** Power of the paired mean test: delta, within-pair sd sD. */
+const powerMean = (n, delta, sD) => phi((delta * Math.sqrt(n)) / sD - Z_A);
+/** The smallest violation reduction (relative to p1) a size detects with power 0.80 at discordance rate q per unit rate. */
+function smallestReduction(n, p1, perRate) {
+  for (let r = 0.01; r <= 1; r += 0.01) {
+    const d = p1 * r;
+    const q = perRate * (p1 + p1 * (1 - r));
+    if (powerBinary(n, d, q) >= 0.8) return r;
+  }
+  return null;
+}
+
+function printRegistered(repeats) {
+  const pct = (x) => `${(x * 100).toFixed(0)}%`;
+  const trapPA2 = trapA.pViolC * PLANNED_TRAP_SHARE;
+  const trapB = binaryStats(pairsPooled.filter((p) => TRAP_FAMILIES.has(p.control.family)));
+  const trapPB2 = trapB.pViolC * PLANNED_TRAP_SHARE;
+  const models = [
+    { name: "model 1", n: TASKS * repeats[0], all: allA, trap: trapA, p1: trapPA2 },
+    { name: "model 2", n: TASKS * repeats[1], all: allPooled, trap: trapB, p1: trapPB2 },
+  ];
+  const lines = [];
+  lines.push("| Model | Paired runs per cell | Claim | Power at the registered size | Smallest effect with power 0.80 |");
+  lines.push("| --- | --- | --- | --- | --- |");
+  for (const m of models) {
+    // The discordance per unit of rate, as in violationNeed: observed discordance over the observed sum of rates.
+    const perRate = m.trap.qViol / ((m.trap.pViolC + m.trap.pViolW) || 1);
+    const d50 = m.p1 / 2;
+    lines.push(`| ${m.name} | ${m.n} | (b) violations, -50% from ${(m.p1 * 100).toFixed(2)}% (planned task mix) | ${pct(powerBinary(m.n, d50, perRate * (m.p1 + m.p1 / 2)))} | ${smallestReduction(m.n, m.p1, perRate) === null || smallestReduction(m.n, m.p1, perRate) >= 0.995 ? "none (not even removing every violation)" : `a ${pct(smallestReduction(m.n, m.p1, perRate))} reduction`} |`);
+    lines.push(`| ${m.name} | ${m.n} | (a) success, non-inferiority margin 5 points, observed discordance ${(m.all.qOk * 100).toFixed(1)}% | ${pct(powerNonInferiority(m.n, MARGIN, m.all.qOk))} | margin ${(100 * Z_A_B * Math.sqrt(m.all.qOk / m.n)).toFixed(1)} points |`);
+    lines.push(`| ${m.name} | ${m.n} | (a) success, same at 2x discordance | ${pct(powerNonInferiority(m.n, MARGIN, 2 * m.all.qOk))} | margin ${(100 * Z_A_B * Math.sqrt(2 * m.all.qOk / m.n)).toFixed(1)} points |`);
+    lines.push(`| ${m.name} | ${m.n} | (c) dollars, -20% (token variance of the weak-suite batches) | ${pct(powerMean(m.n, 0.2 * meanTokens, sdDiff))} | a ${pct((Z_A_B * sdDiff) / (Math.sqrt(m.n) * meanTokens))} difference in mean tokens |`);
+  }
+  console.log(["# Power at the registered sizes (eval/power.mjs --registered)", "", ...lines].join("\n"));
+}
+
+const registeredArg = process.argv.indexOf("--registered");
+if (registeredArg < 0) console.log(out.join("\n"));
+else printRegistered(process.argv[registeredArg + 1].split(",").map(Number));
