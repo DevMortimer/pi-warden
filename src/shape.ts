@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 11;
+export const EXPECTED_SCHEMA = 12;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -54,6 +54,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false }),
     rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
+    // A missing section turns the turn-start reminder off: it is new, so nothing it says was expected.
+    rulesAtTurnStart: section("rulesAtTurnStart", { ...off, threshold: 1 }),
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
@@ -129,6 +131,9 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (config.action.floor !== "level" && config.action.floor !== "evidence") config.action = { ...config.action, floor: "evidence" };
   // The soft rules tier was added inside the rules section later than the section itself; an older config module leaves it undefined and the tier stays off.
   if (typeof config.rules.softThreshold !== "number") config.rules = { ...config.rules, softThreshold: 0 };
+  // The turn-start reminder was added after the rules section; an older config module leaves it undefined and the reminder stays off.
+  if (typeof config.rulesAtTurnStart?.threshold !== "number") config.rulesAtTurnStart = { ...off, threshold: 1 };
+  if (typeof config.rulesAtTurnStart.enabled !== "boolean") config.rulesAtTurnStart = { ...config.rulesAtTurnStart, enabled: false };
   // The command rules were added inside the action section later than the section itself; an older config module leaves them undefined.
   if (!Array.isArray(config.action.commandRules)) config.action = { ...config.action, commandRules: [] };
   if (!Array.isArray(config.action.commandDenyRules)) config.action = { ...config.action, commandDenyRules: [] };

@@ -40,6 +40,13 @@ let failNetwork = false;
 let hangNetwork = false;
 /** Answer every judgment with this HTTP status, e.g. 401 for a revoked key. */
 let failStatus: number | undefined;
+/** Judgment requests the mock answered; a background judgment may answer after the prompt has returned. */
+let answeredRequests = 0;
+/** When set, the judgment request that finds it waits on it before answering; a test releases it with `releaseJudge`. */
+let judgeGate: Promise<void> | undefined;
+let releaseJudge: (() => void) | undefined;
+/** Hold the next judgment until the test releases it, so the caller can prove it did not wait for the answer. */
+const holdNextJudge = () => { judgeGate = new Promise<void>(resolve => { releaseJudge = resolve; }); };
 const sentMessages: Array<{ message: { customType: string; content: string }; options?: Record<string, unknown> }> = [];
 const sentUserMessages: Array<string> = [];
 const requests: Array<{ model?: string; state: Record<string, unknown>; questions: Record<string, { type: string }> }> = [];
@@ -111,10 +118,17 @@ const toolResult = (toolName: string, input: Record<string, unknown>, output: st
   fire("tool_result", { toolName, toolCallId: "call-1", input, content: [{ type: "text", text: output }], isError: failed, details: toolName === "bash" ? { exitCode: failed ? 1 : 0 } : undefined }, ctx);
 const agentEnd = (finalText: string, ctx = context()) => fire("agent_end", { messages: [{ role: "user", content: prompt ?? "" }, { role: "assistant", content: [{ type: "text", text: finalText }], stopReason: "stop" }] }, ctx);
 const newPrompt = (text: string, ctx = context()) => { prompt = text; return fire("before_agent_start", { prompt: text }, ctx).then(() => fire("agent_start", {}, ctx)); };
-/** Fire before_agent_start with skills in systemPromptOptions and return its result. */
-const promptWithSkills = (text: string, skills: Array<{ name: string; description: string; filePath: string; baseDir: string; sourceInfo: { path: string; source: string; scope: string; origin: string }; disableModelInvocation: boolean }>, ctx = context()) => {
+/** Fire before_agent_start with skills in systemPromptOptions, let the background assessment settle, and reach the next
+ * tool boundary, which is where a passing tip is delivered. The delivered tip comes back in the hook's old message
+ * shape, so a test reads delivery the same way it reads a refusal. */
+const promptWithSkills = async (text: string, skills: Array<{ name: string; description: string; filePath: string; baseDir: string; sourceInfo: { path: string; source: string; scope: string; origin: string }; disableModelInvocation: boolean }>, ctx = context()) => {
   prompt = text;
-  return fire("before_agent_start", { prompt: text, systemPromptOptions: { cwd: temporary, skills } }, ctx);
+  const before = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience").length;
+  await fire("before_agent_start", { prompt: text, systemPromptOptions: { cwd: temporary, skills } }, ctx);
+  await settleBackground();
+  await toolCall("read", { path: "src/index.ts" }, ctx);
+  const delivered = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience");
+  return delivered.length > before ? { message: delivered.at(-1)!.message } : undefined;
 };
 const runCommand = (args: string, ctx = context()) => Reflect.apply(command.handler, command, [args, ctx]);
 const configPath = () => join(temporary, "agent", "pi-warden", "config.json");
@@ -143,6 +157,18 @@ const readLog = async (path: string, lines: number, settled = true): Promise<Rec
   throw new Error(`log at ${path} did not reach ${lines} labelled lines`);
 };
 const STACK_BAR = { widget: { barMode: "stack" } };
+/** Wait for a background judgment or a trace write, which no longer happen before a prompt returns. */
+const waitFor = async (ready: () => boolean, describe: string): Promise<void> => {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (ready()) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${describe}`);
+};
+/** One macrotask turn, so a fetch that just resolved can run its `.then`. */
+const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
+/** Let a background judgment answer (mock answers are immediate) before a test reads its state or trace. */
+const settleBackground = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 25));
 /**
  * The spend-cut action config for tests whose subject is not the spend cut: the ask gate is off, so every call reaches
  * the judge, and no trace-only sample rides a second request. `tests/action-cut.test.ts` covers those on their own.
@@ -154,6 +180,8 @@ const writeConfig = (json: string) => {
   return writeFile(configPath(), JSON.stringify({ ...config, action: { ...FULL_ACTION, ...(config.action ?? {}) } }));
 };
 const grantConsent = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
+/** Consent with the rules guard on: the turn-start reminder needs a rule set to ask about. */
+const curatorConfig = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, ...STACK_BAR }));
 
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), "pi-warden-ext-"));
@@ -184,6 +212,11 @@ before(async () => {
     requests.push(body);
     requestUrls.push(String(input));
     requestAuth.push(new Headers(init?.headers).get("authorization"));
+    // A held judgment answers only when the test releases it, so the caller's return can be timed against it.
+    const gate = judgeGate;
+    judgeGate = undefined;
+    if (gate) await gate;
+    answeredRequests++;
     // Answer every asked question from nextAnswers so slop, approval, stuck, and done requests all work with one mock.
     const answers: Record<string, unknown> = {};
     for (const [id, question] of Object.entries(body.questions)) {
@@ -228,6 +261,7 @@ beforeEach(async () => {
   notices.length = 0; widgets.length = 0; confirms.length = 0;
   confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; hangNetwork = false; failStatus = undefined; prompt = "Run the test suite";
   keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0; requestUrls.length = 0; requestAuth.length = 0;
+  answeredRequests = 0; judgeGate = undefined; releaseJudge = undefined;
   widgetComponent = undefined; widgetPlacement = undefined; customCalls.length = 0; openPanels.length = 0; panelClosed.length = 0; renders = 0;
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
@@ -3093,7 +3127,7 @@ test("conscience: no-tool lifecycle fixture for recommend mode", async () => {
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "before_agent_start must return a custom message in recommend mode");
+  assert.ok(result?.message, "the tip is delivered at the next tool boundary in recommend mode");
   assert.match(result!.message!.content, /impeccable/i, "the message should recommend the impeccable skill");
   assert.match(result!.message!.content, /Consider using/, "the message should suggest consideration");
 });
@@ -3117,7 +3151,7 @@ test("conscience: no-tool lifecycle fixture for load mode", async () => {
   const result = await promptWithSkills("Take a screenshot of this page and make it look better", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "before_agent_start must return a custom message in load mode");
+  assert.ok(result?.message, "the loaded skill body is delivered at the next tool boundary in load mode");
   assert.ok(result!.message!.content.length > 100, "load mode should supply the full skill body");
   assert.match(result!.message!.content, /impeccable/);
 });
@@ -3142,7 +3176,7 @@ test("conscience: default threshold 1.0 traces assessment but delivers nothing",
   assert.match(traceText, /below_threshold/, "trace should note below_threshold");
 });
 
-test("conscience: lowered threshold delivers one message via hook return", async () => {
+test("conscience: a lowered threshold delivers one tip at the next tool boundary through the steer path", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
@@ -3150,10 +3184,13 @@ test("conscience: lowered threshold delivers one message via hook return", async
   const result = await promptWithSkills("design a landing page", skills) as {
     message?: { customType: string; content: string };
   } | undefined;
-  assert.ok(result?.message, "should return a message from the hook");
+  assert.ok(result?.message, "the tip is delivered at the next tool boundary");
   assert.equal(result!.message!.customType, "pi-warden-conscience");
   assert.match(result!.message!.content, /impeccable/);
-  assert.equal(sentMessages.filter(m => m.message.customType === "pi-warden-conscience").length, 0, "should not use sendMessage");
+  const delivered = sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience");
+  assert.equal(delivered.length, 1, "exactly one tip rides the steer path");
+  assert.equal(delivered[0]!.options?.deliverAs, "steer", "the tip goes through the steer path");
+  assert.equal(delivered[0]!.options?.triggerTurn, undefined, "a tip never starts a turn by itself");
 });
 
 test("conscience: the tip is the name, one useWhen line, and the skill file", async () => {
@@ -3177,6 +3214,51 @@ test("conscience: the tip is the name, one useWhen line, and the skill file", as
   assert.ok(!content.includes("Frontend interface design"), "the full description does not ride along");
   await rm(indexPath("global"), { force: true });
   await sessionStart();
+});
+
+test("conscience: the assessment does not hold the prompt, and a run that ends first drops the tip with a trace", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  sentMessages.length = 0;
+  const before = answeredRequests;
+  holdNextJudge();
+  const started = Date.now();
+  const returned = await fire("before_agent_start", { prompt: "design a landing page", systemPromptOptions: { cwd: temporary, skills } });
+  const held = Date.now() - started;
+  assert.equal(returned, undefined, "nothing rides back from before_agent_start");
+  assert.ok(held < 250, `before_agent_start held the prompt ${held} ms while the judge was still thinking`);
+  releaseJudge?.();
+  await waitFor(() => answeredRequests > before, "the background conscience assessment");
+  await tick();
+  await agentEnd("");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /conscience · tip dropped \(the run ended first\)/);
+  assert.equal(sentMessages.filter(entry => entry.message.customType === "pi-warden-conscience").length, 0, "no tip was appended");
+});
+
+test("conscience: a throw before the assessment's try is caught and traced, not an unhandled rejection", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await runCommand("trace", context({ hasUI: false }));
+    const errorsBefore = (sentMessages.at(-1)!.message.content.match(/error: other/g) ?? []).length;
+    // A branch read that throws is inside the background task but before its own try block.
+    const ctx = context({ sessionManager: { getBranch: () => { throw new Error("branch read failed"); } } });
+    await fire("before_agent_start", { prompt: "design a landing page", systemPromptOptions: { cwd: temporary, skills } }, ctx);
+    await settleBackground();
+    await tick();
+    assert.deepEqual(unhandled, [], "the background task must not reject unhandled");
+    await runCommand("trace", context({ hasUI: false }));
+    const traceText = sentMessages.at(-1)!.message.content;
+    assert.match(traceText, /skipReason: error/, "the failure is traced");
+    assert.equal((traceText.match(/error: other/g) ?? []).length, errorsBefore + 1, "exactly one trace line for the failure");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 });
 
 test("conscience: steer budget exhausted blocks delivery", async () => {
@@ -4852,6 +4934,8 @@ test("the compaction appendix carries the open loops, and warden_recall prints i
     await toolResult("edit", { path: join(temporary, "src/a.ts"), edits: [] }, "Edited src/a.ts", false, ctx);
     await loopsTool({ action: "add", text: "Rerun the build", when: "after the type fix" }, ctx);
     sentMessages.length = 0;
+    // The turn-start rules reminder sent its own request when the prompt arrived; nothing below sends another.
+    const beforeRecall = networkCalls;
     const compactHandlers = extension.handlers.get("session_compact") ?? [];
     await Reflect.apply(compactHandlers[0]!, undefined, [{ type: "session_compact", compactionEntry: {}, fromExtension: false, reason: "manual", willRetry: false }, ctx]);
     const appendix = sentMessages.find(m => m.message.customType === "pi-warden-compact-evidence")!.message.content;
@@ -4862,7 +4946,7 @@ test("the compaction appendix carries the open loops, and warden_recall prints i
     for (const section of sections) assert.ok(appendix.includes(section), `the appendix carries the same text: ${section}`);
     assert.match(recall, /npm run build → src\/a\.ts\(3,7\): error TS2322/);
     assert.match(recall, /last passing check: npm test; code changed since last passing check: yes/);
-    assert.equal(networkCalls, 0, "recall and loops make no judgment request");
+    assert.equal(networkCalls, beforeRecall, "recall and loops make no judgment request");
   } finally {
     await rm(loopsDir(), { recursive: true, force: true });
   }
@@ -4887,6 +4971,157 @@ test("waste: the session tip is off by default and is appended to the prompt onc
   assert.equal((options.appendSystemPrompt ?? "").split("Tool calls are expensive").length - 1, 1, "the tip appears once");
   await runCommand("trace", context({ hasUI: false }));
   assert.equal((sentMessages.at(-1)!.message.content.match(/waste · session tip/g) ?? []).length, 1, "the trace records the tip delivery once per session");
+});
+
+test("rules at turn start: the prompt does not wait for the judgment, and the reminder reaches the next tool boundary through the steer path", async () => {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n\n# House prose\nNo em-dashes in documents.\n");
+  try {
+    nextAnswers = { ...nextAnswers, applies_0: 0.9, applies_1: 0.1 };
+    const before = answeredRequests;
+    const sentBefore = sentMessages.length;
+    holdNextJudge();
+    const started = Date.now();
+    const result = await fire("before_agent_start", { prompt: "Read the config module and tighten the retry default" });
+    const held = Date.now() - started;
+    assert.equal(result, undefined, "nothing rides back from before_agent_start");
+    assert.equal(sentMessages.length, sentBefore, "nothing is delivered before a tool boundary");
+    assert.ok(held < 250, `before_agent_start held the prompt ${held} ms while the judge was still thinking`);
+    releaseJudge?.();
+    await waitFor(() => answeredRequests > before, "the background rules judgment");
+    await tick();
+    await toolCall("read", { path: "src/config.ts" });
+    const delivered = sentMessages.slice(sentBefore);
+    assert.equal(delivered.length, 1, "one message at the tool boundary");
+    assert.equal(delivered[0]!.message.customType, "pi-warden-rules");
+    assert.equal(delivered[0]!.message.content, "Rules that apply to this request:\n- No hardcoded secrets: Source code must not contain passwords or API keys.", "only the rule that passed the threshold is named, heading and first line");
+    assert.equal(delivered[0]!.options?.deliverAs, "steer", "the existing steer path carries it, so Pi appends it after the newest message");
+    assert.equal(delivered[0]!.options?.triggerTurn, undefined, "a delivery never starts a turn by itself");
+    const state = requests.at(-1)!.state as { request: string; rules: Array<{ rule: string }> };
+    assert.equal(state.request, "Read the config module and tighten the retry default");
+    assert.deepEqual(state.rules.map(rule => rule.rule), ["No hardcoded secrets", "House prose"], "every rule is asked about, so the ones left out are left out on the answer");
+    assert.ok(!("task" in state), "the curator's own state is the request and the rules, not an action summary");
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · 1 rule delivered at the next tool boundary/);
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+test("rules at turn start: no rule over the threshold queues nothing", async () => {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    // The fake judge answers an unknown question with 0.1, below the 0.3 threshold.
+    const before = answeredRequests;
+    const sentBefore = sentMessages.length;
+    assert.equal(await fire("before_agent_start", { prompt: "What does the retry helper do?" }), undefined);
+    await waitFor(() => answeredRequests > before, "the background rules judgment");
+    await tick();
+    await toolCall("read", { path: "src/config.ts" });
+    assert.equal(sentMessages.length, sentBefore, "no rule applies: nothing is delivered");
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · none apply/);
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+test("rules at turn start: a failed request appends nothing and the trace says why", async () => {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    failNetwork = true;
+    const before = networkCalls;
+    const sentBefore = sentMessages.length;
+    assert.equal(await fire("before_agent_start", { prompt: "Read the config module" }), undefined, "fail open");
+    await waitFor(() => networkCalls > before, "the background rules request");
+    await tick();
+    failNetwork = false;
+    await toolCall("read", { path: "src/config.ts" });
+    assert.equal(sentMessages.length, sentBefore, "nothing is delivered");
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · nothing appended/);
+    assert.match(sentMessages.at(-1)!.message.content, /error: TypeSafe returned HTTP 503/);
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+test("rules at turn start: a run that ends before delivery drops the reminder and traces it", async () => {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    nextAnswers = { ...nextAnswers, applies_0: 0.9 };
+    // The answer arrives after the run ended.
+    const before = answeredRequests;
+    holdNextJudge();
+    await fire("before_agent_start", { prompt: "Read the config module" });
+    await fire("agent_start", {});
+    await agentEnd("");
+    releaseJudge?.();
+    await waitFor(() => answeredRequests > before, "the background rules judgment");
+    await tick();
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · dropped/);
+    assert.match(sentMessages.at(-1)!.message.content, /run ended before the answer arrived/);
+    // The other order: the answer lands during the run and no tool boundary follows before the end.
+    const queued = answeredRequests;
+    await fire("before_agent_start", { prompt: "Read the config module" });
+    await fire("agent_start", {});
+    await waitFor(() => answeredRequests > queued, "the background rules judgment");
+    await tick();
+    await agentEnd("");
+    await runCommand("trace", context({ hasUI: false }));
+    assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · dropped \(the run ended first\)/);
+    assert.equal(sentMessages.filter(entry => entry.message.customType === "pi-warden-rules").length, 0, "no reminder was ever appended");
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+
+test("rules at turn start: a short continuation and a relayed child report send no request and trace the skip", async () => {
+  await curatorConfig();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    const requestsBefore = requests.length;
+    await fire("before_agent_start", { prompt: "yes" });
+    await fire("before_agent_start", { prompt: "scout reports:\n\ndone" });
+    await tick();
+    assert.equal(requests.length, requestsBefore, "neither prompt asks Jev anything");
+    await runCommand("trace", context({ hasUI: false }));
+    const traceText = sentMessages.at(-1)!.message.content;
+    assert.match(traceText, /rules · turn start · skipped/);
+    assert.match(traceText, /skipReason: short_continuation/);
+    assert.match(traceText, /skipReason: relayed_report/);
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+test("rules at turn start: the request is redacted and the table carries the rule with its path scope", async () => {
+  await curatorConfig();
+  const key = projectKey();
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n\n# Version bumps stay out of features\npaths: package.json, CHANGELOG.md\nUse a separate commit.\n");
+  try {
+    const before = requests.length;
+    await fire("before_agent_start", { prompt: `Deploy uses this key: ${key}` });
+    await waitFor(() => requests.length > before, "the background rules request");
+    const body = requests.at(-1)!;
+    assert.ok(Object.keys(body.questions).every(name => name.startsWith("applies_")), "one question per rule");
+    assert.ok(!JSON.stringify(body).includes(key.slice(0, 20)), "the key never reaches the judge");
+    const state = body.state as { rules: Array<{ rule: string; applies_to_files: string[] }> };
+    assert.deepEqual(state.rules[1]!.applies_to_files, ["package.json", "CHANGELOG.md"], "a rule's scope rides with it");
+  } finally {
+    await rm(rules, { force: true });
+  }
 });
 
 test("waste: a nudge rides the tool result and never blocks a call or changes a hold", async () => {
@@ -5118,12 +5353,13 @@ test("turn rules: one end-of-run steer covers the run's diff and the files no pe
     assert.match(steers[0]!.message.content, /the change to app\.txt \(made by a command, not an edit\)/);
     assert.equal(steers[0]!.options?.deliverAs, "followUp");
     assert.equal(steers[0]!.options?.triggerTurn, true, "the same delivery as the done-check");
-    // A second run with no change judges nothing and steers nothing.
+    // A second run with no change judges nothing and steers nothing. The turn-start rules reminder is not a run
+    // judgment: it asks before the model call, so only the run's own requests count here.
     requests.length = 0;
     sentMessages.length = 0;
     await newPrompt("thanks", context({ cwd: repo }));
     await agentEnd("You're welcome.", context({ cwd: repo }));
-    assert.equal(requests.length, 0);
+    assert.equal(requests.filter(request => !Object.keys(request.questions).some(name => name.startsWith("applies_"))).length, 0);
     assert.equal(steersOnly().length, 0);
   } finally {
     guard.restore();

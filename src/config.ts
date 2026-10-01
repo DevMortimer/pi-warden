@@ -243,6 +243,13 @@ export interface RulesConfig {
   sensitivePaths: Record<string, string>;
 }
 
+export interface RulesAtTurnStartConfig {
+  /** Ask which rules apply before each new user message, and append the ones that do as one short message. */
+  enabled: boolean;
+  /** P(this rule applies) at or above which the rule is named. Measured against the owner's own requests; see docs/guards.md. */
+  threshold: number;
+}
+
 export interface ContextConfig {
   enabled: boolean;
   /** Only new tool output is compressed; warm history and system prompts are never changed. */
@@ -472,6 +479,8 @@ export interface WardenConfig {
   slop: SlopGuardConfig;
   security: SecurityConfig;
   rules: RulesConfig;
+  /** A rules reminder at the start of each user turn (curator.ts). */
+  rulesAtTurnStart: RulesAtTurnStartConfig;
   context: ContextConfig;
   runaway: RunawayConfig;
   notify: NotifyConfig;
@@ -506,7 +515,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 11;
+export const CONFIG_SCHEMA = 12;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -546,6 +555,8 @@ export function defaultConfig(): WardenConfig {
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true },
     rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
+    // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
+    rulesAtTurnStart: { enabled: true, threshold: 0.3 },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
@@ -1011,11 +1022,12 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "rulesAtTurnStart" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
   return {
     compaction: applyCompaction(base.compaction, raw.compaction, source),
     waste: applyWaste(base.waste, raw.waste),
     rules: applyRules(base.rules, raw.rules),
+    rulesAtTurnStart: applyRulesAtTurnStart(base.rulesAtTurnStart, raw.rulesAtTurnStart, source, warnings),
     runaway: applyRunaway(base.runaway, raw.runaway),
     subagent: applySubagent(base.subagent, raw.subagent),
     // A project file may switch notifications off or on, but never names a command to run.
@@ -1094,6 +1106,17 @@ function applyWaste(base: WasteConfig, raw: unknown): WasteConfig {
     paging: boolean(raw.paging, base.paging),
     search: boolean(raw.search, base.search),
     recheck: boolean(raw.recheck, base.recheck),
+  };
+}
+
+/** The turn-start reminder spends a request before every user message, so a project file may make it stricter, never turn it off. */
+function applyRulesAtTurnStart(base: RulesAtTurnStartConfig, raw: unknown, source: "user" | "project", warnings: string[]): RulesAtTurnStartConfig {
+  if (!isObject(raw)) return base;
+  const project = source === "project";
+  return {
+    enabled: project ? projectSwitch("rulesAtTurnStart.enabled", raw.enabled, base.enabled, warnings) : boolean(raw.enabled, base.enabled),
+    // A lower cut names more rules, which is the stricter reading of "remind me".
+    threshold: project ? projectProbability("rulesAtTurnStart.threshold", raw.threshold, base.threshold, warnings) : probability(raw.threshold, base.threshold),
   };
 }
 

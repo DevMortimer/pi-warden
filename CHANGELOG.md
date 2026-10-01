@@ -8,6 +8,26 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 0.86.0
+
+### Added
+
+- The turn-start rules reminder: before the first model call of each new user message, pi-warden starts one request asking which of the project's rules apply to that request (one question per rule, carrying the request, the task spine, and each rule's heading, text, and `paths:` scope), and the ones that pass the threshold reach the agent as one short message at the next tool boundary, at most three, strongest first. The prompt never waits for the answer; nothing earlier in the context moves, so a warm prompt cache is never invalidated. A judgment that is off, fails, or takes longer than two seconds appends nothing and says so in the trace, and a run that ends before the answer arrives drops the reminder with a trace line. A short continuation or a relayed child report sends no request: the two prompts the conscience's local gate also skips, with the reason traced. `rulesAtTurnStart.enabled` (default true) and `rulesAtTurnStart.threshold` (default 0.3) control it; a project file may make it stricter, never turn it off. Measured on 100 real requests from three projects, labelled by one model: 68.9% of the rules named apply, 80 of 100 requests name at least one rule, p50 278 ms and p90 336 ms for the request itself. See [guards.md → Rules at turn start](docs/guards.md#rules-at-turn-start).
+- `/warden status` reports the session's turn-start reminder: rules named, requests, failures, and the latency percentiles.
+
+### Changed
+
+- The conscience assessment and the turn-start rules request both run in the background: `before_agent_start` starts them and returns, so a prompt never waits for Jev. The hold falls from the judgment's own latency (p50 254 ms against a 250 ms local mock) to under 1 ms at p90 for both. A passing tip is delivered at the next tool boundary through the steer path, with its existing budget rule and its `agent_end` reminder; a tip or a reminder whose run ended first is dropped and traced. See [guards.md → Turn-start delivery calibration](docs/guards.md#turn-start-delivery-calibration-2026-10-01-background-delivery).
+- The turn-start rules request skips the prompts the conscience's local gate skips: offline over 7,633 recorded prompts, 105 short continuations and 785 relayed child reports send no request, so the rate falls from 100 to 88.3 requests per 100 recorded prompts.
+
+### Removed
+
+- `workingMemory.*` from the config: the pruning-at-a-cold-turn-start idea failed its feasibility gate before any of its code was written (200 sampled tool results, one Jev question each: no threshold dropped at least 30% of candidates with at most 10% misses), so no feature sits behind the keys. Every documented key is a promise kept through 1.x, so the inert surface is gone. The measurement stays in [guards.md → Working-memory feasibility](docs/guards.md#working-memory-feasibility-2026-09-30-gate-failed).
+
+### Docs
+
+- `docs/guards.md` (Rules at turn start) describes the background delivery, the tool-boundary rule, the drop trace, the skip, and both measurements; `docs/configuration.md` documents `rulesAtTurnStart.*`; `docs/data-handling.md` lists exactly what the turn-start request sends and when it sends nothing; `docs/commands.md` names the new `/warden status` totals.
+
 ## 0.85.0
 
 ### Added

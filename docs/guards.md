@@ -2,7 +2,7 @@
 
 Every guard, what it looks at, the questions it asks Jev, the thresholds, and the numbers behind them. The [README](../README.md) has the short version. Defaults live in [configuration.md](configuration.md); what leaves the machine is in [data-handling.md](data-handling.md).
 
-Contents: [Action guard](#action-guard) · [Why Jev](#why-jev-and-not-a-second-llm-call) · [Calibration](#calibration) · [Rules](#rules) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Context saver](#context-saver) · [Subagent triage](#subagent-triage) · [Desktop notifications](#desktop-notifications) · [Steer messages](#steer-messages)
+Contents: [Action guard](#action-guard) · [Why Jev](#why-jev-and-not-a-second-llm-call) · [Calibration](#calibration) · [Rules](#rules) · [Rules at turn start](#rules-at-turn-start) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Context saver](#context-saver) · [Subagent triage](#subagent-triage) · [Desktop notifications](#desktop-notifications) · [Steer messages](#steer-messages)
 
 ## Action guard
 
@@ -446,6 +446,79 @@ The end-of-run questions ship with a measurement: 42 labelled cases (`eval/rules
 | shell-changed files | holdout | 3 | 1.000 / 1.000 / 1.000 / 1.000 | 0.000 / 0.000 / 0.000 / 0.000 |
 
 The scores separate widely: turn violations run 0.83 to 1.00 and their compliant near-misses 0.00 to 0.36; the shell cases run 0.96 to 1.00 and 0.00. Every cutoff from 0.5 to 0.8 separates this set, so the shipped `rules.threshold` (0.7), with each rule's own `threshold:` header when it set one, needs no turn-specific value. The set is small and hand-built and its cases are clear-cut; the muddled tune case shows the question responds to ambiguity, so read these numbers as “the question separates labelled turn diffs”, not as an error rate for real runs. Full per-case scores and the tables at every cutoff are in `eval/reports/2026-09-27-turn-rules/`.
+
+## Rules at turn start
+
+Before the first model call of a new user message, pi-warden starts one background request asking which of the project's rules apply to that request: one `noul` per rule (`applies_<n>`), carrying the request (1500 redacted characters), the task spine, and the rule set with each rule's heading, text (300 characters), and `paths:` scope. The prompt does not wait for the answer. When it arrives during the run, the rules over `rulesAtTurnStart.threshold` (0.3) are delivered at the next tool boundary through the steer path — a custom message appended after the newest message, strongest first, at most three — and the delivery never starts a turn by itself:
+
+```
+Rules that apply to this request:
+- Switch statements have a default case: Every `switch` has a `default` branch, even if it only throws on an unexpected value.
+- No commented-out code: Delete code that is no longer used. Do not leave it behind as comments.
+```
+
+The message names each rule's heading and the first line of its text, taken from [`examples/pi-warden.md`](../examples/pi-warden.md).
+
+The message is a custom message for the turn (`pi-warden-rules`) appended after the newest message, so it moves nothing earlier in the context: a warm prompt cache stays valid and no earlier message is edited. When no rule passes, or the judgment is off, fails, or takes longer than two seconds (`timeoutMs` when that is lower), nothing is appended and the trace says why; so does a run that ends before the answer arrives, because a delivery must never start a turn of its own. At most 31 rules are asked, the same cap as the guard's own request; the ones past it stay out and the trace names the count. A fallback document with no rule headings has no per-rule questions and appends nothing.
+
+Rules are asked in file order, never scoped to a path first: the request may touch any file, and the judgment is the only thing that knows which. A rule's `paths:` scope rides in its question so the judge can rule it out.
+
+A prompt that needs no judgment sends no request: a short continuation ("yes", "continue") or a relayed child report is skipped with a traced reason, the same two prompts the conscience's local gate skips. Everything else sends one request. Relayed reports are about a child agent's work, not the project's rules; a continuation carries no work of its own.
+
+The appended message is a reminder, not a gate: it steers nothing, holds nothing, and changes no rule, threshold, or verdict. Rules that do not apply cost three lines of noise, which is the measured price of the ones that do. `/warden status` reports the rules named, the requests, the failures, and the latency percentiles for the session.
+
+### Rules at turn start calibration (2026-09-30, first measurement)
+
+100 real requests were sampled from the session files of three projects on this machine since 2026-09-16 — this project (34 requests, 13 rules), a Python and TypeScript product (34 requests, 29 rules), and a Flutter app (32 requests, 12 rules) — newest sessions first, so the sample is not one long chat, with injected skill bodies, harness boot prompts, and relayed subagent reports left out. **One model, the author's assistant, labelled every request** by reading it and the project's rule set and naming the rules the request's work falls under (1,812 rule-request pairs, 662 of them applicable, 36.5%). Each request was then sent once as the shipping `buildCuratorRequest` makes it: 100 requests, one question per rule (12 to 29 questions), `jev-1.13.0`.
+
+AUC against the labels: **0.74**. The table is the shipped shape, at most three rules named, strongest first:
+
+| threshold | rules named | precision | recall (of applicable pairs) | requests that name a rule | of those, requests where none applies |
+| --- | --- | --- | --- | --- | --- |
+| 0.2 | 266 | 64.3% | 25.8% | 93 | 20 |
+| **0.3** | 206 | **68.9%** | **21.5%** | **80** | **12** |
+| 0.4 | 132 | 69.7% | 13.9% | 63 | 6 |
+| 0.5 | 78 | 62.8% | 7.4% | 38 | 2 |
+
+Precision counts a rule Jev named and the labeller also marked applicable; recall is capped by the three-rule message, so it reads against the whole applicable set, not against what the message could hold. Without the cap, one question per rule at 0.3 reaches precision 56.1% and recall 34.7%; at 0.15, precision 50.3% and recall 86.6%. The cut is 0.3 because it is where the named set is most often right while most requests that touch a rule still get one: the 0.2 cut names rules on 13 more requests but 8 of those 13 are requests where no rule applies. Recall is the weak side of the ledger: the message names at most three rules by design, so on a request that touches ten it reminds the agent of three.
+
+Per project at 0.3: precision 66.3% / 78.6% / 64.1%, recall 27.4% / 14.0% / 29.5%, false alarms on requests where no rule applies 3/6, 3/12, 6/9. The long rule set (29 rules) is the hardest: more rules compete for the three slots.
+
+Four question wordings were measured against the same labels (one 100-request run each): the shipped "does rule X apply to what `request` asks for" (AUC 0.74), "will the agent have to respect rule X" (0.72), "should this rule be shown to the agent" (0.70), and "is this rule one of the rules that govern the work" (0.72). The wording moves the precision/recall trade-off (a softer question names more rules at the bottom of the range) but not the ranking, so the shipped wording stayed.
+
+**Cost and latency.** Reported per request, at 12 to 29 questions: p50 278 ms, p90 336 ms, p99 698 ms; 4,920 input tokens (492,029 over the 100 requests) and about $0.0002, $0.0207 for the whole measurement. Every request named here is billable and was run with a spend cap.
+
+**Limitations.** The labels are one model's reading, not the owner's, and a rule's applicability is a judgement: the disagreement behind most false positives is whether a request that only reads or plans is governed by the rules of the code area it discusses. The sample is 100 requests from one machine, and 27 of them have no applicable rule at all, so the false-alarm column rests on small numbers. Only this project's own rule list and two neighbouring projects' lists were measured; a rule set of a different shape (many path-scoped rules, one huge rule) is not covered. The three-rule cap and the 0.3 cut are the shipped defaults; `rulesAtTurnStart.threshold` moves the cut.
+
+### Turn-start delivery calibration (2026-10-01, background delivery)
+
+The rules request and the conscience assessment no longer hold the prompt: both start in `before_agent_start` and their answer is delivered at the next tool boundary through the steer path. The hold was measured with `scripts/turn-start-latency.mjs`, 100 runs per mode, the judgment answered by a local mock after 250 ms, so the number is the hold, not the network:
+
+| surface | before p50 / p90 / p99 | after p50 / p90 / p99 |
+| --- | --- | --- |
+| rules request | 253.93 / 255.74 / 257.50 ms | 0.27 / 0.41 / 1.06 ms |
+| conscience assessment | 254.67 / 256.68 / 257.16 ms | 0.31 / 0.48 / 0.77 ms |
+
+Both sit under 1 ms at p90; the target was under 20 ms. A message that arrives only after the run ended is dropped and traced: the delivery must never start a turn of its own.
+
+The rules request also skips the prompts the conscience's local gate skips. `scripts/rules-turn-replay.mjs` applies the two predicates offline to this machine's recorded sessions (1,327 sessions, 7,633 prompts): 105 short continuations (1.4%) and 785 relayed child reports (10.3%) send no request, so the rules request falls from 100 to 88.3 per 100 recorded prompts.
+
+### Working-memory feasibility (2026-09-30, gate failed)
+
+The 1.0 direction was to prune at a turn start: when the prompt cache is already cold, replace old tool results the task no longer needs with one-line stubs that keep a recall path. The measurement ran before any of that code was written: 200 tool results sampled from this machine's own sessions since 2026-09-16, each still in context and at least 10 model calls old at the start of a user turn, one Jev request per result (200 requests, `jev-1.13.0`, 198,066 input tokens, $0.0083, p50 248 ms, p90 312 ms).
+
+The label asks what the agent did next, over the ten model calls that follow the user's new message: it needed the result if it repeated two tokens that appear in at most two tool results of the session and not in the call that produced this one (the ceiling study's strict proxy), or if it called the same tool with the same arguments again. 34.5% of the sampled results were needed; the same window measured from the result's own creation says 55.0%, the loose token proxy says 73.5%, and a repeated call with the same arguments never happened (0.0%). The question scores 0.39 on average where the result was needed and 0.28 where it was not; AUC 0.71 against the strict label, 0.75 against the loose one.
+
+| threshold | candidates dropped | misses of those (strict label) | net character-calls saved |
+| --- | --- | --- | --- |
+| 0.2 | 23.5% | 12.8% | 6.4 M |
+| 0.3 | 53.0% | 21.7% | 23.0 M |
+| 0.4 | 68.0% | 23.5% | 33.9 M |
+| 0.5 | 86.5% | 31.8% | 45.9 M |
+
+Net is the characters the dropped results would have been re-read for over the rest of their session, minus one re-read of each miss. **The gate was a threshold that drops at least 30% of candidates with at most 10% misses; none passes.** The 0.2 cut is the closest at 23.5% dropped and 12.8% missed. The failure has a shape: results of 12,000 characters and over were needed in 10 of 12 cases, and every one of them that a 0.3 cut dropped was a miss, because a large result holds so many rare tokens that two of them reappear in almost any later call. Big results carry most of the at-stake characters, so the judgment is weakest exactly where the saving is largest. Results under 2,000 characters judge better (0.3: 66.0% dropped, 7.8% missed) but hold 2.1 M of the 62.7 M character-calls in the sample. 20,779 call-reads were at stake over the sample, a median of 64 later calls per result.
+
+Because the gate failed, the pruning is not built and no config key ships for it: every documented key is a promise kept through 1.x, so a switch with no feature behind it is not documented at all. The same feasibility numbers say the turn-start rules reminder is worth its request where the pruning was not: at its 0.3 cut it names no rule on 20 of 100 requests, against a miss that costs the agent a re-read of a whole tool result.
 
 ## Slop
 
