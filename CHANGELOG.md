@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.86.1
+
 ### Added
 
 - A/B benchmark tooling: a third cell (`warden-offline`, pi-warden with Jev judgments off, so only the offline parts run) beside the prose-only and warden cells; a cost axis that prices each run in dollars — agent input, output, cache-read, and cache-write tokens from the session log at a price table in `eval/config.mjs` (prices from Pi's model catalog, source named there), plus the run's Jev requests and input tokens — reported per run and per cell; four multi-turn tasks (5-6 user turns, a project rule matters only after the first turn) that exercise the turn-start rules reminder; `npm run eval:power`, the power calculation from the earlier reports (violations per run, success non-inferiority, dollars per run) per registered model, with the proposed batches and their estimated cost (billed for one model, list-price equivalent for the plan-based one, plus its token total for quota); and `eval/preregistration.md`, the pre-registration for the 1.0 thesis run. Repo tooling; rides along with the next release.
