@@ -1,5 +1,5 @@
 import type { ActionGuardConfig, LargeOutputConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
-import { APPROVAL_THRESHOLD, askApproval, evaluateAction, releaseHeld, textApproves } from "./guard.js";
+import { evaluateAction, settleApproval } from "./guard.js";
 import type { EvaluateOptions, PreviousAction, ScratchRecords, TaskMessage, Verdict } from "./guard.js";
 import type { TaskSpine } from "./shape.js";
 import type { Judge } from "pi-typesafe";
@@ -22,7 +22,7 @@ export interface Conversation {
   siblings?: readonly ToolCallRef[] | undefined;
   /** The agent's own words in that message (or its latest text under this prompt); shared by the siblings. Explains, never authorizes. */
   plan?: string | undefined;
-  /** The agent's message the latest user message answers: the text of the newest assistant message before it. Lets a short or numbered reply be read against what it points at. Explains, never authorizes. */
+  /** The agent's words the latest user message answers: the text of every assistant message of the turn before it, in order. Lets a short or numbered reply be read against what it points at. Explains, never authorizes. */
   asked?: string | undefined;
 }
 
@@ -93,24 +93,9 @@ export class ActionGuard {
     const pending = ready && !ready.used && ready.key === key ? ready.verdict : judgeCall(call.tool, call.input, options.previousActions);
     this.prejudged.set(call.id, { key, verdict: pending, used: true });
     const verdict = await pending;
-    if (retryAfterHold && verdict.level === "confirm") await this.settleApproval(verdict, conversation, options);
+    if (retryAfterHold && verdict.level === "confirm") await settleApproval(verdict, task, conversation.asked, { judge: options.judge, timeoutMs: options.config.timeoutMs, signal: options.signal });
     if (verdict.approvedByUser) this.holdPending = false;
     return verdict;
-  }
-
-  /** One approval request for one held call. When there is no judge or the request fails, the offline reading of the reply decides; a failure alone never releases the call. */
-  private async settleApproval(verdict: Verdict, conversation: Conversation, options: InspectOptions): Promise<void> {
-    const { task } = conversation;
-    if (options.judge) {
-      const answer = await askApproval(options.judge, verdict.summary, task, conversation.asked, verdict.reasons, { timeoutMs: options.config.timeoutMs, signal: options.signal });
-      if (answer.ok) {
-        if (verdict.judgment) verdict.judgment.approved = answer.approved;
-        if (answer.approved >= APPROVAL_THRESHOLD) releaseHeld(verdict, `user approved in the latest message (${answer.approved.toFixed(2)})`);
-        return;
-      }
-      verdict.approvalError = answer.error;
-    }
-    if (textApproves(task)) releaseHeld(verdict, "user approved in the latest message");
   }
 
   /** The call inspected under `task` was held: the next inspection under a different prompt asks whether that prompt approves it. */

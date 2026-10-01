@@ -1,4 +1,4 @@
-// Replays the approval question on held calls recorded in trace files, and counts approval questions offline.
+// Replays the approval designs on held calls recorded in trace files, and counts approval questions offline.
 //
 // A real case is a judged action call whose trace line has a `confirm` verdict and an `approved` score: the call was held, or it
 // was released because the reply read as approval. Its reply (`task`), the agent message before it (`asked`), the call, and the
@@ -9,7 +9,8 @@
 //   --sessions DIR    Pi session files (default ~/.pi/agent/sessions)
 //   --since DATE      first day to read (default 2026-09-16)
 //   --labels FILE     JSON { "<session id>:<trace time>": true|false }: whether the reply approves that action, labelled blind by a model
-//   --judge           send the old and the new question for each case (billable: cases x 2 x --repeats requests); without it, counts only
+//   --judge           send every design's request for each case (billable: cases x 3 x --repeats requests); without it, counts only
+//   --designs LIST    comma list of old, candidate, round2 (default all)
 //   --repeats N       runs per question (default 3)
 //   --out FILE        write per-case scores as JSON
 // Build first (npm run build); run: PI_TYPESAFE_MAX_USD_PER_DAY=0.5 node scripts/approval-replay.mjs --traces DIR --labels FILE --judge
@@ -17,7 +18,8 @@ import { readdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createTypeSafe } from 'pi-typesafe';
-import { APPROVAL_THRESHOLD, approvalQuestion, buildApprovalRequest, buildRequest, describeAction, describePlan, taskSpine } from '../dist/index.js';
+import { describeAction, describePlan, taskSpine } from '../dist/index.js';
+import { designs, measure, tally } from './approval-designs.mjs';
 
 const args = process.argv.slice(2);
 const value = (name, fallback) => { const index = args.indexOf(`--${name}`); return index >= 0 && args[index + 1] !== undefined ? args[index + 1] : fallback; };
@@ -26,6 +28,7 @@ if (!tracesDir) { console.error('--traces DIR is required'); process.exit(2); }
 const sessionsDir = value('sessions', join(homedir(), '.pi', 'agent', 'sessions'));
 const since = value('since', '2026-09-16');
 const repeats = Number(value('repeats', 3));
+const only = value('designs', designs.join(',')).split(',');
 
 const walk = dir => readdirSync(dir).flatMap(name => { const path = join(dir, name); return statSync(path).isDirectory() ? walk(path) : name.endsWith('.jsonl') ? [path] : []; });
 const norm = text => String(text).replace(/\s+/g, ' ').trim();
@@ -83,43 +86,29 @@ for (const row of rows) {
   const userIndex = branch.findLastIndex(entry => entry.type === 'message' && entry.message.role === 'user');
   if (userIndex < 0) continue;
   const reply = branch[userIndex];
-  const before = branch.slice(0, userIndex).findLast(entry => entry.type === 'message' && (entry.message.role === 'assistant' || entry.message.role === 'user'));
-  const askedText = before?.message.role === 'assistant' ? textOf(before.message.content).trim() : '';
+  // The assistant messages of the turn the reply answers: after the previous user message, before the reply, in order.
+  const messages = [];
+  for (let cursor = userIndex - 1; cursor >= 0 && !(branch[cursor].type === 'message' && branch[cursor].message.role === 'user'); cursor--) {
+    if (branch[cursor].type === 'message' && branch[cursor].message.role === 'assistant') messages.unshift(textOf(branch[cursor].message.content).trim());
+  }
   const reasons = (row.details.find(detail => detail.startsWith('why: ')) ?? '').slice(5).split('; ').filter(reason => reason && !reason.startsWith('user approved in the latest message'));
   const summary = describeAction(best.part.name, best.part.arguments, entries[0].cwd);
   const task = textOf(reply.message.content);
   const plan = describePlan(textOf(best.entry.message.content));
-  cases.push({ key: `${row.sessionId}:${row.at}`, released: row.released, task, asked: askedText, summary, reasons, plan, spine: taskSpine(branch.slice(0, userIndex + 1)) });
+  cases.push({ key: `${row.sessionId}:${row.at}`, released: row.released, task, messages, summary, reasons, plan, spine: taskSpine(branch.slice(0, userIndex + 1)) });
 }
 console.log(`rebuilt from the session files: ${cases.length} of ${rows.length}`);
 if (!args.includes('--judge')) process.exit(0);
 
-// --- Judge: the old question (acting-request state, `task` only) against the new one. ---
+// --- Judge: every design on every case, `repeats` runs each. ---
 const labelsFile = value('labels');
 const labels = labelsFile ? JSON.parse(readFileSync(labelsFile, 'utf8')) : {};
-const judge = createTypeSafe({ maxRequests: cases.length * repeats * 2 + 10 });
-const scored = [];
-for (const item of cases) {
-  const oldRequest = { state: buildRequest(item.summary, item.task, { approval: true, plan: item.plan, spine: item.spine }).state, questions: approvalQuestion };
-  const newRequest = buildApprovalRequest(item.summary, item.task, item.asked, item.reasons);
-  const run = async request => Promise.all(Array.from({ length: repeats }, async () => (await judge.evaluate(request)).answers.approved.noul));
-  const [oldScores, newScores] = await Promise.all([run(oldRequest), run(newRequest)]);
-  scored.push({ key: item.key, released: item.released, label: labels[item.key], old: oldScores, new: newScores });
-}
-// A call counts as released when every run is at or above the threshold, held otherwise; the mean decides the table when runs disagree.
-const mean = scores => scores.reduce((total, score) => total + score, 0) / scores.length;
-const releases = scores => mean(scores) >= APPROVAL_THRESHOLD;
-const labelled = scored.filter(item => typeof item.label === 'boolean');
-const table = arm => ({
-  releasedCorrectly: labelled.filter(item => item.label && releases(item[arm])).length,
-  releasedWrongly: labelled.filter(item => !item.label && releases(item[arm])).length,
-  heldCorrectly: labelled.filter(item => !item.label && !releases(item[arm])).length,
-  heldWrongly: labelled.filter(item => item.label && !releases(item[arm])).length,
-});
-console.log(`labelled: ${labelled.length} (${labelled.filter(item => item.label).length} approve, ${labelled.filter(item => !item.label).length} do not)`);
-console.log('old question:', JSON.stringify(table('old')));
-console.log('new question:', JSON.stringify(table('new')));
-console.log('as recorded (old question at the time):', JSON.stringify({ released: scored.filter(item => item.released).length, held: scored.filter(item => !item.released).length }));
+const judge = createTypeSafe({ maxRequests: cases.length * repeats * only.length + 10 });
+const rows = await measure(judge, cases.map(item => ({ ...item, approves: labels[item.key] })), { repeats, only });
+const labelled = rows.filter(row => typeof row.item.approves === 'boolean');
+console.log(`labelled: ${labelled.length} (${labelled.filter(row => row.item.approves).length} approve, ${labelled.filter(row => !row.item.approves).length} do not)`);
+for (const design of only) console.log(design, JSON.stringify(tally(labelled, design)));
+console.log('as recorded (old question at the time):', JSON.stringify({ released: cases.filter(item => item.released).length, held: cases.filter(item => !item.released).length }));
 const usage = judge.getUsage();
 console.log(`requests: ${usage.requestsStarted}, input tokens: ${usage.inputTokens}, output tokens: ${usage.outputTokens}`);
-if (value('out')) writeFileSync(value('out'), JSON.stringify(scored, null, 1), { mode: 0o600 });
+if (value('out')) writeFileSync(value('out'), JSON.stringify(rows.map(({ item, runs }) => ({ key: item.key, label: item.approves, released: item.released, runs })), null, 1), { mode: 0o600 });

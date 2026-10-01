@@ -146,22 +146,26 @@ function recentTaskContext(ctx: ExtensionContext): TaskMessage[] {
 }
 
 /**
- * The agent message the latest user message answers: the text parts of the newest assistant message before it, redacted
- * and clipped to its last 1,500 characters (the question is usually at the end). Sent only with the approval request of a
- * held call, to read a short or numbered reply against what it points at; it explains the reply and never approves.
+ * The agent's words the latest user message answers: the text of every assistant message after the previous user message
+ * and before the latest one, in order, redacted and clipped to the last 3,000 characters (the question is usually at the
+ * end). A reply that arrives mid-run follows messages that hold only tool calls, and an explanation can sit earlier in the
+ * turn, so the newest message alone is not enough. Sent only with the approval request of a held call, to read a short or
+ * numbered reply against what it points at; it explains the reply and never approves.
  */
 export function askedBeforeReply(ctx: ExtensionContext): string | undefined {
   const entries = ctx.sessionManager.getBranch();
+  const texts: string[] = [];
   let userSeen = false;
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
     if (entry?.type !== "message") continue;
     if (!userSeen) { userSeen = entry.message.role === "user"; continue; }
-    if (entry.message.role === "user") return undefined;
+    if (entry.message.role === "user") break;
     if (entry.message.role !== "assistant") continue;
-    return describeAsked(assistantText(entry.message.content));
+    const text = assistantText(entry.message.content).trim();
+    if (text) texts.unshift(text);
   }
-  return undefined;
+  return describeAsked(texts.join("\n\n"));
 }
 
 /**
