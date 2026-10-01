@@ -1,0 +1,117 @@
+{
+  "window": {
+    "since": "2026-09-15T16:00:00.000Z",
+    "until": "2026-10-01T16:00:00.000Z"
+  },
+  "sessions": 1168,
+  "entries": 208867,
+  "bashCalls": 70599,
+  "unreadableLines": 0,
+  "holds": {
+    "judged": 53868,
+    "levels": {
+      "confirm": 416,
+      "allow": 34382,
+      "warn": 19068,
+      "deny": 2
+    },
+    "held": 419,
+    "outcomes": {
+      "approved": 29,
+      "unlabelled": 308,
+      "replanned": 79,
+      "declined": 3
+    },
+    "reasons": {
+      "git reset --hard": 25,
+      "judged irreversible": 45,
+      "file outside the project": 37,
+      "recursive rm (absolute or temp path)": 283,
+      "other": 15,
+      "force push": 14
+    }
+  },
+  "heldResultsInSessions": 733,
+  "steers": {
+    "total": 1834,
+    "byKind": {
+      "rules": 422,
+      "credential notice": 400,
+      "intent mismatch": 397,
+      "slop": 125,
+      "done-check": 124,
+      "stuck": 89,
+      "open loops": 86,
+      "needs user input": 59,
+      "off-task": 25,
+      "tool or skill reminder": 24,
+      "prose trend": 22,
+      "security": 16,
+      "prompt injection": 14,
+      "other": 10,
+      "repeat note": 9,
+      "action warning": 6,
+      "runaway": 3,
+      "subagent report": 3
+    }
+  },
+  "doneCheckFollowUp": {
+    "ranCheck": 94,
+    "noCheck": 30
+  },
+  "rules": {
+    "steers": 422,
+    "distinctRules": 41,
+    "countsPerRuleTopFirst": [
+      63,
+      59,
+      51,
+      34,
+      31,
+      27,
+      25,
+      19,
+      17,
+      14,
+      12,
+      9,
+      8,
+      7,
+      6,
+      6,
+      4,
+      4,
+      2,
+      2,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  "conscience": {
+    "tool": 171,
+    "skill": 94,
+    "coreTool": 146
+  },
+  "contextSaver": {
+    "compressedResults": 457
+  }
+}

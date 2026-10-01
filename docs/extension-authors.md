@@ -11,7 +11,7 @@ const verdict = await evaluateAction(
   { tool: "bash", input: { command: "git push --force" }, cwd: process.cwd(), task: "push my branch" },
   { config: defaultConfig().action, judge },   // omit judge for pattern checks only
 );
-verdict.level;      // "allow" | "warn" | "confirm"  (confirm = hold in steer mode)
+verdict.level;      // "allow" | "warn" | "confirm" | "deny"  (confirm = hold in steer mode)
 verdict.reasons;    // ["destructive: git force push", "irreversible 0.91"]
 
 const set = new RuleStore().load(process.cwd(), defaultConfig().rules);

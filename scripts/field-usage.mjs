@@ -32,14 +32,21 @@ const STEER_KINDS = [
   ["done-check", /reports completion/],
   ["intent mismatch", /something different from what you said/],
   ["credential notice", /Possible credentials/],
-  ["stuck", /same call (?:succeeded|failed)|called \d+ times with/],
-  ["rules", /content just written to .* violates project rules?/],
+  ["stuck", /same call (?:succeeded|failed)|called \d+ times with|failures with the same strategy/],
+  ["rules", /(?:content just written to .*|change to .* \(made by a command, not an edit\)|changes this run made) violates? (?:a )?project rules?/],
   ["slop", /stub or placeholder|restate the code|dead or duplicated|hedging|vague notes/],
   ["needs user input", /may need user input/],
   ["runaway", /stopped your reply/],
   ["prose trend", /recent replies read as/],
   ["prompt injection", /prompt injection/i],
   ["large output", /large-output/],
+  ["off-task", /looks unrelated to the user's request/],
+  ["security", /may introduce a security weakness/],
+  ["action warning", /call ran with a warning/],
+  ["open loops", /open loops? you promised/],
+  ["subagent report", /subagent reports? needs? you/],
+  ["repeat note", /this repeats the last note/],
+  ["tool or skill reminder", /^Reminder: consider using/],
 ];
 const kindOf = (text) => STEER_KINDS.find(([, pattern]) => pattern.test(text))?.[0] ?? "other";
 
@@ -89,7 +96,7 @@ for (const file of sessionFiles(sessionsDir)) {
       const kind = kindOf(text);
       count(steers, kind);
       if (kind === "rules") {
-        const name = /pi-warden\.md: "([^"]+)"/.exec(text)?.[1];
+        const name = /pi-warden\.md: "([^"]+)"|project rules?: "([^"]+)"/.exec(text)?.slice(1).find(Boolean);
         if (name) count(rules, name);
       }
       if (kind === "done-check") {
@@ -139,7 +146,8 @@ const report = {
   heldResultsInSessions: heldResults,
   steers: { total: [...steers.values()].reduce((a, b) => a + b, 0), byKind: sorted(steers) },
   doneCheckFollowUp: doneFollowUp,
-  rulesByName: sorted(rules),
+  // Counts only: rule names come from private projects and stay out of the report.
+  rules: { steers: steers.get("rules") ?? 0, distinctRules: rules.size, countsPerRuleTopFirst: [...rules.values()].sort((a, b) => b - a) },
   conscience,
   contextSaver: { compressedResults: compressed },
 };
