@@ -77,6 +77,7 @@ export function actionDetails(verdict: Verdict, extra: { mode?: string; told?: s
   if (judgment?.securityRisk !== undefined) lines.push(`security risk: ${percent(judgment.securityRisk)}`);
   if (verdict.slop) lines.push(`slop: stub ${percent(verdict.slop.stub)} · comments ${percent(verdict.slop.comments)} · dead ${percent(verdict.slop.dead)} · hedging ${percent(verdict.slop.hedging)}${verdict.slopReasons?.length ? ` → ${verdict.slopReasons.join("; ")}` : ""}`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
+  if (verdict.approvalError) lines.push(`approval request failed: ${clip(verdict.approvalError, 200)}; the reply was read offline`);
   if (verdict.notAsked) lines.push(`not asked: ${verdict.notAsked}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
   if (extra.mode && verdict.level === "confirm") lines.push(`mode: ${extra.mode}`);
