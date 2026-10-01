@@ -1,0 +1,37 @@
+Dry-run listing of the proposed batch (eval/preregistration.md). No run starts,
+nothing is billed: this is the planned matrix only. Full listings reproduce with
+the same commands.
+
+
+$ node scripts/eval-ab.mjs --dry-run --model deepseek/deepseek-flash --repeats 143 --turns 12
+
+# 8580 runs listed (20 tasks x 3 cells x 143 repeats)
+
+eval-ab: 20 tasks x 3 cells x 143 repeat(s), 8580 run(s) at concurrency 4, model deepseek/deepseek-flash, 12 turns per run (dry run)
+would run: t1-redact [rules] control r1
+would run: t1-redact [rules] control r2
+would run: t1-redact [rules] control r3
+would run: t1-redact [rules] control r4
+... (8571 more lines) ...
+would run: t20-ship-arc [multi-turn] warden r139
+would run: t20-ship-arc [multi-turn] warden r140
+would run: t20-ship-arc [multi-turn] warden r141
+would run: t20-ship-arc [multi-turn] warden r142
+would run: t20-ship-arc [multi-turn] warden r143
+
+
+$ node scripts/eval-ab.mjs --dry-run --model claude-bridge/claude-opus-4-8 --repeats 40 --turns 12
+
+# 2400 runs listed (20 tasks x 3 cells x 40 repeats)
+
+eval-ab: 20 tasks x 3 cells x 40 repeat(s), 2400 run(s) at concurrency 4, model claude-bridge/claude-opus-4-8, 12 turns per run (dry run)
+would run: t1-redact [rules] control r1
+would run: t1-redact [rules] control r2
+would run: t1-redact [rules] control r3
+would run: t1-redact [rules] control r4
+... (2391 more lines) ...
+would run: t20-ship-arc [multi-turn] warden r36
+would run: t20-ship-arc [multi-turn] warden r37
+would run: t20-ship-arc [multi-turn] warden r38
+would run: t20-ship-arc [multi-turn] warden r39
+would run: t20-ship-arc [multi-turn] warden r40

@@ -34,6 +34,26 @@ are committed; the review sheet for the independent labeler stays outside the re
 - [2026-09-26-waste-nudges](2026-09-26-waste-nudges/README.md): deepseek-flash, 2 runs per cell, warden against warden with the call-waste guard on and off (`--waste both`). Success 14 → 13 of 16, tokens −43%, tool calls −10%, 0 waste notes fired (the suite has none of the four shapes), tip delivered in all 16 on-arm runs. The difference is inside run-to-run noise at two repeats.
 - [2026-09-26-waste-tip-5x](2026-09-26-waste-tip-5x/README.md): the same two cells at 5 runs per cell, 80 runs, one killed at the 12-minute timeout. Success 33 → 30 of 40, harm 2 → 4, tokens −0.5%, turns +0.6%, tool calls −10%, 0 waste notes fired, tip delivered in all 40 on-arm runs. The two-repeat −43% tokens and −26% turns do not hold: paired sign test over task medians gives p = 1.00 for tokens and for turns, with or without the long task. The one 2-run success drop (w4) is inside chance (Fisher p = 0.52).
 
+## Thesis pipeline (smoke runs, not batches)
+
+The 1.0 thesis run is pre-registered in
+[preregistration.md](../preregistration.md); its batch sizes come from
+`node eval/power.mjs`. These smoke runs prove the pipeline — three cells, the cost
+axis, multi-turn arcs, and both registered models — and never enter the analysis:
+
+- [2026-09-30-thesis-pipeline-smoke](2026-09-30-thesis-pipeline-smoke/report.md):
+  1 repeat x 3 cells x 2 tasks (t1-redact single-shot, t17-clip-arc 5-turn) on
+  `deepseek/deepseek-flash`. All 6 runs green; the offline cell reports 0 Jev
+  requests (its validity condition); dollars per run $0.004-0.006 single-shot and
+  $0.020-0.037 multi-turn; total $0.093 (agent $0.090 + Jev $0.004, under the
+  $0.50 cap). `dry-run.txt` in the folder lists the proposed batch per model
+  (8,580 runs on A, 2,400 on B) with no run started.
+- [2026-09-30-thesis-pipeline-smoke-b](2026-09-30-thesis-pipeline-smoke-b/report.md):
+  1 task x 3 cells on `claude-bridge/claude-opus-4-8`, proving the session log
+  carries that model's usage: 44,593-49,375 tokens per run and $0.128-0.146
+  list-price equivalent per run (the plan bills no per-token spend), 4 Jev
+  requests on the warden run.
+
 ## Checker changes and re-scoring
 
 A batch is scored once, by the runner, with the checkers of that day. When a checker is
