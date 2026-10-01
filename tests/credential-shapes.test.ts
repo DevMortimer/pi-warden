@@ -135,3 +135,55 @@ test("every value findSecrets reports is masked: URL passwords, Authorization an
   }
   assert.equal(maskSecrets(cases[0]!).text, "redis://worker:[redacted]@cache.internal:6379");
 });
+
+test("a value that is a code expression is not a credential, and masking leaves the source line readable", () => {
+  // Field cases, 2026-09-30: reading these source lines back returned `[redacted]` inside the code, and an agent that
+  // edited from that text wrote the placeholder into the file.
+  const code = [
+    "const tokens = match[1]!.split(/\\s+/).filter(Boolean);",
+    "const ctxTokens = usage.ctxTokens;",
+    "let apiKey = readKeySync(configPath);",
+    "const projectKey = () => [project, key];",
+    "const tokenizer = tokens.map((t) => t.trim());",
+    "const firstToken = rows[0].id;",
+    "const onlyToken = rows[0];",
+    "tokens: number;",
+    "const authToken = `tok_${value}`;",
+  ];
+  for (const line of code) {
+    assert.deepEqual(findSecrets(line), [], line);
+    const masked = maskSecrets(line);
+    assert.equal(masked.text, line, `${line}: the line comes back unchanged`);
+    assert.equal(masked.masked, 0, `${line}: nothing was masked`);
+  }
+});
+
+test("a real key stays masked; a long mixed-case key is judged without backtracking", () => {
+  // A Supabase anon key is a JWT that sits in a JSON value. Split so repository secret scanners do not read a fixture
+  // as a live key.
+  const jwt = ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", "eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIn0", "0x3f9c2b7a1d4e8f6a2b5c9d7e1f4a8b6c3d2e5f9a"].join(".");
+  const json = `{"supabaseAnonKey": "${jwt}"}`;
+  assert.deepEqual(findSecrets(json), [jwt]);
+  assert.deepEqual(maskSecrets(json), { text: `{"supabaseAnonKey": "[redacted]"}`, masked: 1 });
+  // Thirty mixed-case groups: the shape that made the code-expression check backtrack exponentially and froze the
+  // guard on a recorded tool result. It is a key, not code, so it must still be found and masked.
+  const key = Array.from({ length: 30 }, (_, index) => `x${index % 10}${"ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index]}y`).join("");
+  assert.ok(looksLikeSecretValue(key));
+  assert.deepEqual(findSecrets(`API_KEY=${key}`), [key]);
+  assert.deepEqual(maskSecrets(`API_KEY=${key}`), { text: "API_KEY=[redacted]", masked: 1 });
+});
+
+test("a type name, a tagged template, and an optional chain are code too", () => {
+  const code = [
+    "const stored: Record<string, TokenRecord> = {};",
+    "tokens: Record<string, TokenRecord>;",
+    "const ctxTokens = joined.filter`\\s+/`;",
+    "const tokens = opts?.tokens.filter(Boolean);",
+    "const apiKey = props?.config?.apiKey ?? fallback;",
+  ];
+  for (const line of code) {
+    const masked = maskSecrets(line);
+    assert.equal(masked.masked, 0, `${line}: nothing was masked`);
+    assert.deepEqual(findSecrets(line), [], line);
+  }
+});

@@ -10,6 +10,68 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - A/B benchmark tooling: a third cell (`warden-offline`, pi-warden with Jev judgments off, so only the offline parts run) beside the prose-only and warden cells; a cost axis that prices each run in dollars — agent input, output, cache-read, and cache-write tokens from the session log at a price table in `eval/config.mjs` (prices from Pi's model catalog, source named there), plus the run's Jev requests and input tokens — reported per run and per cell; four multi-turn tasks (5-6 user turns, a project rule matters only after the first turn) that exercise the turn-start rules reminder; `npm run eval:power`, the power calculation from the earlier reports (violations per run, success non-inferiority, dollars per run) per registered model, with the proposed batches and their estimated cost (billed for one model, list-price equivalent for the plan-based one, plus its token total for quota); and `eval/preregistration.md`, the pre-registration for the 1.0 thesis run. Repo tooling; rides along with the next release.
 
+## 0.86.0
+
+### Added
+
+- The turn-start rules reminder: before the first model call of each new user message, pi-warden starts one request asking which of the project's rules apply to that request (one question per rule, carrying the request, the task spine, and each rule's heading, text, and `paths:` scope), and the ones that pass the threshold reach the agent as one short message at the next tool boundary, at most three, strongest first. The prompt never waits for the answer; nothing earlier in the context moves, so a warm prompt cache is never invalidated. A judgment that is off, fails, or takes longer than two seconds appends nothing and says so in the trace, and a run that ends before the answer arrives drops the reminder with a trace line. A short continuation or a relayed child report sends no request: the two prompts the conscience's local gate also skips, with the reason traced. `rulesAtTurnStart.enabled` (default true) and `rulesAtTurnStart.threshold` (default 0.3) control it; a project file may make it stricter, never turn it off. Measured on 100 real requests from three projects, labelled by one model: 68.9% of the rules named apply, 80 of 100 requests name at least one rule, p50 278 ms and p90 336 ms for the request itself. See [guards.md → Rules at turn start](docs/guards.md#rules-at-turn-start).
+- `/warden status` reports the session's turn-start reminder: rules named, requests, failures, and the latency percentiles.
+
+### Changed
+
+- The conscience assessment and the turn-start rules request both run in the background: `before_agent_start` starts them and returns, so a prompt never waits for Jev. The hold falls from the judgment's own latency (p50 254 ms against a 250 ms local mock) to under 1 ms at p90 for both. A passing tip is delivered at the next tool boundary through the steer path, with its existing budget rule and its `agent_end` reminder; a tip or a reminder whose run ended first is dropped and traced. See [guards.md → Turn-start delivery calibration](docs/guards.md#turn-start-delivery-calibration-2026-10-01-background-delivery).
+- The turn-start rules request skips the prompts the conscience's local gate skips: offline over 7,633 recorded prompts, 105 short continuations and 785 relayed child reports send no request, so the rate falls from 100 to 88.3 requests per 100 recorded prompts.
+
+### Removed
+
+- `workingMemory.*` from the config: the pruning-at-a-cold-turn-start idea failed its feasibility gate before any of its code was written (200 sampled tool results, one Jev question each: no threshold dropped at least 30% of candidates with at most 10% misses), so no feature sits behind the keys. Every documented key is a promise kept through 1.x, so the inert surface is gone. The measurement stays in [guards.md → Working-memory feasibility](docs/guards.md#working-memory-feasibility-2026-09-30-gate-failed).
+
+### Docs
+
+- `docs/guards.md` (Rules at turn start) describes the background delivery, the tool-boundary rule, the drop trace, the skip, and both measurements; `docs/configuration.md` documents `rulesAtTurnStart.*`; `docs/data-handling.md` lists exactly what the turn-start request sends and when it sends nothing; `docs/commands.md` names the new `/warden status` totals.
+
+## 0.85.0
+
+### Added
+
+- `action.ask` (default on): code decides before the request whether Jev can change anything the agent sees for this call. It asks for a git history or remote write, a delete or a move, a write through a redirect, `tee`, or `sed -i`, a database client, a network write, a publish, a deploy, an infrastructure command, a `gh` write, `ssh`/`scp`/`rsync`, a build or package target that deploys, publishes, or installs, a call nested in a `for`, `do`, or substitution, an interpreter script that names such a shape, and every `write` and `edit`. Every other call is decided by the offline pattern pass and the floor, and the trace says `not asked` with the reason.
+- `action.traceSample` (default 0.05): one judged call in twenty still asks the off-task, scope, and should-proceed questions in a second request, so the recorded signal keeps coming. Their answers go through the off-task and should-proceed checks, stay trace-only, and never hold.
+
+### Changed
+
+- The action guard's Jev spend falls on recorded traffic: on the calls pi-warden judged from 2026-09-25 to 2026-09-30, the acting requests fall 51.1% (28,036 to 13,627 plus 717 sampled) and the input tokens per request fall about 42% (measured against the API on 171 sampled calls, 2,288 to 1,327). Together, about 68% fewer input tokens on the action path.
+- The gate still asks 96.7% of the calls whose answer changed what the agent saw in that window (327 of 338). The 11 it leaves offline were all `warn`-level, none was held, and the highest irreversible score among them was 0.57, under the 0.9 hold.
+- `action.offTask`, `action.shouldProceed.threshold`, and `action.shouldProceed.steer` keep working with the lean request: the sampled call's off-task, scope, and should-proceed answers go through the same checks as before, and `shouldProceed.steer: true` puts `should_proceed` on every acting request the ask gate sends.
+- `off_task`, `scope`, and `scopeConfidence` are optional on a judgment and absent from the acting request's answers; a verdict with no off-task answer reads as "no evidence", never as a warning.
+- The offline pattern pass and the floor decide a call the gate leaves unasked exactly as they decide one whose request failed: built-in hits warn or hold as they would with `floor: "level"`, so no current hold weakens.
+
+## 0.84.0
+
+### Added
+
+- `conscience.localTopK` (default 31, the most one request holds) and `conscience.localFloor` (default 0.5): the local rank decides how many candidates reach Jev, and a prompt with no candidate above the floor gets no request at all.
+
+### Changed
+
+- The conscience never offers Pi's core tools, a tool whose name or index entry says it deletes, drops, or destroys, a tool the session already called, a skill file the session already read, or a tool the model cannot call by that name in this session.
+- A local gate runs before any request. Short continuations, relayed child reports, and a task spine already assessed in this session are skipped with a traced reason; the rest are ranked locally against the request and the task spine, and only the top candidates go to Jev.
+- A recommendation tip is the name, one `useWhen` line, and for a skill the file to read, instead of the whole tool description.
+
+## 0.83.0
+
+### Changed
+
+- A `KEY=value` or `KEY: value` hit whose value is a code expression is no longer a credential, so masking no longer rewrites source code in a tool result. A call (`readKeySync(configPath`), an index (`rows[0]`), a member access with or without optional chaining (`output.secretIds`, `opts?.tokens`), a non-null assertion (`match[1]!.split(`), an arrow body (`x => y`), a template literal (`` tag`/\s+/` ``, `` `${x}` ``), and a type name with type arguments (`Record<string`) stay readable; the field case, reading a line as `const tokens = [redacted]).filter(Boolean)`, cannot happen. Token shapes (`sk-`, `ghp_`, `AKIA`, JWTs, PEM blocks, URL passwords, signed-URL parameters) still mask in code. A bracket, a parenthesis, or a word before one inside otherwise opaque characters is still a key: `DB_PASSWORD=<password>(<more>` and `API_KEY=abc[123]DEFghi789` keep their mask, as does a call whose name is plain lowercase or snake_case (`get_config_value(config_key=...`), where a parenthesized password cannot be told apart. Replayed against 1,152 recorded session logs since 2026-09-16 (95,141 tool-result text blocks, all projects): tool results that mask a value fall from 274 to 171, and 17 distinct values stop being masked, every one of them a code fragment from the list above. No value that was masked becomes readable apart from those 17, nothing that was readable becomes masked, and 27 of the 126 values still masked are token-shaped (JWTs, PEM blocks, `sk-` keys, `gh*_` tokens, an `AKIA` key).
+- A value that is a stand-in is still traced, not announced, unchanged; only the code-expression class moved from "masked and announced" to "not a credential".
+
+### Fixed
+
+- Credential detection no longer backtracks exponentially, so a tool result can no longer freeze the guard. The code-identifier alternatives in `looksLikeSecretValue` (`src/redact.ts`) wrote a repeated group whose character class could eat the capital that the next iteration needed, so a credential-key assignment carrying a long mixed-case value (about 85 characters of mixed case and digits, as a signed-URL signature produces) took minutes of CPU time: one recorded session result hung the offline replay until the pattern was rewritten. Every pattern in that check is now linear, and the replay's masking cost is unchanged — per masked tool result the median falls from 0.10 ms to 0.08 ms (the p99 rises from 0.99 ms to 1.67 ms, because the remaining results are a smaller set with a larger share of the expensive ones), and across all text blocks the mean is 0.028 ms before and after.
+
+### Docs
+
+- `docs/guards.md` (Security) and `docs/configuration.md` (`security.maskOutput`) name the code expressions that are not credentials. `scripts/credential-replay.mjs` replays session logs against a chosen build (`--files`, `--lib`, `--skip`) and reports the masks a change removes (`--compare`), with the removed values written to a file outside the repository.
+
 ## 0.82.0
 
 ### Added

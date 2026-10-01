@@ -45,6 +45,10 @@ export interface ActionGuardConfig {
   tools: string[];
   /** When TypeSafe cannot answer (timeout, outage, budget), allow the call with a warning instead of asking. */
   failOpen: boolean;
+  /** Whether a call whose answer cannot change what the agent sees is decided offline. On by default; the pattern pass and the floor always run. */
+  ask: { enabled: boolean };
+  /** Fraction of judged calls that also asks the trace-only questions (off-task, scope, should-proceed) in a second request, so the recorded signal keeps coming. 0 disables it. */
+  traceSample: number;
   /** Per-request TypeSafe timeout. The call is judged as an error after this. */
   timeoutMs: number;
   irreversible: Threshold;
@@ -237,6 +241,13 @@ export interface RulesConfig {
   skip: string[];
   /** Glob → note. A write or edit under a matching path steers the agent with the note once per path; code only. */
   sensitivePaths: Record<string, string>;
+}
+
+export interface RulesAtTurnStartConfig {
+  /** Ask which rules apply before each new user message, and append the ones that do as one short message. */
+  enabled: boolean;
+  /** P(this rule applies) at or above which the rule is named. Measured against the owner's own requests; see docs/guards.md. */
+  threshold: number;
 }
 
 export interface ContextConfig {
@@ -436,6 +447,10 @@ export interface ConscienceConfig {
   recommendThreshold: number;
   /** P(advance) from the disposition question must reach this before a candidate is considered. Default 0.70. */
   advanceThreshold: number;
+  /** Candidates the local ranker keeps for Jev (1..256); the rest never reach a request. Default 31, the most one request holds; the labelled replay keeps 8 of 9 good picks at 31 and fewer at 12 or 20. */
+  localTopK: number;
+  /** Local BM25 floor against the request and the task spine; below it the conscience sends no request. Default 0.5. */
+  localFloor: number;
 }
 
 
@@ -464,6 +479,8 @@ export interface WardenConfig {
   slop: SlopGuardConfig;
   security: SecurityConfig;
   rules: RulesConfig;
+  /** A rules reminder at the start of each user turn (curator.ts). */
+  rulesAtTurnStart: RulesAtTurnStartConfig;
   context: ContextConfig;
   runaway: RunawayConfig;
   notify: NotifyConfig;
@@ -498,7 +515,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 11;
+export const CONFIG_SCHEMA = 12;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -514,6 +531,8 @@ export function defaultConfig(): WardenConfig {
       enabled: true,
       tools: [...COMMAND_TOOLS, "write", "edit"],
       failOpen: true,
+      ask: { enabled: true },
+      traceSample: 0.05,
       timeoutMs: 5000,
       // 0.9 holds: below it the judge is wrong one call in two to one in seven, and the 0.7 to 0.9 band held no call the user regretted.
       irreversible: { warn: 0.5, confirm: 0.9 },
@@ -536,6 +555,8 @@ export function defaultConfig(): WardenConfig {
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true },
     rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
+    // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
+    rulesAtTurnStart: { enabled: true, threshold: 0.3 },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
@@ -560,6 +581,8 @@ export function defaultConfig(): WardenConfig {
       // Beta policy thresholds (measured 2026-09-22); disabled by default, conscience.enabled is the switch.
       recommendThreshold: 0.80,
       advanceThreshold: 0.70,
+      localTopK: 31,
+      localFloor: 0.5,
     },
     prefs: { enabled: true, inject: true },
     waste: { enabled: true, tip: false, every: 20, sleep: true, paging: true, search: true, recheck: true },
@@ -824,11 +847,14 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
   })() : threshold(raw.irreversible, base.irreversible);
   let failOpen = boolean(raw.failOpen, base.failOpen);
   if (project && failOpen && !base.failOpen) { warnings.push(projectIgnored("action.failOpen", true, false)); failOpen = false; }
+  const rawAsk = isObject(raw.ask) ? raw.ask : {};
   const shouldProceed = isObject(raw.shouldProceed) ? raw.shouldProceed : {};
   return {
     enabled: project ? projectSwitch("action.enabled", raw.enabled, base.enabled, warnings) : boolean(raw.enabled, base.enabled),
     tools,
     failOpen,
+    ask: { enabled: project ? projectSwitch("action.ask.enabled", rawAsk.enabled, base.ask.enabled, warnings) : boolean(rawAsk.enabled, base.ask.enabled) },
+    traceSample: probability(raw.traceSample, base.traceSample),
     timeoutMs,
     irreversible,
     offTask: offTaskThreshold(raw.offTask, base.offTask),
@@ -996,11 +1022,12 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "rulesAtTurnStart" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
   return {
     compaction: applyCompaction(base.compaction, raw.compaction, source),
     waste: applyWaste(base.waste, raw.waste),
     rules: applyRules(base.rules, raw.rules),
+    rulesAtTurnStart: applyRulesAtTurnStart(base.rulesAtTurnStart, raw.rulesAtTurnStart, source, warnings),
     runaway: applyRunaway(base.runaway, raw.runaway),
     subagent: applySubagent(base.subagent, raw.subagent),
     // A project file may switch notifications off or on, but never names a command to run.
@@ -1082,6 +1109,17 @@ function applyWaste(base: WasteConfig, raw: unknown): WasteConfig {
   };
 }
 
+/** The turn-start reminder spends a request before every user message, so a project file may make it stricter, never turn it off. */
+function applyRulesAtTurnStart(base: RulesAtTurnStartConfig, raw: unknown, source: "user" | "project", warnings: string[]): RulesAtTurnStartConfig {
+  if (!isObject(raw)) return base;
+  const project = source === "project";
+  return {
+    enabled: project ? projectSwitch("rulesAtTurnStart.enabled", raw.enabled, base.enabled, warnings) : boolean(raw.enabled, base.enabled),
+    // A lower cut names more rules, which is the stricter reading of "remind me".
+    threshold: project ? projectProbability("rulesAtTurnStart.threshold", raw.threshold, base.threshold, warnings) : probability(raw.threshold, base.threshold),
+  };
+}
+
 /** Pi awaits the compaction hook with no deadline of its own, so this one is bounded too. */
 const MAX_COMPACTION_TIMEOUT_MS = 120_000;
 
@@ -1148,6 +1186,8 @@ function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig
     maxLoadedBytes: Math.max(1024, Math.min(262144, typeof raw.maxLoadedBytes === "number" ? raw.maxLoadedBytes : base.maxLoadedBytes)),
     recommendThreshold: Math.max(0, Math.min(1, typeof raw.recommendThreshold === "number" ? raw.recommendThreshold : base.recommendThreshold)),
     advanceThreshold: Math.max(0, Math.min(1, typeof raw.advanceThreshold === "number" ? raw.advanceThreshold : base.advanceThreshold)),
+    localTopK: Math.max(1, Math.min(256, typeof raw.localTopK === "number" ? Math.trunc(raw.localTopK) : base.localTopK)),
+    localFloor: Math.max(0, Math.min(20, typeof raw.localFloor === "number" ? raw.localFloor : base.localFloor)),
   };
 }
 

@@ -2,7 +2,7 @@
 
 Every guard, what it looks at, the questions it asks Jev, the thresholds, and the numbers behind them. The [README](../README.md) has the short version. Defaults live in [configuration.md](configuration.md); what leaves the machine is in [data-handling.md](data-handling.md).
 
-Contents: [Action guard](#action-guard) · [Why Jev](#why-jev-and-not-a-second-llm-call) · [Calibration](#calibration) · [Rules](#rules) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Context saver](#context-saver) · [Subagent triage](#subagent-triage) · [Desktop notifications](#desktop-notifications) · [Steer messages](#steer-messages)
+Contents: [Action guard](#action-guard) · [Why Jev](#why-jev-and-not-a-second-llm-call) · [Calibration](#calibration) · [Rules](#rules) · [Rules at turn start](#rules-at-turn-start) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Context saver](#context-saver) · [Subagent triage](#subagent-triage) · [Desktop notifications](#desktop-notifications) · [Steer messages](#steer-messages)
 
 ## Action guard
 
@@ -57,6 +57,45 @@ User-declared rules keep their action in both evidence and level modes.
 
 **Hold feedback.** What you do next labels each judgment, so hold precision is measured on your sessions rather than assumed. A hold your reply releases (or the confirm dialog allows) was a false positive; a hold you decline, or that nobody approves after you replied and the next turn ended, stood. An allowed call your next message tells the agent to stop, undo, or revert was a miss: one `regretted` question rides the first action request after your reply, with the redacted summaries of last turn's allowed calls (a locator names the one when there are several); offline, a stop-word heuristic stands in. `/warden status` shows the counts and the precision, the trace entry of each call gets its outcome, and every judged call is written with its scores and outcome to an owner-only per-session file under `~/.pi/agent/pi-warden/holds/` (tool, pattern ids, scores, level, mode, outcome; never the command). `"action": { "feedbackLog": false }` keeps the counts and skips the file.
 
+### What reaches Jev (2026-09-30, 0.83.0)
+
+The action request left every judged call on the machine. Most of those answers could not change what the agent saw, so
+two things now decide whether a call is worth a request, and what that request carries.
+
+**Ask gate (`action.ask`).** Code decides before the request whether Jev can change anything the agent sees. It asks when
+the call can be irreversible or visible: a git history or remote write, a delete or a move, a write through a shell
+redirect or `tee` or `sed -i`, a database client, a network write, a publish, a deploy, or an infrastructure command, a
+`gh` write, `ssh`/`scp`/`rsync`, a build or package target that deploys, publishes, or installs, a call nested in a
+`for`, `do`, or substitution, an interpreter script that names such a shape, and every `write` and `edit`. Every other
+call is decided offline: the pattern pass and the floor still run, the trace says `not asked: <reason>`, and no request
+leaves the machine. The gate errs toward asking: a missed ask loses a real warning, an extra ask only costs money.
+
+On the recorded action traffic from 2026-09-25 to 2026-09-30 (33,795 calls, 28,036 of them judged), the gate asks
+14,326: 48.9% fewer requests. Of the 338 calls whose answer changed what the agent saw in that window (an irreversible
+warn or hold, or an intent-mismatch steer on a visible action), it still asks 327: 96.7%. All 11 it leaves offline were
+`warn`-level, none was held, and the highest irreversible score among them was 0.57, well under the 0.9 hold.
+
+**The acting request.** It carries only what a delivered outcome reads: the task, the
+action summary, the agent's plan, the spine, last turn's allowed calls, the floor hits, and the questions whose answers
+act (`irreversible`, `mutates`, `visible`, `intent_mismatch`, `large_output`, plus slop, security, approval, regret, and
+the per-violation questions when they apply). The earlier messages are not on it: no acting question reads them. The
+resolved rules content rides the request only while a violation is open, because only the per-violation questions name
+it. On 171 sampled calls the acting request falls from 2,288 to 1,327 input tokens (measured against the API), with a
+median absolute shift of 0.00 in the `irreversible` answer and no call crossing 0.5 or 0.9.
+
+**Trace sample (`action.traceSample`).** The off-task, scope, and should-proceed questions are not on the acting
+request. They ride a second request on one call in twenty. Its answers go through the off-task and should-proceed checks
+with their usual thresholds (`action.offTask`, `action.shouldProceed.threshold`) and are written into the trace and the
+hold record. Off-task holds nothing and is always trace-only, and should-proceed is trace-only by default, so nothing
+new reaches the agent. With `action.traceSample: 0` these settings have nothing to read. The exception is the opt-in
+`action.shouldProceed.steer: true`, which puts `should_proceed` on every acting request so a low score steers; the ask
+gate still decides first, so a call it leaves offline gets no answer unless `action.ask.enabled` is `false`. When both
+requests answer it, the acting answer wins.
+
+Together, on that window, the acting requests fall 51.1% and the input tokens per request fall about 42%, for an
+estimated **68% cut in input tokens** on the action path. The added cost is code only: the gate costs a median of 19
+microseconds per call.
+
 ### Why Jev and not a second LLM call
 
 Agents pick the next command well and notice badly when that command is out of proportion to the request. A pattern list catches `rm -rf /`; it cannot tell `db:reset` after "reset the database" from `db:reset` after "add a column". A generative model can, but a second LLM call per tool call is slow and expensive. Jev is a System One model: it returns calibrated probabilities to fixed questions in about a quarter of a second, for a fraction of a cent, which is cheap enough to sit in front of every guarded call. Three rules follow from that: in evidence mode the judge decides the level while built-in patterns provide context, in level mode patterns set the floor and Jev can only raise it, the agent's plan can add a nudge but never remove a hold, and the LLM is never asked to judge itself.
@@ -65,11 +104,17 @@ One request stays well inside Jev's context window. The caps do the work: rule t
 
 ## Conscience
 
-**Status: beta.** The conscience ships off by default; `conscience.enabled: true` is the one switch. It recommends only (names a skill or tool and asks the agent to load it; it never loads by itself — `loadThreshold` stays at 1.0). Measured on 2026-09-22 against the owner's labels: pooled tool precision 74/83 (89%) at the 0.80/0.70 gates, labelled precision 9/10, good picks survive 9/20, status-update noise 11/12 below the gate. Known limits: design and opinion asks are under-recommended (the five technical-thinking-partner rows never exceed 0.67 usefulness — the index description is the lever), and the judge sees the task spine (the thread's first request, the latest prompt, up to four earlier user turns), not the assistant's replies.
+**Status: beta.** The conscience ships off by default; `conscience.enabled: true` is the one switch. It recommends only (names a skill or tool and asks the agent to load it; it never loads by itself — `loadThreshold` stays at 1.0). Measured on 2026-09-22 against the owner's labels: pooled tool precision 74/83 (89%) at the 0.80/0.70 gates, labelled precision 9/10, good picks survive 9/20, status-update noise 11/12 below the gate. The local gate, the top-k cut, and the short tip were measured on 2026-10-01 (see [Calibration](#local-gate-top-k-and-tip-text-2026-10-01)). Known limits: design and opinion asks are under-recommended (the five technical-thinking-partner rows never exceed 0.67 usefulness — the index description is the lever), and the judge sees the task spine (the thread's first request, the latest prompt, up to four earlier user turns), not the assistant's replies.
 
 The conscience coach assesses whether the agent is missing a useful skill or tool before it acts. Disabled by default (`conscience.enabled: false`).
 
 **Modes:** `recommend` (name a skill, ask the agent to load it) and `load` (supply the skill body from disk). Default `recommend`; `load` requires global consent and a trusted project.
+
+**Candidates:** never Pi's core tools (`bash`, `read`, `edit`, `write`, and the rest of the core set in `CORE_PI_TOOLS`), a tool whose name or index entry says it deletes, drops, or destroys, a tool the session already called, a skill file the session already read, or a tool the model cannot call by that name in this session.
+
+**Local gate:** before any request, the prompt itself is checked: a short continuation ("yes", "go", "1. …"), a relayed child report, and a task spine already assessed in this session each stop the pass with a traced `skipReason` and no request. What survives is ranked locally (BM25 over the index fields `lead`, `useWhen`, `examples`, against the request, the recent context, and the task spine); only the top `conscience.localTopK` (default 31) reaches Jev, and under `conscience.localFloor` (default 0.5) nothing is sent at all.
+
+**Tip text:** a recommendation carries the name, one `useWhen` line, and for a skill the file to read. The full tool description never rides along.
 
 **How it works:** On each normal operator prompt, `before_agent_start` evaluates eligible skill and tool candidates via Jev. A selection passing the measured thresholds produces at most one custom message through the steer budget. Turn-end re-assessment triggers on tool failures. One reminder fires at `agent_end` if the capability remains unresolved and the run did not end with a final text reply.
 
@@ -120,7 +165,7 @@ AUC against regret: 0.26 — non-regretted calls score higher (correct direction
 | `should_proceed` | 0.26 | 0.58 |
 | `pause_requested` | 0.27 | 0.51 |
 
-The question is trace-only by default until calibrated: AUC against regret is 0.26 and the default threshold of 0.6 flags 44% of non-read-only calls. The score and reason remain in the trace, but no steer reaches the agent. Set `action.shouldProceed.steer: true` to restore the pause-and-ask steer; `action.shouldProceed.threshold` (formerly `hold`) remains the threshold. This question never holds a call, consistent with the existing rule that only deny rules and `irreversible >= 0.9` hold; a built-in destructive pattern holds only when no judge answers or when `action.floor` is `"level"`.
+The question is trace-only by default until calibrated: AUC against regret is 0.26 and the default threshold of 0.6 flags 44% of non-read-only calls. The score and reason remain in the trace, but no steer reaches the agent. Set `action.shouldProceed.steer: true` to restore the pause-and-ask steer (the question then rides every acting request that the ask gate sends; by default only the sampled call asks it); `action.shouldProceed.threshold` (formerly `hold`) remains the threshold. This question never holds a call, consistent with the existing rule that only deny rules and `irreversible >= 0.9` hold; a built-in destructive pattern holds only when no judge answers or when `action.floor` is `"level"`.
 
 ### violation_judgment calibration (2026-09-20)
 
@@ -253,6 +298,37 @@ The lever was not wording but the `pAdvance` gate on the four-way disposition pr
 
 Candidate policy (beta candidate): `{ questionHash: "fb2d35042f667b3c", model: "jev-1.13.0", recommendThreshold: 0.80, advanceThreshold: 0.70, loadThreshold: 1.0 }`. Pooled precision at this policy on the 2026-09-22 per-project corpus: 89% (74/83); on the owner-labelled subset 90% (9/10). The 95% precision gate with n ≥ 10 is not met. Full tables: `eval/reports/2026-09-22-conscience-policy/`.
 
+### Local gate, top k, and tip text (2026-10-01)
+
+Two parts, both on recorded sessions: an offline pass over every recorded prompt (no requests, no spend), and Jev replays of a 91-prompt sample — 38 owner-labelled rows (20 good, 18 rejected) and 53 field prompts that had received a tip — every run capped with `PI_TYPESAFE_MAX_USD_PER_DAY`.
+
+**The gate over 7,614 recorded prompts (offline, no requests):**
+
+| outcome | prompts | share |
+| --- | --- | --- |
+| below the local floor: no request | 1,442 | 18.9% |
+| relayed report: no request | 778 | 10.2% |
+| short continuation: no request | 105 | 1.4% |
+| task spine already assessed: no request | 28 | 0.4% |
+| sends one request | 5,261 | 69.1% |
+
+30.9% of prompts send no request at all. The old pass needed one request per candidate kind (10,522 over these prompts; 2.00 per assessed prompt in the Jev sample). The ranked top k fits in one request (5,261; 1.00 per prompt): 50% fewer requests.
+
+**Jev sample, before and after:**
+
+| set | prompts | requests per prompt | input tokens per request | input tokens per prompt |
+| --- | --- | --- | --- | --- |
+| labelled, before | 38 | 2.00 (76 total) | 7,310 | 14,620 |
+| labelled, after | 38 | 1.00 (38 total) | 10,241 | 10,241 |
+| field, before | 53 | 2.00 (106 total) | 7,253 | 14,506 |
+| field, after | 53 | 1.00 (53 total) | 10,123 | 10,123 |
+
+One request now carries the whole ranked list, so it is larger than either half of the old pair: input tokens per request rise 40%, and input tokens per prompt fall 30%. The gate also stops the pass entirely on 30.9% of prompts, which the per-prompt figure above does not count (the sample is work prompts, none of which the gate skips).
+
+**Good picks kept.** The current policy on the 38 labelled rows selects 10 (9 good, 1 rejected): precision 9/10, the same 9/10 the 2026-09-22 run reported. After the gate: 9 selected (8 good, 1 rejected), precision 8/9. The one good pick that no longer clears the gate is the borderline row: the old pass scores it 0.83 and 0.80 on a repeat, the new pass surfaces the owner's own labelled skill for that row at 0.72 and 0.75 — two runs each side agree, so the row sits on the 0.80 threshold rather than one run going badly. Core-tool and destructive-tool tips after the gate: 0 of 9 (labelled) and 0 of 32 (field).
+
+**Top k, chosen on this replay** (good picks kept, out of 9): `k=6` → 4, `k=12` → 5, `k=20` → 7, `k=31` → 8. The cut does not only remove candidates: fewer candidates in the request lower Jev's score for the candidate it should pick, because the lexically closest set competes with it. 31 is the most a single request holds, so it is the default; a lower `conscience.localTopK` buys tokens per request (12: 4,852, −34%) and gives up picks.
+
 ### Path rules
 
 `action.pathRules` (user file only) gives the pattern floor a path dimension: which paths, which side of the access is held, which surfaces check, and what happens on a hit. The `access` field names the side that flows — `"read"` holds writes and lets reads through, `"write"` holds reads (a log the agent may create but never open), `"none"` holds any touch. File tools are checked through the structured `path` argument, exactly; the bash surface sees only two things: the whole data-text-stripped command for `none` rules (you declared the path always-matters, so a mention counts), and redirect/`tee` targets for the write side. Tokens in arbitrary argv are never classified — that is the false-positive treadmill this design exists to avoid. `note` actions ride the existing sensitive-path behavior (Jev decides whether a command that merely mentions the path can write); `warn`, `confirm` (a dialog), and `block` ride the command-rule ladder. Exempt a rule with `exemptRules` by id.
@@ -324,7 +400,7 @@ Path scoping in config: `rules.exclude` globs are never sent to Jev (secrets, ge
 
 `/warden bench [--runs N]` (default 10) measures what one of those checks costs on this machine: the fixed built-in sample file judged N times against the active rules, one request at a time, reporting p50 and p95 latency, requests, mean input tokens per check, and estimated cost per check and per 100 edits. The sample is built in and no project content is sent, so no confirmation is needed; a sample the rules keep out is reported and never sent. A first run (2026-09-27, 10 checks of a 12-rule set): p50 264 ms, p95 306 ms, 4,839 input tokens per check, about $0.000203 per check and $0.0203 per 100 edits. Neither command ships a new Jev question — the audit reuses the write questions and the bench measures them — so the calibration above stands.
 
-`/warden rules calibrate [--commits N] [--max N] [--yes]` replays the recent git history through the same questions the guard asks live. The last N non-merge commits (default 20) come from a read-only `git log -p`; each changed file of each commit becomes one `edit` input — the removed lines as `oldText`, the added lines as `newText`, and the file after the commit as the surrounding context — one request per changed file, capped at `--max` (default 40). Binary files, generated files (lockfiles, build output, minified, map, snapshot and log files, and anything carrying the `Code generated ... DO NOT EDIT.` marker), gitignored files, and anything under `rules.exclude` or `rules.skip` are skipped. A rule fires at its own `threshold:` cutoff (or `rules.threshold` when it sets none), exactly as live. The report is one line per rule, worst first: how often it applied and fired, the mean score, and the flags `fires on everything` and `undecided`, then the rules that never applied to any file in the sample. A rule with no fire in the sample reports `no violation in sample` instead of the `never fires` flag and is not counted as flagged: replayed commits are mostly reviewed, compliant code, so a rule that never fires there is often a rule people follow, where the live `/warden report` keeps `never fires` with its own meaning. Every score is written to the local rules log with `source: "calibrate"`, so `/warden report` counts the replays apart from live verdicts. Nothing is sent before a confirm dialog that shows the number of requests and the diffs, redacted; a headless run sends nothing without the explicit `--yes`.
+`/warden rules calibrate [--commits N] [--max N] [--yes]` replays the recent git history through the same questions the guard asks live. The last N non-merge commits (default 31) come from a read-only `git log -p`; each changed file of each commit becomes one `edit` input — the removed lines as `oldText`, the added lines as `newText`, and the file after the commit as the surrounding context — one request per changed file, capped at `--max` (default 40). Binary files, generated files (lockfiles, build output, minified, map, snapshot and log files, and anything carrying the `Code generated ... DO NOT EDIT.` marker), gitignored files, and anything under `rules.exclude` or `rules.skip` are skipped. A rule fires at its own `threshold:` cutoff (or `rules.threshold` when it sets none), exactly as live. The report is one line per rule, worst first: how often it applied and fired, the mean score, and the flags `fires on everything` and `undecided`, then the rules that never applied to any file in the sample. A rule with no fire in the sample reports `no violation in sample` instead of the `never fires` flag and is not counted as flagged: replayed commits are mostly reviewed, compliant code, so a rule that never fires there is often a rule people follow, where the live `/warden report` keeps `never fires` with its own meaning. Every score is written to the local rules log with `source: "calibrate"`, so `/warden report` counts the replays apart from live verdicts. Nothing is sent before a confirm dialog that shows the number of requests and the diffs, redacted; a headless run sends nothing without the explicit `--yes`.
 
 `/warden rules tune` asks the session's agent to rewrite the rules that need it: the ones the latest calibrate flagged `fires on everything` or `undecided`, and the ones `/warden rules check` flagged this session, each with its current text and the reason (the flags with their counts, or the check's judgeability reason). A rule with no fire in the calibrate sample is never rewritten for that alone. The one prompt asks for a rewrite that is concrete and judgeable from the content of one changed file alone, with its `paths:` scope kept where it holds; the agent edits `pi-warden.md` with its own tools, so the edit is visible and yours to review. With nothing flagged the command says so and sends nothing.
 From the tuning set (`scripts/rules-cases.mjs`, 8 rules, 13 cases, all as expected): `console.log` in code scores 1.00, a bare TODO 1.00 and a `TODO(QUEUE-41)` 0.00, an empty catch 0.99, a `switch` without `default` 0.96, a hardcoded token 0.88, a missing return type 0.99 with a bad boolean name 0.96 on the same write. A compliant module, a test that mentions `console.log` in a string, and a Markdown doc about `console.log` score nothing. The locator points at the right one of two edits. Not covered: content past the sample limits. Shell writes reuse the `write` questions; no separate measurement. Those numbers predate 0.65.1.
@@ -371,6 +447,79 @@ The end-of-run questions ship with a measurement: 42 labelled cases (`eval/rules
 
 The scores separate widely: turn violations run 0.83 to 1.00 and their compliant near-misses 0.00 to 0.36; the shell cases run 0.96 to 1.00 and 0.00. Every cutoff from 0.5 to 0.8 separates this set, so the shipped `rules.threshold` (0.7), with each rule's own `threshold:` header when it set one, needs no turn-specific value. The set is small and hand-built and its cases are clear-cut; the muddled tune case shows the question responds to ambiguity, so read these numbers as “the question separates labelled turn diffs”, not as an error rate for real runs. Full per-case scores and the tables at every cutoff are in `eval/reports/2026-09-27-turn-rules/`.
 
+## Rules at turn start
+
+Before the first model call of a new user message, pi-warden starts one background request asking which of the project's rules apply to that request: one `noul` per rule (`applies_<n>`), carrying the request (1500 redacted characters), the task spine, and the rule set with each rule's heading, text (300 characters), and `paths:` scope. The prompt does not wait for the answer. When it arrives during the run, the rules over `rulesAtTurnStart.threshold` (0.3) are delivered at the next tool boundary through the steer path — a custom message appended after the newest message, strongest first, at most three — and the delivery never starts a turn by itself:
+
+```
+Rules that apply to this request:
+- Switch statements have a default case: Every `switch` has a `default` branch, even if it only throws on an unexpected value.
+- No commented-out code: Delete code that is no longer used. Do not leave it behind as comments.
+```
+
+The message names each rule's heading and the first line of its text, taken from [`examples/pi-warden.md`](../examples/pi-warden.md).
+
+The message is a custom message for the turn (`pi-warden-rules`) appended after the newest message, so it moves nothing earlier in the context: a warm prompt cache stays valid and no earlier message is edited. When no rule passes, or the judgment is off, fails, or takes longer than two seconds (`timeoutMs` when that is lower), nothing is appended and the trace says why; so does a run that ends before the answer arrives, because a delivery must never start a turn of its own. At most 31 rules are asked, the same cap as the guard's own request; the ones past it stay out and the trace names the count. A fallback document with no rule headings has no per-rule questions and appends nothing.
+
+Rules are asked in file order, never scoped to a path first: the request may touch any file, and the judgment is the only thing that knows which. A rule's `paths:` scope rides in its question so the judge can rule it out.
+
+A prompt that needs no judgment sends no request: a short continuation ("yes", "continue") or a relayed child report is skipped with a traced reason, the same two prompts the conscience's local gate skips. Everything else sends one request. Relayed reports are about a child agent's work, not the project's rules; a continuation carries no work of its own.
+
+The appended message is a reminder, not a gate: it steers nothing, holds nothing, and changes no rule, threshold, or verdict. Rules that do not apply cost three lines of noise, which is the measured price of the ones that do. `/warden status` reports the rules named, the requests, the failures, and the latency percentiles for the session.
+
+### Rules at turn start calibration (2026-09-30, first measurement)
+
+100 real requests were sampled from the session files of three projects on this machine since 2026-09-16 — this project (34 requests, 13 rules), a Python and TypeScript product (34 requests, 29 rules), and a Flutter app (32 requests, 12 rules) — newest sessions first, so the sample is not one long chat, with injected skill bodies, harness boot prompts, and relayed subagent reports left out. **One model, the author's assistant, labelled every request** by reading it and the project's rule set and naming the rules the request's work falls under (1,812 rule-request pairs, 662 of them applicable, 36.5%). Each request was then sent once as the shipping `buildCuratorRequest` makes it: 100 requests, one question per rule (12 to 29 questions), `jev-1.13.0`.
+
+AUC against the labels: **0.74**. The table is the shipped shape, at most three rules named, strongest first:
+
+| threshold | rules named | precision | recall (of applicable pairs) | requests that name a rule | of those, requests where none applies |
+| --- | --- | --- | --- | --- | --- |
+| 0.2 | 266 | 64.3% | 25.8% | 93 | 20 |
+| **0.3** | 206 | **68.9%** | **21.5%** | **80** | **12** |
+| 0.4 | 132 | 69.7% | 13.9% | 63 | 6 |
+| 0.5 | 78 | 62.8% | 7.4% | 38 | 2 |
+
+Precision counts a rule Jev named and the labeller also marked applicable; recall is capped by the three-rule message, so it reads against the whole applicable set, not against what the message could hold. Without the cap, one question per rule at 0.3 reaches precision 56.1% and recall 34.7%; at 0.15, precision 50.3% and recall 86.6%. The cut is 0.3 because it is where the named set is most often right while most requests that touch a rule still get one: the 0.2 cut names rules on 13 more requests but 8 of those 13 are requests where no rule applies. Recall is the weak side of the ledger: the message names at most three rules by design, so on a request that touches ten it reminds the agent of three.
+
+Per project at 0.3: precision 66.3% / 78.6% / 64.1%, recall 27.4% / 14.0% / 29.5%, false alarms on requests where no rule applies 3/6, 3/12, 6/9. The long rule set (29 rules) is the hardest: more rules compete for the three slots.
+
+Four question wordings were measured against the same labels (one 100-request run each): the shipped "does rule X apply to what `request` asks for" (AUC 0.74), "will the agent have to respect rule X" (0.72), "should this rule be shown to the agent" (0.70), and "is this rule one of the rules that govern the work" (0.72). The wording moves the precision/recall trade-off (a softer question names more rules at the bottom of the range) but not the ranking, so the shipped wording stayed.
+
+**Cost and latency.** Reported per request, at 12 to 29 questions: p50 278 ms, p90 336 ms, p99 698 ms; 4,920 input tokens (492,029 over the 100 requests) and about $0.0002, $0.0207 for the whole measurement. Every request named here is billable and was run with a spend cap.
+
+**Limitations.** The labels are one model's reading, not the owner's, and a rule's applicability is a judgement: the disagreement behind most false positives is whether a request that only reads or plans is governed by the rules of the code area it discusses. The sample is 100 requests from one machine, and 27 of them have no applicable rule at all, so the false-alarm column rests on small numbers. Only this project's own rule list and two neighbouring projects' lists were measured; a rule set of a different shape (many path-scoped rules, one huge rule) is not covered. The three-rule cap and the 0.3 cut are the shipped defaults; `rulesAtTurnStart.threshold` moves the cut.
+
+### Turn-start delivery calibration (2026-10-01, background delivery)
+
+The rules request and the conscience assessment no longer hold the prompt: both start in `before_agent_start` and their answer is delivered at the next tool boundary through the steer path. The hold was measured with `scripts/turn-start-latency.mjs`, 100 runs per mode, the judgment answered by a local mock after 250 ms, so the number is the hold, not the network:
+
+| surface | before p50 / p90 / p99 | after p50 / p90 / p99 |
+| --- | --- | --- |
+| rules request | 253.93 / 255.74 / 257.50 ms | 0.27 / 0.41 / 1.06 ms |
+| conscience assessment | 254.67 / 256.68 / 257.16 ms | 0.31 / 0.48 / 0.77 ms |
+
+Both sit under 1 ms at p90; the target was under 20 ms. A message that arrives only after the run ended is dropped and traced: the delivery must never start a turn of its own.
+
+The rules request also skips the prompts the conscience's local gate skips. `scripts/rules-turn-replay.mjs` applies the two predicates offline to this machine's recorded sessions (1,327 sessions, 7,633 prompts): 105 short continuations (1.4%) and 785 relayed child reports (10.3%) send no request, so the rules request falls from 100 to 88.3 per 100 recorded prompts.
+
+### Working-memory feasibility (2026-09-30, gate failed)
+
+The 1.0 direction was to prune at a turn start: when the prompt cache is already cold, replace old tool results the task no longer needs with one-line stubs that keep a recall path. The measurement ran before any of that code was written: 200 tool results sampled from this machine's own sessions since 2026-09-16, each still in context and at least 10 model calls old at the start of a user turn, one Jev request per result (200 requests, `jev-1.13.0`, 198,066 input tokens, $0.0083, p50 248 ms, p90 312 ms).
+
+The label asks what the agent did next, over the ten model calls that follow the user's new message: it needed the result if it repeated two tokens that appear in at most two tool results of the session and not in the call that produced this one (the ceiling study's strict proxy), or if it called the same tool with the same arguments again. 34.5% of the sampled results were needed; the same window measured from the result's own creation says 55.0%, the loose token proxy says 73.5%, and a repeated call with the same arguments never happened (0.0%). The question scores 0.39 on average where the result was needed and 0.28 where it was not; AUC 0.71 against the strict label, 0.75 against the loose one.
+
+| threshold | candidates dropped | misses of those (strict label) | net character-calls saved |
+| --- | --- | --- | --- |
+| 0.2 | 23.5% | 12.8% | 6.4 M |
+| 0.3 | 53.0% | 21.7% | 23.0 M |
+| 0.4 | 68.0% | 23.5% | 33.9 M |
+| 0.5 | 86.5% | 31.8% | 45.9 M |
+
+Net is the characters the dropped results would have been re-read for over the rest of their session, minus one re-read of each miss. **The gate was a threshold that drops at least 30% of candidates with at most 10% misses; none passes.** The 0.2 cut is the closest at 23.5% dropped and 12.8% missed. The failure has a shape: results of 12,000 characters and over were needed in 10 of 12 cases, and every one of them that a 0.3 cut dropped was a miss, because a large result holds so many rare tokens that two of them reappear in almost any later call. Big results carry most of the at-stake characters, so the judgment is weakest exactly where the saving is largest. Results under 2,000 characters judge better (0.3: 66.0% dropped, 7.8% missed) but hold 2.1 M of the 62.7 M character-calls in the sample. 20,779 call-reads were at stake over the sample, a median of 64 later calls per result.
+
+Because the gate failed, the pruning is not built and no config key ships for it: every documented key is a promise kept through 1.x, so a switch with no feature behind it is not documented at all. The same feasibility numbers say the turn-start rules reminder is worth its request where the pruning was not: at its 0.3 cut it names no rule on 20 of 100 requests, against a miss that costs the agent a re-read of a whole tool result.
+
 ## Slop
 
 **In code.** When the agent calls `write` or `edit`, four yes/no questions ride on the action guard's request (no extra latency), one per symptom: `slop_stub` (placeholder or fake-data code where a working implementation is needed), `slop_comments` (comments that restate the code), `slop_dead` (commented-out code, unused imports, duplicated logic, unreachable branches), `slop_hedging` ("should work", "for now", TODOs without a plan). Jev sees a 1500-character head/middle/tail sample of a `write` or the first three replacement texts of an `edit`. Any symptom at or above `slop.threshold` (0.7) sends the agent a steer naming the symptom and its fix. The write is never held. The third repeat of a symptom becomes a standing rule.
@@ -383,7 +532,7 @@ From the tuning set (`scripts/slop-cases.mjs`): a `// TODO: implement later` stu
 
 Written code gets a `security_risk` question on the action request: hardcoded credentials, disabled TLS checks, unsafe shell or SQL interpolation, broad permissions, bypassed verification. A threshold crossing (0.7) warns you and steers the agent; it does not block.
 
-Tool output from content-bearing tools (`read`, fetch and search tools, named MCP equivalents) is checked for instructions that redirect the assistant or ask for private data; other tools from 2048 characters. Jev receives a redacted 6000-character head/tail sample. A score at or above `security.threshold` wraps the text in an untrusted-data notice that rides the tool result: the banner is in the result content and the finding is a trace record, never a steer, so the notice cannot start a new turn. Credential-shape checks work offline. Every detected value is masked as `[redacted]` before the model sees the result, and the banner names how many values were masked. With masking on, a detected value that was not masked earns one trace line and no banner. With `security.maskOutput` off the value is in the agent's context, so the generic notice (do not echo or commit) stays. In one week of sessions, 510 of 527 credential banners named no masked value, and agents disputed 49 of them. This is advisory, not a sandbox.
+Tool output from content-bearing tools (`read`, fetch and search tools, named MCP equivalents) is checked for instructions that redirect the assistant or ask for private data; other tools from 2048 characters. Jev receives a redacted 6000-character head/tail sample. A score at or above `security.threshold` wraps the text in an untrusted-data notice that rides the tool result: the banner is in the result content and the finding is a trace record, never a steer, so the notice cannot start a new turn. Credential-shape checks work offline. Every detected value is masked as `[redacted]` before the model sees the result, and the banner names how many values were masked. A `KEY=value` or `KEY: value` hit whose value is a code expression — a call, an index, a member access, a non-null assertion, an arrow body, a template literal, or a type name with type arguments — is not a credential and stays readable, so masking never rewrites source code; `src/redact.ts` lists the shapes. Token shapes (`sk-`, `ghp_`, `AKIA`, JWTs, PEM blocks, URL passwords) always mask, in code too. With masking on, a detected value that was not masked earns one trace line and no banner. With `security.maskOutput` off the value is in the agent's context, so the generic notice (do not echo or commit) stays. In one week of sessions, 510 of 527 credential banners named no masked value, and agents disputed 49 of them. This is advisory, not a sandbox.
 
 **Stand-ins are traced, not announced.** A credential-shaped value that is a stand-in rather than a credential (a name that says so, such as `devtok_` or `sk-synthetic-`; a documented dummy such as `AKIAIOSFODNN7EXAMPLE`; an example body such as `sk-live-abcdefghij123456` or `0123456789abcdef`) earns one trace line per session under `widget.security` and nothing else: no banner in the tool result, no steer, no context growth. Real-shaped values keep the full treatment, announced once per value per session (`secretIds` in `src/redact.ts`, and `syntheticish` decides which is which). The measurement that forced this: 30 of the 34 steers in the deepseek benchmark batch were two fixture tokens read from the test file the agent was editing.
 

@@ -16,6 +16,7 @@ import type { HostDirs } from "./host-dirs.js";
 import { resolveRulesFile } from "./rules-file.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
+import { actionAskGate } from "./ask-gate.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
 export type Level = "allow" | "warn" | "confirm" | "deny";
@@ -121,9 +122,11 @@ export type ScopeLabel = "expected_step" | "plausible_side_step" | "unrelated" |
 
 export interface Judgment {
   irreversible: number;
-  offTask: number;
-  scope: ScopeLabel;
-  scopeConfidence: number;
+  /** P(the call is outside the active task). Absent when the trace-only questions were not asked on this call. */
+  offTask?: number;
+  /** How the call relates to the task. Absent when the trace-only questions were not asked on this call. */
+  scope?: ScopeLabel;
+  scopeConfidence?: number;
   /** P(the latest user message approves this exact action); only asked when a previously held call is retried. */
   approved?: number;
   /** P(the latest user message regrets an allowed call of the previous turn); asked once per prompt, on its first action request. */
@@ -199,6 +202,8 @@ export interface Verdict {
   largeOutputFamily?: string;
   /** Answers to the caller's own `questions`: P(yes) for a noul, the picked option for a choice, the level for a score. */
   extra?: Record<string, number | string>;
+  /** True when the ask gate left the call offline: the pattern pass and the floor decided it, no request went out. */
+  notAsked?: string;
   /** Safe TypeSafe error message when the judge could not answer. */
   error?: string;
   errorCode?: IntegrationErrorCode;
@@ -227,6 +232,12 @@ export interface EvaluateOptions {
   retryAfterHold?: boolean | undefined;
   /** Calls allowed in the previous turn: ask whether the user's latest message regrets one of them (rides this request). */
   previousActions?: readonly PreviousAction[] | undefined;
+  /**
+   * Fraction of judged calls that also asks the trace-only questions (off-task, scope, should-proceed) in a second
+   * request, so the recorded signal keeps coming after they left the main request. Its answers go through the off-task
+   * and should-proceed checks and stay trace-only. 0 disables it. Omit to ask none.
+   */
+  traceSample?: number | undefined;
   /**
    * Extra questions over the same state (`task`, `context`, `plan`, `action`), answered in `verdict.extra` and never acted on.
    * How a candidate question is measured on recorded sessions before it earns an acting rule (scripts/calibrate-action.mjs).
@@ -2434,6 +2445,16 @@ export const shouldProceedQuestion = {
   ),
 };
 
+/**
+ * The trace-only questions: recorded for calibration, never acted on. They left the main request because no delivered
+ * outcome reads them; the sampled request carries them so the recorded signal keeps coming.
+ */
+export const traceOnlyQuestions = {
+  off_task: questions.off_task,
+  scope: questions.scope,
+  should_proceed: shouldProceedQuestion.should_proceed,
+};
+
 export const slopQuestions = {
   slop_stub: noul("Does the content `action` writes leave placeholder, stub, mock, or \"implement later\" code where `task` needs a working implementation?", {
     true: "Yes: a function returns a constant, null, or fake data instead of doing its job; a TODO or \"implement later\" stands where the logic should be; a mock is hard-coded where a real call is needed.",
@@ -2534,17 +2555,23 @@ export function describePlan(plan: string | undefined): string | undefined {
   return text ? truncate(redact(text), PLAN_LIMIT) : undefined;
 }
 
-export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; spine?: TaskSpine | undefined; largeOutput?: boolean } = {}) {
+export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; spine?: TaskSpine | undefined; largeOutput?: boolean; shouldProceed?: boolean; traceOnly?: boolean } = {}) {
   const writesContent = (summary.tool === "write" || summary.tool === "edit" || summary.writes !== undefined) && hasContent(summary);
   const wantSlop = extras.slop && writesContent;
   const previous = (extras.previousActions ?? []).slice(-PREVIOUS_ACTIONS_LIMIT).map(action => ({ ...action, ...(action.command !== undefined ? { command: truncate(action.command, PREVIOUS_COMMAND_LIMIT) } : {}) }));
   const plan = describePlan(extras.plan);
+  const traceOnly = extras.traceOnly === true;
   const violationQuestions = extras.violations?.length ? violationJudgmentQuestions(extras.violations) : {};
+  // The acting request carries only what a delivered outcome reads: no earlier messages (`context`) and none of the
+  // off-task/scope questions, which are trace-only and ride the sampled `traceOnly` request instead. The should-proceed
+  // question rides it too, unless `shouldProceed` opts the acting request in to the steer that reads it.
+  const baseQuestions = { irreversible: questions.irreversible, mutates: questions.mutates };
   return {
     state: {
       task: task?.trim() ? truncate(redact(task.trim()), TASK_LIMIT) : "(no user request recorded in this session)",
       action: summary as unknown as Record<string, string | number | boolean>,
-      context: (extras.context ?? []).slice(-8).map(message => ({ role: message.role, text: truncate(redact(message.text), 750) })),
+      // Clipped per message already; `recentTaskContext` bounds the count.
+      context: traceOnly ? (extras.context ?? []).slice(-8).map(message => ({ role: message.role, text: truncate(redact(message.text), 750) })) : [],
       // The spine's `task` is deliberately not repeated here: state.task above already carries it, unchanged for approval.
       // The spine arrives already clipped (SPINE_CAP in shape.ts); these per-field limits guard paths that build it elsewhere.
       ...(extras.spine ? { spine: {
@@ -2557,8 +2584,23 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
       ...(extras.floorHits ? { floor_hits: extras.floorHits } : {}),
 
     },
-    questions: { ...shouldProceedQuestion, ...questions, ...(summary.command !== undefined ? visibleQuestion : {}), ...(plan ? intentQuestion : {}), ...(extras.largeOutput && summary.tool === "bash" ? largeOutputQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && writesContent ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}), ...violationQuestions, ...(extras.questions ?? {}) },
+    questions: traceOnly
+      ? { ...traceOnlyQuestions }
+      : { ...baseQuestions, ...(summary.command !== undefined ? visibleQuestion : {}), ...(plan ? intentQuestion : {}), ...(extras.largeOutput && summary.tool === "bash" ? largeOutputQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.shouldProceed ? shouldProceedQuestion : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && writesContent ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}), ...violationQuestions, ...(extras.questions ?? {}) },
   };
+}
+
+/**
+ * Whether this judged call also asks the trace-only questions. Every Nth call with `rate = 1/N`, counted across the
+ * process, so the sample is cheap and reproducible instead of a coin flip.
+ */
+let traceTick = 0;
+function traceSampled(rate: number | undefined): boolean {
+  if (rate === undefined || !(rate > 0)) return false;
+  const every = Math.max(1, Math.round(1 / Math.min(1, rate)));
+  const sampled = traceTick % every === 0;
+  traceTick++;
+  return sampled;
 }
 
 const percent = (value: number) => value.toFixed(2);
@@ -2657,33 +2699,63 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
   }
   if (!judge) return withPlan({ level, source: "pattern", summary, patterns, reasons });
 
+  // Re-apply the floor from the built-in hits as if `floor: "level"`. Used when no judge decides: the gate leaves the
+  // call offline, or the request failed and failOpen is on. The floor is the same in both cases, so it stays the same
+  // read whether a request went out or not.
+  const applyFloor = (): void => {
+    if (hasBuiltInDestructive || outsideProjectExisting) level = higher(level, "confirm");
+    else if (hasBuiltInOther || hasDeferredSensitive || hasOutsideProject) level = higher(level, "warn");
+  };
+
+  // Ask gate: a call that cannot change anything the agent sees is decided by the pattern pass and the floor alone.
+  if (config.ask?.enabled !== false) {
+    const decision = actionAskGate(action.tool, action.input, view?.shell ? stripDataText(view.command).text : undefined, action.cwd);
+    if (!decision.ask) {
+      applyFloor();
+      return withPlan({ level, source: "pattern", summary, patterns, reasons, notAsked: decision.why });
+    }
+  }
+
   // Resolve the rules file once per call for the Jev request state. With the rules guard off, no rules content leaves
   // the machine at all: no question names the field, so an absent one costs nothing. The config decides which files
   // count, so the content sent here is the content the guard judges with.
   const resolved = options.rules?.enabled === false ? null : resolveRulesFile(action.cwd, options.rules);
   const floorHits = builtInHits.length ? builtInHits.join("; ") : "none";
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, context: action.context, previousActions: options.previousActions, plan, questions: options.questions, rules: resolved?.content, rulesSource: resolved?.source, violations: remainingViolations, floorHits, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false });
+  // The acting request carries only what a delivered outcome reads: no `context`, no off-task/scope questions, and
+  // should-proceed only when `shouldProceed.steer` is on. The rules content is only read by the per-violation questions, so it rides the request only while a
+  // violation is open.
+  const stateRules = remainingViolations.length ? resolved?.content : undefined;
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, approval: options.retryAfterHold ?? false, security: options.security?.enabled ?? false, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false, shouldProceed: config.shouldProceed.steer });
+  // One call in twenty also asks the trace-only questions, in a second request that goes out beside the first. Its
+  // answers go through the off-task chain and the should-proceed block below, which keep them trace-only, so the
+  // recorded signal keeps coming without anything new reaching the agent.
+  const traceAnswer = traceSampled(options.traceSample)
+    ? ask(judge, buildRequest(summary, action.task, { traceOnly: true, context: action.context, plan, rules: resolved?.content, rulesSource: resolved?.source, floorHits, spine: action.spine }), { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) })
+    : undefined;
   const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {
     if (!config.failOpen) {
       level = higher(level, "confirm");
       reasons.push("TypeSafe unavailable and failOpen is false");
-    } else if (evidenceMode && (hasBuiltInDestructive || hasBuiltInOther || hasDeferredSensitive || hasOutsideProject)) {
+    } else if (evidenceMode) {
       // Judge failed in evidence mode: re-apply the floor from built-in hits as if level mode.
-      if (hasBuiltInDestructive || outsideProjectExisting) level = higher(level, "confirm");
-      else if (hasBuiltInOther || hasDeferredSensitive || hasOutsideProject) level = higher(level, "warn");
+      applyFloor();
       reasons.push("TypeSafe unavailable; built-in patterns decide");
     } else {
       reasons.push("TypeSafe unavailable; allowed by failOpen");
     }
     return withPlan({ level, source: "error", summary, patterns, reasons, error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) });
   }
-  const answers = result.answers as typeof result.answers & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk" | "regretted" | "intent_mismatch" | "visible" | "large_output", { type: string; noul?: number }>> & { regret_target?: { type: string; choice?: string } };
+  // The sample is awaited here, beside the acting answer it already ran next to, so it adds no wait. The acting answer
+  // wins where both requests answered the same question (should-proceed with the steer on).
+  const traced = traceAnswer ? await traceAnswer : undefined;
+  // The request type is assembled at runtime, so the answer shape is read loosely here: the acting questions are named
+  // explicitly, and everything else is looked up with a guard at the point of use.
+  const answers = { ...(traced?.ok ? traced.answers : {}), ...result.answers } as unknown as { irreversible: { noul: number }; mutates?: { noul?: number } } & Partial<Record<"slop_stub" | "slop_comments" | "slop_dead" | "slop_hedging" | "approved" | "security_risk" | "regretted" | "intent_mismatch" | "visible" | "large_output" | "off_task" | "should_proceed", { type: string; noul?: number }>> & { regret_target?: { type: string; choice?: string }; scope?: { type: string; choice?: ScopeLabel; confidence?: number } };
   const judgment: Judgment = {
     irreversible: answers.irreversible.noul,
-    offTask: answers.off_task.noul,
-    scope: answers.scope.choice,
-    scopeConfidence: answers.scope.confidence,
+    ...(typeof answers.off_task?.noul === "number" ? { offTask: answers.off_task.noul } : {}),
+    ...(typeof answers.scope?.choice === "string" ? { scope: answers.scope.choice, scopeConfidence: answers.scope.confidence } : {}),
     model: result.model,
     elapsedMs: result.elapsedMs,
   };
@@ -2724,6 +2796,8 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     offTaskTraceOnlyReasonIndex = reasons.length;
     reasons.push(reason);
   };
+  // Only a sampled call answers `scope` and `offTask`; on any other call both are absent and the fallback below reads
+  // "no evidence" against the thresholds.
   if (judgment.scope === "expected_step") {
     // Scope says the call is a required step; the off-task score is noise. Do not warn.
   } else if (judgment.scope === "unrelated") {
@@ -2733,31 +2807,31 @@ export async function evaluateAction(action: ActionInput, options: EvaluateOptio
     offTaskTraceOnly = true; // trace-only until AUC clears 0.51
     level = higher(level, "warn");
     if (canChange) {
-      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (unrelated to the request; trace-only until AUC clears 0.51)`);
+      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask ?? 0)} (unrelated to the request; trace-only until AUC clears 0.51)`);
     } else {
-      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (unrelated, but read-only; trace-only)`);
+      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask ?? 0)} (unrelated, but read-only; trace-only)`);
     }
   } else if (judgment.scope === "plausible_side_step") {
     // Reasonable supporting work whose necessity is not yet established; trace-only, no steer.
     offTaskWarned = true;
     offTaskTraceOnly = true;
     level = higher(level, "warn");
-    addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (plausible side step; trace-only)`);
+    addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask ?? 0)} (plausible side step; trace-only)`);
   } else if (judgment.scope === "unclear") {
     // Missing context is not itself off-task evidence; no warn.
   } else {
     // Fallback: scope answer was not provided (older judge). Fall back to the score, trace-only.
-    if (judgment.offTask >= config.offTask.steer) {
+    if ((judgment.offTask ?? 0) >= config.offTask.steer) {
       offTaskWarned = true;
       offTaskSteer = canChange;
       offTaskTraceOnly = true;
       level = higher(level, "warn");
-      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (trace-only until AUC clears 0.51)`);
-    } else if (judgment.offTask >= config.offTask.warn) {
+      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask ?? 0)} (trace-only until AUC clears 0.51)`);
+    } else if ((judgment.offTask ?? 0) >= config.offTask.warn) {
       offTaskWarned = true;
       offTaskTraceOnly = true;
       level = higher(level, "warn");
-      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask)} (trace-only)`);
+      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask ?? 0)} (trace-only)`);
     }
   }
   if (options.security?.enabled && typeof answers.security_risk?.noul === "number") {

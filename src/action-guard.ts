@@ -74,7 +74,7 @@ export class ActionGuard {
     const retryAfterHold = this.holdPending && this.lastHoldPrompt !== task;
     const judgeCall = (tool: string, input: Record<string, unknown>, previousActions?: readonly PreviousAction[]) => evaluateAction(
       { tool, input, cwd: options.cwd, task, context: conversation.context, plan: conversation.plan, spine: conversation.spine },
-      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, largeOutput: options.largeOutput, rules: options.rules, retryAfterHold, previousActions, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn, hostPaths: options.hostPaths },
+      { config: options.config, judge: options.judge, signal: options.signal, slop: options.slop, security: options.security, largeOutput: options.largeOutput, rules: options.rules, retryAfterHold, previousActions, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn, hostPaths: options.hostPaths, traceSample: options.config.traceSample },
     );
     // A retry after a hold stays sequential because an approval consumed by one sibling changes the question for the next.
     if (options.judge && !retryAfterHold) {

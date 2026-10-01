@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 11;
+export const EXPECTED_SCHEMA = 12;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -48,12 +48,14 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     steerVisible: source.steerVisible ?? false,
     notices: source.notices ?? false,
     steerBudget: typeof source.steerBudget === "number" && source.steerBudget >= 0 ? source.steerBudget : 3,
-    action: section("action", { ...off, tools: [], failOpen: true, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "all", shouldProceed: { threshold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
+    action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, traceSample: 0, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "all", shouldProceed: { threshold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false }),
     rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
+    // A missing section turns the turn-start reminder off: it is new, so nothing it says was expected.
+    rulesAtTurnStart: section("rulesAtTurnStart", { ...off, threshold: 1 }),
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
@@ -71,12 +73,12 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
     // An older config module collects no warnings.
     warnings: Array.isArray(source.warnings) ? source.warnings : [],
-    conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70 }),
+    conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, localTopK: 31, localFloor: 0.5 }),
   };
   // A missing/invalid runtime section falls back to disabled conscience, no loads, and the existing update warning.
   if (typeof config.conscience !== "object" || config.conscience === null) {
     missing.push("conscience");
-    config.conscience = { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70 };
+    config.conscience = { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, localTopK: 31, localFloor: 0.5 };
   }
   if (typeof config.conscience.skills !== "object" || config.conscience.skills === null) {
     config.conscience = { ...config.conscience, skills: { mode: "recommend", exclude: [] } };
@@ -109,6 +111,10 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.widget.panelWidth !== "string" && typeof config.widget.panelWidth !== "number") config.widget = { ...config.widget, panelWidth: "40%" };
   // The feedback log flag was added inside the action section later than the section itself; an older config module leaves it undefined and the log stays on.
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };
+  // The ask gate was added inside the action section later than the section itself; an older config module leaves it undefined and the gate stays on.
+  if (typeof config.action.ask !== "object" || config.action.ask === null || typeof config.action.ask.enabled !== "boolean") config.action = { ...config.action, ask: { enabled: true } };
+  // The trace-only sample was added inside the action section later than the section itself; an older config module leaves it undefined and one call in twenty is sampled.
+  if (typeof config.action.traceSample !== "number") config.action = { ...config.action, traceSample: 0.05 };
   // The allowed-call retention was added inside the learning section later than the section itself; an older config module leaves it undefined and the 90-day default applies.
   if (typeof config.learning.allowedRetentionDays !== "number") config.learning = { ...config.learning, allowedRetentionDays: 90 };
   if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.9 };
@@ -125,6 +131,9 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (config.action.floor !== "level" && config.action.floor !== "evidence") config.action = { ...config.action, floor: "evidence" };
   // The soft rules tier was added inside the rules section later than the section itself; an older config module leaves it undefined and the tier stays off.
   if (typeof config.rules.softThreshold !== "number") config.rules = { ...config.rules, softThreshold: 0 };
+  // The turn-start reminder was added after the rules section; an older config module leaves it undefined and the reminder stays off.
+  if (typeof config.rulesAtTurnStart?.threshold !== "number") config.rulesAtTurnStart = { ...off, threshold: 1 };
+  if (typeof config.rulesAtTurnStart.enabled !== "boolean") config.rulesAtTurnStart = { ...config.rulesAtTurnStart, enabled: false };
   // The command rules were added inside the action section later than the section itself; an older config module leaves them undefined.
   if (!Array.isArray(config.action.commandRules)) config.action = { ...config.action, commandRules: [] };
   if (!Array.isArray(config.action.commandDenyRules)) config.action = { ...config.action, commandDenyRules: [] };

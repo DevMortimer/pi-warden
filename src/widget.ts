@@ -349,7 +349,7 @@ export function actionTokens(verdict: Verdict, at = Date.now()): Tokens {
     source: verdict.source,
     irreversible: fixed(verdict.judgment?.irreversible),
     offTask: fixed(verdict.judgment?.offTask),
-    scope: verdict.judgment?.scope.replace(/_/g, " "),
+    scope: verdict.judgment?.scope?.replace(/_/g, " "),
     approved: fixed(verdict.judgment?.approved),
     intent: fixed(verdict.judgment?.intentMismatch),
     visible: fixed(verdict.judgment?.visible),
