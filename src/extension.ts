@@ -2316,7 +2316,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       return { content: next };
     };
     // Checks use the original result, not the excerpts or security banner.
-    if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text), event.input, event.toolName);
+    if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text, ctx.cwd), event.input, event.toolName);
     if (config.done.enabled && config.done.uiProof && !failed) {
       const input = event.input as Record<string, unknown>;
       const written = event.toolName === "write" || event.toolName === "edit" ? (typeof input.path === "string" ? [input.path] : [])

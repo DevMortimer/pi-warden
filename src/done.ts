@@ -1,3 +1,4 @@
+import { isAbsolute, relative, resolve } from "node:path";
 import { ask, choice, noul } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { DoneGuardConfig, VisualToolsConfig } from "./config.js";
@@ -12,12 +13,20 @@ export type ToolOutcome = "read" | "mutation" | "check-pass" | "check-fail" | "u
 /** Commands whose success is evidence that the work was verified. */
 const CHECK_COMMAND = /\b(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lint|typecheck|build|verify|ci)\b|(?:npx|pnpm|bunx)\s+(?:tsc|jest|vitest|mocha|eslint|biome|prettier\s+--check)\b|pytest|jest|vitest|mocha|tsc|eslint|biome\s+check|ruff|mypy|flake8|pylint|black\s+--check|cargo\s+(?:test|check|build|clippy)|go\s+(?:test|vet|build)|make\s+(?:test|check|lint|build)|mvn\s+(?:test|verify)|gradle\w*\s+(?:test|check|build)|dotnet\s+(?:test|build)|node\s+--test|deno\s+(?:test|check|lint)|rspec|rake\s+test|mix\s+test|phpunit|swift\s+(?:test|build)|xcodebuild\s+test|ctest|zig\s+(?:test|build))\b/;
 
+/** A write or edit whose resolved path lies outside the project root (a scratch file, a note in the home directory). */
+function isOutsideProject(input: Record<string, unknown>, cwd: string): boolean {
+  const path = typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : undefined;
+  if (!path) return false;
+  const rel = relative(resolve(cwd), resolve(cwd, path));
+  return rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel);
+}
+
 /**
- * What a finished tool call contributes to the run's evidence. Only write/edit count as code changes: shell side effects
+ * What a finished tool call contributes to the run's evidence. Only write/edit inside the project count as code changes: shell side effects
  * (deleting a temp dir, installing a package) are too varied to demand a test run for. Custom tools are unknown.
  */
-export function classifyToolResult(tool: string, input: Record<string, unknown>, failed: boolean, output?: string): ToolOutcome {
-  if (tool === "write" || tool === "edit") return "mutation";
+export function classifyToolResult(tool: string, input: Record<string, unknown>, failed: boolean, output?: string, cwd?: string): ToolOutcome {
+  if (tool === "write" || tool === "edit") return cwd !== undefined && isOutsideProject(input, cwd) ? "unknown" : "mutation";
   if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return "read";
   const view = commandOf(tool, input);
   if (!view) return "unknown";
