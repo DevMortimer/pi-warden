@@ -15,6 +15,8 @@ v3, still before any batch run: model B is `claude-bridge/claude-sonnet-5-5` (no
 
 v3, revised before any batch run: the queue runs in blocks, one block per task x repeat, with the cell order of each block shuffled by a registered seed, so paired runs start minutes apart; a stopped batch resumes from its record; a run that fails on an agent-model API error is re-run, and one that still fails leaves its whole block out of the metrics (a model with more than 10% of its blocks excluded is inconclusive); a Jev request still in flight when a run's process exits no longer stops the batch; the batch has a Jev dollar cap of $8 for A and $2 for B; the two batches run at the same time at concurrency 10 (A) and 6 (B), under `caffeinate -i`; the commit under test is the `src/` of the `main` commit that merges the approval-context pull request.
 
+v3, commit fixed before any batch run: the commit under test is `5ff3c778193584ce2404b1b43a31f5a40ef6563d`, the `main` commit that merged the last 1.0 code change.
+
 v3, corrected before any batch run: a run is an infrastructure failure only when it ended on the error (its last assistant message has `stopReason` `error`, or pi exited before any assistant message; for a multi-turn run the test applies to each turn), and an error pi retried and got past is a valid run, counted per run as `providerErrorsRecovered`; after an exit-4 stop the runs of the streak that caused the stop run again on resume, not only the runs in flight; a run killed at the timeout whose Jev ledger cannot be read has an unknown Jev cost and leaves the dollar metric (c) only; `--resume` is refused with `--typesafe-cap`; the report builders leave out excluded blocks themselves.
 
 ## Thesis
@@ -263,7 +265,7 @@ under test (the command prints nothing), then starts the two batches in two
 terminals (the run folder, `--out`, defaults to a dated name with the model):
 
 ```
-git diff <commit under test> HEAD -- src
+git diff 5ff3c778193584ce2404b1b43a31f5a40ef6563d HEAD -- src
 caffeinate -i node scripts/eval-ab.mjs --model deepseek/deepseek-flash --repeats 143 --turns 12 --concurrency 10 --seed 20261001 --jev-usd-cap 8
 caffeinate -i node scripts/eval-ab.mjs --model claude-bridge/claude-sonnet-5-5 --repeats 40 --turns 12 --concurrency 6 --seed 20261001 --jev-usd-cap 2
 ```
@@ -291,10 +293,9 @@ memory and about 550% of 1,000% CPU on a 10-core, 16 GB machine, and its runs to
 
 ## Commit under test
 
-The batch runs on the `src/` tree of the `main` commit that merges the last 1.0 code
-change, the approval-context pull request. A separate commit adds that commit's hash to
-this section before the launch. The launch checks that `git diff <that commit> HEAD -- src`
-prints nothing. Both batches run on that one commit.
+The batch runs on the `src/` tree of commit `5ff3c778193584ce2404b1b43a31f5a40ef6563d`, the `main` commit that merged the
+last 1.0 code change. The launch checks that
+`git diff 5ff3c778193584ce2404b1b43a31f5a40ef6563d HEAD -- src` prints nothing. Both batches run on that one commit.
 
 ## Model
 
