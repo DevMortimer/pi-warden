@@ -13,6 +13,7 @@ import type { Judge } from "../src/guard.js";
 import { actionDetails } from "../src/trace.js";
 import { actionTokens } from "../src/widget.js";
 import { findSecrets, looksLikeSecretValue, partitionSecrets, redact, secretFingerprint, secretIds, syntheticish } from "../src/redact.js";
+import { judgedAction } from "./judged-action.js";
 
 let cwd: string;
 before(async () => {
@@ -30,9 +31,14 @@ const answers = (irreversible: number, offTask: number, scope = "expected_step",
     ...(mutates === undefined ? {} : { mutates: { type: "noul" as const, noul: mutates } }),
   },
 });
+// A real judge answers only the questions a request asks; the stub does the same.
+const onlyAsked = <T extends { answers: Record<string, unknown> }>(result: T, request: unknown): T => ({
+  ...result,
+  answers: Object.fromEntries(Object.entries(result.answers).filter(([id]) => id in (request as { questions: Record<string, unknown> }).questions)),
+});
 const judge = (irreversible: number, offTask: number, scope?: string, mutates?: number): Judge & { calls: unknown[] } => {
   const calls: unknown[] = [];
-  return { calls, async evaluate(request) { calls.push(request); return answers(irreversible, offTask, scope, 0.9, mutates) as never; } };
+  return { calls, async evaluate(request) { calls.push(request); return onlyAsked(answers(irreversible, offTask, scope, 0.9, mutates), request) as never; } };
 };
 const failingJudge = (code: "timeout" | "http" = "timeout"): Judge => ({
   async evaluate() { throw new TypeSafeIntegrationError(code, `synthetic ${code}`); },
@@ -42,8 +48,9 @@ test("should-proceed keeps the trace reason at the threshold and leaves higher s
   for (const score of [0.6, 0.61]) {
     const result = answers(0.1, 0.1);
     const verdict = await evaluateAction({ tool: "write", input: { path: "example.ts", content: "export {};" }, cwd, task: "add a module" }, {
-      config: defaultConfig().action,
-      judge: { async evaluate() { return { ...result, answers: { ...result.answers, should_proceed: { type: "noul", noul: score } } } as never; } },
+      config: judgedAction(),
+      traceSample: 1,
+      judge: { async evaluate(request) { return onlyAsked({ ...result, answers: { ...result.answers, should_proceed: { type: "noul", noul: score } } }, request) as never; } },
     });
     assert.equal(verdict.judgment?.shouldProceed, score);
     assert.equal(verdict.shouldProceedTraceOnly, score === 0.6 ? true : undefined);
@@ -53,14 +60,14 @@ test("should-proceed keeps the trace reason at the threshold and leaves higher s
 });
 
 test("off-task never holds: an unrelated change warns but is trace-only; a read-only command only warns", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const inspect = { tool: "bash", input: { command: "cat package.json; node -e \"console.log(require('./package.json').version)\"" }, cwd, task: "Update the README image" };
-  const readOnly = await evaluateAction(inspect, { config, judge: judge(0.05, 0.91, "unrelated", 0.05) });
+  const readOnly = await evaluateAction(inspect, { config, traceSample: 1, judge: judge(0.05, 0.91, "unrelated", 0.05) });
   assert.equal(readOnly.level, "warn");
   assert.match(readOnly.reasons.join("; "), /unrelated, but read-only/);
   assert.equal(readOnly.offTaskSteer, undefined, "nothing changed, nothing to steer back from");
   assert.equal(readOnly.offTaskTraceOnly, true, "off-task is trace-only until AUC clears 0.51");
-  const changes = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config, judge: judge(0.2, 0.91, "unrelated", 0.95) });
+  const changes = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config, traceSample: 1, judge: judge(0.2, 0.91, "unrelated", 0.95) });
   assert.equal(changes.level, "warn");
   assert.equal(changes.offTaskSteer, true);
   assert.equal(changes.offTaskTraceOnly, true, "steer is trace-only until AUC clears 0.51");
@@ -68,14 +75,14 @@ test("off-task never holds: an unrelated change warns but is trace-only; a read-
   assert.equal(changes.offTaskTraceOnlyReasonIndex, changes.reasons.findIndex(reason => reason.startsWith("off-task 0.91")), "delivery metadata identifies only the generated diagnostic");
   assert.match(offTaskSteer(changes), /^pi-warden: this bash call looks unrelated to the user's request \(off-task 0\.91\)\. It ran\./);
   assert.match(formatVerdict(changes), /off task · warn$/);
-  const unknown = await evaluateAction(inspect, { config, judge: judge(0.05, 0.91, "unrelated") });
+  const unknown = await evaluateAction(inspect, { config, traceSample: 1, judge: judge(0.05, 0.91, "unrelated") });
   assert.equal(unknown.offTaskSteer, true, "without a mutates answer the call is taken to change something");
   assert.equal(unknown.offTaskTraceOnly, true);
-  const write = await evaluateAction({ tool: "write", input: { path: "poem.txt", content: "roses" }, cwd, task: "Fix the login bug" }, { config, judge: judge(0.05, 0.95, "unrelated", 0.05) });
+  const write = await evaluateAction({ tool: "write", input: { path: "poem.txt", content: "roses" }, cwd, task: "Fix the login bug" }, { config, traceSample: 1, judge: judge(0.05, 0.95, "unrelated", 0.05) });
   assert.equal(write.level, "warn", "write and edit always change something, and still never hold for scope alone");
   assert.equal(write.offTaskSteer, true);
   assert.equal(write.offTaskTraceOnly, true);
-  const below = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config: { ...config, offTask: { warn: 0.6, steer: 0.95 } }, judge: judge(0.2, 0.91, "unrelated", 0.95) });
+  const below = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config: { ...config, offTask: { warn: 0.6, steer: 0.95 } }, traceSample: 1, judge: judge(0.2, 0.91, "unrelated", 0.95) });
   assert.equal(below.offTaskSteer, true, "scope unrelated steers regardless of score threshold");
   assert.equal(below.level, "warn");
   const probe = judge(0.05, 0.05, "expected_step", 0.05);
@@ -85,17 +92,17 @@ test("off-task never holds: an unrelated change warns but is trace-only; a read-
 
 test("missing scope context is not itself off-task evidence; scope expected_step vetoes; unrelated always warns", async () => {
   const action = { tool: "write", input: { path: "src/output.ts", content: "export const output = 1;" }, cwd, task: "Nice, the guard works :)" };
-  const unclear = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.1, 0.95, "unclear") });
+  const unclear = await evaluateAction(action, { config: judgedAction(), traceSample: 1, judge: judge(0.1, 0.95, "unclear") });
   assert.equal(unclear.level, "allow");
   assert.equal(unclear.offTaskSteer, undefined);
-  const unrelated = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.1, 0.95, "unrelated") });
+  const unrelated = await evaluateAction(action, { config: judgedAction(), traceSample: 1, judge: judge(0.1, 0.95, "unrelated") });
   assert.equal(unrelated.level, "warn");
   assert.equal(unrelated.offTaskSteer, true);
   assert.equal(unrelated.offTaskTraceOnly, true);
-  const expectedStep = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.1, 0.95, "expected_step") });
+  const expectedStep = await evaluateAction(action, { config: judgedAction(), traceSample: 1, judge: judge(0.1, 0.95, "expected_step") });
   assert.equal(expectedStep.level, "allow", "scope expected_step vetoes off-task even with a high score");
   assert.equal(expectedStep.offTaskSteer, undefined);
-  const destructive = await evaluateAction(action, { config: defaultConfig().action, judge: judge(0.95, 0.95, "unclear") });
+  const destructive = await evaluateAction(action, { config: judgedAction(), traceSample: 1, judge: judge(0.95, 0.95, "unclear") });
   assert.equal(destructive.level, "confirm", "missing context does not disable irreversible-action protection");
 });
 
@@ -716,7 +723,7 @@ test("session scratch: the judge reads the scratch fact in floor_hits", async ()
   try {
     const scratch = records(realpathSync(base));
     const fake = judge(0.2, 0.1);
-    const verdict = await onPlatform("darwin", () => evaluateAction({ tool: "bash", input: { command: `rm -rf ${base}` }, cwd, task: "run the tests" }, { config: defaultConfig().action, judge: fake, scratch }));
+    const verdict = await onPlatform("darwin", () => evaluateAction({ tool: "bash", input: { command: `rm -rf ${base}` }, cwd, task: "run the tests" }, { config: judgedAction(), judge: fake, scratch }));
     const request = fake.calls[0] as { state: { floor_hits: string } };
     assert.equal(request.state.floor_hits, "recursive rm of session scratch: every target is under the temp directory or a declared scratch root [risky]");
     assert.notEqual(verdict.level, "confirm", verdict.reasons.join("; "));
@@ -911,7 +918,7 @@ test("describeAction summarises tool input without leaking secrets or absolute p
 
 test("evaluateAction allows read-only commands without consulting the judge", async () => {
   const j = judge(0.9, 0.9);
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "git status" }, cwd, task: "push my branch" }, { config: defaultConfig().action, judge: j });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git status" }, cwd, task: "push my branch" }, { config: judgedAction(), judge: j });
   assert.equal(verdict.level, "allow");
   assert.equal(verdict.source, "read-only");
   assert.equal(j.calls.length, 0);
@@ -919,7 +926,7 @@ test("evaluateAction allows read-only commands without consulting the judge", as
 
 test("evaluateAction escalates destructive patterns to confirm even before the judge answers", async () => {
   const j = judge(0.1, 0.1);
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push my branch" }, { config: { ...defaultConfig().action, floor: "level" as const }, judge: j });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push my branch" }, { config: { ...judgedAction(), floor: "level" as const }, judge: j });
   assert.equal(verdict.level, "confirm");
   assert.ok(verdict.patterns.some(hit => hit.id === "git-force-push"));
   assert.equal(j.calls.length, 1, "the judge still runs so the widget can show the off-task judgment");
@@ -928,7 +935,7 @@ test("evaluateAction escalates destructive patterns to confirm even before the j
 
 test("evaluateAction in evidence mode feeds built-in hits to the judge and lets irreversible decide the level", async () => {
   const j = judge(0.1, 0.1);
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push my branch" }, { config: defaultConfig().action, judge: j });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push my branch" }, { config: judgedAction(), judge: j });
   assert.equal(verdict.level, "allow", "built-in hit is evidence, not a level-setter");
   assert.ok(verdict.patterns.some(hit => hit.id === "git-force-push"), "pattern still recorded for trace");
   const request = j.calls[0] as { state: Record<string, unknown> };
@@ -938,19 +945,18 @@ test("evaluateAction in evidence mode feeds built-in hits to the judge and lets 
 
 test("evaluateAction sends named state fields and the base questions; `visible` joins for commands only", async () => {
   const j = judge(0.2, 0.1);
-  await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests and fix failures" }, { config: defaultConfig().action, judge: j });
+  await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests and fix failures" }, { config: judgedAction(), judge: j });
   const request = j.calls[0] as { state: Record<string, unknown>; questions: Record<string, { type: string }> };
-  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "visible"]);
-  await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "x" }, cwd, task: "t" }, { config: defaultConfig().action, judge: j });
+  assert.deepEqual(Object.keys(request.questions).sort(), ["irreversible", "mutates", "visible"]);
+  await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "x" }, cwd, task: "t" }, { config: judgedAction(), judge: j });
   assert.ok(!("visible" in (j.calls[1] as { questions: object }).questions), "a write is never visible outside the working tree");
   assert.equal(request.questions.irreversible?.type, "noul");
-  assert.equal(request.questions.scope?.type, "choice");
   assert.equal(request.state.task, "Run the tests and fix failures");
   assert.deepEqual(request.state.action, { tool: "bash", command: "npm test" });
 });
 
 test("evaluateAction applies thresholds from config", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const warn = await evaluateAction({ tool: "bash", input: { command: "npm run migrate" }, cwd, task: "add a column" }, { config, judge: judge(0.55, 0.1) });
   assert.equal(warn.level, "warn");
   // The 0.5 to 0.9 band warns: the default confirm is 0.9, so a judge-only 0.8 does not hold.
@@ -964,45 +970,45 @@ test("evaluateAction applies thresholds from config", async () => {
 });
 
 test("evaluateAction gates off-task on scope: expected_step vetoes; unrelated always warns; plausible_side_step is trace-only", async () => {
-  const config = defaultConfig().action;
-  const side = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, judge: judge(0.1, 0.7, "plausible_side_step") });
+  const config = judgedAction();
+  const side = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, traceSample: 1, judge: judge(0.1, 0.7, "plausible_side_step") });
   assert.equal(side.level, "warn", "plausible_side_step is still a warning");
   assert.equal(side.offTaskSteer, undefined, "side steps do not steer");
   assert.equal(side.offTaskTraceOnly, true, "side steps are trace-only");
-  const unrelated = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, judge: judge(0.1, 0.9, "unrelated") });
+  const unrelated = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, traceSample: 1, judge: judge(0.1, 0.9, "unrelated") });
   assert.equal(unrelated.level, "warn");
   assert.equal(unrelated.offTaskSteer, true);
   assert.equal(unrelated.offTaskTraceOnly, true, "steer is trace-only until AUC clears 0.51");
   assert.ok(unrelated.reasons.some(reason => /off-task/i.test(reason)));
-  const expectedStep = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, judge: judge(0.1, 0.9, "expected_step") });
+  const expectedStep = await evaluateAction({ tool: "write", input: { path: join(cwd, "notes.md"), content: "x" }, cwd, task: "fix login" }, { config, traceSample: 1, judge: judge(0.1, 0.9, "expected_step") });
   assert.equal(expectedStep.level, "allow", "scope expected_step vetoes off-task");
   assert.equal(expectedStep.offTaskSteer, undefined);
   assert.equal(expectedStep.offTaskTraceOnly, undefined);
 });
 
 test("evaluateAction without a judge runs pattern checks only", async () => {
-  const quiet = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: defaultConfig().action });
+  const quiet = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: judgedAction() });
   assert.equal(quiet.level, "allow");
   assert.equal(quiet.source, "pattern");
-  const risky = await evaluateAction({ tool: "bash", input: { command: "rm -rf dist" }, cwd, task: "test" }, { config: defaultConfig().action });
+  const risky = await evaluateAction({ tool: "bash", input: { command: "rm -rf dist" }, cwd, task: "test" }, { config: judgedAction() });
   assert.equal(risky.level, "warn");
-  const loud = await evaluateAction({ tool: "bash", input: { command: "git reset --hard" }, cwd, task: "test" }, { config: defaultConfig().action });
+  const loud = await evaluateAction({ tool: "bash", input: { command: "git reset --hard" }, cwd, task: "test" }, { config: judgedAction() });
   assert.equal(loud.level, "confirm");
   assert.equal(loud.judgment, undefined);
 });
 
 test("evaluateAction fails open by default and fails closed when configured", async () => {
-  const open = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: defaultConfig().action, judge: failingJudge() });
+  const open = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: judgedAction(), judge: failingJudge() });
   assert.equal(open.level, "allow");
   assert.equal(open.source, "error");
   assert.match(open.error ?? "", /synthetic timeout/);
-  const closed = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: { ...defaultConfig().action, failOpen: false }, judge: failingJudge("http") });
+  const closed = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: { ...judgedAction(), failOpen: false }, judge: failingJudge("http") });
   assert.equal(closed.level, "confirm");
   assert.equal(closed.source, "error");
 });
 
 test("evaluateAction warns on writes outside the project and confirms overwrites there", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const fresh = await evaluateAction({ tool: "write", input: { path: join(tmpdir(), "pi-warden-does-not-exist-" + process.pid, "x.txt"), content: "x" }, cwd, task: "write a scratch file" }, { config });
   assert.equal(fresh.level, "warn");
   const overwrite = await evaluateAction({ tool: "write", input: { path: join(cwd, "..", "pi-warden-guard-overwrite-target"), content: "x" }, cwd: join(cwd, "inner-does-not-matter"), task: "x" }, { config });
@@ -1028,7 +1034,7 @@ test("hostPaths reads PI_WARDEN_HOST_PATHS and ignores relative entries, empty e
 });
 
 test("evaluateAction: an overwrite in a host path is not held by the outside-project rule; outside every host path it still is", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const host = await mkdtemp(join(tmpdir(), "pi-warden-host-"));
   const other = await mkdtemp(join(tmpdir(), "pi-warden-other-"));
   try {
@@ -1056,7 +1062,7 @@ test("evaluateAction: an overwrite in a host path is not held by the outside-pro
 });
 
 test("evaluateAction: an overwrite of a /warden index file is not held; the rest of the agent directory still is", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const agent = await mkdtemp(join(tmpdir(), "pi-warden-agent-"));
   try {
     await mkdir(join(agent, "pi-warden", "index", "projects"), { recursive: true });
@@ -1083,7 +1089,7 @@ test("evaluateAction: an overwrite of a /warden index file is not held; the rest
 });
 
 test("wardenHostPaths: a symlinked index directory is not a host path", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const root = await mkdtemp(join(tmpdir(), "pi-warden-index-link-"));
   try {
     const home = join(root, "home");
@@ -1116,7 +1122,7 @@ test("wardenHostPaths: a symlinked index directory is not a host path", async ()
 });
 
 test("evaluateAction: a prompt never authorizes a recursive rm of a root-like target", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const held = [
     ["Clean up build/ please.", "rm -rf /"], ["Clean up build/ please.", "rm -rf ."], ["Clean up build/ please.", "rm -rf ./"], ["fix the failing test", "rm -rf /"],
     ["delete the .. directory", "rm -rf .."], ["remove ~ caches", "rm -rf ~"], ["delete * now", "rm -rf *"], ["remove $HOME tmp", "rm -rf $HOME"],
@@ -1141,13 +1147,13 @@ test("evaluateAction: path rules, deny rules, and sensitive paths still fire in 
   try {
     await writeFile(join(host, "draft.md"), "v1");
     const hostPathsOn = hostPaths({ PI_WARDEN_HOST_PATHS: host });
-    const blocked = { ...defaultConfig().action, pathRules: [{ id: "no-drafts", paths: ["**/draft.md"], access: "none" as const, tools: ["write", "edit"], action: "block" as const }] };
+    const blocked = { ...judgedAction(), pathRules: [{ id: "no-drafts", paths: ["**/draft.md"], access: "none" as const, tools: ["write", "edit"], action: "block" as const }] };
     const byPath = await evaluateAction({ tool: "write", input: { path: join(host, "draft.md"), content: "v2" }, cwd, task: "x" }, { config: blocked, hostPaths: hostPathsOn });
     assert.equal(byPath.level, "deny", "a path rule still blocks");
-    const denyRule = { ...defaultConfig().action, commandDenyRules: [{ id: "no-host-rm", pattern: "\\brm\\b", severity: "deny" as const }] };
+    const denyRule = { ...judgedAction(), commandDenyRules: [{ id: "no-host-rm", pattern: "\\brm\\b", severity: "deny" as const }] };
     const byCommand = await evaluateAction({ tool: "bash", input: { command: `rm ${join(host, "draft.md")}` }, cwd, task: "x" }, { config: denyRule, hostPaths: hostPathsOn });
     assert.equal(byCommand.level, "deny", "a deny rule still blocks");
-    const sensitive = await evaluateAction({ tool: "write", input: { path: join(host, ".env"), content: "A=1" }, cwd, task: "x" }, { config: defaultConfig().action, hostPaths: hostPathsOn });
+    const sensitive = await evaluateAction({ tool: "write", input: { path: join(host, ".env"), content: "A=1" }, cwd, task: "x" }, { config: judgedAction(), hostPaths: hostPathsOn });
     assert.notEqual(sensitive.level, "allow", "a sensitive path is still flagged");
   } finally {
     await rm(host, { recursive: true, force: true });
@@ -1156,7 +1162,7 @@ test("evaluateAction: path rules, deny rules, and sensitive paths still fire in 
 
 test("evaluateAction skips tools that are not guarded", async () => {
   const j = judge(0.9, 0.9);
-  const verdict = await evaluateAction({ tool: "read", input: { path: "/etc/passwd" }, cwd, task: "x" }, { config: defaultConfig().action, judge: j });
+  const verdict = await evaluateAction({ tool: "read", input: { path: "/etc/passwd" }, cwd, task: "x" }, { config: judgedAction(), judge: j });
   assert.equal(verdict.level, "allow");
   assert.equal(verdict.source, "skipped");
   assert.equal(j.calls.length, 0);
@@ -1174,16 +1180,16 @@ const withSlop = (irreversible: number, offTask: number, slop: Partial<Record<"s
         if (ids.includes(`slop_${symptom}`)) base.answers[`slop_${symptom}`] = { type: "noul", noul: slop[symptom] ?? 0.05 };
       }
       if (ids.includes("approved")) base.answers.approved = { type: "noul", noul: approved ?? 0 };
-      return base as never;
+      return onlyAsked(base, request) as never;
     },
   };
 };
 
 test("slop questions join the write/edit request only, score per symptom, and never raise the level", async () => {
-  const config = defaultConfig();
+  const config = { ...defaultConfig(), action: judgedAction() };
   const j = withSlop(0.1, 0.1, { stub: 0.95, hedging: 0.8, comments: 0.2 });
   const write = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "// TODO implement\nexport function a() { return null as any; }" }, cwd, task: "implement a()" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
+  assert.deepEqual(Object.keys((j.calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "slop_comments", "slop_dead", "slop_hedging", "slop_stub"]);
   assert.equal(write.level, "allow", "slop never blocks");
   assert.deepEqual(write.slop, { stub: 0.95, comments: 0.2, dead: 0.05, hedging: 0.8 });
   assert.deepEqual(write.slopSymptoms, ["stub", "hedging"], "strongest first");
@@ -1191,7 +1197,7 @@ test("slop questions join the write/edit request only, score per symptom, and ne
   assert.match(formatVerdict(write), /slop: stub 0\.95, hedging 0\.80/);
 
   const bash = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "test" }, { config: config.action, judge: j, slop: config.slop });
-  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "scope", "should_proceed", "visible"], "no slop questions for bash");
+  assert.deepEqual(Object.keys((j.calls[1] as { questions: object }).questions).sort(), ["irreversible", "mutates", "visible"], "no slop questions for bash");
   assert.equal(bash.slop, undefined);
 
   const clean = await evaluateAction({ tool: "edit", input: { path: join(cwd, "a.ts"), edits: [{ oldText: "a", newText: "b" }] }, cwd, task: "rename" }, { config: config.action, judge: withSlop(0.1, 0.1, {}), slop: config.slop });
@@ -1213,7 +1219,7 @@ test("long writes are sampled head, middle, and tail so a stub at the end is sti
 });
 
 test("a retry after a hold asks Jev about approval; an approving reply lets the call through", async () => {
-  const config = defaultConfig();
+  const config = { ...defaultConfig(), action: judgedAction() };
   const first = await evaluateAction({ tool: "bash", input: { command: "git push --force" }, cwd, task: "push my branch" }, { config: config.action, judge: withSlop(0.9, 0.2, {}) });
   assert.equal(first.level, "confirm");
   assert.equal(first.judgment?.approved, undefined);
@@ -1233,7 +1239,7 @@ test("a retry after a hold asks Jev about approval; an approving reply lets the 
 });
 
 test("the regret question rides the request with last turn's allowed calls; a locator joins from two candidates", async () => {
-  const config = defaultConfig();
+  const config = { ...defaultConfig(), action: judgedAction() };
   const one = [{ id: "a1", tool: "bash", command: "git push origin main" }];
   const single = buildRequest(describeAction("bash", { command: "npm test" }, cwd), "wait, don't push yet", { previousActions: one });
   assert.deepEqual(single.state.previous_actions, one);
@@ -1256,18 +1262,18 @@ test("the regret question rides the request with last turn's allowed calls; a lo
       const base = answers(0.1, 0.1) as { answers: Record<string, unknown> };
       base.answers.regretted = { type: "noul", noul: 0.9 };
       base.answers.regret_target = { type: "choice", choice: "a2", confidence: 0.7, probabilities: { a1: 0.3, a2: 0.7 } };
-      return base as never;
+      return onlyAsked(base, request) as never;
     },
   };
   const verdict = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "wait, undo that" }, { config: config.action, judge: j, previousActions: [one[0]!, { id: "a2", tool: "write", path: "a.ts" }] });
   assert.equal(verdict.level, "allow", "regret labels earlier calls; it never changes this verdict");
   assert.equal(verdict.judgment?.regretted, 0.9);
   assert.equal(verdict.judgment?.regretTarget, "a2");
-  assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "off_task", "regret_target", "regretted", "scope", "should_proceed", "visible"]);
+  assert.deepEqual(Object.keys((calls[0] as { questions: object }).questions).sort(), ["irreversible", "mutates", "regret_target", "regretted", "visible"]);
 });
 
 test("the agent's plan travels with the request and is judged for intent mismatch; an empty plan asks nothing", async () => {
-  const config = defaultConfig();
+  const config = { ...defaultConfig(), action: judgedAction() };
   const secretPlan = "Now I will remove the build directory. TOKEN=sk-synthetic-0123456789abcdef";
   const request = buildRequest(describeAction("bash", { command: "rm -rf build" }, cwd), "clean the build", { plan: secretPlan });
   assert.match(String(request.state.plan), /^Now I will remove the build directory\. TOKEN=\[redacted\]/);
@@ -1285,7 +1291,7 @@ test("the agent's plan travels with the request and is judged for intent mismatc
         calls.push(request);
         const base = answers(0.1, 0.1, "expected_step", 0.9, mutates) as { answers: Record<string, unknown> };
         if ("intent_mismatch" in (request as { questions: object }).questions) base.answers.intent_mismatch = { type: "noul", noul: mismatch };
-        return base as never;
+        return onlyAsked(base, request) as never;
       },
     };
   };
@@ -1324,7 +1330,7 @@ test("the agent's plan travels with the request and is judged for intent mismatc
 });
 
 test("a visible action (commit, push, merge, launch) needs less plan mismatch to be steered than a file edit", async () => {
-  const defaults = defaultConfig().action;
+  const defaults = judgedAction();
   const config = { ...defaults, intentTraceOnly: "invisible" as const };
   const withVisible = (mismatch: number, visible: number): Judge => ({
     async evaluate(request) {
@@ -1332,7 +1338,7 @@ test("a visible action (commit, push, merge, launch) needs less plan mismatch to
       const ids = Object.keys((request as { questions: object }).questions);
       if (ids.includes("intent_mismatch")) base.answers.intent_mismatch = { type: "noul", noul: mismatch };
       if (ids.includes("visible")) base.answers.visible = { type: "noul", noul: visible };
-      return base as never;
+      return onlyAsked(base, request) as never;
     },
   });
   const call = { tool: "bash", input: { command: "gh pr ready 12 && git push origin feature" }, cwd, task: "get the PR ready", plan: "I will run the tests once more before touching the PR." };
@@ -1371,7 +1377,7 @@ test("textApproves is a conservative offline stand-in", () => {
 });
 
 test("steerReason explains the hold and the two acceptable moves without echoing the command", async () => {
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push" }, { config: defaultConfig().action, judge: judge(0.9, 0.1) });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push" }, { config: judgedAction(), judge: judge(0.9, 0.1) });
   const text = steerReason(verdict, { canApprove: true });
   assert.match(text, /held this bash call/);
   assert.match(text, /git force push/);
@@ -1396,7 +1402,7 @@ test("a repeated steer collapses to the one-line notice; a changed notice does n
 });
 
 test("context-mode and powershell tools are guarded through their command fields", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const j = judge(0.1, 0.1);
   const readOnly = await evaluateAction({ tool: "ctx_execute", input: { language: "shell", code: "cd ~/app && git status && ls src" }, cwd, task: "look around" }, { config, judge: j });
   assert.equal(readOnly.source, "read-only");
@@ -1429,7 +1435,7 @@ test("context-mode and powershell tools are guarded through their command fields
 });
 
 test("commandRules: user rules match against stripDataText output, not raw command", () => {
-  const config = { ...defaultConfig().action, commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" as const }], commandDenyRules: [], exemptRules: [] };
+  const config = { ...judgedAction(), commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" as const }], commandDenyRules: [], exemptRules: [] };
   assert.ok(matchPatterns("bash", { command: "kubectl delete pod foo" }, undefined, { commandRules: config.commandRules, commandDenyRules: [], exemptRules: [] }).some(hit => hit.id === "kubectl-delete"));
   assert.equal(matchPatterns("bash", { command: "cat <<'EOF'\nkubectl delete pod foo\nEOF" }, cwd, { commandRules: config.commandRules, commandDenyRules: [], exemptRules: [] }).length, 0, "data heredoc body does not fire");
   assert.ok(matchPatterns("bash", { command: "sh <<'EOF'\nkubectl delete pod foo\nEOF" }, cwd, { commandRules: config.commandRules, commandDenyRules: [], exemptRules: [] }).some(hit => hit.id === "kubectl-delete"), "shell-sink heredoc body does fire");
@@ -1437,14 +1443,14 @@ test("commandRules: user rules match against stripDataText output, not raw comma
 });
 
 test("commandRules: severity ladder interacts with built-ins via higher()", async () => {
-  const config = { ...defaultConfig().action, commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" as const }], commandDenyRules: [], exemptRules: [] };
+  const config = { ...judgedAction(), commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" as const }], commandDenyRules: [], exemptRules: [] };
   const warn = await evaluateAction({ tool: "bash", input: { command: "git push origin feature" }, cwd, task: "fix the bug" }, { config });
   assert.equal(warn.level, "warn");
   assert.ok(warn.patterns.some(hit => hit.id === "git-push-any"));
-  const confirm = { ...defaultConfig().action, commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" as const }], commandDenyRules: [], exemptRules: [] };
+  const confirm = { ...judgedAction(), commandRules: [{ id: "kubectl-delete", pattern: "\\bkubectl\\s+delete\\b", severity: "confirm" as const }], commandDenyRules: [], exemptRules: [] };
   const held = await evaluateAction({ tool: "bash", input: { command: "kubectl delete pod foo" }, cwd, task: "cleanup" }, { config: confirm });
   assert.equal(held.level, "confirm");
-  const both = { ...defaultConfig().action, commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" as const }], commandDenyRules: [], exemptRules: [] };
+  const both = { ...judgedAction(), commandRules: [{ id: "git-push-any", pattern: "\\bgit\\s+push\\b", severity: "warn" as const }], commandDenyRules: [], exemptRules: [] };
   const stacked = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push" }, { config: both });
   assert.equal(stacked.level, "confirm", "built-in destructive rule raises above the user's warn");
   assert.ok(stacked.patterns.some(hit => hit.id === "git-force-push"));
@@ -1452,7 +1458,7 @@ test("commandRules: severity ladder interacts with built-ins via higher()", asyn
 });
 
 test("commandDenyRules: deny blocks with no dialog, no judge", async () => {
-  const config = { ...defaultConfig().action, commandRules: [], commandDenyRules: [{ id: "never-talos-reset", pattern: "\\btalosctl\\s+reset\\b", severity: "deny" as const }], exemptRules: [] };
+  const config = { ...judgedAction(), commandRules: [], commandDenyRules: [{ id: "never-talos-reset", pattern: "\\btalosctl\\s+reset\\b", severity: "deny" as const }], exemptRules: [] };
   const verdict = await evaluateAction({ tool: "bash", input: { command: "talosctl reset --nodes talos1" }, cwd, task: "reset" }, { config, judge: judge(0.05, 0.05) });
   assert.equal(verdict.level, "deny");
   assert.equal(verdict.source, "pattern");
@@ -1461,7 +1467,7 @@ test("commandDenyRules: deny blocks with no dialog, no judge", async () => {
 });
 
 test("commandRules: exemptRules silences a built-in; unknown id surfaces as no match, not a crash", () => {
-  const config = { ...defaultConfig().action, commandRules: [], commandDenyRules: [], exemptRules: ["infra-destroy"] };
+  const config = { ...judgedAction(), commandRules: [], commandDenyRules: [], exemptRules: ["infra-destroy"] };
   const exempted = matchPatterns("bash", { command: "kubectl delete pod foo" }, undefined, { commandRules: [], commandDenyRules: [], exemptRules: config.exemptRules });
   assert.equal(exempted.filter(hit => hit.id === "infra-destroy").length, 0, "built-in is exempted");
   assert.ok(exempted.length === 0, "no other rule fires for this command");
@@ -1493,14 +1499,14 @@ test("commandRules: caseSensitive and message override work", () => {
 });
 
 test("commandRules: confirm with action dialog prompts the user regardless of mode", async () => {
-  const config = { ...defaultConfig().action, commandRules: [{ id: "flux-suspend", pattern: "\\bflux\\s+suspend\\b", severity: "confirm" as const, action: "dialog" as const }], commandDenyRules: [], exemptRules: [] };
+  const config = { ...judgedAction(), commandRules: [{ id: "flux-suspend", pattern: "\\bflux\\s+suspend\\b", severity: "confirm" as const, action: "dialog" as const }], commandDenyRules: [], exemptRules: [] };
   const verdict = await evaluateAction({ tool: "bash", input: { command: "flux suspend kustomization apps" }, cwd, task: "pause" }, { config, judge: judge(0.1, 0.1) });
   assert.equal(verdict.level, "confirm");
   assert.ok(verdict.patterns.some(hit => hit.action === "dialog"), "the dialog action is on the pattern hit");
 });
 
 test("commandRules: confirm without action defaults to dialog for user rules", async () => {
-  const config = { ...defaultConfig().action, commandRules: [{ id: "helm-uninstall", pattern: "\\bhelm\\s+(?:uninstall|delete)\\b", severity: "confirm" as const }], commandDenyRules: [], exemptRules: [] };
+  const config = { ...judgedAction(), commandRules: [{ id: "helm-uninstall", pattern: "\\bhelm\\s+(?:uninstall|delete)\\b", severity: "confirm" as const }], commandDenyRules: [], exemptRules: [] };
   const verdict = await evaluateAction({ tool: "bash", input: { command: "helm uninstall my-release" }, cwd, task: "remove" }, { config });
   assert.equal(verdict.level, "confirm");
   assert.equal(verdict.patterns[0]?.action, undefined, "action is unset; the extension checks default dialog behavior");
@@ -1595,7 +1601,7 @@ test("pathRules: exemptRules silences a user path rule, and its id is known", ()
 });
 
 test("pathRules: a block hit outranks a built-in confirm on the ladder", async () => {
-  const config = { ...defaultConfig().action, pathRules: [{ id: "never-dd", paths: ["/dev/sda"], access: "write" as const, tools: ["*"], action: "block" as const }] };
+  const config = { ...judgedAction(), pathRules: [{ id: "never-dd", paths: ["/dev/sda"], access: "write" as const, tools: ["*"], action: "block" as const }] };
   const verdict = await evaluateAction({ tool: "bash", input: { command: "cat /dev/sda" }, cwd, task: "inspect the disk" }, { config });
   assert.equal(verdict.level, "deny", "the deny hit wins over the built-in destructive confirm");
   assert.ok(verdict.reasons.some(reason => reason.includes("never-dd")), "the path rule's id is named in the reasons");
@@ -1657,28 +1663,32 @@ test("pathRules: inertPathRules detects access:write with only write tools and r
   assert.equal(inertPathRules(notInert, ["bash", "write", "edit"]).length, 0, "access:read with write tools is not inert");
 });
 
-// The active rules file rides every judged action request. The rules guard's own switch decides whether it leaves at all.
-test("rules.enabled false keeps the rules file out of the action request; true and omitted send it as before", async () => {
+// The active rules file rides a judged action request only while a violation is open on the call, because only the
+// per-violation questions name it. The rules guard's own switch still decides whether it leaves at all.
+test("the rules content rides the action request only while a violation is open, and stays home with the guard off", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-warden-rules-off-"));
   await writeFile(join(project, "pi-warden.md"), "# Rules\n\n- Never commit secrets.\n");
-  const config = defaultConfig().action;
-  const action = { tool: "bash", input: { command: "npm test" }, cwd: project, task: "run the tests" };
-  const state = async (rules?: { enabled: boolean }) => {
+  const config = judgedAction();
+  const state = async (command: string, rules?: { enabled: boolean }) => {
     const spy = judge(0.1, 0.1);
-    await evaluateAction(action, { config, judge: spy, ...(rules ? { rules } : {}) });
+    await evaluateAction({ tool: "bash", input: { command }, cwd: project, task: "run the tests" }, { config, judge: spy, ...(rules ? { rules } : {}) });
     return (spy.calls[0] as { state: Record<string, unknown> }).state;
   };
 
-  const off = await state({ enabled: false });
+  const plain = await state("npm test", { enabled: true });
+  assert.equal("rules" in plain, false, "no open violation: the rules content does not ride the request");
+  assert.equal("rulesSource" in plain, false);
+
+  const held = await state("rm -rf build", { enabled: true });
+  assert.match(held.rules as string, /Never commit secrets/, "a violation names the rules, so the content rides the request");
+  assert.equal(held.rulesSource, "pi-warden.md");
+
+  const off = await state("rm -rf build", { enabled: false });
   assert.equal("rules" in off, false, "no rules content is sent when the rules guard is off");
   assert.equal("rulesSource" in off, false, "and no rulesSource names the file it came from");
 
-  const on = await state({ enabled: true });
-  assert.match(on.rules as string, /Never commit secrets/, "the rules content is sent when the rules guard is on");
-  assert.equal(on.rulesSource, "pi-warden.md");
-
-  const unset = await state();
-  assert.equal(unset.rules, on.rules, "a library caller that passes no rules config keeps the earlier behaviour");
+  const unset = await state("rm -rf build");
+  assert.equal(unset.rules, held.rules, "a library caller that passes no rules config keeps the earlier behaviour");
   assert.equal(unset.rulesSource, "pi-warden.md");
 
   await rm(project, { recursive: true, force: true });
@@ -1717,13 +1727,13 @@ const largeOutputJudge = (largeOutput: number): Judge & { calls: Array<{ questio
   return { calls, async evaluate(request) {
     calls.push(request as never);
     const result = answers(0.05, 0.05, "expected_step", 0.9, 0.05);
-    return { ...result, answers: { ...result.answers, ...("large_output" in (request as { questions: Record<string, unknown> }).questions ? { large_output: { type: "noul", noul: largeOutput } } : {}) } } as never;
+    return onlyAsked({ ...result, answers: { ...result.answers, ...("large_output" in (request as { questions: Record<string, unknown> }).questions ? { large_output: { type: "noul", noul: largeOutput } } : {}) } }, request) as never;
   } };
 };
 const largeOutputOn = { enabled: true, threshold: 0.85 };
 
 test("large output: above the threshold steers once per command family per session and never holds", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const steered = new Set<string>();
   const first = await evaluateAction({ tool: "bash", input: { command: "npm test -- --reporter=spec" }, cwd, task: "Run the tests and fix the failures" }, { config, judge: largeOutputJudge(0.92), largeOutput: largeOutputOn });
   assert.equal(first.judgment?.largeOutput, 0.92);
@@ -1742,14 +1752,14 @@ test("large output: above the threshold steers once per command family per sessi
 });
 
 test("large output: below the threshold does not steer", async () => {
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: defaultConfig().action, judge: largeOutputJudge(0.84), largeOutput: largeOutputOn });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: judgedAction(), judge: largeOutputJudge(0.84), largeOutput: largeOutputOn });
   assert.equal(verdict.judgment?.largeOutput, 0.84);
   assert.equal(verdict.largeOutputFamily, undefined);
   assert.equal(largeOutputNotice(verdict, new Set()), undefined);
 });
 
 test("large output: non-bash tools never ask the question", async () => {
-  const config = { ...defaultConfig().action, tools: ["bash", "powershell", "write", "ctx_execute"] };
+  const config = { ...judgedAction(), tools: ["bash", "powershell", "write", "ctx_execute"] };
   for (const [tool, input] of [["write", { path: "notes.txt", content: "hello" }], ["powershell", { command: "Get-Content big.log" }], ["ctx_execute", { language: "shell", code: "npm test" }]] as const) {
     const probe = largeOutputJudge(0.99);
     const verdict = await evaluateAction({ tool, input: { ...input }, cwd, task: "Run the tests" }, { config, judge: probe, largeOutput: largeOutputOn });
@@ -1764,7 +1774,7 @@ test("large output: non-bash tools never ask the question", async () => {
 test("large output: a disabled config never asks the question", async () => {
   for (const largeOutput of [{ enabled: false, threshold: 0.85 }, undefined]) {
     const probe = largeOutputJudge(0.99);
-    const verdict = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: defaultConfig().action, judge: probe, largeOutput });
+    const verdict = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: judgedAction(), judge: probe, largeOutput });
     assert.ok(!("large_output" in probe.calls[0]!.questions));
     assert.equal(verdict.judgment?.largeOutput, undefined);
     assert.equal(verdict.largeOutputFamily, undefined);
@@ -1773,10 +1783,10 @@ test("large output: a disabled config never asks the question", async () => {
 });
 
 test("large output: the score is in the action trace tokens and details when judged, absent otherwise", async () => {
-  const judged = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: defaultConfig().action, judge: largeOutputJudge(0.3), largeOutput: largeOutputOn });
+  const judged = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: judgedAction(), judge: largeOutputJudge(0.3), largeOutput: largeOutputOn });
   assert.equal(actionTokens(judged).largeOutput, "0.30");
   assert.match(actionDetails(judged).find(line => line.startsWith("jev:"))!, / · large-output 0\.30 · /);
-  const unasked = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: defaultConfig().action, judge: largeOutputJudge(0.3) });
+  const unasked = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "Run the tests" }, { config: judgedAction(), judge: largeOutputJudge(0.3) });
   assert.equal(actionTokens(unasked).largeOutput, undefined);
   assert.ok(!("largeOutput" in JSON.parse(JSON.stringify(actionTokens(unasked)))), "the trace file line carries no largeOutput key");
   assert.ok(!actionDetails(unasked).some(line => line.includes("large-output")));

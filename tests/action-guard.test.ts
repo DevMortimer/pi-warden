@@ -4,6 +4,7 @@ import { ActionGuard } from "../src/action-guard.js";
 import type { Conversation, InspectOptions, ToolCallRef } from "../src/action-guard.js";
 import { defaultConfig } from "../src/config.js";
 import type { Judge } from "pi-typesafe";
+import { judgedAction } from "./judged-action.js";
 
 interface Request { state: { action: { command?: string; path?: string } }; questions: Record<string, unknown> }
 interface Answers { irreversible: number; offTask?: number; scope?: string; mutates?: number; approved?: number; shouldProceed?: number }
@@ -23,16 +24,19 @@ function stubJudge(): Judge & { requests: Request[]; next: Answers; release: () 
       judge.requests.push(request as Request);
       const answers = { ...judge.next };
       if (judge.open) await new Promise<void>(resolve => { waiting.push(resolve); });
+      // A real judge answers only the questions the request asks.
+      const asked = (request as Request).questions;
+      const given = {
+        irreversible: { type: "noul", noul: answers.irreversible },
+        off_task: { type: "noul", noul: answers.offTask ?? 0.1 },
+        scope: { type: "choice", choice: answers.scope ?? "expected_step", confidence: 0.9, probabilities: { [answers.scope ?? "expected_step"]: 0.9 } },
+        mutates: { type: "noul", noul: answers.mutates ?? 0.9 },
+        should_proceed: { type: "noul", noul: answers.shouldProceed ?? 1.0 },
+        approved: { type: "noul", noul: answers.approved ?? 0 },
+      };
       return {
         model: "jev-test", elapsedMs: 5, usage: { input_tokens: 10, output_tokens: 0 },
-        answers: {
-          irreversible: { type: "noul", noul: answers.irreversible },
-          off_task: { type: "noul", noul: answers.offTask ?? 0.1 },
-          scope: { type: "choice", choice: answers.scope ?? "expected_step", confidence: 0.9, probabilities: { [answers.scope ?? "expected_step"]: 0.9 } },
-          mutates: { type: "noul", noul: answers.mutates ?? 0.9 },
-          should_proceed: { type: "noul", noul: answers.shouldProceed ?? 1.0 },
-          ...((request as Request).questions.approved ? { approved: { type: "noul", noul: answers.approved ?? 0 } } : {}),
-        },
+        answers: Object.fromEntries(Object.entries(given).filter(([id]) => id in asked)),
       } as never;
     },
   };
@@ -40,7 +44,7 @@ function stubJudge(): Judge & { requests: Request[]; next: Answers; release: () 
 }
 
 const bash = (id: string, command: string): ToolCallRef => ({ id, tool: "bash", input: { command } });
-const options = (judge?: Judge): InspectOptions => ({ config: defaultConfig().action, cwd: process.cwd(), judge });
+const options = (judge?: Judge): InspectOptions => ({ config: judgedAction(), cwd: process.cwd(), judge });
 const under = (task: string, siblings?: ToolCallRef[]): Conversation => ({ task, siblings });
 const askedApproval = (judge: { requests: Request[] }) => "approved" in judge.requests.at(-1)!.questions;
 
@@ -50,6 +54,8 @@ test("should-proceed records low scores as trace-only by default and supports st
   for (const steer of [false, true]) {
     const opts = options(judge);
     opts.config.shouldProceed.steer = steer;
+    // Trace-only reaches the question through the sample; the opt-in steer puts it on every acting request.
+    opts.config.traceSample = steer ? 0 : 1;
     const verdict = await new ActionGuard().inspect(bash("quiet", "npm test"), under("run tests"), opts);
     assert.equal(verdict.level, "warn");
     assert.equal(verdict.judgment?.shouldProceed, 0.3);
@@ -57,6 +63,8 @@ test("should-proceed records low scores as trace-only by default and supports st
     assert.equal(verdict.shouldProceedTraceOnly, steer ? undefined : true);
     assert.ok(verdict.reasons.includes(`should-proceed 0.30 (${steer ? "may need user input before continuing" : "trace-only until calibrated"})`));
     if (!steer) assert.equal(verdict.reasons[verdict.shouldProceedTraceOnlyReasonIndex!], "should-proceed 0.30 (trace-only until calibrated)");
+    const acting = judge.requests.filter(request => "irreversible" in request.questions);
+    assert.equal("should_proceed" in acting.at(-1)!.questions, steer);
   }
 });
 

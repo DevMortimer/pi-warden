@@ -10,6 +10,7 @@ import type { Violation } from "../src/guard.js";
 import { buildInitPrompt, writeStarterRules } from "../src/init.js";
 import { resolveRulesFile } from "../src/rules-file.js";
 import { completeConfig } from "../src/shape.js";
+import { judgedAction } from "./judged-action.js";
 
 let cwd: string;
 before(async () => { cwd = await mkdtemp(join(tmpdir(), "warden-pipeline-")); });
@@ -41,13 +42,13 @@ test("authorization does not clear a destructive hold for an unrelated target or
     ["Do not, under any circumstances or at any point during this task, force push: git push --force origin main", "git push --force origin main"],
   ]) {
     const action = { tool: "bash", input: { command }, cwd, task };
-    assert.equal((await evaluateAction(action, { config: defaultConfig().action })).level, "confirm");
-    assert.equal((await evaluateAction(action, { config: { ...defaultConfig().action, floor: "level" as const }, judge: fakeJudge() })).level, "confirm");
+    assert.equal((await evaluateAction(action, { config: judgedAction() })).level, "confirm");
+    assert.equal((await evaluateAction(action, { config: { ...judgedAction(), floor: "level" as const }, judge: fakeJudge() })).level, "confirm");
   }
 });
 
 test("non-rm bash violations fire in the pattern loop regardless of authorization", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   // Destructive patterns always fire in the pattern loop, even when the user explicitly named the command.
   assert.equal((await evaluateAction({ tool: "bash", input: { command: "git push --force origin feature" }, cwd, task: "force push" }, { config })).level, "confirm");
 });
@@ -67,7 +68,7 @@ test("file-scope authorization requires every complete path, not a shared basena
 
 test("violation questions use instance keys and real answers control escalation", async () => {
   const judge = fakeJudge({ violation_0: 0.99 });
-  const verdict = await evaluateAction({ tool: "bash", input: { command: "rm -rf /var/tmp/test" }, cwd, task: "delete test" }, { config: defaultConfig().action, judge });
+  const verdict = await evaluateAction({ tool: "bash", input: { command: "rm -rf /var/tmp/test" }, cwd, task: "delete test" }, { config: judgedAction(), judge });
   assert.ok(judge.requests[0]!.questions.violation_0);
   assert.equal(verdict.extra?.violation_0, 0.99);
   assert.equal(verdict.level, "deny");
@@ -83,7 +84,7 @@ test("duplicate violation IDs receive separate questions and scoped state", () =
 });
 
 test("sensitive paths remain advisory and read-only suppression survives aggregation", async () => {
-  const config = { ...defaultConfig().action, floor: "level" as const };
+  const config = { ...judgedAction(), floor: "level" as const };
   const read = await evaluateAction({ tool: "bash", input: { command: "cat .env" }, cwd, task: "inspect the fixture" }, { config, judge: fakeJudge({ mutates: 0, violation_0: 0.99 }) });
   assert.equal(read.level, "allow");
   const write = await evaluateAction({ tool: "write", input: { path: ".env", content: "REVIEW_FIXTURE=1" }, cwd, task: "update the fixture" }, { config, judge: fakeJudge({ violation_0: 0.99 }) });
@@ -92,15 +93,15 @@ test("sensitive paths remain advisory and read-only suppression survives aggrega
 });
 
 test("sensitive path warns in evidence mode via deferral, not the floor", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const write = await evaluateAction({ tool: "write", input: { path: ".env", content: "REVIEW_FIXTURE=1" }, cwd, task: "update the fixture" }, { config, judge: fakeJudge({ violation_0: 0.99 }) });
   assert.equal(write.level, "allow", "sensitive-path is evidence when judge answers in evidence mode");
 });
 
 test("older action sections receive the escalation default before making a decision", async () => {
-  const { escalationThreshold: _threshold, ...legacyAction } = defaultConfig().action;
+  const { escalationThreshold: _threshold, ...legacyAction } = judgedAction();
   const { config } = completeConfig({ ...defaultConfig(), action: legacyAction } as never);
-  assert.equal(config.action.escalationThreshold, defaultConfig().action.escalationThreshold);
+  assert.equal(config.action.escalationThreshold, judgedAction().escalationThreshold);
   const verdict = await evaluateAction({ tool: "bash", input: { command: "rm -rf build" }, cwd, task: "inspect output" }, { config: { ...config.action, floor: "level" as const }, judge: fakeJudge({ violation_0: 0.6 }) });
   assert.equal(verdict.level, "warn");
 });
@@ -109,11 +110,11 @@ test("unreadable rule candidates are skipped without crashing the hook", async (
   const directory = join(cwd, "bad-rules");
   await mkdir(join(directory, "AGENTS.md"), { recursive: true });
   // Unreadable file is silently skipped; pattern floor still fires in level mode.
-  const harmless = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd: directory, task: "run tests" }, { config: defaultConfig().action, judge: fakeJudge() });
+  const harmless = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd: directory, task: "run tests" }, { config: judgedAction(), judge: fakeJudge() });
   assert.equal(harmless.level, "allow");
-  const destructive = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd: directory, task: "run tests" }, { config: defaultConfig().action, judge: fakeJudge() });
+  const destructive = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd: directory, task: "run tests" }, { config: judgedAction(), judge: fakeJudge() });
   assert.equal(destructive.level, "allow", "evidence mode: built-in hit does not set level when judge answers");
-  const destructiveLevel = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd: directory, task: "run tests" }, { config: { ...defaultConfig().action, floor: "level" as const }, judge: fakeJudge() });
+  const destructiveLevel = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd: directory, task: "run tests" }, { config: { ...judgedAction(), floor: "level" as const }, judge: fakeJudge() });
   assert.equal(destructiveLevel.level, "confirm", "level mode: built-in hit still sets confirm");
 });
 
@@ -134,7 +135,7 @@ test("init preserves fallback policy and includes prior rules in the tailoring p
 // --- floor-to-evidence tests (order 6) ---
 
 test("(a) evidence mode: destructive hit, judge present, Jev 0.18 → allow with evidence note", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const j = fakeJudge({ irreversible: 0.18 });
   const verdict = await evaluateAction({ tool: "bash", input: { command: "git reset --hard HEAD~1" }, cwd, task: "undo last commit" }, { config, judge: j });
   assert.equal(verdict.level, "allow");
@@ -144,13 +145,13 @@ test("(a) evidence mode: destructive hit, judge present, Jev 0.18 → allow with
 });
 
 test("(b) level mode: destructive hit, no judge → confirm as today", async () => {
-  const config = { ...defaultConfig().action, floor: "level" as const };
+  const config = { ...judgedAction(), floor: "level" as const };
   const verdict = await evaluateAction({ tool: "bash", input: { command: "git reset --hard HEAD~1" }, cwd, task: "undo last commit" }, { config });
   assert.equal(verdict.level, "confirm");
 });
 
 test("(c) evidence mode: destructive hit, judge present, Jev 0.92 → confirm via irreversible", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const j = fakeJudge({ irreversible: 0.92 });
   const verdict = await evaluateAction({ tool: "bash", input: { command: "git reset --hard HEAD~1" }, cwd, task: "undo last commit" }, { config, judge: j });
   assert.equal(verdict.level, "confirm");
@@ -159,7 +160,7 @@ test("(c) evidence mode: destructive hit, judge present, Jev 0.92 → confirm vi
 
 test("(d) user command rule severity destructive, judge present, Jev 0.1 → confirm (user rule wins)", async () => {
   const config = {
-    ...defaultConfig().action,
+    ...judgedAction(),
     floor: "evidence" as const,
     commandRules: [{ id: "my-deploy", pattern: "deploy", severity: "confirm" as const }],
   };
@@ -170,7 +171,7 @@ test("(d) user command rule severity destructive, judge present, Jev 0.1 → con
 });
 
 test("(e) evidence mode: outside-project existing write, judge present, Jev 0.2 → allow with evidence note", async () => {
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const j = fakeJudge({ irreversible: 0.2 });
   const verdict = await evaluateAction({ tool: "write", input: { path: "/tmp/test-file.ts", content: "x" }, cwd, task: "write to tmp" }, { config, judge: j });
   assert.equal(verdict.level, "allow");
@@ -178,7 +179,7 @@ test("(e) evidence mode: outside-project existing write, judge present, Jev 0.2 
 });
 
 test("(f) floor:level restores (a) to confirm", async () => {
-  const config = { ...defaultConfig().action, floor: "level" as const };
+  const config = { ...judgedAction(), floor: "level" as const };
   const j = fakeJudge({ irreversible: 0.18 });
   const verdict = await evaluateAction({ tool: "bash", input: { command: "git reset --hard HEAD~1" }, cwd, task: "undo last commit" }, { config, judge: j });
   assert.equal(verdict.level, "confirm");
@@ -192,7 +193,7 @@ test("(h) judge failure in evidence mode falls back to floor for built-in hits",
       throw new Error("simulated timeout");
     },
   };
-  const config = defaultConfig().action;
+  const config = judgedAction();
   const verdict = await evaluateAction({ tool: "bash", input: { command: "git push --force origin main" }, cwd, task: "push" }, { config, judge: failingJudge });
   assert.equal(verdict.level, "confirm", "destructive built-in hit holds when judge fails");
   assert.ok(verdict.reasons.some(r => /built-in patterns decide/.test(r)));
@@ -215,7 +216,7 @@ test("(j) deferred sensitive hit warns on judge failure in evidence mode", async
       throw new Error("simulated timeout");
     },
   };
-  const config = defaultConfig().action;
+  const config = judgedAction();
   // Bash cat .env: sensitive-path is deferred for bash, judge fails -> warn from deferred hit
   const bashVerdict = await evaluateAction({ tool: "bash", input: { command: "cat .env" }, cwd, task: "inspect env" }, { config, judge: failingJudge });
   assert.equal(bashVerdict.level, "warn", "deferred sensitive hit warns when judge fails");
