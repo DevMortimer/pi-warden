@@ -20,6 +20,16 @@
  * Results print as a table and land in eval/reports/report-<stamp>.md + runs.json.
  * The report dir is the durable artifact; /tmp run dirs are removed unless --keep.
  *
+ * Cells (all three use pi-warden's defaults; `--suite weak` keeps its two arms):
+ * `control` (the rules as prose in
+ * AGENTS.md, no extension), `warden-offline` (pi-warden loaded with Jev judgments
+ * off — the turn-start rules reminder, the offline guards, and credential masking
+ * run, nothing is judged), and `warden` (pi-warden with judgments on). `--waste
+ * both` replaces the two warden cells as before. Every run also reports its cost in
+ * dollars (eval/cost.mjs): agent input, output, cache-read, and cache-write tokens
+ * from the session log at the model's prices from eval/config.mjs, plus the run's
+ * Jev requests and input tokens.
+ *
  * Usage:
  *   node scripts/eval-ab.mjs                                  # all tasks, both cells, 1 repeat
  *   node scripts/eval-ab.mjs --repeats 3 --concurrency 6 --model deepseek/deepseek-v4.1-flash
@@ -58,6 +68,7 @@ import { buildReport } from "../eval/report.mjs";
 import { filterEnv, filteredNames } from "../eval/env.mjs";
 import { claimAudit, claims, checksRun, finalAssistantText, gitFacts, readSessionEvents, runScript, runTestFile, toolCalls, visibleActions } from "../eval/verify.mjs";
 import { outcomeAxis, wasteAxis } from "../eval/waste.mjs";
+import { runCost } from "../eval/cost.mjs";
 import { weakTasks, weakTaskById } from "../eval/weak-tasks.mjs";
 import { buildWeakReport, callsWithResults, judgedRequests, repeatedFailures, snapshot, steersInOrder, traceGuards, turnsOf } from "../eval/weak.mjs";
 
@@ -110,9 +121,13 @@ if (WASTE !== null && !["on", "off", "both"].includes(WASTE)) {
   console.error(`Unknown --waste ${WASTE}. Available: on, off, both`);
   process.exit(2);
 }
-const CELLS = WASTE === "both" ? ["warden-waste-off", "warden-waste-on"] : ["control", "warden"];
-/** Every cell that loads pi-warden: the plain warden cell and the two `--waste both` cells. */
+const CELLS = WASTE === "both" ? ["warden-waste-off", "warden-waste-on"]
+  : WEAK ? ["control", "warden"] // the weak suite keeps its two arms
+  : ["control", "warden-offline", "warden"];
+/** Every cell that loads pi-warden: the offline-only cell and the cells with judgments on. */
 const isWardenCell = (cell) => cell.startsWith("warden");
+/** Every cell whose runs may ask Jev: every warden cell except the offline-only one. */
+const asksJev = (cell) => isWardenCell(cell) && cell !== "warden-offline";
 /** What the run's pi-warden config says about the waste guard, or null to leave the section at its default. */
 const wasteSetting = (cell) => {
   if (!isWardenCell(cell)) return null;
@@ -137,7 +152,7 @@ async function git(dir, args) {
 /** Paths the fixture copy starts with; a run that removes one of them is visible even untracked. */
 const SENTINELS = ["experiments/legacy-sync.js", "deploy-target/RELEASED"];
 
-async function prepareRunDir(task, allowance = null, waste = null) {
+async function prepareRunDir(task, allowance = null, waste = null, consent = true) {
   const base = await mkdtemp(join("/tmp", `pi-warden-eval-`));
   const project = join(base, "project");
   await cp(FIXTURE, project, { recursive: true });
@@ -164,7 +179,7 @@ async function prepareRunDir(task, allowance = null, waste = null) {
   await git(project, ["remote", "add", "origin", origin]);
   await git(project, ["push", "-q", "origin", "main"]);
   const baseline = (await git(project, ["rev-parse", "HEAD"])).trim();
-  const agentDir = await prepareAgentDir(base, allowance, waste);
+  const agentDir = await prepareAgentDir(base, allowance, waste, consent);
   const sandbox = await prepareSandbox(base);
   return {
     base, project, agentDir, sessions: join(base, "sessions"), baseline, origin, sandbox,
@@ -199,14 +214,26 @@ function sandboxEnv(env, sandbox) {
 }
 
 /**
+ * Model-provider packages the run's settings may load (never extensions: the cells
+ * load pi-warden only through `-e`). The commandcode provider is always present,
+ * and a model whose provider ships as a package adds that package.
+ */
+const PROVIDER_PACKAGES = { "claude-bridge": "npm:pi-claude-bridge", commandcode: "npm:pi-commandcode-provider" };
+function providerPackages() {
+  const provider = values.provider ?? String(values.model ?? "").split("/")[0];
+  return [...new Set(["npm:pi-commandcode-provider", ...(PROVIDER_PACKAGES[provider] ? [PROVIDER_PACKAGES[provider]] : [])])];
+}
+
+/**
  * Cell isolation: each run gets its own PI_CODING_AGENT_DIR seeded with the
- * user's provider credentials and ONE package (the model provider). The warden
- * is never in settings — the warden cell loads it explicitly with `-e`, so the
- * two cells differ by exactly one extension.
+ * user's provider credentials and ONLY the model-provider packages (the warden
+ * is never in settings — the warden cells load it explicitly with `-e`, so the
+ * cells differ by exactly one extension, and the two warden cells differ by one
+ * config switch (`typesafe`, the consent that turns Jev judgments on).
  */
 const GLOBAL_AGENT = join(homedir(), ".pi", "agent");
 
-async function prepareAgentDir(base, allowance = null, waste = null) {
+async function prepareAgentDir(base, allowance = null, waste = null, consent = true) {
   const agentDir = join(base, "agent-dir");
   await mkdir(join(agentDir, "pi-warden"), { recursive: true });
   await mkdir(join(agentDir, "pi-typesafe"), { recursive: true });
@@ -222,11 +249,11 @@ async function prepareAgentDir(base, allowance = null, waste = null) {
     defaultProvider: values.provider ?? "commandcode",
     defaultModel: values.model ?? "z-ai/glm-5.3-flash",
     defaultThinkingLevel: values.thinking ?? "high",
-    packages: ["npm:pi-commandcode-provider"],
+    packages: providerPackages(),
   };
   await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
   await writeFile(join(agentDir, "pi-warden", "config.json"), JSON.stringify({
-    typesafe: true,
+    typesafe: consent,
     ...(allowance === null ? {} : { maxRequests: Math.max(1, allowance) }),
     ...(waste === null ? {} : { waste: { enabled: waste, tip: waste } }),
   }));
@@ -355,6 +382,7 @@ async function score({ project, sessions, agentDir, baseline, run, checks, dropp
       claimsWithoutRun: audit.unran, violationCount: viols.length,
     }),
     waste: wasteAxis(events, { seconds: run.seconds }),
+    cost: runCost({ events, agentDir, model: values.model ?? "pi default" }),
     git: { commits: facts.commits, subjects: facts.subjects, merges: facts.merges, pushed: facts.pushed, deleted: facts.deleted },
     missingSentinels,
     steerCount: steers.length, steers, holds,
@@ -364,7 +392,7 @@ async function score({ project, sessions, agentDir, baseline, run, checks, dropp
 }
 
 async function runOnce(task, cell, repeat, allowance = null) {
-  const dirs = await prepareRunDir(task, allowance, wasteSetting(cell));
+  const dirs = await prepareRunDir(task, allowance, wasteSetting(cell), asksJev(cell));
   const { base, project, agentDir, sessions, baseline } = dirs;
   const env = filterEnv(process.env, { agentDir });
   env.PI_WARDEN_DB = join(base, "holds.db");
@@ -388,11 +416,14 @@ async function runOnce(task, cell, repeat, allowance = null) {
   }
 }
 
-/** One decay arc: the prompts chained into ONE pi session (`-c` continues it). */
-async function runArc(task, cell, repeat) {
-  const { base, project, agentDir, sessions, baseline } = await prepareRunDir(task);
+/** One decay arc or multi-turn task: the prompts chained into ONE pi session (`-c` continues it). */
+async function runArc(task, cell, repeat, allowance = null) {
+  const dirs = await prepareRunDir(task, allowance, wasteSetting(cell), asksJev(cell));
+  const { base, project, agentDir, sessions, baseline } = dirs;
   const env = filterEnv(process.env, { agentDir });
   env.PI_WARDEN_DB = join(base, "holds.db");
+  // The day cap lives in the run's own ledger, so it bounds every client the run creates.
+  if (allowance !== null) env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY = String(Math.max(1, allowance));
   const dropped = filteredNames(process.env, { agentDir });
   const checks = task.checks ?? ["test"];
   const turns = [];
@@ -425,13 +456,15 @@ async function runArc(task, cell, repeat) {
       previousViolations = viols.length;
       previousSteers = steers.length;
     }
-    const facts = gitFacts(project, baseline);
+    // Score the end state with the same axes as a single-shot run, so success,
+    // violations, and dollars per run cover multi-turn runs too; `turns` keeps the
+    // per-turn table on top.
+    const scored = await score({
+      project, sessions, agentDir, baseline, checks, dropped, task, dirs,
+      run: { task: task.id, family: task.family ?? "decay", trap: task.trap, cell, repeat, turns },
+    });
     return {
-      record: {
-        task: task.id, family: task.family ?? "decay", trap: task.trap, cell, repeat,
-        turns, envDropped: dropped, git: { commits: facts.commits, subjects: facts.subjects, pushed: facts.pushed, deleted: facts.deleted },
-        missingSentinels: SENTINELS.filter((p) => !existsSync(join(project, p))),
-      },
+      record: { ...scored, turns },
       pi: { code: 0, timedOut: turns.some((t) => t.timedOut), seconds: turns.reduce((s, t) => s + t.seconds, 0), out: "", err: "" },
       base, checks,
     };
@@ -457,7 +490,7 @@ async function main() {
   // Batch folders read <date>-<model>-<tasks>x<cells>x<repeats>; a same-minute collision appends the time.
   const modelSlug = (values.model ?? "default").split("/").pop().replace(/[^A-Za-z0-9.-]/g, "");
   const modeSlug = (TURNS ? `-turns${TURNS}` : "") + (WEAK ? "-weak" : "") + (WASTE === null ? "" : `-waste${WASTE}`);
-  let outDir = values.out ? resolve(values.out) : join(REPORTS, `${stamp}-${modelSlug}-${SELECTED.length}x2x${REPEATS}${modeSlug}`);
+  let outDir = values.out ? resolve(values.out) : join(REPORTS, `${stamp}-${modelSlug}-${SELECTED.length}x${CELLS.length}x${REPEATS}${modeSlug}`);
   if (!values.out && existsSync(outDir)) outDir += `-${new Date().toISOString().slice(11, 16).replace(":", "")}`;
 
   const runs = [];
@@ -481,7 +514,7 @@ async function main() {
   await mkdir(outDir, { recursive: true });
 
   // Judged-request budget: a warden run's allowance is its weight's share of what is neither spent nor reserved.
-  const budget = { used: 0, reserved: 0, weightLeft: queue.filter((q) => isWardenCell(q.cell)).reduce((s, q) => s + (q.task.judgeWeight ?? 1), 0) };
+  const budget = { used: 0, reserved: 0, weightLeft: queue.filter((q) => asksJev(q.cell)).reduce((s, q) => s + (q.task.judgeWeight ?? 1), 0) };
   const takeAllowance = (task) => {
     const weight = task.judgeWeight ?? 1;
     const free = TYPESAFE_CAP - budget.used - budget.reserved;
@@ -498,14 +531,14 @@ async function main() {
       const { task, cell, repeat } = queue[cursor++];
       const label = `${task.id} ${cell} r${repeat}`;
       const started = Date.now();
-      const allowance = TYPESAFE_CAP !== null && isWardenCell(cell) ? takeAllowance(task) : null;
+      const allowance = TYPESAFE_CAP !== null && asksJev(cell) ? takeAllowance(task) : null;
       if (allowance !== null && allowance < 1) {
         runs.push({ task: task.id, family: task.family, cell, repeat, skipped: `TypeSafe cap ${TYPESAFE_CAP} reached` });
         done++;
         process.stdout.write(`[${done}/${queue.length}] ${label} ... skipped: TypeSafe cap reached\n`);
         continue;
       }
-      const outcome = task.arc && (TURNS || !task.prompt) ? await runArc(task, cell, repeat) : await runOnce(task, cell, repeat, allowance);
+      const outcome = task.arc && (TURNS || !task.prompt) ? await runArc(task, cell, repeat, allowance) : await runOnce(task, cell, repeat, allowance);
       const { record, pi, base } = outcome;
       if (allowance !== null) {
         budget.reserved -= allowance;
