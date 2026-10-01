@@ -22,7 +22,7 @@ export interface Conversation {
   siblings?: readonly ToolCallRef[] | undefined;
   /** The agent's own words in that message (or its latest text under this prompt); shared by the siblings. Explains, never authorizes. */
   plan?: string | undefined;
-  /** The agent message the latest user message answers: the text of the newest assistant message before it. Lets a short or numbered reply be read against what it points at. Explains, never authorizes. */
+  /** The agent's words the latest user message answers: the text of every assistant message of the turn before it, in order. Lets a short or numbered reply be read against what it points at. Explains, never authorizes. */
   asked?: string | undefined;
 }
 

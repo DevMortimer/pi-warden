@@ -1180,7 +1180,7 @@ test("evaluateAction skips tools that are not guarded", async () => {
   assert.equal(j.calls.length, 0);
 });
 
-const withSlop = (irreversible: number, offTask: number, slop: Partial<Record<"stub" | "comments" | "dead" | "hedging", number>>, approved?: number): Judge & { calls: unknown[] } => {
+const withSlop = (irreversible: number, offTask: number, slop: Partial<Record<"stub" | "comments" | "dead" | "hedging", number>>, approved?: number, pointsAtAction = 1): Judge & { calls: unknown[] } => {
   const calls: unknown[] = [];
   return {
     calls,
@@ -1192,6 +1192,7 @@ const withSlop = (irreversible: number, offTask: number, slop: Partial<Record<"s
         if (ids.includes(`slop_${symptom}`)) base.answers[`slop_${symptom}`] = { type: "noul", noul: slop[symptom] ?? 0.05 };
       }
       if (ids.includes("approved")) base.answers.approved = { type: "noul", noul: approved ?? 0 };
+      if (ids.includes("reply_points_at_action")) base.answers.reply_points_at_action = { type: "noul", noul: pointsAtAction };
       return onlyAsked(base, request) as never;
     },
   };
@@ -1241,7 +1242,7 @@ test("a retry after a hold takes the guard's approval step: the acting request n
   const retry = await evaluateAction({ ...action, task: "no, just push normally", asked: "Force-push the branch?" }, { config: config.action, judge: declined, retryAfterHold: true });
   assert.equal(declined.calls.length, 2, "the acting request, then one approval request");
   assert.ok(!("approved" in (declined.calls[0] as { questions: object }).questions), "the acting request does not ask approved");
-  assert.deepEqual(Object.keys((declined.calls[1] as { questions: object }).questions), ["approved"]);
+  assert.deepEqual(Object.keys((declined.calls[1] as { questions: object }).questions), ["approved", "reply_points_at_action"]);
   assert.equal(retry.level, "confirm");
   assert.equal(retry.approvedByUser, undefined);
 
@@ -1253,8 +1254,15 @@ test("a retry after a hold takes the guard's approval step: the acting request n
   assert.equal(request.state.action.command, "git push --force");
   assert.equal(approved.level, "allow");
   assert.equal(approved.approvedByUser, true);
-  assert.match(approved.reasons[0] ?? "", /user approved in the latest message \(0\.95\)/);
+  assert.match(approved.reasons[0] ?? "", /user approved in the latest message \(0\.95, points at the action 1\.00\)/);
   assert.equal(approved.judgment?.approved, 0.95);
+
+  const elsewhere = withSlop(0.9, 0.2, {}, 0.95, 0.2);
+  const pointed = await evaluateAction({ ...action, task: "1. yes", asked: "1. rebase?\n2. force-push the branch?" }, { config: config.action, judge: elsewhere, retryAfterHold: true });
+  assert.equal(pointed.level, "confirm", "approved without pointing at this action releases nothing");
+  assert.equal(pointed.judgment?.pointsAtAction, 0.2);
+  const pointing = withSlop(0.9, 0.2, {}, 0.5, 0.95);
+  assert.equal((await evaluateAction({ ...action, task: "yes", asked: "Force-push?" }, { config: config.action, judge: pointing, retryAfterHold: true })).level, "confirm", "pointing at the action without approval releases nothing");
 
   const allowed = withSlop(0.1, 0.1, {}, 0.95);
   await evaluateAction({ ...action, input: { command: "npm install left-pad" }, task: "yes" }, { config: config.action, judge: allowed, retryAfterHold: true });

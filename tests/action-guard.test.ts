@@ -8,7 +8,7 @@ import type { Judge } from "pi-typesafe";
 import { judgedAction } from "./judged-action.js";
 
 interface Request { state: { action: { command?: string; path?: string }; task?: string; asked?: string; reasons?: string[]; [key: string]: unknown }; questions: Record<string, unknown> }
-interface Answers { irreversible: number; offTask?: number; scope?: string; mutates?: number; approved?: number; shouldProceed?: number }
+interface Answers { irreversible: number; offTask?: number; scope?: string; mutates?: number; approved?: number; pointsAtAction?: number; shouldProceed?: number }
 
 /**
  * A judge whose next answers are set by the test. `open` keeps requests pending until the test releases them, which is
@@ -36,6 +36,7 @@ function stubJudge(): Judge & { requests: Request[]; next: Answers; release: () 
         mutates: { type: "noul", noul: answers.mutates ?? 0.9 },
         should_proceed: { type: "noul", noul: answers.shouldProceed ?? 1.0 },
         approved: { type: "noul", noul: answers.approved ?? 0 },
+        reply_points_at_action: { type: "noul", noul: answers.pointsAtAction ?? 1 },
       };
       return {
         model: "jev-test", elapsedMs: 5, usage: { input_tokens: 10, output_tokens: 0 },
@@ -95,7 +96,7 @@ test("a hold is released by a reply Jev reads as approval; the same prompt, a qu
   verdict = await guard.inspect(bash("c4", "git push --force"), under("YES. Force push it now, I own that branch."), options(judge));
   assert.equal(verdict.level, "allow");
   assert.equal(verdict.approvedByUser, true);
-  assert.match(verdict.reasons[0]!, /^user approved in the latest message \(0\.95\)/);
+  assert.match(verdict.reasons[0]!, /^user approved in the latest message \(0\.95, points at the action 1\.00\)/);
 
   verdict = await guard.inspect(bash("c5", "git push --force"), under("push my branch"), options(judge));
   assert.equal(verdict.level, "confirm", "approval is consumed; a new hold starts");
@@ -286,7 +287,29 @@ test("the approval request carries the reply, the message it answers, the action
   assert.equal(request!.state.asked, asked);
   assert.equal(request!.state.action.command, "rm -rf build");
   assert.ok(request!.state.reasons!.some(reason => /irreversible 0\.90/.test(reason)));
-  assert.deepEqual(Object.keys(request!.questions), ["approved"]);
+  assert.deepEqual(Object.keys(request!.questions), ["approved", "reply_points_at_action"]);
+});
+
+test("a held call is released only when approved and reply_points_at_action both reach 0.7", async () => {
+  const cases: Array<{ approved: number; pointsAtAction: number; released: boolean; why: string }> = [
+    { approved: 0.95, pointsAtAction: 0.9, released: true, why: "both at or above 0.7 release" },
+    { approved: 0.95, pointsAtAction: 0.69, released: false, why: "approved alone does not release: the reply points at another item" },
+    { approved: 0.69, pointsAtAction: 0.95, released: false, why: "pointing at the action alone does not release" },
+  ];
+  for (const { approved, pointsAtAction, released, why } of cases) {
+    const guard = new ActionGuard();
+    const judge = stubJudge();
+    judge.next = { irreversible: 0.9 };
+    await guard.inspect(bash("c1", "rm -rf build"), under("clean up"), options(judge));
+    guard.hold("clean up");
+    judge.next = { irreversible: 0.9, approved, pointsAtAction };
+    const verdict = await guard.inspect(bash("c2", "rm -rf build"), { task: "1. yes", asked: "1. delete the build folder?\n2. keep the cache?" }, options(judge));
+    assert.equal(verdict.level, released ? "allow" : "confirm", why);
+    assert.equal(verdict.approvedByUser, released ? true : undefined, why);
+    assert.equal(verdict.judgment?.approved, approved);
+    assert.equal(verdict.judgment?.pointsAtAction, pointsAtAction);
+    if (released) assert.match(verdict.reasons[0]!, new RegExp(`points at the action ${pointsAtAction.toFixed(2).replace(".", "\\.")}`));
+  }
 });
 
 test("a failed approval request falls back to the offline reading of the reply and is traced", async () => {
