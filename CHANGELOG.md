@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 0.88.0
+
 ### Added
 
 - Approval on demand. The acting request no longer asks whether the reply approves; a call that is held again under a new user prompt gets one approval request, with the reply and the agent message it answers (`asked`: the newest assistant message before the reply, redacted, its last 1,500 characters). The call is released when `approved` is at least 0.7. Exports: `settleApproval`, `askApproval`, `buildApprovalRequest`, `replyApprovalQuestion`, `describeAsked`, `APPROVAL_THRESHOLD`; `asked` on `Conversation` and `ActionInput`.
