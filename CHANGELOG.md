@@ -26,6 +26,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 - `docs/upgrading.md`: what changes between 0.74.1 and 1.0 (removed settings, project files that only tighten, new defaults, deprecated names), linked from the README.
 - Configuration reference checked against `src/config.ts`: `compaction.maxRequests` default is 12 (was 20), the project-file table lists `action.ask.enabled` and `rulesAtTurnStart.*` as stricter-only, the user-only keys are named, `stuck.diffLimit`, `stuck.tailLimit`, `context.compactAppendix`, and the `PI_WARDEN_DB`, `PI_WARDEN_STEER_STATS`, `PI_WARDEN_INDEX_DIR` variables are documented, and a table that lost its header renders again. The adaptive-steer kind list in the guard docs matches `STEER_KINDS`. The README paired-run count names its four report batches.
 
+## 0.90.0
+
+### Changed
+
+- A config file that still sets `conscience.loadThreshold` or `learning.adaptiveThresholds` (documented in 0.74.1, removed since) now gets one config warning per key, from the user file and from a project file. The warning says the key was removed in 1.0 and is ignored, and what happens now. The key still has no effect. `docs/configuration.md` has a "Removed in 1.0" note.
+
 ## 0.89.1
 
 ### Added
