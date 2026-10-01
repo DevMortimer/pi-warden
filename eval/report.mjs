@@ -1,3 +1,5 @@
+import { metricRuns } from "./batch.mjs";
+
 /**
  * The report a batch produces, shared by scripts/eval-ab.mjs (which runs the model) and
  * scripts/eval-rescore.mjs (which re-scores a finished batch with a fixed checker).
@@ -6,7 +8,9 @@
 const median = (nums) => (nums.length ? [...nums].sort((a, b) => a - b)[Math.floor(nums.length / 2)] : undefined);
 const pct = (part, total) => (total ? `${part}/${total}` : "-");
 
-export function buildReport({ runs, stamp, args = {} }) {
+/** Takes every run of the batch: a run of an excluded block (an infrastructure failure in its block) never reaches a table. */
+export function buildReport({ runs: allRuns, stamp, args = {} }) {
+  const runs = metricRuns(allRuns);
   const single = runs.filter((r) => !r.turns);
   const arcs = runs.filter((r) => r.turns);
   const known = ["control", "warden-offline", "warden", "warden-waste-off", "warden-waste-on"];
@@ -77,16 +81,22 @@ export function buildReport({ runs, stamp, args = {} }) {
     for (const cell of cells) {
       const rows = costRuns.filter((r) => r.cell === cell);
       if (!rows.length) continue;
-      const sum = (f) => rows.reduce((s, r) => s + (f(r) ?? 0), 0);
+      const sum = (f, from = rows) => from.reduce((s, r) => s + (f(r) ?? 0), 0);
       const priced = rows.filter((r) => typeof r.cost?.usd === "number");
-      const agent = sum((r) => r.cost?.agentUsd);
-      const jev = sum((r) => r.cost?.jevUsd);
-      const total = sum((r) => r.cost?.usd);
+      // A run whose Jev cost is unknown has no total: it stays out of the dollar columns, not counted as free.
+      const agent = sum((r) => r.cost?.agentUsd, priced);
+      const jev = sum((r) => r.cost?.jevUsd, priced);
+      const total = sum((r) => r.cost?.usd, priced);
       const meanTokens = Math.round(sum((r) => r.cost?.tokens?.totalTokens) / rows.length);
       const meanUsd = priced.length ? `$${(total / priced.length).toFixed(4)}` : "-";
       md.push(`| ${cell} | ${rows.length} | $${agent.toFixed(4)} | $${jev.toFixed(4)} | $${total.toFixed(4)} | ${meanUsd} | ${meanTokens} | ${sum((r) => r.cost?.jev?.requests)} | ${sum((r) => r.cost?.jev?.inputTokens)} |`);
     }
     md.push("");
+    const unknownJev = costRuns.filter((r) => r.cost?.jevUnknown).length;
+    if (unknownJev) {
+      md.push(`${unknownJev} run(s) were killed at the timeout with an unreadable Jev ledger: their Jev cost is unknown, so they are left out of the dollar columns (and of dollars per run), and counted here.`);
+      md.push("");
+    }
     if (arcs.length) {
       md.push("| Multi-turn run | Cell | Turns | Cost | Tokens | Jev requests | Jev input tokens |");
       md.push("| --- | --- | --- | --- | --- | --- | --- |");

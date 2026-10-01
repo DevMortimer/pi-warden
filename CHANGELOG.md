@@ -4,7 +4,21 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
-## Unreleased
+## 0.89.1
+
+### Added
+
+- A/B benchmark tooling, registration v3 (`eval/preregistration.md`): model B is `claude-bridge/claude-sonnet-5-5`; agent dollars come from the providers' price pages instead of Pi's catalog, each DeepSeek call priced by its own timestamp at the peak or off-peak rate (Chinese public holidays off-peak, from the State Council's 2026 notice) and Sonnet 5.5 at Anthropic's list prices; a failed Jev judgment in a `warden` run stops the batch and the run is not counted (`eval/jev-stop.mjs`, exit code 3); `scripts/eval-call-costs.mjs` lists every call of a report with its price window; `npm run eval:power` adds the wall-clock of each batch. Repo tooling; rides along with the next release.
+- A/B batch scheduling (`eval/batch.mjs`, `scripts/eval-ab.mjs`), pre-registration v3 revised before any batch run: the queue runs in blocks (one per task x repeat, repeat by repeat) with the cell order of each block shuffled by a seeded generator (`--seed`) and the block's runs dispatched one after another, so paired runs share a price window and the machine's load; `--resume DIR` continues a stopped batch from its `runs.json`, which is now rewritten after every run; a run that fails on an agent-model API error is re-run after 1 and 5 minutes, then recorded with `infraError` and its whole block left out of the metrics, and 5 such failures in a row stop the batch (exit code 4); a Jev request still in flight when a run's process exits no longer stops the batch (recorded as `abandonedJevRequests`); `--jev-usd-cap N` stops the batch at N Jev dollars (exit code 3); the launch commands run under `caffeinate -i`. Repo tooling; rides along with the next release.
+- A/B batch corrections, registration v3 corrected before any batch run: a run is an infrastructure failure only when it ended on the error (its last assistant message, or the last of any turn, stopped on an error, or pi exited before any assistant message); an error pi retried and got past is a valid run, counted as `providerErrorsRecovered`; after an exit-4 stop all 5 runs of the streak run again on resume (an isolated failure stays excluded); a run killed at the timeout with an unreadable Jev ledger has an unknown Jev cost, so it leaves the dollar metric only and the report counts it; `--resume` refuses `--typesafe-cap`; `buildReport` and `buildWeakReport` drop excluded blocks themselves. Repo tooling; rides along with the next release.
+
+## 0.89.0
+
+### Changed
+
+- Approval round 2 replaces the one-question design of 0.88.0. The approval request of a held call carries a second question, `reply_points_at_action` (do the agreeing parts of the reply point at this action, not at another item or question), and the call is released only when both `approved` and `reply_points_at_action` are at least 0.7. `replyApprovalQuestion` holds both questions; `askApproval` also returns `pointsAtAction`, and `Judgment.pointsAtAction` records it. No exported name changed.
+- `asked` is the text of every assistant message after the previous user message and before the reply, in order, redacted, last 3,000 characters (before: the newest assistant message, last 1,500). A reply that arrives mid-run follows messages that hold only tool calls, and an explanation can sit earlier in the turn. The approval request now sends up to 3,000 redacted characters of the agent's turn; the consent text (`disclosure`) and `docs/data-handling.md` say so.
+- Measured on 30 cases, 17 held-out cases, and 24 recorded holds (runs; `docs/guards.md`): wrong releases fall from 12 to 1 and correct releases from 81 to 78; held approvals rise from 9 to 12. The pre-set rule counted in runs chose the one-question design (3 fewer correct releases, 2 allowed); the owner shipped round 2 because the held-out cases show 1 wrong release against 6 at equal correct releases, and a wrong release costs more than a second "yes".
 
 ## 0.89.0
 
