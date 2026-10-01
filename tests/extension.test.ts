@@ -336,7 +336,11 @@ test("action rules context is disclosed, rides the request only while a violatio
     assert.equal(off?.state.rulesSource, undefined);
 
     const { disclosure } = await import("../src/extension.js");
-    assert.match(disclosure, /unless the rules guard is off/i);
+    assert.match(disclosure, /unless the rules guard is on/i);
+    assert.match(disclosure, /one judged action call in twenty .*up to eight redacted earlier user\/assistant text messages and the resolved active rules file content/i, "earlier messages and the rules content ride the sample");
+    assert.match(disclosure, /only while a rule violation is open/i);
+    assert.match(disclosure, /short continuation or a relayed child report, which send nothing/i);
+    assert.doesNotMatch(disclosure, /with every action request/i);
   } finally { await rm(rulesFile); }
 });
 
