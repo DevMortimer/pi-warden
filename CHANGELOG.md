@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 1.0.1
+
 ### Fixed
 
 - The run-end rules check no longer judges files that a `git pull` brought in when the pulled commit was made during the run, such as a squash commit from a pull request merged on the hosting service: a commit counts as brought by git when this worktree's HEAD reflog shows that the checkout did not create it, whatever its date. The commit-date rule stays as the fallback when the reflog is off.
