@@ -419,6 +419,7 @@ test("diffSince: a squash commit the hosting service made during the run, pulled
   const s = await hostedScene();
   try {
     const start = await snapshotTree(s.dir);
+    assert.ok(start.tree);
     await s.squash({ "fix.ts": "export const fixed = true;\n" });
     s.run(["pull", "-q", "--ff-only", "origin", "main"]);
     assert.deepEqual(await s.diffPaths(start), [], "the version bump and the fix came from origin");
@@ -465,6 +466,7 @@ test("diffSince: with the HEAD reflog off the commit-date rule decides and the n
   try {
     s.run(["config", "core.logAllRefUpdates", "false"]);
     const start = await snapshotTree(s.dir);
+    assert.ok(start.tree);
     await s.squash();
     s.run(["pull", "-q", "--ff-only", "origin", "main"]);
     const diff = await diffSince(s.dir, start.tree!, 8000, { head: start.head, startedAt: start.startedAt });

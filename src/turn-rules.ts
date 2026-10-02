@@ -156,8 +156,12 @@ async function createdInRun(cwd: string, start: RunStart & { head: string }, end
       if (entry.at < startSecond) break;
       entries.push(entry);
     }
-    const arrival = entries.findLastIndex(entry => entry.at === startSecond && entry.commit === start.head);
-    if (arrival >= 0) entries.length = arrival;
+    for (let index = entries.length - 1; index >= 0; index--) {
+      if (entries[index]!.at === startSecond && entries[index]!.commit === start.head) {
+        entries.length = index;
+        break;
+      }
+    }
     // HEAD moved, so a reflog that is recording has the move as its newest entry.
     if (entries[0]?.commit !== endHead) return undefined;
     return [...new Set(entries.filter(entry => CREATING_REFLOG_SUBJECT.test(entry.subject)).map(entry => entry.commit))];
