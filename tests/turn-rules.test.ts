@@ -383,3 +383,95 @@ test("diffSince: over the probe limit only the newest commits are probed, and th
     assert.match(diff!.notes[0]!, new RegExp(`^git-brought filter cut: ${files} files × ${commits} older commits is over the ${BROUGHT_PROBE_LIMIT}-probe limit, so only the newest ${BROUGHT_PROBE_LIMIT / files} commits were probed$`));
   } finally { await s.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// A commit the hosting service makes during the run is brought by git whatever its date; the HEAD reflog says what this checkout made.
+
+/** `scene()` with a bare `origin` and a second clone that plays the hosting service: another committer, dated after the run starts. */
+async function hostedScene() {
+  const s = await scene();
+  const bare = await mkdtemp(join(tmpdir(), "pi-warden-origin-"));
+  const hostDir = await mkdtemp(join(tmpdir(), "pi-warden-host-"));
+  const later = new Date(Date.now() + 60_000).toISOString();
+  const host = (args: string[]) => execFileSync("git", ["-c", "user.name=hosting", "-c", "user.email=hosting@example.com", ...args], {
+    cwd: hostDir, stdio: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_COMMITTER_DATE: later, GIT_AUTHOR_DATE: later },
+  }).toString();
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare]);
+  await writeFile(join(s.dir, "package.json"), '{"version":"1.0.0"}\n');
+  s.run(["add", "package.json"]);
+  s.run(["commit", "-q", "-m", "package"], OLD);
+  s.run(["remote", "add", "origin", bare]);
+  s.run(["push", "-q", "origin", "main"]);
+  host(["clone", "-q", bare, "."]);
+  /** A squash commit on `origin/main` that bumps the version, with `extra` files, as the hosting service writes it. */
+  const squash = async (extra: Record<string, string> = {}) => {
+    await writeFile(join(hostDir, "CHANGELOG.md"), "# Changelog\n## 1.0.1\n");
+    await writeFile(join(hostDir, "package.json"), '{"version":"1.0.1"}\n');
+    for (const [name, content] of Object.entries(extra)) await writeFile(join(hostDir, name), content);
+    host(["add", "."]);
+    host(["commit", "-q", "-m", "Fix it (#1)"]);
+    host(["push", "-q", "origin", "main"]);
+  };
+  return { ...s, bare, squash, cleanup: async () => { await s.cleanup(); await rm(bare, { recursive: true, force: true }); await rm(hostDir, { recursive: true, force: true }); } };
+}
+
+test("diffSince: a squash commit the hosting service made during the run, pulled with --ff-only, gives no verdict for its files", async () => {
+  const s = await hostedScene();
+  try {
+    const start = await snapshotTree(s.dir);
+    assert.ok(start.tree);
+    await s.squash({ "fix.ts": "export const fixed = true;\n" });
+    s.run(["pull", "-q", "--ff-only", "origin", "main"]);
+    assert.deepEqual(await s.diffPaths(start), [], "the version bump and the fix came from origin");
+    const diff = await diffSince(s.dir, start.tree!, 8000, { head: start.head, startedAt: start.startedAt });
+    assert.deepEqual(diff!.notes, []);
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: a commit made in another worktree during the run and fast-forwarded into this one gives no verdict", async () => {
+  const s = await hostedScene();
+  const other = `${s.dir}-other`;
+  try {
+    const start = await snapshotTree(s.dir);
+    s.run(["worktree", "add", "-q", "-b", "other", other]);
+    const inOther = (args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: other, stdio: "pipe" });
+    await writeFile(join(other, "CHANGELOG.md"), "# Changelog\n## 1.0.1\n");
+    await writeFile(join(other, "other.ts"), "export const other = 1;\n");
+    inOther(["add", "."]);
+    inOther(["commit", "-q", "-m", "work in the other worktree"]);
+    s.run(["merge", "-q", "--ff-only", "other"]);
+    assert.deepEqual(await s.diffPaths(start), []);
+  } finally {
+    s.run(["worktree", "remove", "--force", other]);
+    await s.cleanup();
+  }
+});
+
+test("diffSince: the agent's own content coming back as a squash on origin is still judged", async () => {
+  const s = await hostedScene();
+  try {
+    const start = await snapshotTree(s.dir);
+    s.run(["checkout", "-q", "-b", "feature"]);
+    await writeFile(join(s.dir, "CHANGELOG.md"), "# Changelog\n## 1.0.1\n");
+    s.run(["commit", "-q", "-am", "bump in the checkout"]);
+    await s.squash({ "fix.ts": "export const fixed = true;\n" });
+    s.run(["checkout", "-q", "main"]);
+    s.run(["pull", "-q", "--ff-only", "origin", "main"]);
+    assert.deepEqual(await s.diffPaths(start), ["CHANGELOG.md"], "the changelog content came from this checkout first; package.json and fix.ts came from origin");
+  } finally { await s.cleanup(); }
+});
+
+test("diffSince: with the HEAD reflog off the commit-date rule decides and the note says so", async () => {
+  const s = await hostedScene();
+  try {
+    s.run(["config", "core.logAllRefUpdates", "false"]);
+    const start = await snapshotTree(s.dir);
+    assert.ok(start.tree);
+    await s.squash();
+    s.run(["pull", "-q", "--ff-only", "origin", "main"]);
+    const diff = await diffSince(s.dir, start.tree!, 8000, { head: start.head, startedAt: start.startedAt });
+    assert.deepEqual(diff!.files.map(file => file.path).sort(), ["CHANGELOG.md", "package.json"], "the squash is dated after the run began, so the date rule judges it");
+    assert.equal(diff!.notes.length, 1);
+    assert.match(diff!.notes[0]!, /^git-brought filter used the commit-date rule because the HEAD reflog is off or cannot be read/);
+  } finally { await s.cleanup(); }
+});
