@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Fixed
+
+- The run-end rules check no longer judges files that a `git pull` brought in when the pulled commit was made during the run, such as a squash commit from a pull request merged on the hosting service: a commit counts as brought by git when this worktree's HEAD reflog shows that the checkout did not create it, whatever its date. The commit-date rule stays as the fallback when the reflog is off.
+
 ## 1.0.0
 
 The first stable release. From 1.0, pi-warden follows semver for the surface the README's Versioning section lists. Coming from 0.74.1, the last release on npm: [docs/upgrading.md](docs/upgrading.md) lists the removed settings, the new defaults, and what project files may still change. The changes since 0.74.1 are in the sections 0.75.0 to 0.90.0 below, and the README's "What it costs" table gives the measured effect of each 1.0 change.
