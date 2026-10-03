@@ -68,7 +68,9 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
   trace file: TypeSafe unavailable, judgments off, a spend-cap stop) stops the batch;
   the runner leaves that run out of `runs.json` and exits with code 3. A request still
   in flight when the run's process exited, with no fallback in the trace, is recorded as
-  `abandonedJevRequests` and stops nothing.
+  `abandonedJevRequests` and stops nothing. A run whose one failed request is a
+  cancelled trace-only sample (the guard's second request on one judged call in twenty)
+  is recorded as `cancelledTraceSamples: 1` and stops nothing.
 - `batch.mjs`: how the batch is scheduled. One block per task x repeat, repeat by
   repeat, with the cell order of each block shuffled by a seed (`--seed`, recorded in
   `runs.json` and the report) and its runs dispatched one after another; `--resume DIR`

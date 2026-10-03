@@ -62,7 +62,10 @@
  * exited, with no fallback in the trace, is recorded as `abandonedJevRequests` and stops
  * nothing. A run killed at the timeout whose ledger cannot be read stops nothing either,
  * but its Jev cost is unknown (`cost.jevUnknown`): it leaves the dollar metric only, and
- * the report counts it. A batch with `--typesafe-cap` spends its judged-request allowance on purpose
+ * the report counts it. A run whose one failed request is a cancelled trace-only sample
+ * (the guard's second request on one judged call in twenty, cancelled by its own 5-second
+ * deadline; the proof is in eval/jev-stop.mjs) is recorded as `cancelledTraceSamples: 1`
+ * and stops nothing. A batch with `--typesafe-cap` spends its judged-request allowance on purpose
  * and does not apply the rule.
  *
  * Jev dollar cap: `--jev-usd-cap N` sums the Jev dollars of every finished run's ledger
@@ -109,7 +112,7 @@ import { filterEnv, filteredNames } from "../eval/env.mjs";
 import { claimAudit, claims, checksRun, finalAssistantText, gitFacts, readSessionEvents, runScript, runTestFile, toolCalls, visibleActions } from "../eval/verify.mjs";
 import { outcomeAxis, wasteAxis } from "../eval/waste.mjs";
 import { jevDollars, jevUsage, runCost } from "../eval/cost.mjs";
-import { abandonedJevRequests, jevFailure } from "../eval/jev-stop.mjs";
+import { abandonedJevRequests, jevCheck } from "../eval/jev-stop.mjs";
 import { createStallWatch, progressCount } from "../eval/stall.mjs";
 import { DEFAULT_SEED, RETRY_DELAYS_MS, blockOrder, firstRuns, infraReason, infraSection, infraCounts, markExclusions, recoveredErrors, runBatch, runKey } from "../eval/batch.mjs";
 import { weakTasks, weakTaskById } from "../eval/weak-tasks.mjs";
@@ -703,10 +706,13 @@ async function main() {
       return { aborted: true, jevUsd };
     }
     // A failed Jev judgment in a run that asks Jev ends the batch and the run is not counted.
-    const jevError = asksJev(cell) && allowance === null ? jevFailure({ agentDir, traceDir: join(base, "trace"), killed: pi.timedOut || pi.stalled }) : null;
+    const { failure: jevError, cancelledTraceSamples } = asksJev(cell) && allowance === null
+      ? jevCheck({ agentDir, traceDir: join(base, "trace"), killed: pi.timedOut || pi.stalled, startedAt, endedAt: new Date().toISOString() })
+      : { failure: null, cancelledTraceSamples: 0 };
     const full = record ? {
       ...record, startedAt, piExit: pi.code, timedOut: pi.timedOut, seconds: Math.round(pi.seconds),
       ...(asksJev(cell) ? { abandonedJevRequests: abandonedJevRequests(agentDir) } : {}),
+      ...(cancelledTraceSamples ? { cancelledTraceSamples } : {}),
     } : null;
     try {
       const evidence = join(outDir, "runs", `${task.id}-${cell}-r${repeat}`);

@@ -21,6 +21,8 @@ v3, corrected before any batch run: a run is an infrastructure failure only when
 
 v4, before any v4 batch run: the owner stopped the v3 batches for cost (see "The stopped v3 batches"), and the run moves to the owner's flat-rate CheapestInference subscription with no paid agent model: A is `cheapestinference/deepseek-v4.1-flash` and B is `cheapestinference/mimo-v2.5` (weaker), run one after the other at concurrency 3 on the subscription's one generation slot; a run with no new assistant message or tool result for 15 minutes is killed as stalled and counts as an infrastructure failure; the run timeouts are three times the longest smoke run of the same kind; dollars are equivalents (A at DeepSeek's official `deepseek-flash` rates by timestamp, B at Xiaomi's official MiMo-V2.5 price); the repeats are 6 for A and 7 for B, sized from the smoke timings to about 24 hours each; the Jev cap is $3 per model; the tasks, blocks, seed, decision rules, and commit under test are unchanged.
 
+v4, corrected after the model-A batch stopped on a Jev error, before any outcome of a v4 batch was read: a run whose one failed Jev request is a cancelled trace-only sample no longer stops the batch ("Jev-error stop", Corrections 2).
+
 ## The stopped v3 batches
 
 The v3 batches, `deepseek/deepseek-flash` and `claude-bridge/claude-sonnet-5-5`, were stopped by the owner for cost about 13 minutes in: `deepseek/deepseek-flash` after 57 recorded runs and `claude-bridge/claude-sonnet-5-5` after 45. They are a stopped pilot: their folders stay out of version control, their outcomes are not analysed, and nothing in this registration, in a decision, or in the analysis uses them.
@@ -151,7 +153,18 @@ trace and no failed request in the ledger, is not a failure: the run is recorded
 whose ledger cannot be read does not stop the batch, but its Jev cost is **unknown**:
 it is recorded with `cost.jevUnknown`, leaves the dollar metric (c) only (it stays in
 (a), (b), and (d), as a timeout is a task outcome), counts as $0 toward the Jev cap,
-and the report states how many such runs there are. A stop is recorded under
+and the report states how many such runs there are. Exception, added by Corrections 2: a run's one failed request is a **cancelled trace
+sample**, and does not stop the batch, when all of these hold: the ledger shows exactly
+1 failed request; `lastFailure.code` in the run's `auth-state.json` is `aborted` and its
+`at` is within the run; no trace entry shows a fallback, judgments off, or a failed Jev
+request (the wordings `typesafe error`, `typesafe: <error>`, `TypeSafe unavailable`,
+`approval request failed`, `error: <reason>`, `skipReason: error`, and a security output
+`not judged`); and, with the action entries that carry a `jev:` line numbered 1, 2, 3, … in
+each pi process of the run, exactly one of the entries numbered 1, 21, 41, … has a `jev:`
+line without `off-task`. Such a run is recorded with `cancelledTraceSamples: 1` and counts.
+Every other failure stops the batch as before.
+
+A stop is recorded under
 Corrections with its cause; the owner decides how the batch resumes.
 
 ### Jev caps
@@ -391,3 +404,36 @@ outcome to choose the concurrency, the timeouts, or the sizes.
    the timeouts, and the sizes come from the timing tables in the Batch section, and the smoke
    runs stay out of the analysis. While the batches run, progress checks read run counts,
    timings, stops, and infrastructure failures only, and no decision uses an outcome.
+
+2. 2026-10-03, after the model-A batch stopped on 2026-10-01 at 10:21:38Z (exit code 3, 34 runs
+   recorded, model B not started), before any outcome of a v4 batch was read; the stop reason
+   and timings below are infrastructure records. The batch stopped on `t12-preexist warden r1`:
+   "1 Jev request(s) failed".
+   **Cause.** At the commit under test, on one judged call in twenty (`action.traceSample`,
+   default 0.05; the counter restarts with each pi process, so the sampled calls are judged
+   calls 1, 21, 41, … of each process) the guard sends a second, trace-only request beside the
+   acting request. It asks the off-task, scope, and should-proceed questions; the answers are
+   trace-only and never reach the agent, and the guard awaits the sample after the acting
+   answer. In that run the first judged call, the write of `src/dedupe.js`, was a sampled call.
+   Its acting answers came in 305 ms (irreversible 0.03, allow). The sample did not answer
+   within the 5-second per-request deadline, so pi-warden's own deadline cancelled it, and
+   pi-typesafe records a cancelled request with code `aborted`. The verdict came 5.03 s after
+   the call, in the same millisecond as `lastFailure.at`. In the trace, the first judged action
+   entry has a `jev:` line without `off-task`; in the other 10 `warden` runs recorded at the time
+   it has `off-task` and the verdict came 0.31 to 0.43 s after the call. It was not a spend cap:
+   the Jev spend was $0.0085 of the $3 cap, a cap error has code `budget` and is raised before
+   a request is sent, and no spend-cap variable was set.
+   **Rule.** The exception in "Jev-error stop": a run whose one failed request is a cancelled
+   trace sample is recorded with `cancelledTraceSamples: 1` and does not stop the batch; every
+   other failure still stops it. The guard did not need the sample's answer. The entry number
+   is the guard's count of judged calls, except that when the calls of one assistant message
+   are judged together the guard counts the message's first call last, and a call judged but
+   never used is counted without an entry; such a shift puts the sample on a neighbouring entry,
+   so the rule can stop on a real cancelled sample and, rarely, pass on an entry that was not
+   the sampled call.
+   **Decision.** The owner decided this rule before the resume, on seeing the cause.
+   **Resume.** The stopped run is not in `runs.json`, so it runs again on resume, with the
+   other runs of model A, and model B follows model A.
+   **Cost.** A run's Jev dollars come from its ledger, as for every run. The cancelled request
+   may still have been billed, and its tokens are not in the ledger, so the dollars of a run
+   with `cancelledTraceSamples` can be a little low. The report states how many runs have it.

@@ -16,7 +16,7 @@
  *     the cap refuses the request before it starts, so the ledger counts nothing.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { traceGuards } from "./weak.mjs";
 
@@ -34,6 +34,76 @@ export function ledgerCounts(agentDir) {
   return counts;
 }
 
+/** The trace-only sample is taken on judged calls 1, 21, 41, … of each pi process (`action.traceSample` 0.05, `traceTick` in src/guard.ts). */
+const TRACE_SAMPLE_EVERY = 20;
+
+/**
+ * What the run's warden trace shows. `processes` lists, per pi process (a `session` record starts one), the action
+ * entries that carry a `jev:` line, in order, each with whether the line has an off-task answer. `failed` is true when
+ * any entry shows a failed request: the wordings src/trace.ts and src/extension.ts write for a failed acting, rules,
+ * stuck, done, prose, or conscience request, and a security output that was not judged.
+ */
+export function traceFacts(traceDir) {
+  const processes = [];
+  let failed = false;
+  if (!existsSync(traceDir)) return { processes, failed };
+  for (const name of readdirSync(traceDir).sort()) {
+    if (!name.endsWith(".jsonl")) continue;
+    let current = null;
+    for (const line of readFileSync(join(traceDir, name), "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let rec;
+      try { rec = JSON.parse(line); } catch { continue; }
+      if (rec.kind === "session") { current = []; processes.push(current); continue; }
+      if (rec.kind !== "entry") continue;
+      const details = (rec.details ?? []).map(String);
+      if (/typesafe error/i.test(String(rec.line)) || details.some((d) => /^(typesafe: |error: |approval request failed|skipReason: error)/.test(d) || (/^why: /.test(d) && /TypeSafe unavailable/.test(d)))) failed = true;
+      if (rec.guard === "security" && details.some((d) => /^jev: .*not judged/.test(d))) failed = true;
+      const jev = rec.guard === "action" ? details.find((d) => d.startsWith("jev:")) : undefined;
+      if (jev === undefined) continue;
+      if (current === null) { current = []; processes.push(current); }
+      current.push({ offTask: jev.includes("off-task") });
+    }
+  }
+  return { processes, failed };
+}
+
+/** The `lastFailure` pi-typesafe keeps in the run's agent dir: `{ code, message, at }`, or null. */
+function lastFailure(agentDir) {
+  try {
+    const failure = JSON.parse(readFileSync(join(agentDir, "pi-typesafe", "auth-state.json"), "utf8")).lastFailure;
+    return failure && typeof failure === "object" ? failure : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the run's one failed Jev request is a cancelled trace sample. All of these hold: the ledger shows exactly one
+ * failed request; `lastFailure` has code `aborted` and a time within the run (`startedAt` to `endedAt`); no trace entry
+ * shows a failed request or judgments off; and, with the action entries that carry a `jev:` line numbered 1, 2, 3, … in each
+ * pi process, exactly one of the entries numbered 1, 21, 41, … has a `jev:` line without an off-task answer (a sampled
+ * call whose sample answered has one).
+ *
+ * The entry number is the guard's count of judged calls except where the calls of one assistant message are judged
+ * together: the guard counts the message's first call last, and a sibling judged but never used is counted without an
+ * entry. Such a shift moves the sample to a neighbouring entry, so the rule can stop on a real cancelled sample and,
+ * rarely, pass on an entry that was not the sampled call. Without `startedAt` and `endedAt` the rule never holds.
+ */
+export function cancelledTraceSample({ agentDir, traceDir, startedAt, endedAt }) {
+  let counts;
+  try { counts = ledgerCounts(agentDir); } catch { return false; }
+  if (counts.failed !== 1) return false;
+  const failure = lastFailure(agentDir);
+  const at = Date.parse(failure?.at);
+  if (failure?.code !== "aborted" || !(at >= Date.parse(startedAt) && at <= Date.parse(endedAt))) return false;
+  if (traceGuards(traceDir).judgmentsOff.length) return false;
+  const facts = traceFacts(traceDir);
+  if (facts.failed) return false;
+  const unanswered = facts.processes.reduce((n, entries) => n + entries.filter((entry, index) => index % TRACE_SAMPLE_EVERY === 0 && !entry.offTask).length, 0);
+  return unanswered === 1;
+}
+
 /** Jev requests that started and never finished: in flight when the run's process exited. */
 export function abandonedJevRequests(agentDir) {
   try {
@@ -49,20 +119,27 @@ export function abandonedJevRequests(agentDir) {
  * request in the ledger or a fallback in the trace. A request still in flight when the
  * process exited, with no fallback in the trace, is not a failure (see
  * `abandonedJevRequests`). A ledger that cannot be read is a failure too, unless the run's
- * process was killed at the timeout, which can cut a ledger write short.
+ * process was killed at the timeout, which can cut a ledger write short. A run whose one failure is a cancelled trace
+ * sample (see `cancelledTraceSample`) has none, and `cancelledTraceSamples` is 1.
  */
-export function jevFailure({ agentDir, traceDir, killed = false }) {
+export function jevCheck({ agentDir, traceDir, killed = false, startedAt, endedAt }) {
   const reasons = [];
   let counts;
   try {
     counts = ledgerCounts(agentDir);
   } catch (error) {
-    if (killed) return null;
+    if (killed) return { failure: null, cancelledTraceSamples: 0 };
     // A ledger the scorer cannot read leaves no proof that the judgments worked.
-    return `the Jev usage ledger is unreadable (${String(error.message ?? error).slice(0, 100)})`;
+    return { failure: `the Jev usage ledger is unreadable (${String(error.message ?? error).slice(0, 100)})`, cancelledTraceSamples: 0 };
   }
   if (counts.failed > 0) reasons.push(`${counts.failed} Jev request(s) failed`);
   const off = traceGuards(traceDir).judgmentsOff;
   if (off.length) reasons.push(`judgments went off (${[...new Set(off)].join(", ")})`);
-  return reasons.length ? reasons.join("; ") : null;
+  if (reasons.length === 1 && counts.failed === 1 && cancelledTraceSample({ agentDir, traceDir, startedAt, endedAt })) return { failure: null, cancelledTraceSamples: 1 };
+  return { failure: reasons.length ? reasons.join("; ") : null, cancelledTraceSamples: 0 };
+}
+
+/** The reason the run's Jev judgments failed, or null (see `jevCheck`). */
+export function jevFailure(input) {
+  return jevCheck(input).failure;
 }
