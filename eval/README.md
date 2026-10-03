@@ -70,7 +70,9 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
   in flight when the run's process exited, with no fallback in the trace, is recorded as
   `abandonedJevRequests` and stops nothing. A run whose one failed request is a
   cancelled trace-only sample (the guard's second request on one judged call in twenty)
-  is recorded as `cancelledTraceSamples: 1` and stops nothing.
+  is recorded as `cancelledTraceSamples: 1` and stops nothing. The check reads times: the
+  action entry with a `jev:` line nearest in time to the failure's `lastFailure.at` must be
+  within 1,000 ms of it and have no `off-task` answer.
 - `batch.mjs`: how the batch is scheduled. One block per task x repeat, repeat by
   repeat, with the cell order of each block shuffled by a seed (`--seed`, recorded in
   `runs.json` and the report) and its runs dispatched one after another; `--resume DIR`

@@ -34,38 +34,33 @@ export function ledgerCounts(agentDir) {
   return counts;
 }
 
-/** The trace-only sample is taken on judged calls 1, 21, 41, … of each pi process (`action.traceSample` 0.05, `traceTick` in src/guard.ts). */
-const TRACE_SAMPLE_EVERY = 20;
+/** The most a failed request's time and the nearest judged action entry may differ and still be the same moment. */
+const SAME_MOMENT_MS = 1000;
 
 /**
- * What the run's warden trace shows. `processes` lists, per pi process (a `session` record starts one), the action
- * entries that carry a `jev:` line, in order, each with whether the line has an off-task answer. `failed` is true when
- * any entry shows a failed request: the wordings src/trace.ts and src/extension.ts write for a failed acting, rules,
- * stuck, done, prose, or conscience request, and a security output that was not judged.
+ * What the run's warden trace shows. `judged` lists, over every pi process, the action entries that carry a `jev:` line:
+ * the entry's time (`at`, ms since the epoch, NaN when unreadable) and whether the line has an off-task answer. `failed`
+ * is true when any entry shows a failed request: the wordings src/trace.ts and src/extension.ts write for a failed
+ * acting, rules, stuck, done, prose, or conscience request.
  */
 export function traceFacts(traceDir) {
-  const processes = [];
+  const judged = [];
   let failed = false;
-  if (!existsSync(traceDir)) return { processes, failed };
+  if (!existsSync(traceDir)) return { judged, failed };
   for (const name of readdirSync(traceDir).sort()) {
     if (!name.endsWith(".jsonl")) continue;
-    let current = null;
     for (const line of readFileSync(join(traceDir, name), "utf8").split("\n")) {
       if (!line.trim()) continue;
       let rec;
       try { rec = JSON.parse(line); } catch { continue; }
-      if (rec.kind === "session") { current = []; processes.push(current); continue; }
       if (rec.kind !== "entry") continue;
       const details = (rec.details ?? []).map(String);
       if (/typesafe error/i.test(String(rec.line)) || details.some((d) => /^(typesafe: |error: |approval request failed|skipReason: error)/.test(d) || (/^why: /.test(d) && /TypeSafe unavailable/.test(d)))) failed = true;
-      if (rec.guard === "security" && details.some((d) => /^jev: .*not judged/.test(d))) failed = true;
       const jev = rec.guard === "action" ? details.find((d) => d.startsWith("jev:")) : undefined;
-      if (jev === undefined) continue;
-      if (current === null) { current = []; processes.push(current); }
-      current.push({ offTask: jev.includes("off-task") });
+      if (jev !== undefined) judged.push({ at: Date.parse(rec.at), offTask: jev.includes("off-task") });
     }
   }
-  return { processes, failed };
+  return { judged, failed };
 }
 
 /** The `lastFailure` pi-typesafe keeps in the run's agent dir: `{ code, message, at }`, or null. */
@@ -81,14 +76,14 @@ function lastFailure(agentDir) {
 /**
  * Whether the run's one failed Jev request is a cancelled trace sample. All of these hold: the ledger shows exactly one
  * failed request; `lastFailure` has code `aborted` and a time within the run (`startedAt` to `endedAt`); no trace entry
- * shows a failed request or judgments off; and, with the action entries that carry a `jev:` line numbered 1, 2, 3, … in each
- * pi process, exactly one of the entries numbered 1, 21, 41, … has a `jev:` line without an off-task answer (a sampled
- * call whose sample answered has one).
+ * shows a failed request or judgments off; and, among the action entries that carry a `jev:` line, the one recorded
+ * nearest in time to `lastFailure.at` is at most 1,000 ms from it and has a `jev:` line without an off-task answer.
  *
- * The entry number is the guard's count of judged calls except where the calls of one assistant message are judged
- * together: the guard counts the message's first call last, and a sibling judged but never used is counted without an
- * entry. Such a shift moves the sample to a neighbouring entry, so the rule can stop on a real cancelled sample and,
- * rarely, pass on an entry that was not the sampled call. Without `startedAt` and `endedAt` the rule never holds.
+ * The guard awaits the trace sample after the acting answer, so when the sample's deadline cancels it, the sampled
+ * call's verdict is recorded at once: its entry and `lastFailure.at` fall in the same moment, and a sample that
+ * answered would have left an off-task answer on that line. The check reads times only, so it does not depend on how
+ * the guard numbers its judged calls. When two entries are equally near, both must lack the off-task answer. Without
+ * `startedAt` and `endedAt` the rule never holds.
  */
 export function cancelledTraceSample({ agentDir, traceDir, startedAt, endedAt }) {
   let counts;
@@ -100,8 +95,10 @@ export function cancelledTraceSample({ agentDir, traceDir, startedAt, endedAt })
   if (traceGuards(traceDir).judgmentsOff.length) return false;
   const facts = traceFacts(traceDir);
   if (facts.failed) return false;
-  const unanswered = facts.processes.reduce((n, entries) => n + entries.filter((entry, index) => index % TRACE_SAMPLE_EVERY === 0 && !entry.offTask).length, 0);
-  return unanswered === 1;
+  const distances = facts.judged.filter((entry) => !Number.isNaN(entry.at)).map((entry) => ({ gap: Math.abs(entry.at - at), offTask: entry.offTask }));
+  if (!distances.length) return false;
+  const nearest = Math.min(...distances.map((entry) => entry.gap));
+  return nearest <= SAME_MOMENT_MS && distances.every((entry) => entry.gap !== nearest || !entry.offTask);
 }
 
 /** Jev requests that started and never finished: in flight when the run's process exited. */

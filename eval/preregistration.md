@@ -23,6 +23,8 @@ v4, before any v4 batch run: the owner stopped the v3 batches for cost (see "The
 
 v4, corrected after the model-A batch stopped on a Jev error, before any outcome of a v4 batch was read: a run whose one failed Jev request is a cancelled trace-only sample no longer stops the batch ("Jev-error stop", Corrections 2).
 
+v4, corrected again before any outcome of a v4 batch was read: the cancelled-sample check no longer numbers the judged entries; the entry nearest in time to the failed request must be within 1,000 ms of it and have no `off-task` ("Jev-error stop", Corrections 3).
+
 ## The stopped v3 batches
 
 The v3 batches, `deepseek/deepseek-flash` and `claude-bridge/claude-sonnet-5-5`, were stopped by the owner for cost about 13 minutes in: `deepseek/deepseek-flash` after 57 recorded runs and `claude-bridge/claude-sonnet-5-5` after 45. They are a stopped pilot: their folders stay out of version control, their outcomes are not analysed, and nothing in this registration, in a decision, or in the analysis uses them.
@@ -158,10 +160,12 @@ sample**, and does not stop the batch, when all of these hold: the ledger shows 
 1 failed request; `lastFailure.code` in the run's `auth-state.json` is `aborted` and its
 `at` is within the run; no trace entry shows a fallback, judgments off, or a failed Jev
 request (the wordings `typesafe error`, `typesafe: <error>`, `TypeSafe unavailable`,
-`approval request failed`, `error: <reason>`, `skipReason: error`, and a security output
-`not judged`); and, with the action entries that carry a `jev:` line numbered 1, 2, 3, … in
-each pi process of the run, exactly one of the entries numbered 1, 21, 41, … has a `jev:`
-line without `off-task`. Such a run is recorded with `cancelledTraceSamples: 1` and counts.
+`approval request failed`, `error: <reason>`, and `skipReason: error`); and, among the action entries
+that carry a `jev:` line, the one recorded nearest in time to `lastFailure.at` is at most 1,000 ms
+from it and its `jev:` line has no `off-task` (when two entries are equally near, both must lack
+it). Corrections 3 replaced the entry-number check of Corrections 2 with this same-moment check and
+removed the security output `not judged` from the wordings. Such a run is recorded with
+`cancelledTraceSamples: 1` and counts.
 Every other failure stops the batch as before.
 
 A stop is recorded under
@@ -437,3 +441,35 @@ outcome to choose the concurrency, the timeouts, or the sizes.
    **Cost.** A run's Jev dollars come from its ledger, as for every run. The cancelled request
    may still have been billed, and its tokens are not in the ledger, so the dollars of a run
    with `cancelledTraceSamples` can be a little low. The report states how many runs have it.
+
+3. 2026-10-03, with 110 of the 360 model-A runs recorded, before any outcome of a v4 batch was
+   read. The model-A batch, resumed on 2026-10-03 at 05:51Z under Corrections 2, was stopped
+   by hand to change the cancelled-sample check of "Jev-error stop"; the numbers below are
+   infrastructure records (the trace and ledger files that Corrections 2's rule reads), not task
+   outcomes. Model B had not started.
+   **Why.** Corrections 2 finds the sampled call by its entry number: with the action entries that
+   carry a `jev:` line numbered 1, 2, 3, … in each pi process, exactly one of entries 1, 21, 41, …
+   must lack `off-task`. The records show that number is wrong in some tasks. Of the 79 judged pi
+   processes in `warden` runs with 0 failed requests, in 4 the off-task answer is on entry 2, not
+   entry 1: `t15-deploy` (process 1, in two runs) and `t17-clip-arc` (process 2,
+   in two runs). One `t19-secret-arc` run has 0 failed requests and a security `jev:` line containing
+   `not judged`. So a cancelled sample in a `t17-clip-arc` or `t19-secret-arc` run would stop the batch with
+   nobody watching, and in `t15-deploy` the number check passes, so another failure that leaves
+   no trace line would be let through.
+   **Check.** The numbering is removed. Among the action entries that carry a `jev:` line, the one
+   recorded nearest in time to `lastFailure.at` must be at most 1,000 ms from it, and its `jev:` line
+   must have no `off-task`. The guard awaits the trace sample after the acting answer, so when the
+   sample's deadline cancels it, the sampled call's verdict is recorded at once. In the run that
+   stopped the batch on 2026-10-01, `lastFailure.at` and the sampled call's entry are the same
+   millisecond. Applied to that run's recovered records (its start and end taken from its trace),
+   the new check says it is a cancelled sample. The security output `not judged` is no longer on
+   the list of failure wordings: it appears in runs with 0 failed requests, and the same-moment check
+   already shows that the one failed request was the sample. The other conditions are unchanged:
+   exactly 1 failed request in the ledger, code `aborted`, `at` within the run, no judgments off, and
+   no failure wording in the trace.
+   **Decision.** The owner decided this change. The batch was stopped to apply it at 110 recorded
+   runs of model A, with 250 to go; no outcome had been read.
+   **Resume.** The batch resumes from its record. The runs recorded so far stay as they are.
+   From the resume on, the supervisor script copies the records of a stopped run (the run that
+   `runs.json` names under `stoppedBy`) into a folder of its own in the batch folder and shows a
+   macOS notification when a model is DONE or STOPPED.
