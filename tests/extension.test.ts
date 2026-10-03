@@ -4503,7 +4503,7 @@ test("judgments off: an unknown typesafeBackend name is refused with the message
   await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: "azure", rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("bash", { command: "npm test" });
   await toolCall("bash", { command: "npm run lint" });
-  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend \"azure\". Valid backends: typesafe, openrouter, commandcode.)"], "said once, carrying pi-typesafe's refusal message");
+  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend \"azure\". Valid backends: typesafe, openrouter, commandcode, liquid.)"], "said once, carrying pi-typesafe's refusal message");
   assert.equal(networkCalls, 0, "no client is created and nothing is sent");
   assert.equal(requests.length, 0);
   await runCommand("status");
