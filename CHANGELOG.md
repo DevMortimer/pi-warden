@@ -6,6 +6,16 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 1.1.0
+
+### Added
+
+- `"typesafeBackend": "liquid"` sends judgments to Liquid AI (api.liquid.ai, key in `LIQUID_API_KEY`, default model `d1:free`) through pi-typesafe 0.9.0. `d1:free` is free but slow (median about 14 seconds a request against the 5-second default `timeoutMs`), and the paid `d1` counts the state once per question, so a 7-question action request costs several times what it costs on Jev; see [docs/configuration.md](docs/configuration.md#liquid-ai-backend).
+
+### Changed
+
+- pi-typesafe `^0.9.0` (was `^0.8.0`).
+
 ## 1.0.1
 
 ### Fixed
