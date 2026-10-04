@@ -6,6 +6,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 1.1.1
+
+### Fixed
+
+- `scripts/live-smoke.mjs` and `scripts/security-cases.mjs` no longer crash when a verdict has no off-task answer, which is now the usual case: the acting request does not ask `off_task`, only the trace sample does. The missing value prints as `-`.
+- The three off-task cases in `scripts/security-cases.mjs` (side comment, take over previous work, new instruction overrides history) pass `traceSample: 1`, so every call asks the off-task question and the cases test its answer again.
+
 ## 1.1.0
 
 ### Added
