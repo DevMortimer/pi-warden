@@ -775,11 +775,21 @@ Two agent tools let the agent hand warden what it must not lose in a long sessio
 
 ## Token Guardian observer
 
-### Pending synthetic-v2 calibration (not measured)
+### Synthetic-v2 observer calibration (2026-10-06, measured)
 
-The candidate questions are frozen at SHA-256 `3fe9064f0de2f6e96373a1942dcba524c0ceb66bb1c9ebd5a98b86f281e11d5e`. Thirty new synthetic-v2 rows are frozen before the run: 15 development and 15 held-out, each split with three of each label (healthy, loop, no_progress, safe_to_resume, unavailable). They exercise early discovery, thresholds (6 repeats, 3 equivalent errors, 20 reads), recent versus stale progress, provider retries and repeated failures, and unavailable MCP. Counters are evidence, not instructions; no private fields are added. Inverse progress is now eligible only with 60 seconds since progress, or with no material progress and observed spend at least half the soft limit.
+The candidate questions were frozen at SHA-256 `3fe9064f0de2f6e96373a1942dcba524c0ceb66bb1c9ebd5a98b86f281e11d5e`. Thirty synthetic-v2 rows were frozen before the run: 15 development and 15 held-out, each split with three of each label (healthy, loop, no_progress, safe_to_resume, unavailable). They exercise early discovery, thresholds (6 repeats, 3 equivalent errors, 20 reads), recent versus stale progress, provider retries and repeated failures, and unavailable MCP. Counters are evidence, not instructions; no private fields are added. Inverse progress is eligible only with 60 seconds since progress, or with no material progress and observed spend at least half the soft limit.
 
-**Pending; no v2 paid requests or measurements have been made.** One future paid run only, no retries: incremental cap $0.01, with $0.000350 prior spend tracked in the combined guard. The pre-run activation criteria are anomaly precision ≥0.90, anomaly recall ≥0.70, zero false safe resume for unsafe/MCP, and safe-resume precision 1.0 at the existing P ≥0.90 and confidence ≥0.80 gates. A passing synthetic run would require review, not automatic activation; production remains **trace-only/unavailable** until measured results are recorded and separately approved. The v1 results below remain historical and do not establish a v2 result.
+The completed one-shot run used model `jev-1.13.0`: **30 requests**, 26,211 input and 3,300 output tokens. Incremental estimated spend was **$0.001104**; combined with the tracked $0.000350 prior spend, **$0.001454**. No retry was made. At the unchanged P ≥0.90 and confidence ≥0.80 gates, every row was gated **unavailable**:
+
+| expected / gated prediction | unavailable (development) | unavailable (holdout) | unavailable (total) |
+| --- | ---: | ---: | ---: |
+| healthy | 3 | 3 | 6 |
+| loop | 3 | 3 | 6 |
+| no_progress | 3 | 3 | 6 |
+| safe_to_resume | 3 | 3 | 6 |
+| unavailable | 3 | 3 | 6 |
+
+Anomaly TP=0, FP=0, FN=12: precision **n/a**, recall **0**. False safe resume=0; safe-resume precision **n/a**. The frozen activation gate (anomaly precision ≥0.90, anomaly recall ≥0.70, zero false safe resume for unsafe/MCP, and safe-resume precision 1.0) was **NOT MET**. A passing synthetic run would still require separate review, not automatic activation. Production remains **trace-only/unavailable**; no threshold or enforcement change follows this measurement. The v1 results below are separate historical evidence.
 
 ### Synthetic observer calibration (2026-10-06)
 
@@ -797,7 +807,7 @@ At the unchanged P >= 0.90 and confidence >= 0.80 gates, aggregate confusion cou
 
 Anomaly TP 1, FP 1, FN 2: precision 50%, recall 33.3%. Policy is frozen as question SHA-256 `bbf5b1e20d38e54949d1c633bd0b2cb4490be385325531c2249a989f4a39ca66`, model `jev-1.13.0`, gates 0.90/0.80, **trace-only/unavailable**. No gate was lowered. These synthetic labels alone cannot establish production accuracy.
 
-When `pi-subagents` emits a version-1 evaluation trigger, Warden synchronously validates its metrics and claims an asynchronous answer only if `subagent.observer` is on, Jev consent and a usable key exist, and the shared request budget and judge cooldown permit it. **One claimed trigger makes at most one Jev request**, containing exactly five Noul questions: repetition without progress, equivalent-failure loop, excessive reading, material progress, and safety of resuming after failure. A status tick makes no request. The answer's estimated microdollar cost is returned to Guardian for its recursive budget; Guardian alone decides whether to pause, resume, stop, signal, or write a ledger entry. The synthetic-v1 calibration below did not establish sufficient anomaly precision. The listener is **trace-only/unavailable**: it does not claim events or spend requests, and Guardian cannot enforce an observer answer. Do not treat a judgment as proof or authorization.
+When `pi-subagents` emits a version-1 evaluation trigger, Warden synchronously validates its metrics and claims an asynchronous answer only if `subagent.observer` is on, Jev consent and a usable key exist, and the shared request budget and judge cooldown permit it. **One claimed trigger makes at most one Jev request**, containing exactly five Noul questions: repetition without progress, equivalent-failure loop, excessive reading, material progress, and safety of resuming after failure. A status tick makes no request. The answer's estimated microdollar cost is returned to Guardian for its recursive budget; Guardian alone decides whether to pause, resume, stop, signal, or write a ledger entry. Neither the synthetic-v1 nor synthetic-v2 calibration established the frozen activation gate. The listener is **trace-only/unavailable**: it does not claim events or spend requests, and Guardian cannot enforce an observer answer. Do not treat a judgment as proof or authorization.
 
 Only allow-listed redacted metrics are sent (see [data handling](data-handling.md#token-guardian-observer)) when a calibrated policy is active. Invalid events, trace-only policy, absent/disabled Warden, no consent or key, exhausted budget, active cooldown, malformed answers, timeout, and network errors **fail unavailable, never healthy**. A claimed trigger is consumed even if its request fails; no replay, notification, wake, or steer follows an observer error. Report triage below is separate and retains its own wake settings.
 
