@@ -51,7 +51,7 @@
     "image": "https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/prune-dist.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --import ./tests/setup-env.ts --test tests/*.test.ts",
     "test:bun": "bun test tests/sqlite-adapter.test.ts tests/learning.test.ts",
