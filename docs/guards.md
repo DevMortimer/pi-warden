@@ -775,6 +775,12 @@ Two agent tools let the agent hand warden what it must not lose in a long sessio
 
 ## Token Guardian observer
 
+### Pending synthetic-v2 calibration (not measured)
+
+The candidate questions are frozen at SHA-256 `3fe9064f0de2f6e96373a1942dcba524c0ceb66bb1c9ebd5a98b86f281e11d5e`. Thirty new synthetic-v2 rows are frozen before the run: 15 development and 15 held-out, each split with three of each label (healthy, loop, no_progress, safe_to_resume, unavailable). They exercise early discovery, thresholds (6 repeats, 3 equivalent errors, 20 reads), recent versus stale progress, provider retries and repeated failures, and unavailable MCP. Counters are evidence, not instructions; no private fields are added. Inverse progress is now eligible only with 60 seconds since progress, or with no material progress and observed spend at least half the soft limit.
+
+**Pending; no v2 paid requests or measurements have been made.** One future paid run only, no retries: incremental cap $0.01, with $0.000350 prior spend tracked in the combined guard. The pre-run activation criteria are anomaly precision ≥0.90, anomaly recall ≥0.70, zero false safe resume for unsafe/MCP, and safe-resume precision 1.0 at the existing P ≥0.90 and confidence ≥0.80 gates. A passing synthetic run would require review, not automatic activation; production remains **trace-only/unavailable** until measured results are recorded and separately approved. The v1 results below remain historical and do not establish a v2 result.
+
 ### Synthetic observer calibration (2026-10-06)
 
 Synthetic fixture version `synthetic-v1`; 12 batched five-question TypeSafe requests, model `jev-1.13.0`; input tokens 7,627, output tokens 1,320; estimated USD **$0.000323** (microdollar-rounded request totals). The local pre-request calibration ceiling was $0.08 within the $0.10 combined authorization, leaving **$0.099677** of the total and $0.02 reserved for the already-authorized Task 5 smoke. No Task 5 request was made here.

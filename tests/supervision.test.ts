@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 // @ts-expect-error calibration fixtures are an executable JavaScript module
-import { cases, fixtureVersion } from "../scripts/supervision-cases.mjs";
+import { cases, developmentCases, holdoutCases, fixtureVersion } from "../scripts/supervision-cases.mjs";
 // @ts-expect-error the calibration runner is an executable JavaScript module
-import { calibrate, calibrationCeilingUsd, canRequestCalibration, requestReserveUsd } from "../scripts/supervision-calibrate.mjs";
+import { calibrate, calibrationCeilingUsd, canRequestCalibration, requestReserveUsd, priorSpendUsd, activationCriteria, claimCalibrationMarker } from "../scripts/supervision-calibrate.mjs";
 import { supervisionPolicy, supervisionQuestions } from "../src/supervision.js";
 import { buildSupervisionRequest, evaluateSupervision, validateSupervisionRequest } from "../src/supervision.js";
 import type { RedactedSupervisionMetrics } from "../src/supervision.js";
@@ -28,8 +31,15 @@ function stub(p = probabilities) {
 const options = (judge: ReturnType<typeof stub>["judge"]) => ({ judge, backend: "typesafe" as const, timeoutMs: 1000, now: () => 1000, price: () => 0.042 });
 
 test("synthetic fixtures are bounded redacted v1 evidence and cover each judgment", () => {
-  assert.equal(fixtureVersion, "synthetic-v1");
-  assert.equal(cases.length, 12);
+  assert.equal(fixtureVersion, "synthetic-v2");
+  assert.equal(cases.length, 30);
+  assert.equal(developmentCases.length, 15);
+  assert.equal(holdoutCases.length, 15);
+  assert.deepEqual(cases, [...developmentCases, ...holdoutCases]);
+  for (const split of [developmentCases, holdoutCases]) {
+    for (const label of ["healthy", "loop", "no_progress", "safe_to_resume", "unavailable"])
+      assert.equal(split.filter((row: { expected: string }) => row.expected === label).length, 3);
+  }
   assert.deepEqual(new Set(cases.map((row: { expected: string }) => row.expected)), new Set(["healthy", "loop", "no_progress", "safe_to_resume", "unavailable"]));
   for (const row of cases) {
     assert.deepEqual(validateSupervisionRequest(envelope(row.metrics)), envelope(row.metrics));
@@ -40,18 +50,35 @@ test("synthetic fixtures are bounded redacted v1 evidence and cover each judgmen
 
 test("calibration policy pins questions and keeps a reserve for the later live smoke", () => {
   const hash = createHash("sha256").update(JSON.stringify(supervisionQuestions)).digest("hex");
-  assert.equal(hash, "bbf5b1e20d38e54949d1c633bd0b2cb4490be385325531c2249a989f4a39ca66");
+  assert.equal(hash, "3fe9064f0de2f6e96373a1942dcba524c0ceb66bb1c9ebd5a98b86f281e11d5e");
   assert.equal(supervisionPolicy.questionHash, hash);
   assert.equal(supervisionPolicy.enforcement, "trace_only");
   assert.equal(supervisionPolicy.model, "jev-1.13.0");
   assert.equal(supervisionPolicy.probabilityThreshold, 0.90);
   assert.equal(supervisionPolicy.confidenceThreshold, 0.80);
-  assert.equal(calibrationCeilingUsd, 0.08);
-  assert.equal(requestReserveUsd, 0.006);
-  assert.equal(canRequestCalibration(0.073, 0.006), true);
-  assert.equal(canRequestCalibration(0.075, 0.006), false);
-  assert.equal(canRequestCalibration(0.08, 0), false);
+  assert.equal(calibrationCeilingUsd, 0.01);
+  assert.equal(priorSpendUsd, 0.000350);
+  assert.equal(requestReserveUsd, 0.0003);
+  assert.deepEqual(activationCriteria, { anomalyPrecision: 0.90, anomalyRecall: 0.70, falseSafeResume: 0, safeResumePrecision: 1 });
+  assert.equal(canRequestCalibration(0.0097), true);
+  assert.equal(canRequestCalibration(0.00971), false);
+  assert.equal(canRequestCalibration(0.01, 0), false);
   assert.equal(canRequestCalibration(NaN), false);
+});
+
+test("exclusive calibration marker claims only once in isolated owner data", () => {
+  const temp = mkdtempSync(join(tmpdir(), "warden-calibration-marker-"));
+  try {
+    const dir = join(temp, "agent", "pi-warden");
+    const marker = join(dir, ".supervision-calibration-v2-run");
+    claimCalibrationMarker(marker);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    assert.equal(statSync(marker).mode & 0o777, 0o600);
+    assert.throws(() => claimCalibrationMarker(marker), { code: "EEXIST" });
+    assert.equal(statSync(marker).mode & 0o777, 0o600);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 test("offline calibration batches one request per row without logging submitted metrics", async () => {
@@ -61,9 +88,31 @@ test("offline calibration batches one request per row without logging submitted 
   assert.equal(report.requests, 2);
   assert.equal(requests.length, 2);
   assert.equal(report.inputTokens, 200);
+  assert.equal(report.combinedSpendUsd, priorSpendUsd + report.spentUsd);
+  assert.equal(report.passes, false);
+  assert.equal(report.safeResumePrecision, null);
+  assert.ok(lines.some(line => line.includes("frozen activation gate=not met")));
   assert.ok(lines.every(line => !line.includes("synthetic-guardian") && !line.includes("rootId") && !line.includes("state")));
-  await assert.rejects(calibrate({ judge, rows: [...cases, cases[0]], print: () => {} }), /twelve requests/);
+  await assert.rejects(calibrate({ judge, rows: [...cases, cases[0]], print: () => {} }), /thirty requests/);
   assert.equal(requests.length, 2);
+});
+
+test("full offline v2 run reports separately frozen development and holdout matrices", async () => {
+  const report = await calibrate({ judge: stub().judge, print: () => {} });
+  assert.equal(report.requests, 30);
+  for (const split of ["development", "holdout"]) {
+    for (const label of ["healthy", "loop", "no_progress", "safe_to_resume", "unavailable"])
+      assert.equal(Object.values(report.splitMatrices[split][label] as Record<string, number>).reduce((a, b) => a + b, 0), 3);
+  }
+  assert.equal(report.passes, false);
+});
+
+test("unsafe paused retries and unavailable MCP cannot count as safe resume in calibration", async () => {
+  const unsafe = cases.filter((row: { expected: string }) => row.expected === "unavailable");
+  const report = await calibrate({ judge: stub([0.1, 0.1, 0.1, 0.9, 0.99]).judge, rows: unsafe, print: () => {} });
+  assert.equal(report.falseSafeResume, unsafe.length);
+  assert.equal(report.safeResumePrecision, 0);
+  assert.equal(report.passes, false);
 });
 
 test("only exact bounded redacted v1 metrics pass validation", () => {
@@ -92,6 +141,10 @@ test("one request has exactly five pinned Noul questions and only redacted state
   assert.deepEqual(request.state, metrics);
   for (const question of Object.values(request.questions)) assert.equal(question.type, "noul");
   assert.match(request.questions.is_failure_loop.instructions as string, /evidence/i);
+  assert.match(request.questions.is_repeating_without_progress.instructions as string, /6 or more/);
+  assert.match(request.questions.is_failure_loop.instructions as string, /3 or more/);
+  assert.match(request.questions.is_reading_beyond_reasonable_discovery.instructions as string, /20 or more/);
+  assert.match(request.questions.is_safe_to_resume_after_failure.instructions as string, /unavailable/);
 });
 
 test("one ask maps healthy and charges input tokens at injected backend price", async () => {
@@ -106,7 +159,10 @@ test("failure gate has priority; active anomaly priority is failure loop, repeti
     [{ ...metrics, progress: { ...metrics.progress, equivalentErrorCount: 3, repeatedOperationCount: 6 } }, [0.93, 0.93, 0.1, 0.9, 0.1], "loop", 0.93],
     [{ ...metrics, progress: { ...metrics.progress, repeatedOperationCount: 6 } }, [0.91, 0.1, 0.9, 0.9, 0.1], "loop", 0.91],
     [{ ...metrics, progress: { ...metrics.progress, readsSinceProgress: 20 } }, [0.1, 0.1, 0.91, 0.09, 0.1], "no_progress", 0.91],
-    [metrics, [0.1, 0.1, 0.2, 0.04, 0.1], "no_progress", 0.96],
+    [{ ...metrics, progress: { ...metrics.progress!, lastProgressAgeMs: 60_000 } }, [0.1, 0.1, 0.2, 0.04, 0.1], "no_progress", 0.96],
+    [metrics, [0.1, 0.1, 0.2, 0.04, 0.1], "healthy", 0.8],
+    [{ ...metrics, progress: { ...metrics.progress!, materialProgressCount: 0, lastProgressAgeMs: null }, observedCostUsd: 0.5 }, [0.1, 0.1, 0.2, 0.04, 0.1], "no_progress", 0.96],
+    [{ ...metrics, progress: { ...metrics.progress!, materialProgressCount: 0, lastProgressAgeMs: 59_999 }, observedCostUsd: 0.499 }, [0.1, 0.1, 0.2, 0.04, 0.1], "healthy", 0.8],
     [{ ...metrics, progress: { ...metrics.progress!, equivalentErrorCount: 3, repeatedOperationCount: 6, readsSinceProgress: 20 } }, [0.9, 0.9, 0.9, 0.1, 0.1], "loop", 0.9],
   ] as const) {
     const result = await evaluateSupervision(m, options(stub([...p]).judge));
