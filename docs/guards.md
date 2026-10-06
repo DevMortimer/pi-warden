@@ -773,6 +773,12 @@ Two agent tools let the agent hand warden what it must not lose in a long sessio
   Loops are stored per session and per project in pi-warden's data folder, so they survive compaction and resume; a loop of one session never shows in another session or another project. `/warden loops` lists them for the user.
 - **`warden_recall`** answers "what did I already try?" for this session: the failed attempts with their error lines, the last passing check with whether the code changed since, and the saved-output paths. It prints the same section text the compaction appendix builds from the same session state, so the two never disagree. Read-only; it takes no arguments.
 
+## Token Guardian observer
+
+When `pi-subagents` emits a version-1 evaluation trigger, Warden synchronously validates its metrics and claims an asynchronous answer only if `subagent.observer` is on, Jev consent and a usable key exist, and the shared request budget and judge cooldown permit it. **One claimed trigger makes at most one Jev request**, containing exactly five Noul questions: repetition without progress, equivalent-failure loop, excessive reading, material progress, and safety of resuming after failure. A status tick makes no request. The answer's estimated microdollar cost is returned to Guardian for its recursive budget; Guardian alone decides whether to pause, resume, stop, signal, or write a ledger entry. These questions have not yet been calibrated; do not treat the judgment as proof or authorization.
+
+Only allow-listed redacted metrics are sent (see [data handling](data-handling.md#token-guardian-observer)). Invalid events, absent/disabled Warden, no consent or key, exhausted budget, active cooldown, malformed answers, timeout, and network errors **fail unavailable, never healthy**. A claimed trigger is consumed even if its request fails; no replay, notification, wake, or steer follows an observer error. Report triage below is separate and retains its own wake settings.
+
 ## Subagent triage
 
 Async subagents report as custom messages (`subagent-notify`, `subagent-incremental-child-notify`, and the control and supervisor variants), and Pi appends each one to the main agent's context itself. warden cannot hold those messages back, so the decision is narrower: does this report need the agent awake? The scan runs on `agent_settled`, when Pi will not continue on its own, which is the one moment a wake costs nothing.

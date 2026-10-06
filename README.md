@@ -83,6 +83,7 @@ Every guard and feature, its default, and its status. Defaults are `defaultConfi
 | ↳ Session tip | Adds one paragraph about call cost to the system prompt | Off. `waste.tip` | Stable |
 | [Open loops and recall](docs/guards.md#open-loops-and-recall) | `warden_loops` keeps the agent's promises; `warden_recall` lists what it already tried | On, no switch | Stable |
 | [Subagent triage](docs/guards.md#subagent-triage) | Wakes the agent only for a subagent report that needs it | On | Stable |
+| [Token Guardian observer](docs/guards.md#token-guardian-observer) | Answers claimed redacted supervision triggers; Guardian alone controls workers | On with Jev consent | Uncalibrated |
 | [Judge cooldown](docs/guards.md#judge-cooldown) | Pauses Jev requests after repeated failures, so a dead backend costs no timeouts | On, no switch | Stable |
 | [Steer budget](docs/guards.md#steer-messages) | At most 3 non-critical steers per run; the rest go to the trace | On | Stable |
 | [Adaptive steers](docs/guards.md#adaptive-steers-per-model) | Makes a steer kind trace-only for a model that rarely follows or often disputes it | On | Stable |

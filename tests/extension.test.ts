@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
-import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createEventBus, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
 import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
@@ -18,6 +18,17 @@ import { indexPath } from "../src/index-cmd.js";
 
 let temporary: string;
 let extension: Extension;
+const events = createEventBus();
+const supervisionMetrics = () => ({ rootId: "root-1", role: "worker", lifecycle: "active", reason: null, continuationPlan: null,
+  observedCostUsd: 0.1, observerCostUsd: 0, softLimitUsd: 1, hardLimitUsd: 2, descendantCount: 0,
+  progress: { materialProgressCount: 1, readsSinceProgress: 0, writesSinceProgress: 0, repeatedOperationCount: 0, equivalentErrorCount: 0, lastOperationSignature: null, lastProgressAgeMs: 10 },
+  mcp: { state: "unknown", capabilityCount: null } });
+const emitSupervision = (metrics: unknown = supervisionMetrics()) => {
+  let claimed: Promise<unknown> | undefined;
+  const request = { version: 1, metrics, claim: (result: Promise<unknown>) => { if (claimed) return false; claimed = result; return true; } };
+  events.emit("pi-subagents/supervision-evaluate/v1", request);
+  return claimed;
+};
 let command: RegisteredCommand;
 const savedKey = process.env.TYPESAFE_API_KEY;
 const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -243,7 +254,7 @@ before(async () => {
   const loader = new DefaultResourceLoader({
     cwd: temporary,
     agentDir: join(temporary, "agent"),
-    settingsManager: SettingsManager.inMemory(),
+    settingsManager: SettingsManager.inMemory(), eventBus: events,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     additionalExtensionPaths: [resolve("src/extension.ts")],
   });
@@ -285,6 +296,82 @@ after(async () => {
   if (savedMode === undefined) delete process.env.PI_WARDEN_MODE; else process.env.PI_WARDEN_MODE = savedMode;
   if (savedDb === undefined) delete process.env.PI_WARDEN_DB; else process.env.PI_WARDEN_DB = savedDb;
   if (temporary) await rm(temporary, { recursive: true, force: true });
+});
+
+test("supervision observer claims synchronously and batches five redacted questions in one async request", async () => {
+  await grantConsent();
+  nextAnswers.has_material_progress = 0.9;
+  holdNextJudge();
+  const result = emitSupervision();
+  assert.ok(result, "claimed during synchronous event dispatch");
+  await waitFor(() => networkCalls === 1, "observer request");
+  assert.equal(answeredRequests, 0);
+  releaseJudge!();
+  const judgment = await result;
+  assert.equal((judgment as { kind: string }).kind, "healthy");
+  assert.equal(networkCalls, 1);
+  assert.deepEqual(Object.keys(requests[0]!.questions), ["is_repeating_without_progress", "is_failure_loop", "is_reading_beyond_reasonable_discovery", "has_material_progress", "is_safe_to_resume_after_failure"]);
+  assert.deepEqual(requests[0]!.state, supervisionMetrics());
+  assert.equal(sentMessages.length, 0);
+});
+
+test("supervision observer skips disabled, invalid, nonconsented and unavailable judge without claiming", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, subagent: { observer: false } }));
+  assert.equal(emitSupervision(), undefined);
+  await grantConsent();
+  assert.equal(emitSupervision({ ...supervisionMetrics(), path: "/private" }), undefined);
+  await writeConfig(JSON.stringify({ typesafe: false }));
+  assert.equal(emitSupervision(), undefined);
+  delete process.env.TYPESAFE_API_KEY;
+  await grantConsent();
+  assert.equal(emitSupervision(), undefined);
+  process.env.TYPESAFE_API_KEY = "offline-test-key";
+  assert.equal(networkCalls, 0);
+});
+
+test("supervision observer does not spend if an earlier EventBus listener owns the claim", async () => {
+  await grantConsent();
+  // Another synchronous listener may already own the claim.
+  let offered = 0;
+  events.emit("pi-subagents/supervision-evaluate/v1", { version: 1, metrics: supervisionMetrics(), claim: (_promise: Promise<unknown>) => { offered++; return false; } });
+  assert.equal(offered, 1);
+  await tick();
+  assert.equal(networkCalls, 0);
+});
+
+test("supervision observer does not claim when shared request budget is spent", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, maxRequests: 1 }));
+  assert.ok(await emitSupervision());
+  assert.equal(networkCalls, 1);
+  assert.equal(emitSupervision(), undefined);
+  assert.equal(networkCalls, 1);
+});
+
+test("supervision observer does not claim when a daily request cap is blocked", async () => {
+  const previous = process.env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY;
+  process.env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY = "1";
+  try {
+    await writeConfig(JSON.stringify({ typesafe: true, maxRequests: 500 }));
+    await sessionStart(); // Recreate the client with the daily cap from the environment.
+    assert.ok(await emitSupervision());
+    assert.equal(networkCalls, 1);
+    assert.equal(emitSupervision(), undefined, "a blocked day cap must prevent claiming, not merely fail after claiming");
+    assert.equal(networkCalls, 1);
+  } finally {
+    if (previous === undefined) delete process.env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY;
+    else process.env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY = previous;
+  }
+});
+
+test("supervision observer failures resolve unavailable quietly and cooldown prevents the next claim", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, judge: { failuresBeforeCooldown: 1, cooldownMs: 60000 } }));
+  failNetwork = true;
+  const result = emitSupervision();
+  assert.ok(result);
+  assert.equal(await result, undefined);
+  assert.equal(emitSupervision(), undefined);
+  assert.equal(notices.length, 0);
+  assert.equal(sentMessages.length, 0);
 });
 
 test("PI_WARDEN_DB is set and not under the real home directory", () => {
@@ -347,6 +434,9 @@ test("action rules context is disclosed, rides the request only while a violatio
     assert.match(disclosure, /only while a rule violation is open/i);
     assert.match(disclosure, /short continuation or a relayed child report, which send nothing/i);
     assert.doesNotMatch(disclosure, /with every action request/i);
+    assert.match(disclosure, /Token Guardian.*allow-listed redacted metrics.*root ID.*role.*lifecycle.*pause reason.*failure continuation plan.*observed USD cost.*observer USD cost.*soft and hard USD limits.*descendant count/i);
+    assert.match(disclosure, /progress material-progress count.*reads and writes since progress.*repeated-operation count.*equivalent-error count.*SHA-256 operation signature.*age since last progress.*MCP availability state.*capability count/i);
+    assert.match(disclosure, /Token Guardian.*excludes.*prompt text.*source code.*raw commands.*command results.*filesystem paths.*raw errors.*credentials/i);
   } finally { await rm(rulesFile); }
 });
 

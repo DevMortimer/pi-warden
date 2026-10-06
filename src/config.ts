@@ -340,6 +340,8 @@ export interface NotifyConfig {
 }
 
 export interface SubagentConfig {
+  /** Observe redacted Token Guardian evaluation events; independent of report triage. */
+  observer: boolean;
   /** Read async subagent reports at all. Off: warden ignores them, as before 0.14. */
   enabled: boolean;
   /** Ask Jev whether a report that names trouble deserves a wake. Off keeps the offline layer, which never wakes. */
@@ -561,7 +563,7 @@ export function defaultConfig(): WardenConfig {
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
     judge: { cooldownMs: 60000, failuresBeforeCooldown: 3 },
-    subagent: { enabled: true, wake: true, threshold: 0.8, cooldownMs: 120000 },
+    subagent: { enabled: true, wake: true, observer: true, threshold: 0.8, cooldownMs: 120000 },
     widget: defaultWidgetConfig(),
     steerVisible: false,
     notices: false,
@@ -931,7 +933,7 @@ function applyJudge(base: JudgeConfig, raw: unknown): JudgeConfig {
 function applySubagent(base: SubagentConfig, raw: unknown): SubagentConfig {
   if (!isObject(raw)) return base;
   const cooldown = typeof raw.cooldownMs === "number" && Number.isSafeInteger(raw.cooldownMs) && raw.cooldownMs >= 0 ? raw.cooldownMs : base.cooldownMs;
-  return { enabled: boolean(raw.enabled, base.enabled), wake: boolean(raw.wake, base.wake), threshold: probability(raw.threshold, base.threshold), cooldownMs: cooldown };
+  return { enabled: boolean(raw.enabled, base.enabled), wake: boolean(raw.wake, base.wake), observer: boolean(raw.observer, base.observer), threshold: probability(raw.threshold, base.threshold), cooldownMs: cooldown };
 }
 
 function applyDone(base: DoneGuardConfig, raw: unknown): DoneGuardConfig {

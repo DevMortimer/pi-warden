@@ -91,8 +91,9 @@ import type { GuardName, TraceEntry } from "./trace.js";
 import { TraceFile, judgmentsState, traceDir, traceFilePath } from "./trace-file.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, rulesTokens, SENTENCE_TEMPLATES, TOKEN_NAMES } from "./widget.js";
 import { statusWidget } from "./widget-render.js";
+import { evaluateSupervision, validateSupervisionRequest } from "./supervision.js";
 
-export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); one judged action call in twenty (`action.traceSample`, default 0.05) also sends a second request for diagnostics that carries up to eight redacted earlier user/assistant text messages and the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens); on every other call that rules content rides the acting request only while a rule violation is open on the call; none of it is sent unless the rules guard is on (`rules.enabled: false` keeps it on this machine); for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); with the context filter on (`context.filter`, off by default), the redacted text of a large tool output in chunks, with the call's command and the agent's stated plan; before each new user message, when the rules guard is on (except for a short continuation or a relayed child report, which send nothing), your new request (1500 redacted characters), the same task spine, and every rule of the active rules source (each rule's heading, its text clipped at 300 characters, and its `paths:` scope), one question per rule, so Jev can say which of them apply; a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them; and, only for a call that is held after an earlier hold, once your reply came in, one approval request with your reply, up to 3000 redacted characters of the agent's text in the turn before it (every assistant message after your previous message), the redacted call summary, and the reasons for the hold (pattern names and scores), so Jev can say whether your reply approves that call. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample, so Jev can say which to keep word for word. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (a hold is kept 365 days and an allowed call 90, both configurable). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
+export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to api.typesafe.ai: your latest request, the task spine it is judged against (the first request of the thread and up to four redacted earlier requests), plus a redacted, truncated summary of each guarded bash, write, or edit call before it runs, with the agent's own words from the message that makes the call (its stated plan); one judged action call in twenty (`action.traceSample`, default 0.05) also sends a second request for diagnostics that carries up to eight redacted earlier user/assistant text messages and the resolved active rules file content (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback, token-aware truncated at ~4000 tokens); on every other call that rules content rides the acting request only while a rule violation is open on the call; none of it is sent unless the rules guard is on (`rules.enabled: false` keeps it on this machine); for a write or edit (or a bash command that writes a file with its content in the command) in a project with a rules file (pi-warden.md, the configured files, or README/CLAUDE/AGENTS as fallback), a larger redacted sample of the written content with the current file around each edit and the rule text; the last few tool calls and output tails when the agent keeps failing; the agent's final message when it reports completion without running checks; redacted tool-output samples for security and context saving (retention and output format); with the context filter on (`context.filter`, off by default), the redacted text of a large tool output in chunks, with the call's command and the agent's stated plan; before each new user message, when the rules guard is on (except for a short continuation or a relayed child report, which send nothing), your new request (1500 redacted characters), the same task spine, and every rule of the active rules source (each rule's heading, its text clipped at 300 characters, and its `paths:` scope), one question per rule, so Jev can say which of them apply; a redacted sample of an async subagent report that names a failure, a stop, or a question, with your latest request, when warden decides whether that report should wake the agent; on the first guarded call after your reply, the redacted summaries of the calls allowed in the previous turn, so Jev can say whether your reply regrets one of them; and, only for a call that is held after an earlier hold, once your reply came in, one approval request with your reply, up to 3000 redacted characters of the agent's text in the turn before it (every assistant message after your previous message), the redacted call summary, and the reasons for the hold (pattern names and scores), so Jev can say whether your reply approves that call. With relevance compaction on (`compaction.enabled`, off by default), at each compaction: the same latest request and task spine, a redacted outline of the conversation being compacted (user and assistant text clipped, one line per tool call), and for each tool call, extension message, and earlier-summary part a redacted 500-character input and a 1100-character head/tail sample, so Jev can say which to keep word for word. For the Token Guardian observer, only on a claimed supervision trigger with consent, an available judge, and unblocked caps: allow-listed redacted metrics consisting of root ID (bounded opaque identifier), role, lifecycle, pause reason, failure continuation plan, observed USD cost, observer USD cost, soft and hard USD limits, descendant count; progress material-progress count, reads and writes since progress, repeated-operation count, equivalent-error count, SHA-256 operation signature (or null), and age since last progress; MCP availability state and capability count. Token Guardian excludes prompt text, source code, raw commands, command results, filesystem paths, raw errors, credentials, and the worker transcript entirely; the five questions share one request per claimed trigger, and Guardian alone handles enforcement. For the conscience coach (recommend mode): your current request (2000 redacted characters), the same task spine (the first request of the thread and up to four redacted earlier requests), up to four recent user/assistant text messages (500 redacted characters each with roles), and sanitized candidate metadata (skill/tool name, role, lead, useWhen, examples when an index entry matches; bare description otherwise; full skill instructions never go to Jev). The index is built locally by the session model; only sanitized entries reach Jev; advertised locations never do. Compression and duplicate notes store an exact, owner-only copy in a temporary file on this machine; the hold feedback log stores tool names, pattern ids, scores, and outcomes (never commands) in an owner-only file under Pi's agent directory; an owner-only SQLite database under Pi's agent directory stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls, for learning and retention (a hold is kept 365 days and an allowed call 90, both configurable). Requests may incur charges. Secret redaction is best-effort. Results are model judgments, not proof or authorization; offline pattern checks stay active either way.";
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
@@ -339,8 +340,9 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
   // Same shape trap for the subagent section: 0.14 added it, and a stale shape module hands the config over without it.
   if (typeof config.subagent !== "object" || config.subagent === null || !Number.isFinite(config.subagent.threshold)) {
     if (!missing.includes("subagent")) missing.push("subagent");
-    config.subagent = { enabled: false, wake: false, threshold: 1, cooldownMs: 0 };
+    config.subagent = { enabled: false, wake: false, observer: true, threshold: 1, cooldownMs: 0 };
   }
+  if (typeof config.subagent.observer !== "boolean") config.subagent = { ...config.subagent, observer: true };
   if (typeof config.widget.subagent !== "string") config.widget = { ...config.widget, subagent: DEFAULT_TEMPLATES.subagent };
   return { config, missing };
 }
@@ -635,9 +637,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
   };
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
   /** A consent flag is not proof that judgments happen; check the key state for the chosen backend. */
-  const judgeFor = (config: WardenConfig): TypeSafe | undefined => {
+  const judgeFor = (config: WardenConfig, quiet = false): TypeSafe | undefined => {
     const off = judgmentsOffReason(config);
-    noteJudgments(config, off);
+    if (!quiet) noteJudgments(config, off);
     if (off) return undefined;
     judgeConfig = config;
     // Absent, exactly as with no judge configured, so no guard needs to know a cooldown exists.
@@ -651,7 +653,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     } catch (error) {
       // An endpoint the config accepts can still be unusable (one that names no defaultModel); a hook must never crash.
       const message = error instanceof Error ? error.message : String(error);
-      if (!judgmentsReported.has("bad_backend")) {
+      if (!quiet && !judgmentsReported.has("bad_backend")) {
         judgmentsReported.add("bad_backend");
         traceFile?.judgments(judgmentsState("bad_backend"));
         judgmentsNotify?.(`warden: Jev judgments are off (typesafeBackend refused: ${message})`);
@@ -660,6 +662,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
     return client;
   };
+  // The observer shares the watched client but never sends cooldown notices of its own.
+  const quietSignals = new WeakSet<AbortSignal>();
   /** Every guard reaches the backend through `evaluate`, so this one seam sees each failure and each success. */
   const watched = (typesafe: TypeSafe): TypeSafe => new Proxy(typesafe, {
     get(target, prop, receiver) {
@@ -667,11 +671,15 @@ export default function wardenExtension(host: ExtensionAPI): void {
       return async (...args: Parameters<TypeSafe["evaluate"]>) => {
         try {
           const result = await target.evaluate(...args);
-          tellCooldown(cooldown.success());
+          const event = cooldown.success();
+          if (!args[1]?.signal || !quietSignals.has(args[1].signal)) tellCooldown(event);
           return result;
         } catch (err) {
           const kind = cooldownFailureKind(err, args[1]?.signal);
-          if (kind) tellCooldown(cooldown.failure(kind, judgeConfig?.judge ?? defaultConfig().judge));
+          if (kind) {
+            const event = cooldown.failure(kind, judgeConfig?.judge ?? defaultConfig().judge);
+            if (!args[1]?.signal || !quietSignals.has(args[1].signal)) tellCooldown(event);
+          }
           throw err;
         }
       };
@@ -1073,7 +1081,48 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
   };
 
+  // EventBus listeners must claim during synchronous dispatch; no async work precedes claim.
+  pi.events?.on("pi-subagents/supervision-evaluate/v1", (value: unknown) => {
+    try {
+      if (value === null || typeof value !== "object" || typeof (value as { claim?: unknown }).claim !== "function") return;
+      const request = value as { version?: unknown; metrics?: unknown; claim(result: Promise<unknown>): boolean };
+      const valid = validateSupervisionRequest({ version: request.version, metrics: request.metrics });
+      if (!valid) return;
+      const config = guardCurrentSections(completeConfig(loadConfig({ cwd: sessionCwd, projectTrusted: sessionTrusted, dirs }))).config;
+      if (!config.enabled || !config.subagent.observer) return;
+      const judge = judgeFor(config, true);
+      if (!judge) return;
+      const spend = judge.getSpend();
+      if (spend.blocked || judge.getUsage().requestsStarted >= (spend.caps.maxRequests ?? config.maxRequests)) return;
+      const quietJudge = new Proxy(judge, {
+        get(target, prop, receiver) {
+          if (prop !== "evaluate") return Reflect.get(target, prop, receiver);
+          return (...args: Parameters<TypeSafe["evaluate"]>) => {
+            if (args[1]?.signal) quietSignals.add(args[1].signal);
+            return target.evaluate(...args);
+          };
+        },
+      });
+      // A different listener may have claimed first: only the winning claim may spend a request.
+      let resolveResult!: (result: unknown) => void;
+      const pending = new Promise<unknown>(resolve => { resolveResult = resolve; });
+      if (request.claim(pending)) {
+        queueMicrotask(() => {
+          void evaluateSupervision(valid.metrics, {
+            judge: quietJudge, backend: config.typesafeBackend!, timeoutMs: config.timeoutMs, now: Date.now,
+          }).then(resolveResult, () => resolveResult(undefined));
+        });
+      } else resolveResult(undefined);
+    } catch {
+      // No claim survives a synchronous setup failure; Guardian treats the trigger as unavailable.
+      return;
+    }
+  });
+  let sessionCwd = process.cwd();
+  let sessionTrusted = false;
   pi.on("session_start", async (_event, ctx) => {
+    sessionCwd = ctx.cwd;
+    sessionTrusted = ctx.isProjectTrusted();
     if (ctx.hasUI) lastUi = ctx.ui as unknown as PanelUi;
     noticeUi = ctx.hasUI ? ctx.ui : undefined;
     // Each session hears the config warnings once, from the configFor call below.
