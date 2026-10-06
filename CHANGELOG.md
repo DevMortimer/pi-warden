@@ -6,6 +6,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 1.1.2
+
+### Fixed
+
+- The build removes `dist/` outputs whose `src/` source is gone. `tsc` never deletes an output whose source was removed, so stale files from other branches shipped with `1.1.1`: 17 files (`conscience-config`, `conscience-loader`, `conscience-policy`, `conscience-privacy`, `jev`, `laya-download`, `laya-judge`, `tool-recommendation`, each as `.js` and `.d.ts`, plus `extension.js.bak`) that nothing imports. Users need to do nothing.
+
 ## 1.1.1
 
 ### Fixed
