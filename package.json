@@ -66,7 +66,8 @@
     "eval:judge": "node scripts/judge-bench.mjs",
     "eval:replay": "node scripts/rules-replay.mjs",
     "eval:rules": "node scripts/rules-bench.mjs",
-    "eval:rules-turn": "node scripts/rules-turn-bench.mjs"
+    "eval:rules-turn": "node scripts/rules-turn-bench.mjs",
+    "eval:supervision": "node --import tsx --env-file-if-exists=.env scripts/supervision-calibrate.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.1 <1",

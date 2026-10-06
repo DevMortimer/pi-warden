@@ -6,27 +6,66 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
-import { createEventBus, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, createEventBus, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { authState, createTypeSafe } from "pi-typesafe";
+import type { TypeSafe } from "pi-typesafe";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject } from "../src/learning.js";
 import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
-import { defaultConfig } from "../src/config.js";
+import { defaultConfig, loadConfig } from "../src/config.js";
+import { judgeOptions } from "../src/backend.js";
+import { JudgeCooldown, cooldownFailureKind } from "../src/judge-cooldown.js";
+import { createSupervisionHandler } from "../src/supervision-handler.js";
 import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
 import { _testSetIndexRunning, askedBeforeReply, assistantPlan } from "../src/extension.js";
 import { SHELL_RULES_CHECKS } from "../src/turn-rules.js";
 import { indexPath } from "../src/index-cmd.js";
+import { supervisionPolicy } from "../src/supervision.js";
 
 let temporary: string;
 let extension: Extension;
 const events = createEventBus();
+// Offline-only active handler on Pi's real EventBus; production extension always registers trace-only.
+let observerClient: TypeSafe | undefined;
+const observerCooldown = new JudgeCooldown();
+const quietSignals = new WeakSet<AbortSignal>();
+events.on("pi-subagents/supervision-evaluate/v1", createSupervisionHandler({
+  policy: Object.freeze({ enforcement: "active" as const }),
+  config: () => loadConfig({ cwd: temporary, projectTrusted: true, dirs: { agentDir: join(temporary, "agent"), configDirName: CONFIG_DIR_NAME } }),
+  judge: config => {
+    const backend = config.typesafeBackend;
+    if (!config.enabled || !config.typesafe || !backend || !authState({ backend }).usable || observerCooldown.active()) return undefined;
+    if (!observerClient) {
+      const client = createTypeSafe(judgeOptions({ maxRequests: config.maxRequests, timeoutMs: config.timeoutMs, typesafeBackend: backend }));
+      observerClient = new Proxy(client, {
+        get(target, prop, receiver) {
+          if (prop !== "evaluate") return Reflect.get(target, prop, receiver);
+          return async (...args: Parameters<TypeSafe["evaluate"]>) => {
+            try {
+              const result = await target.evaluate(...args);
+              observerCooldown.success();
+              return result;
+            } catch (error) {
+              const kind = cooldownFailureKind(error, args[1]?.signal);
+              if (kind) observerCooldown.failure(kind, config.judge);
+              throw error;
+            }
+          };
+        },
+      });
+    }
+    return observerClient;
+  },
+  quietSignal: signal => { quietSignals.add(signal); },
+}));
 const supervisionMetrics = () => ({ rootId: "root-1", role: "worker", lifecycle: "active", reason: null, continuationPlan: null,
   observedCostUsd: 0.1, observerCostUsd: 0, softLimitUsd: 1, hardLimitUsd: 2, descendantCount: 0,
   progress: { materialProgressCount: 1, readsSinceProgress: 0, writesSinceProgress: 0, repeatedOperationCount: 0, equivalentErrorCount: 0, lastOperationSignature: null, lastProgressAgeMs: 10 },
   mcp: { state: "unknown", capabilityCount: null } });
-const emitSupervision = (metrics: unknown = supervisionMetrics()) => {
+const emitSupervision = (metrics: unknown = supervisionMetrics(), bus = events) => {
   let claimed: Promise<unknown> | undefined;
   const request = { version: 1, metrics, claim: (result: Promise<unknown>) => { if (claimed) return false; claimed = result; return true; } };
-  events.emit("pi-subagents/supervision-evaluate/v1", request);
+  bus.emit("pi-subagents/supervision-evaluate/v1", request);
   return claimed;
 };
 let command: RegisteredCommand;
@@ -124,7 +163,11 @@ const fire = (type: string, event: Record<string, unknown>, ctx = context()) => 
   assert.equal(handlers.length, 1, `one ${type} handler`);
   return Reflect.apply(handlers[0]!, undefined, [{ type, ...event }, ctx]) as Promise<unknown>;
 };
-const sessionStart = (ctx = context()) => fire("session_start", {}, ctx);
+const sessionStart = (ctx = context()) => {
+  observerClient = undefined;
+  observerCooldown.reset();
+  return fire("session_start", {}, ctx);
+};
 const toolResult = (toolName: string, input: Record<string, unknown>, output: string, failed: boolean, ctx = context()) =>
   fire("tool_result", { toolName, toolCallId: "call-1", input, content: [{ type: "text", text: output }], isError: failed, details: toolName === "bash" ? { exitCode: failed ? 1 : 0 } : undefined }, ctx);
 const agentEnd = (finalText: string, ctx = context()) => fire("agent_end", { messages: [{ role: "user", content: prompt ?? "" }, { role: "assistant", content: [{ type: "text", text: finalText }], stopReason: "stop" }] }, ctx);
@@ -298,6 +341,32 @@ after(async () => {
   if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 
+test("production trace-only calibration never claims an event or spends even when consented", async () => {
+  const publicExtension = await import("../src/extension.js");
+  assert.equal("createWardenExtensionForTesting" in publicExtension, false);
+  assert.equal("createSupervisionHandler" in publicExtension, false);
+  assert.equal("createSupervisionHandler" in await import("../src/index.js"), false);
+  assert.equal(supervisionPolicy.enforcement, "trace_only");
+  assert.ok(Object.isFrozen(supervisionPolicy));
+  await writeConfig(JSON.stringify({ typesafe: true, subagent: { observer: true }, supervisionPolicy: { enforcement: "active" } }));
+  const previous = process.env.PI_WARDEN_SUPERVISION_ENFORCEMENT;
+  process.env.PI_WARDEN_SUPERVISION_ENFORCEMENT = "active";
+  const productionBus = createEventBus();
+  const loader = new DefaultResourceLoader({
+    cwd: temporary, agentDir: join(temporary, "agent"), settingsManager: SettingsManager.inMemory(), eventBus: productionBus,
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    additionalExtensionPaths: [resolve("src/extension.ts")],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  assert.equal(emitSupervision(supervisionMetrics(), productionBus), undefined);
+  await tick();
+  assert.equal(networkCalls, 0);
+  assert.equal(sentMessages.length, 0);
+  if (previous === undefined) delete process.env.PI_WARDEN_SUPERVISION_ENFORCEMENT;
+  else process.env.PI_WARDEN_SUPERVISION_ENFORCEMENT = previous;
+});
+
 test("supervision observer claims synchronously and batches five redacted questions in one async request", async () => {
   await grantConsent();
   nextAnswers.has_material_progress = 0.9;
@@ -334,7 +403,7 @@ test("supervision observer does not spend if an earlier EventBus listener owns t
   // Another synchronous listener may already own the claim.
   let offered = 0;
   events.emit("pi-subagents/supervision-evaluate/v1", { version: 1, metrics: supervisionMetrics(), claim: (_promise: Promise<unknown>) => { offered++; return false; } });
-  assert.equal(offered, 1);
+  assert.equal(offered, 1, "active listener offers claim synchronously");
   await tick();
   assert.equal(networkCalls, 0);
 });
@@ -355,7 +424,7 @@ test("supervision observer does not claim when a daily request cap is blocked", 
     await sessionStart(); // Recreate the client with the daily cap from the environment.
     assert.ok(await emitSupervision());
     assert.equal(networkCalls, 1);
-    assert.equal(emitSupervision(), undefined, "a blocked day cap must prevent claiming, not merely fail after claiming");
+    assert.equal(emitSupervision(), undefined, "a blocked day cap must prevent claiming");
     assert.equal(networkCalls, 1);
   } finally {
     if (previous === undefined) delete process.env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY;

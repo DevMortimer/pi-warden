@@ -775,9 +775,25 @@ Two agent tools let the agent hand warden what it must not lose in a long sessio
 
 ## Token Guardian observer
 
-When `pi-subagents` emits a version-1 evaluation trigger, Warden synchronously validates its metrics and claims an asynchronous answer only if `subagent.observer` is on, Jev consent and a usable key exist, and the shared request budget and judge cooldown permit it. **One claimed trigger makes at most one Jev request**, containing exactly five Noul questions: repetition without progress, equivalent-failure loop, excessive reading, material progress, and safety of resuming after failure. A status tick makes no request. The answer's estimated microdollar cost is returned to Guardian for its recursive budget; Guardian alone decides whether to pause, resume, stop, signal, or write a ledger entry. These questions have not yet been calibrated; do not treat the judgment as proof or authorization.
+### Synthetic observer calibration (2026-10-06)
 
-Only allow-listed redacted metrics are sent (see [data handling](data-handling.md#token-guardian-observer)). Invalid events, absent/disabled Warden, no consent or key, exhausted budget, active cooldown, malformed answers, timeout, and network errors **fail unavailable, never healthy**. A claimed trigger is consumed even if its request fails; no replay, notification, wake, or steer follows an observer error. Report triage below is separate and retains its own wake settings.
+Synthetic fixture version `synthetic-v1`; 12 batched five-question TypeSafe requests, model `jev-1.13.0`; input tokens 7,627, output tokens 1,320; estimated USD **$0.000323** (microdollar-rounded request totals). The local pre-request calibration ceiling was $0.08 within the $0.10 combined authorization, leaving **$0.099677** of the total and $0.02 reserved for the already-authorized Task 5 smoke. No Task 5 request was made here.
+
+At the unchanged P >= 0.90 and confidence >= 0.80 gates, aggregate confusion counts (rows are expected labels, columns are gated predictions):
+
+| expected / predicted | healthy | loop | no_progress | safe_to_resume | unavailable |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| healthy | 0 | 0 | 1 | 0 | 5 |
+| loop | 0 | 0 | 0 | 0 | 2 |
+| no_progress | 0 | 0 | 1 | 0 | 0 |
+| safe_to_resume | 0 | 0 | 0 | 0 | 1 |
+| unavailable | 0 | 0 | 0 | 0 | 2 |
+
+Anomaly TP 1, FP 1, FN 2: precision 50%, recall 33.3%. Policy is frozen as question SHA-256 `bbf5b1e20d38e54949d1c633bd0b2cb4490be385325531c2249a989f4a39ca66`, model `jev-1.13.0`, gates 0.90/0.80, **trace-only/unavailable**. No gate was lowered. These synthetic labels alone cannot establish production accuracy.
+
+When `pi-subagents` emits a version-1 evaluation trigger, Warden synchronously validates its metrics and claims an asynchronous answer only if `subagent.observer` is on, Jev consent and a usable key exist, and the shared request budget and judge cooldown permit it. **One claimed trigger makes at most one Jev request**, containing exactly five Noul questions: repetition without progress, equivalent-failure loop, excessive reading, material progress, and safety of resuming after failure. A status tick makes no request. The answer's estimated microdollar cost is returned to Guardian for its recursive budget; Guardian alone decides whether to pause, resume, stop, signal, or write a ledger entry. The synthetic-v1 calibration below did not establish sufficient anomaly precision. The listener is **trace-only/unavailable**: it does not claim events or spend requests, and Guardian cannot enforce an observer answer. Do not treat a judgment as proof or authorization.
+
+Only allow-listed redacted metrics are sent (see [data handling](data-handling.md#token-guardian-observer)) when a calibrated policy is active. Invalid events, trace-only policy, absent/disabled Warden, no consent or key, exhausted budget, active cooldown, malformed answers, timeout, and network errors **fail unavailable, never healthy**. A claimed trigger is consumed even if its request fails; no replay, notification, wake, or steer follows an observer error. Report triage below is separate and retains its own wake settings.
 
 ## Subagent triage
 
