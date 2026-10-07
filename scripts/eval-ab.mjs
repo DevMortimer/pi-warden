@@ -39,6 +39,14 @@
  * seed, plan, and order, skips every task x cell x repeat already recorded, and appends
  * the rest. A run that a stop or an interrupt cut short runs again.
  *
+ * Re-run pass (Corrections 4 of eval/preregistration.md): `--resume DIR --rerun-excluded`,
+ * only once the main pass is finished (every planned run recorded), runs every block that
+ * holds an `infraError` run once more (all three cells, the registered cell order). Its
+ * first runs move to the `superseded` list of `runs.json`, each with `supersededAt`, and
+ * their evidence folders move to `DIR/superseded/`; they leave every metric, and their Jev
+ * dollars stay in the batch total. One pass per batch: the exclusions after the pass are
+ * final. A stop during the pass resumes as `--resume` does.
+ *
  * Infrastructure failures: a run that ended on an error (the last assistant message of
  * the run, or of any of its turns, has stopReason `error`) or whose pi exited before
  * any assistant message is re-run after 1 and then 5 minutes (`--retry-delays`). An
@@ -78,6 +86,7 @@
  *   node scripts/eval-ab.mjs --tasks t6-dsn,t7-todo --max-runs 4 --keep
  *   node scripts/eval-ab.mjs --turns 12 --tasks t16-decay      # decay arc, one long session
  *   node scripts/eval-ab.mjs --resume eval/reports/<batch folder>   # continue a stopped batch
+ *   node scripts/eval-ab.mjs --resume eval/reports/<batch folder> --rerun-excluded   # run its excluded blocks once more
  *   node scripts/eval-ab.mjs --suite weak --repeats 2 --typesafe-cap 400 \
  *     --model deepseek/deepseek-flash --waste both
  *
@@ -100,7 +109,7 @@
 
 import { parseArgs } from "node:util";
 import { spawn, execFileSync } from "node:child_process";
-import { cp, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, renameSync, writeFileSync as writeFileSyncNow } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { basename, join, resolve, dirname } from "node:path";
@@ -114,7 +123,7 @@ import { outcomeAxis, wasteAxis } from "../eval/waste.mjs";
 import { jevDollars, jevUsage, runCost } from "../eval/cost.mjs";
 import { abandonedJevRequests, jevCheck } from "../eval/jev-stop.mjs";
 import { createStallWatch, progressCount } from "../eval/stall.mjs";
-import { DEFAULT_SEED, RETRY_DELAYS_MS, blockOrder, firstRuns, infraReason, infraSection, infraCounts, markExclusions, recoveredErrors, runBatch, runKey } from "../eval/batch.mjs";
+import { DEFAULT_SEED, RETRY_DELAYS_MS, blockOrder, firstRuns, infraReason, infraSection, infraCounts, markExclusions, recoveredErrors, rerunExcluded, runBatch, runKey } from "../eval/batch.mjs";
 import { weakTasks, weakTaskById } from "../eval/weak-tasks.mjs";
 import { buildWeakReport, callsWithResults, judgedRequests, repeatedFailures, snapshot, steersInOrder, traceGuards, turnsOf } from "../eval/weak.mjs";
 
@@ -147,6 +156,7 @@ const { values: cli } = parseArgs({
     out: { type: "string" },
     keep: { type: "boolean", default: false },
     "dry-run": { type: "boolean", default: false },
+    "rerun-excluded": { type: "boolean", default: false },
   },
 });
 
@@ -188,6 +198,10 @@ const JEV_USD_CAP = values["jev-usd-cap"] ? Math.max(0, Number(values["jev-usd-c
 const RETRY_DELAYS = values["retry-delays"] ? values["retry-delays"].split(",").map((s) => Number(s) * 1000) : RETRY_DELAYS_MS;
 if (!Number.isInteger(SEED) || (JEV_USD_CAP !== null && !Number.isFinite(JEV_USD_CAP)) || RETRY_DELAYS.some((ms) => !Number.isFinite(ms) || ms < 0)) {
   console.error("--seed must be an integer, --jev-usd-cap a number of dollars, --retry-delays seconds like 60,300");
+  process.exit(2);
+}
+if (cli["rerun-excluded"] && !RESUME_DIR) {
+  console.error("--rerun-excluded: needs --resume DIR; it runs the excluded blocks of a finished batch once more");
   process.exit(2);
 }
 
@@ -621,11 +635,41 @@ async function main() {
   const taskIds = SELECTED.map((t) => t.id);
   const blocks = blockOrder({ taskIds, cells: CELLS, repeats: REPEATS, seed: SEED }).map((b) => ({ ...b, family: byId(b.task).family ?? (WEAK ? "weak" : "rules") }));
   const plan = { ...Object.fromEntries(PLAN_KEYS.filter((k) => values[k] !== undefined).map((k) => [k, values[k]])), tasks: taskIds.join(",") };
-  const state = { runs: stored?.runs ?? [], jevUsd: stored?.jevUsd ?? 0, stops: stored?.stops ?? [] };
+  const state = { runs: stored?.runs ?? [], jevUsd: stored?.jevUsd ?? 0, stops: stored?.stops ?? [], superseded: stored?.superseded ?? [], reruns: stored?.reruns ?? [] };
   const plannedRuns = values["max-runs"] ? firstRuns(blocks, Number(values["max-runs"])) : blocks;
   const queue = plannedRuns.flatMap((b) => b.cells.map((cell) => ({ task: byId(b.task), cell, repeat: b.repeat })));
-  const done = new Set(state.runs.map(runKey));
-  const remaining = queue.filter((q) => !done.has(runKey({ task: q.task.id, cell: q.cell, repeat: q.repeat })));
+  const pending = () => {
+    const done = new Set(state.runs.map(runKey));
+    return queue.filter((q) => !done.has(runKey({ task: q.task.id, cell: q.cell, repeat: q.repeat })));
+  };
+  let remaining = pending();
+
+  // Corrections 4 (eval/preregistration.md): --rerun-excluded runs the excluded blocks of a
+  // finished batch once more, all three cells, and never a second pass.
+  if (cli["rerun-excluded"]) {
+    if (state.reruns.length) {
+      console.error("--rerun-excluded: this batch already ran its re-run pass; the exclusions after the pass are final");
+      process.exit(2);
+    }
+    if (remaining.length) {
+      console.error(`--rerun-excluded: the main pass is not finished: ${remaining.length} planned run(s) left`);
+      process.exit(2);
+    }
+    const pass = rerunExcluded(state, plannedRuns);
+    if (!pass.blocks.length) {
+      console.log("--rerun-excluded: no excluded block; nothing runs again");
+      return;
+    }
+    remaining = pending();
+    console.log(`re-run pass: ${pass.blocks.length} excluded block(s) run once more, ${pass.runs.length} first run(s) move to superseded`);
+    if (!values["dry-run"]) {
+      await mkdir(join(outDir, "superseded"), { recursive: true });
+      for (const run of pass.runs) {
+        const name = `${run.task}-${run.cell}-r${run.repeat}`;
+        try { await rename(join(outDir, "runs", name), join(outDir, "superseded", name)); } catch { /* an evidence folder is best effort */ }
+      }
+    }
+  }
 
   console.log(`eval-ab: ${WEAK ? "weak suite, " : ""}${SELECTED.length} tasks x ${CELLS.length} cells x ${REPEATS} repeat(s), ` +
     `${queue.length} run(s) in ${plannedRuns.length} block(s) at concurrency ${CONCURRENCY}, seed ${SEED}` +
@@ -665,6 +709,8 @@ async function main() {
       stamp: stored?.stamp ?? stamp, seed: SEED, plan, jevUsd: state.jevUsd,
       args: { ...values, extension: values.extension?.map((p) => p.split("/").pop()), out: values.out?.split("/").pop() },
       ...(current ? { stoppedBy: current } : {}), stops: state.stops, runs: sorted,
+      ...(state.superseded.length ? { superseded: state.superseded } : {}),
+      ...(state.reruns.length ? { reruns: state.reruns } : {}),
     }, null, 2));
   };
   const persist = () => {
@@ -762,7 +808,7 @@ async function main() {
   // The report builders leave out the excluded blocks themselves.
   const md = WEAK ? buildWeakReport({ runs: state.runs, stamp, args: values, cap: TYPESAFE_CAP }) : buildReport({ runs: state.runs, stamp, args: values });
   md.splice(2, 0, `Block order: repeat by repeat, task by task; the cells of each block shuffled with seed ${SEED}.`, "");
-  md.push(...infraSection(state.runs, blocks.length));
+  md.push(...infraSection(state.runs, blocks.length, state.reruns));
   await writeFile(join(outDir, "report.md"), scrubPaths(md.join("\n")));
   persist();
   console.log(`\nreport: ${join(outDir, "report.md")}`);

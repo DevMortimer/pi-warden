@@ -25,6 +25,8 @@ v4, corrected after the model-A batch stopped on a Jev error, before any outcome
 
 v4, corrected again before any outcome of a v4 batch was read: the cancelled-sample check no longer numbers the judged entries; the entry nearest in time to the failed request must be within 1,000 ms of it and have no `off-task` ("Jev-error stop", Corrections 3).
 
+v4, corrected while model B's main pass ran, after it had excluded more than 10% of its blocks and before any metric of a v4 batch was computed: after a model's main pass, every block it excluded for an infrastructure failure runs once more, all three cells, and the exclusions after that one pass are final ("Resume", Corrections 4).
+
 ## The stopped v3 batches
 
 The v3 batches, `deepseek/deepseek-flash` and `claude-bridge/claude-sonnet-5-5`, were stopped by the owner for cost about 13 minutes in: `deepseek/deepseek-flash` after 57 recorded runs and `claude-bridge/claude-sonnet-5-5` after 45. They are a stopped pilot: their folders stay out of version control, their outcomes are not analysed, and nothing in this registration, in a decision, or in the analysis uses them.
@@ -473,3 +475,29 @@ outcome to choose the concurrency, the timeouts, or the sizes.
    From the resume on, the supervisor script copies the records of a stopped run (the run that
    `runs.json` names under `stoppedBy`) into a folder of its own in the batch folder and shows a
    macOS notification when a model is DONE or STOPPED.
+
+4. 2026-10-07, with 371 of the 420 model-B runs recorded, before any metric of a v4 batch was
+   computed. The numbers below are infrastructure records (the `infraError` runs and the
+   excluded blocks of "Infrastructure failures"), not task outcomes.
+   **Why.** During model B's main pass, its provider often answered HTTP 503 "The model is at
+   capacity". At 2026-10-07T22:32Z, 18 of model B's 140 blocks were excluded (12.9%), above
+   the 10% limit of "Decision rules", with 49 runs still to run. Of its 27 `infraError` runs,
+   22 ended on that 503 error, 2 on HTTP 429, 2 on a connection error, and 1 on the stall
+   rule. The excluded blocks are not a random sample of the tasks: 10 of the 18 belong to the
+   decay arc and the four multi-turn tasks (`t16-decay`, `t17-clip-arc` to `t20-ship-arc`),
+   which are 5 of the 20 tasks. Model A had 1 of its 120 blocks excluded (0.8%).
+   **Rule.** After a model's main pass ends (every planned run recorded), every block that
+   holds an `infraError` run runs once more: all three cells, in the registered cell order,
+   with the same plan, commit under test, extension, retries, stall rule, stop rules, and Jev
+   cap. The first runs of those blocks stay in `runs.json` as superseded runs, with their
+   evidence folders, and leave every metric. Each block gets this second run at most once. The
+   exclusions after the pass are final, and the 10% limit of "Decision rules" applies to them.
+   The rule applies to both models: model A's one excluded block runs once more too. A stop
+   during the pass resumes as "Resume" says. The Jev dollars of the superseded runs stay in the
+   batch's Jev total.
+   **Tooling.** `scripts/eval-ab.mjs --resume <batch folder> --rerun-excluded` starts the
+   pass. It refuses while planned runs remain, and when the batch already ran its pass.
+   **Decision.** The owner decided this on 2026-10-07, from the infrastructure counts above,
+   while model B's main pass ran. No metric, report table, or aggregate outcome of a v4 batch
+   had been computed or read. The batch log prints each finished run's checks and violations on
+   its progress line; such lines of single runs were seen while the stops were recorded.

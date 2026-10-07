@@ -88,7 +88,14 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
   run (default `--timeout-min`); 5 such failures in a row stop the batch with exit code 4, and all 5 run again on
   resume;
   `--jev-usd-cap N` stops the batch at N Jev dollars with exit code 3. Both stops
-  resume with `--resume`, which refuses `--typesafe-cap`. A run killed at the timeout
+  resume with `--resume`, which refuses `--typesafe-cap`. `--rerun-excluded` (with
+  `--resume DIR`, once the main pass is finished: every planned run recorded) runs every
+  block that holds an `infraError` run once more, all three cells in the registered cell
+  order. The first runs of those blocks move to the `superseded` list of `runs.json` with
+  `supersededAt` and their evidence folders to `DIR/superseded/`, and they leave every
+  metric while their Jev dollars stay in the batch total. One pass per batch: the
+  exclusions after the pass are final (the 10% limit applies to them), and a stop during
+  the pass resumes with a plain `--resume`. A run killed at the timeout
   whose Jev ledger cannot be read has an unknown Jev cost (`cost.jevUnknown`): it stays
   out of the dollar columns, and the report counts it. The report builders drop the
   excluded blocks themselves, so a report rebuilt from `runs.json` matches.

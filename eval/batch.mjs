@@ -111,6 +111,28 @@ export function markExclusions(runs) {
   return runs;
 }
 
+/**
+ * The one re-run pass of Corrections 4 (eval/preregistration.md): the excluded blocks of a
+ * finished batch run once more. Every run of an excluded block (the batch's own rule,
+ * `markExclusions`) moves from `state.runs` to `state.superseded`, each with `supersededAt`,
+ * and the pass is recorded in `state.reruns` as `{ at, blocks }`. The Jev dollars of the
+ * moved runs stay in `state.jevUsd`. Returns the blocks that run once more (in the
+ * registered order of `blocks`) and their moved runs; with no excluded block it changes
+ * nothing and returns no block.
+ */
+export function rerunExcluded(state, blocks, at = new Date().toISOString()) {
+  markExclusions(state.runs);
+  const excluded = new Set(state.runs.filter((r) => r.excludedBlock).map((r) => `${r.task}|${r.repeat}`));
+  const pass = blocks.filter((b) => excluded.has(`${b.task}|${b.repeat}`)).map(({ task, repeat }) => ({ task, repeat }));
+  if (!pass.length) return { blocks: [], runs: [] };
+  const keys = new Set(pass.map((b) => `${b.task}|${b.repeat}`));
+  const moved = state.runs.filter((r) => keys.has(`${r.task}|${r.repeat}`)).map((r) => ({ ...r, supersededAt: at }));
+  state.runs = state.runs.filter((r) => !keys.has(`${r.task}|${r.repeat}`));
+  state.superseded = [...(state.superseded ?? []), ...moved];
+  state.reruns = [...(state.reruns ?? []), { at, blocks: pass }];
+  return { blocks: pass, runs: moved };
+}
+
 /** The runs that count for the metrics: no infrastructure failure, and not in a block that has one. Every report builder applies it itself. */
 export const metricRuns = (runs) => markExclusions(runs).filter((r) => !r.excludedBlock);
 
@@ -134,8 +156,8 @@ export function infraCounts(runs, plannedBlocks) {
   };
 }
 
-/** The report section for infrastructure failures and block exclusions. */
-export function infraSection(runs, plannedBlocks) {
+/** The report section for infrastructure failures and block exclusions. `reruns` is the batch's `reruns` record (Corrections 4's re-run passes). */
+export function infraSection(runs, plannedBlocks, reruns = []) {
   const counts = infraCounts(runs, plannedBlocks);
   const md = ["## Infrastructure failures and excluded blocks", ""];
   md.push("A run is an infrastructure failure when it ended on an agent-model API error (its last assistant message stopped on an error) or pi exited before any assistant message; it is re-run twice (after 1 and 5 minutes), and one that still fails leaves its whole block out of the metrics above. A provider error that pi retried and got past is not a failure: the run counts, and the errors are counted per run as `providerErrorsRecovered`. A timeout is a task outcome.");
@@ -145,6 +167,9 @@ export function infraSection(runs, plannedBlocks) {
   for (const [cell, c] of Object.entries(counts.perCell)) md.push(`| ${cell} | ${c.runs} | ${c.infraErrors} | ${c.retriedOk} | ${c.excludedRuns} |`);
   md.push("");
   md.push(`Excluded blocks: ${counts.excludedBlocks} of ${counts.plannedBlocks} (${(counts.share * 100).toFixed(1)}%). ${counts.inconclusive ? `More than ${EXCLUSION_LIMIT * 100}% of the blocks are excluded: this model's result is INCONCLUSIVE.` : `At most ${EXCLUSION_LIMIT * 100}% of the blocks are excluded.`}`);
+  const again = reruns.flatMap((r) => r.blocks ?? []);
+  const still = new Set(runs.filter((r) => r.infraError).map((r) => `${r.task}|${r.repeat}`));
+  md.push(`Blocks that ran once more (Corrections 4): ${again.length}; of those excluded after the pass: ${again.filter((b) => still.has(`${b.task}|${b.repeat}`)).length}.`);
   md.push(`Provider errors recovered inside valid runs: ${counts.providerErrorsRecovered}.`);
   md.push(`Runs with an unknown Jev cost (killed at the timeout with an unreadable Jev ledger), left out of the dollar metric only: ${counts.unknownJevCost}.`);
   md.push("");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AttemptResult, BatchRun, BatchState } from "../eval/batch.mjs";
@@ -642,5 +642,158 @@ test("--jev-usd-cap stops the batch at the cap with exit code 3, and a resume wi
     assert.equal(final.runs.length, 12);
     assert.equal(new Set(final.runs.map(keyOf)).size, 12);
     assert.equal(final.jevUsd, 0.168);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+// ---- the re-run pass of Corrections 4: --rerun-excluded --------------------------------------
+
+test("a finished batch with one excluded block runs exactly that block's three runs again, in the registered cell order, and keeps the first runs and their folders as superseded", () => {
+  const f = fixture();
+  try {
+    // The warden-offline run of block r1 fails on every attempt (the counter is per cell over
+    // the batch), so block r1 alone is excluded and the main pass still finishes.
+    const run = f.go(["--repeats", "2", "--concurrency", "1", "--seed", "5", "--out", f.out], { PI_FAKE_INFRA: "error", PI_FAKE_INFRA_FAILS: "3", PI_FAKE_INFRA_CELL: "warden-offline" });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    const before = f.read();
+    assert.equal(before.runs.length, 6);
+    assert.deepEqual(before.runs.filter((r: { infraError?: string }) => r.infraError).map((r: { cell: string; repeat: number }) => `r${r.repeat} ${r.cell}`), ["r1 warden-offline"]);
+    assert.equal(before.superseded, undefined);
+    assert.equal(before.reruns, undefined);
+    // 8 starts: block r1 has the failing run's 3 attempts, block r2 is clean.
+    const startsBefore = f.starts().length;
+    assert.equal(startsBefore, 8);
+
+    const pass = f.go(["--resume", f.out, "--concurrency", "1", "--rerun-excluded"]);
+    assert.equal(pass.status, 0, pass.stdout + pass.stderr);
+    const order = blockOrder({ taskIds: ["t1-redact"], cells: CELLS, repeats: 2, seed: 5 });
+    // Exactly the excluded block's three runs ran again, in the registered cell order of the block.
+    assert.equal(f.starts().length, startsBefore + 3);
+    assert.deepEqual(f.starts().slice(-3).map((l) => l.split(" ")[0]), order[0]!.cells);
+    const after = f.read();
+    assert.equal(after.runs.length, 6);
+    assert.equal(new Set(after.runs.map(keyOf)).size, 6);
+    assert.equal(after.runs.some((r: { infraError?: string }) => r.infraError), false);
+    // The first runs of block r1 are kept as superseded runs with supersededAt; block r2 is untouched.
+    assert.deepEqual(after.superseded.map((r: { cell: string; repeat: number }) => `r${r.repeat} ${r.cell}`).sort(), order[0]!.cells.map((c: string) => `r1 ${c}`).sort());
+    for (const r of after.superseded) assert.match(r.supersededAt, /^\d{4}-\d{2}-\d{2}T/);
+    for (const r of before.runs) {
+      const kept = r.repeat === 2 ? after.runs : after.superseded;
+      assert.equal(kept.find((x: { task: string; cell: string; repeat: number }) => keyOf(x) === keyOf(r)).startedAt, r.startedAt, `r${r.repeat} ${r.cell} is kept as it ran first`);
+    }
+    // The pass is recorded once, naming the one excluded block.
+    assert.deepEqual(after.reruns.map((r: { blocks: unknown[] }) => r.blocks), [[{ task: "t1-redact", repeat: 1 }]]);
+    assert.match(after.reruns[0].at, /^\d{4}-\d{2}-\d{2}T/);
+    // The evidence folders move with their runs; the new runs write fresh folders.
+    const names = (dir: string) => readdirSync(join(f.out, dir)).sort();
+    assert.deepEqual(names("runs"), ["t1-redact-control-r1", "t1-redact-control-r2", "t1-redact-warden-offline-r1", "t1-redact-warden-offline-r2", "t1-redact-warden-r1", "t1-redact-warden-r2"].sort());
+    assert.deepEqual(names("superseded"), ["t1-redact-control-r1", "t1-redact-warden-offline-r1", "t1-redact-warden-r1"].sort());
+    // The report counts the pass, and no metric uses a superseded run.
+    const report = readFileSync(join(f.out, "report.md"), "utf8");
+    assert.match(report, /Blocks that ran once more \(Corrections 4\): 1; of those excluded after the pass: 0\./);
+    assert.equal(report.split("## Infrastructure failures")[0]!.includes("t1-redact"), true);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("--rerun-excluded is refused without --resume and while planned runs remain", () => {
+  const f = fixture();
+  try {
+    const noResume = f.go(["--rerun-excluded"]);
+    assert.equal(noResume.status, 2);
+    assert.match(noResume.stderr, /needs --resume/);
+    // Interrupted at the start of the 4th pi process: the main pass has 3 planned runs left.
+    const first = f.go(["--repeats", "2", "--concurrency", "1", "--seed", "5", "--out", f.out], { PI_FAKE_INTERRUPT_AT: "4" });
+    assert.equal(first.status, 130, first.stdout + first.stderr);
+    const refused = f.go(["--resume", f.out, "--concurrency", "1", "--rerun-excluded"]);
+    assert.equal(refused.status, 2);
+    assert.match(refused.stderr, /the main pass is not finished: 3 planned run\(s\) left/);
+    const doc = f.read();
+    assert.equal(doc.runs.length, 3);
+    assert.equal(doc.superseded, undefined);
+    assert.equal(doc.reruns, undefined);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("--rerun-excluded starts one pass only: a second pass is refused and the record does not change", () => {
+  const f = fixture();
+  try {
+    const main = f.go(["--repeats", "1", "--concurrency", "1", "--out", f.out], { PI_FAKE_INFRA: "error", PI_FAKE_INFRA_FAILS: "3", PI_FAKE_INFRA_CELL: "warden-offline" });
+    assert.equal(main.status, 0, main.stdout + main.stderr);
+    const first = f.go(["--resume", f.out, "--concurrency", "1", "--rerun-excluded"]);
+    assert.equal(first.status, 0, first.stdout + first.stderr);
+    const after = f.read();
+    assert.equal(after.reruns.length, 1);
+    const again = f.go(["--resume", f.out, "--concurrency", "1", "--rerun-excluded"]);
+    assert.equal(again.status, 2);
+    assert.match(again.stderr, /already ran its re-run pass/);
+    const unchanged = f.read();
+    assert.deepEqual(unchanged.runs, after.runs);
+    assert.deepEqual(unchanged.superseded, after.superseded);
+    assert.deepEqual(unchanged.reruns, after.reruns);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("a stop during the re-run pass leaves the rest of the pass to a plain --resume", () => {
+  const f = fixture();
+  try {
+    const main = f.go(["--repeats", "2", "--concurrency", "1", "--seed", "5", "--out", f.out], { PI_FAKE_INFRA: "error", PI_FAKE_INFRA_FAILS: "3", PI_FAKE_INFRA_CELL: "warden-offline" });
+    assert.equal(main.status, 0, main.stdout + main.stderr);
+    assert.equal(f.starts().length, 8);
+    // The pass starts at pi start 9; the interrupt kills its second run.
+    const pass = f.go(["--resume", f.out, "--concurrency", "1", "--rerun-excluded"], { PI_FAKE_INTERRUPT_AT: "10" });
+    assert.equal(pass.status, 130, pass.stdout + pass.stderr);
+    const partial = f.read();
+    assert.equal(partial.runs.length, 4, "the killed run is not recorded");
+    assert.equal(partial.superseded.length, 3);
+    assert.equal(partial.reruns.length, 1);
+    // No second --rerun-excluded: a plain resume continues the pass.
+    const done = f.go(["--resume", f.out, "--concurrency", "1"]);
+    assert.equal(done.status, 0, done.stdout + done.stderr);
+    const final = f.read();
+    assert.equal(final.runs.length, 6);
+    assert.equal(new Set(final.runs.map(keyOf)).size, 6);
+    assert.equal(final.superseded.length, 3);
+    assert.equal(final.reruns.length, 1);
+    assert.equal(final.runs.some((r: { infraError?: string }) => r.infraError), false);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("the Jev total and the --jev-usd-cap check keep the dollars of the superseded runs", () => {
+  const f = fixture();
+  try {
+    // 1,000,000 Jev input tokens in the one warden run of the batch = $0.042.
+    const main = f.go(["--repeats", "1", "--concurrency", "1", "--out", f.out], { PI_FAKE_INFRA: "error", PI_FAKE_INFRA_FAILS: "3", PI_FAKE_INFRA_CELL: "warden-offline", PI_FAKE_JEV_TOKENS: "1000000" });
+    assert.equal(main.status, 0, main.stdout + main.stderr);
+    const before = f.read();
+    assert.equal(before.jevUsd, 0.042);
+    // A cap below the spend of the superseded runs alone stops the pass at once: their dollars still count.
+    const capped = f.go(["--resume", f.out, "--concurrency", "1", "--rerun-excluded", "--jev-usd-cap", "0.02"], { PI_FAKE_JEV_TOKENS: "1000000" });
+    assert.equal(capped.status, 3, capped.stdout + capped.stderr);
+    assert.match(capped.stderr, /Jev spend \$0\.0420 reached the cap of \$0\.02/);
+    const idle = f.read();
+    assert.equal(idle.jevUsd, 0.042);
+    assert.equal(idle.runs.length, 0);
+    assert.equal(idle.superseded.length, 3);
+    // The pass then runs: the total keeps the superseded dollars and adds the new warden run's.
+    const done = f.go(["--resume", f.out, "--concurrency", "1", "--jev-usd-cap", "1"], { PI_FAKE_JEV_TOKENS: "1000000" });
+    assert.equal(done.status, 0, done.stdout + done.stderr);
+    const final = f.read();
+    assert.equal(final.jevUsd, 0.084);
+    assert.equal(final.runs.length, 3);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("--rerun-excluded on a batch with no excluded block says so and changes nothing", () => {
+  const f = fixture();
+  try {
+    const main = f.go(["--repeats", "1", "--concurrency", "1", "--out", f.out]);
+    assert.equal(main.status, 0, main.stdout + main.stderr);
+    const json = readFileSync(join(f.out, "runs.json"), "utf8");
+    const started = f.starts().length;
+    const pass = f.go(["--resume", f.out, "--concurrency", "1", "--rerun-excluded"]);
+    assert.equal(pass.status, 0, pass.stdout + pass.stderr);
+    assert.match(pass.stdout, /no excluded block/);
+    assert.equal(readFileSync(join(f.out, "runs.json"), "utf8"), json, "runs.json is untouched");
+    assert.equal(f.starts().length, started, "no run started");
+    assert.equal(existsSync(join(f.out, "superseded")), false);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
