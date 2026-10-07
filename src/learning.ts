@@ -19,6 +19,17 @@ let driver: SqliteDriver | undefined;
 
 // --- Schema (shared constant) ---
 
+/** One unchecked cause per row, keyed by project and topic, for the cause-check's repeat steer. */
+export const CAUSES_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS causes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_root TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    timestamp INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_causes_project_topic ON causes(project_root, topic, timestamp);`;
+
 /**
  * The `holds` table: one row per judged call. The last five columns are what an earlier version wrote and nothing
  * reads now; they stay, always empty, so a session still running that version -- whose INSERT names them -- and a
@@ -87,7 +98,7 @@ export const HOLDS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS hold_meta (
     key TEXT PRIMARY KEY,
     value INTEGER NOT NULL
-  ) WITHOUT ROWID;${HOLDS_INDEXES}
+  ) WITHOUT ROWID;${HOLDS_INDEXES}${CAUSES_SCHEMA}
 `;
 
 /** The task text hash: the key of hold_tasks. */
@@ -489,6 +500,31 @@ export async function recordHold(hold: HoldRecord, dirs: HostDirs = defaultHostD
 
 export async function recordOutcome(id: number, outcome: string, dirs: HostDirs = defaultHostDirs()): Promise<void> {
   try { (await getDb(dirs)).prepare("UPDATE holds SET outcome = ?, outcome_at = ? WHERE id = ?").run(outcome, Date.now(), id); } catch (err) { console.warn("pi-warden: could not record hold outcome:", err); }
+}
+
+/**
+ * Remember one unchecked cause for the cause-check's repeat steer. A row older than the stored window only grows the
+ * file, so it is pruned at each write. Never throws: a broken database costs the repeat steer, not the run.
+ */
+export async function recordCause(topic: string, summary: string, projectRoot: string, at: number, dirs: HostDirs = defaultHostDirs()): Promise<void> {
+  try {
+    const d = await getDb(dirs);
+    d.prepare("INSERT INTO causes (project_root, topic, summary, timestamp) VALUES (?, ?, ?, ?)").run(projectRoot, topic, summary, at);
+    d.prepare("DELETE FROM causes WHERE timestamp < ?").run(at - 8 * 86_400_000);
+  } catch (err) {
+    console.warn("pi-warden: could not record cause:", err);
+  }
+}
+
+/** The newest earlier cause on the same project and topic at or after `since`, or undefined. */
+export async function findCause(topic: string, projectRoot: string, since: number, dirs: HostDirs = defaultHostDirs()): Promise<{ summary: string; at: number } | undefined> {
+  try {
+    const row = (await getDb(dirs)).prepare("SELECT summary, timestamp AS at FROM causes WHERE project_root = ? AND topic = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT 1").get(projectRoot, topic, since) as { summary?: unknown; at?: unknown } | undefined;
+    return row === undefined ? undefined : { summary: String(row.summary), at: Number(row.at) };
+  } catch (err) {
+    console.warn("pi-warden: could not read cause history:", err);
+    return undefined;
+  }
 }
 
 // --- Querying ---

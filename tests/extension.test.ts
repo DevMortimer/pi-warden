@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
-import { initSchema, queryHoldsForProject } from "../src/learning.js";
+import { initSchema, queryHoldsForProject, recordCause } from "../src/learning.js";
 import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
 import { defaultConfig } from "../src/config.js";
 import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
@@ -185,9 +185,11 @@ const writeConfig = (json: string) => {
   const config = JSON.parse(json) as { action?: Record<string, unknown> };
   return writeFile(configPath(), JSON.stringify({ ...config, action: { ...FULL_ACTION, ...(config.action ?? {}) } }));
 };
-const grantConsent = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
+const grantConsent = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, cause: { enabled: false }, ...STACK_BAR }));
+/** Consent with the cause-check at its default (on), for tests whose subject is that guard. */
+const grantConsentCause = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
 /** Consent with the rules guard on: the turn-start reminder needs a rule set to ask about. */
-const curatorConfig = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, ...STACK_BAR }));
+const curatorConfig = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, cause: { enabled: false }, ...STACK_BAR }));
 
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), "pi-warden-ext-"));
@@ -274,6 +276,12 @@ beforeEach(async () => {
   nextModel = "jev-1.13.0";
   await rm(configPath(), { force: true });
   await sessionStart();
+  // The cause-check remembers unchecked causes in the shared database; a test starts from an empty history.
+  {
+    const db = new DatabaseSync(process.env.PI_WARDEN_DB!);
+    try { db.exec("DELETE FROM causes"); } catch { /* the table is created by schema init */ }
+    db.close();
+  }
   widgets.length = 0;
 });
 
@@ -5717,4 +5725,86 @@ test("asked: no assistant message before the latest user message, or a message w
   assert.equal(askedOf(assistantEntry({ type: "text", text: "Earlier." }), userEntry("a"), assistantEntry({ type: "toolCall", id: "c1", name: "bash", arguments: {} }), userEntry("b")), undefined);
   assert.equal(askedOf(assistantEntry({ type: "text", text: "Earlier." }), userEntry("a"), userEntry("b")), undefined, "the message before the earlier prompt is not what this reply answers");
   assert.equal(askedOf(assistantEntry({ type: "text", text: "Delete it?" }), userEntry("yes"), assistantEntry({ type: "toolCall", id: "c2", name: "bash", arguments: {} }), { type: "message", message: { role: "toolResult", toolCallId: "c2", toolName: "bash", content: [] } }), "Delete it?", "calls made after the reply do not hide it");
+});
+
+// ---------------------------------------------------------------------------
+// Cause-check: a final reply that names an unchecked cause is sent back.
+
+test("cause-check: a causal guess with no check in the run is sent back", async () => {
+  await grantConsentCause();
+  await newPrompt("why did the alert fire");
+  await toolResult("bash", { command: "git status" }, "clean", false);
+  nextAnswers = { states_cause: 0.9, hands_off: 0.05, checked: 0.05, topic: "code" };
+  const before = networkCalls;
+  await agentEnd("The alert is probably from a manual edit.");
+  assert.equal(networkCalls - before, 1);
+  const request = requests.at(-1)!;
+  assert.ok("states_cause" in request.questions, "the cause question reached Jev");
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0]!.message.content, /check it with your own tools/i);
+  assert.deepEqual(sentMessages[0]!.options, { deliverAs: "followUp", triggerTurn: true });
+});
+
+test("cause-check: a check handed to a person is sent back", async () => {
+  await grantConsentCause();
+  await newPrompt("why did the alert fire");
+  nextAnswers = { states_cause: 0.1, hands_off: 0.9, checked: 0.05, topic: "config" };
+  await agentEnd("Ask the team whether the config changed.");
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0]!.message.content, /check it with your own tools/i);
+});
+
+test("cause-check: a run that checked the claim is recorded but not steered", async () => {
+  await grantConsentCause();
+  await newPrompt("why did the alert fire");
+  await toolResult("bash", { command: "gh run view 7 --log" }, "the deploy at 09:00 printed the alert", false);
+  nextAnswers = { states_cause: 0.9, hands_off: 0.05, checked: 0.9, topic: "code" };
+  await agentEnd("The alert is probably from the deploy at 09:00.");
+  assert.equal(networkCalls, 1, "the reply was judged");
+  assert.equal(sentMessages.length, 0, "no steer when the run checked the cause");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /cause: warden · cause-check/);
+});
+
+test("cause-check: a reply with no causal or hand-off wording sends no request", async () => {
+  await grantConsentCause();
+  await newPrompt("fix the parser");
+  nextAnswers = { states_cause: 0.9, checked: 0.05 };
+  await agentEnd("Tests pass; the parser bug is fixed.");
+  assert.equal(networkCalls, 0);
+  assert.equal(sentMessages.length, 0);
+});
+
+test("cause-check: when the done-check steers the same reply, the cause-check records its decision only", async () => {
+  await grantConsentCause();
+  await newPrompt("fix the parser and explain the alert");
+  await toolResult("edit", { path: "src/parser.ts", edits: [] }, "ok", false);
+  nextAnswers = { claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.9, outcome: "complete", states_cause: 0.9, hands_off: 0.05, checked: 0.05, topic: "code" };
+  await agentEnd("Fixed the parser; the alert is probably from a manual edit.");
+  assert.equal(sentMessages.length, 1, "one steer for the reply");
+  assert.match(sentMessages[0]!.message.content, /no test, build, or lint run/);
+  assert.ok(requests.some(item => "states_cause" in item.questions), "the cause-check still judged the reply");
+  assert.ok(!sentMessages.some(entry => /check it with your own tools/i.test(entry.message.content)), "the cause steer is not delivered");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match(sentMessages.at(-1)!.message.content, /cause: warden · cause-check/);
+});
+
+test("cause-check: the guard off sends nothing", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, cause: { enabled: false }, ...STACK_BAR }));
+  await newPrompt("why did the alert fire");
+  nextAnswers = { states_cause: 0.9, checked: 0.05 };
+  await agentEnd("The alert is probably from a manual edit.");
+  assert.equal(networkCalls, 0);
+  assert.equal(sentMessages.length, 0);
+});
+
+test("cause-check: a repeated unchecked cause is steered harder with the earlier date", async () => {
+  await grantConsentCause();
+  await newPrompt("why did the alert fire");
+  const at = Date.now() - 86_400_000;
+  await recordCause("code", "a manual edit", temporary, at);
+  nextAnswers = { states_cause: 0.9, hands_off: 0.05, checked: 0.05, topic: "code" };
+  await agentEnd("The alert is probably still from a manual edit.");
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0]!.message.content, new RegExp(new Date(at).toISOString().slice(0, 10)));
 });

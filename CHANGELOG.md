@@ -6,6 +6,15 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Added
+
+- The cause-check guard (on by default, `cause.enabled`): when the final reply of a run states a likely cause, or asks a person to check something the agent could inspect itself, and no tool result in that run checked it, pi-warden sends the reply back with one follow-up turn: check the cause with its own tools (a query, a log, a file, or a command) and give the evidence, or say plainly that the cause is unverified and why it cannot check it. It is the sibling of the done-check. An offline pre-filter (`causePreFilter`) fires on causal and hand-off wording, so a reply about results or next steps spends no request; the guard asks Jev whether the reply states a cause or hands off a check, and whether the run checked it. Each unchecked cause is stored per project for `cause.windowDays` (default 7) as a short redacted summary under a topic; the same unchecked cause on the same topic on a later day gets a stronger steer that names the earlier date. When the done-check steers the same reply, the cause-check records its decision in the trace and sends no steer, so one reply gets at most one end-of-run steer. The repeat history lives in a `causes` table in the same owner-only database as the hold log, and every request, stored summary, and trace line passes through `redact()`.
+
+### Docs
+
+- `docs/guards.md` describes the new cause-check; `docs/configuration.md` lists its keys, widget template, and tokens; `docs/data-handling.md` and the consent notice name the cause-check request and its stored repeat history; `README.md` lists the guard next to the done-check.
+- `eval/reports/2026-10-07-cause-check/` measures the offline pre-filter on recorded sessions: the totals, the flagged count, and how many of a 20-reply sample were real unchecked causes.
+
 ## 1.2.0
 
 ### Added

@@ -168,6 +168,16 @@ export interface DoneGuardConfig {
   visualTools: VisualToolsConfig;
 }
 
+export interface CauseGuardConfig {
+  enabled: boolean;
+  /** P(the final reply states a cause or hands a check to a person) at or above this is judged. */
+  claimsCause: number;
+  /** Also send the agent a follow-up asking it to check the cause. Triggers one more LLM turn. */
+  nudge: boolean;
+  /** Days an unchecked cause is remembered for the repeat steer. */
+  windowDays: number;
+}
+
 /** Tool calls that show the rendered UI. Matching is case-insensitive. */
 export interface VisualToolsConfig {
   /** Heads of a shell command segment: `agent-browser`, `npx playwright`. */
@@ -479,6 +489,7 @@ export interface WardenConfig {
   action: ActionGuardConfig;
   stuck: StuckGuardConfig;
   done: DoneGuardConfig;
+  cause: CauseGuardConfig;
   slop: SlopGuardConfig;
   security: SecurityConfig;
   rules: RulesConfig;
@@ -518,7 +529,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 12;
+export const CONFIG_SCHEMA = 13;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -555,6 +566,7 @@ export function defaultConfig(): WardenConfig {
     },
     stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true, repeatSteer: true, evidence: true, diffLimit: 3000, tailLimit: 1000 },
     done: { enabled: true, claimsDone: 0.7, nudge: true, uiProof: true, uiFiles: [...DEFAULT_UI_FILES], visualTools: defaultVisualTools() },
+    cause: { enabled: true, claimsCause: 0.7, nudge: true, windowDays: 7 },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true },
     rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
@@ -955,6 +967,16 @@ function applyDone(base: DoneGuardConfig, raw: unknown): DoneGuardConfig {
   };
 }
 
+function applyCause(base: CauseGuardConfig, raw: unknown): CauseGuardConfig {
+  if (!isObject(raw)) return base;
+  return {
+    enabled: boolean(raw.enabled, base.enabled),
+    claimsCause: probability(raw.claimsCause, base.claimsCause),
+    nudge: boolean(raw.nudge, base.nudge),
+    windowDays: Math.max(1, positiveInteger(raw.windowDays, base.windowDays)),
+  };
+}
+
 function applyProse(base: ProseConfig, raw: unknown): ProseConfig {
   if (!isObject(raw)) return base;
   return {
@@ -1007,6 +1029,7 @@ function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
     action: template(raw.action, base.action),
     stuck: template(raw.stuck, base.stuck),
     done: template(raw.done, base.done),
+    cause: template(raw.cause, base.cause),
     prose: template(raw.prose, base.prose),
     security: template(raw.security, base.security),
     context: template(raw.context, base.context),
@@ -1025,7 +1048,7 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "slop" | "security" | "rules" | "rulesAtTurnStart" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "cause" | "slop" | "security" | "rules" | "rulesAtTurnStart" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
   return {
     compaction: applyCompaction(base.compaction, raw.compaction, source),
     waste: applyWaste(base.waste, raw.waste),
@@ -1039,6 +1062,7 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
     action: applyAction(base.action, raw.action, timeoutMs, source, warnings),
     stuck: applyStuck(base.stuck, raw.stuck),
     done: applyDone(base.done, raw.done),
+    cause: applyCause(base.cause, raw.cause),
     slop: applySlop(base.slop, raw.slop),
     security: isObject(raw.security) ? {
       enabled: source === "project" ? projectSwitch("security.enabled", raw.security.enabled, base.security.enabled, warnings) : boolean(raw.security.enabled, base.security.enabled),

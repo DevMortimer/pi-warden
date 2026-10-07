@@ -1,3 +1,4 @@
+import type { CauseVerdict } from "./cause.js";
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
 import type { ProseVerdict } from "./prose.js";
@@ -5,7 +6,7 @@ import type { RulesVerdict } from "./rules.js";
 import type { RunawayVerdict } from "./runaway.js";
 import type { Attempt, StuckVerdict } from "./stuck.js";
 
-export type GuardName = "action" | "stuck" | "done" | "prose" | "security" | "context" | "runaway" | "rules" | "subagent" | "conscience" | "waste";
+export type GuardName = "action" | "stuck" | "done" | "cause" | "prose" | "security" | "context" | "runaway" | "rules" | "subagent" | "conscience" | "waste";
 
 export interface TraceEntry {
   at: number;
@@ -98,6 +99,17 @@ export function doneDetails(verdict: DoneVerdict, finalMessage: string, told?: s
   const lines = [`final message: ${clip(finalMessage.replace(/\s+/g, " "), 300)}`];
   lines.push(`evidence: ${verdict.evidence.mutations} code change${verdict.evidence.mutations === 1 ? "" : "s"}${verdict.evidence.checks.length ? `; checks: ${verdict.evidence.checks.map(check => `${clip(check.call, 60)} → ${check.passed ? "passed" : "failed"}`).join(", ")}` : "; no checks ran"}`);
   if (verdict.judgment) lines.push(`jev: claims done ${percent(verdict.judgment.claimsDone)} · claims verified ${percent(verdict.judgment.claimsVerified)} · checks apply ${percent(verdict.judgment.verificationApplies)} · ${verdict.judgment.outcome} · ${verdict.judgment.model} · ${verdict.judgment.elapsedMs} ms`);
+  if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
+  if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
+  if (told) lines.push(`agent told: ${clip(told, 400)}`);
+  return lines;
+}
+
+export function causeDetails(verdict: CauseVerdict, finalMessage: string, told?: string): string[] {
+  const lines = [`final message: ${clip(finalMessage.replace(/\s+/g, " "), 300)}`];
+  lines.push(`run: ${verdict.judgment === undefined ? "not judged" : `${verdict.topic} · checked ${percent(verdict.judgment.checked)}`}`);
+  if (verdict.judgment) lines.push(`jev: states cause ${percent(verdict.judgment.statesCause)} · hands off ${percent(verdict.judgment.handsOff)} · checked ${percent(verdict.judgment.checked)} · ${verdict.judgment.model} · ${verdict.judgment.elapsedMs} ms`);
+  if (verdict.previous !== undefined) lines.push(`earlier unchecked cause on ${verdict.topic}: recorded ${new Date(verdict.previous.at).toISOString().slice(0, 10)}`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
   if (told) lines.push(`agent told: ${clip(told, 400)}`);
