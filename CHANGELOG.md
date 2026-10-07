@@ -10,6 +10,19 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - The action guard reads a script a command runs from disk and applies the same pattern floor and ask gate to its body: `bash FILE`, `./FILE`, `source FILE` and `. FILE`, `npm`/`pnpm`/`yarn`/`bun` scripts from `package.json` (with `preNAME` and `postNAME`), `make TARGET` or the default target, and `node`/`python`/`python3`/`ruby`/`perl`/`deno run FILE`. A body is read only when it resolves, after symlinks, inside the project root or a temp root, as a regular file of at most 64 KB, and one level deep. A body hit keeps the id and severity it has when typed directly and its label names the source (`(via cleanup.sh)`, `(via npm run clean)`); `action.exemptRules` and user `commandRules` apply to it; a body hit makes the ask gate ask with `runs a script with <shape>`; and the body lines that hit ride the request to Jev as `script_lines`, redacted and bounded to five lines and 600 characters.
 
+### Changed
+
+- The done-check nudge names one check command instead of "whatever exists": the last check that passed earlier in this session in this project, else the `check` then `test` script of the project's `package.json` run with the package manager its lock file names (`pnpm-lock.yaml`, `yarn.lock`, `bun.lockb` or `bun.lock`, else npm), else the same `Makefile` targets; with none of those it keeps the generic ask. The UI nudge names the last local URL a tool result printed this session (`http://localhost:PORT`, `127.0.0.1`, `[::1]`) when there is one.
+- Done-check UI proof now counts only what shows the page to the agent: a successful tool result that contains an image, a page text snapshot (`agent-browser snapshot`, `agent-browser get text`, the MCP `take_snapshot` tool), a browser or device test run (`playwright test`, `flutter test` with `integration_test` or golden tests), or a `read` of an image file. A screenshot command that only writes a file (`agent-browser screenshot PATH`, `idb screenshot`, `xcrun simctl io … screenshot`, `chrome --headless --screenshot`), `agent-browser` `open`/`close`/`click`/`fill`/`set`/`wait`/`eval`, and MCP navigation tools no longer count; a saved screenshot counts once something reads it. The `done.visualTools` defaults match, and every config key still works.
+
+### Fixed
+
+- The done-check counts a shell command as a check only when a check runner starts one of its shell segments, after `cd DIR`, environment assignments, and `timeout`/`time`/`env`/`npx`/`pnpm exec`/`bunx`/`yarn`/`uv run`/`poetry run`/`python -m` wrappers. A runner name in an argument (`grep -n jest package.json`, `which eslint`, `npm view vitest version`) no longer counts as a check.
+- A check run counts as proof only when it really ran and its output agrees: the runner's own summary wins over the exit code (a summary that reports failures is a failed check even with exit code 0), a summary that reports zero tests (`Tests: 0 total`, `[no tests to run]`, and similar) is never a check, and when the shell can hide the runner's exit code (a pipe without `set -o pipefail`, `||`, or `;` with more commands) the exit code is no proof — with no runner summary the run is not a check at all. Each run that names a runner but does not count gets one trace detail with the reason.
+
+
+
+
 ## 1.1.2
 
 ### Fixed

@@ -24,7 +24,7 @@ import { ArmingTracker, unparseableArmingRules } from "./arming.js";
 import * as configModule from "./config.js";
 import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, PACKAGE_NAME, parseConfigValue, PROJECT_CONFIG_FILE, projectConfigPath, readUserConfig, setNestedValue, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig, WardenMode } from "./config.js";
-import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, isVisualCheck, needsDoneCheck, recordOutcome as recordDoneOutcome, recordUi } from "./done.js";
+import { checkSkipReason, classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, isVisualCheck, localUrl, needsDoneCheck, projectCheckCommand, recordOutcome as recordDoneOutcome, recordUi } from "./done.js";
 import type { RunEvidence } from "./done.js";
 import { createdScratch, describeAsked, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, movedInTargets, offTaskSteer, pruneScratch, scratchCandidates, SCRATCH_PATHS_ENV, scratchPaths, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
@@ -465,6 +465,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let fullOutputs = new Map<string, { text: string; path?: string }>();
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
+  /** The last check that passed in this session and its project root, and the last local URL a tool result printed: the done nudge names them. */
+  let lastPassedCheck: { call: string; cwd: string } | undefined;
+  let lastLocalUrl: string | undefined;
   // Turn rules: the read-only working-tree snapshot started at run start and awaited at run end, and the files a
   // per-edit judgment saw.
   let turnSnapshot: Promise<SnapshotResult> | undefined;
@@ -2377,7 +2380,16 @@ export default function wardenExtension(host: ExtensionAPI): void {
       return { content: next };
     };
     // Checks use the original result, not the excerpts or security banner.
-    if (config.done.enabled) recordDoneOutcome(evidence, classifyToolResult(event.toolName, event.input, failed, text, ctx.cwd), event.input, event.toolName);
+    const printedUrl = localUrl(text);
+    if (printedUrl !== undefined) lastLocalUrl = printedUrl;
+    if (config.done.enabled) {
+      const outcome = classifyToolResult(event.toolName, event.input, failed, text, ctx.cwd);
+      const call = recordDoneOutcome(evidence, outcome, event.input, event.toolName);
+      if (outcome === "check-pass" && call !== undefined) lastPassedCheck = { call, cwd: ctx.cwd };
+      // Each run that names a check runner but does not count gets one trace detail with the reason.
+      const skip = checkSkipReason(event.toolName, event.input, failed, text, ctx.cwd);
+      if (skip !== undefined) record(ctx, config, "done", `warden · done · check not counted · ${call ?? event.toolName}`, [skip]);
+    }
     if (config.done.enabled && config.done.uiProof && !failed) {
       const input = event.input as Record<string, unknown>;
       const written = event.toolName === "write" || event.toolName === "edit" ? (typeof input.path === "string" ? [input.path] : [])
@@ -2712,7 +2724,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const verdict = await doneCheck;
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     // At most one nudge per user prompt; a later unverified claim is still judged and recorded.
-    const nudge = verdict.unverified && config.done.nudge && !doneNudged ? doneNudge(verdict) : undefined;
+    const nudge = verdict.unverified && config.done.nudge && !doneNudged
+      ? doneNudge(verdict, { lastCheck: lastPassedCheck?.cwd === ctx.cwd ? lastPassedCheck.call : undefined, projectCheck: projectCheckCommand(ctx.cwd), localUrl: lastLocalUrl })
+      : undefined;
     record(ctx, config, "done", formatDone(verdict, config.widget.done), doneDetails(verdict, finalMessage, nudge));
     if (!verdict.unverified) return;
     stats.unverified++;

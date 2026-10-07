@@ -2366,7 +2366,7 @@ test("done-check: an edit after a passing run makes the run unverified again", a
   assert.deepEqual(requests.at(-1)!.state.run, { file_changes: 2, checks_run: [] }, "the stale pass is not verification");
   assert.equal(sentMessages.length, 1, "the agent is nudged to run the checks again");
   assert.match(sentMessages[0]!.message.content, /after 2 file changes with no test, build, or lint run since the last change/);
-  assert.match(sentMessages[0]!.message.content, /Run the project's tests, build, or lint/);
+  assert.match(sentMessages[0]!.message.content, /Run npm test on what you changed\./, "the nudge names the check that passed earlier in this session");
   assert.deepEqual(sentMessages[0]!.options, { deliverAs: "followUp", triggerTurn: true });
   assert.match(widgets.at(-1)!.at(-1)!, /^UNVERIFIED\s+done\s+done-check · 2 changes · 0\/0 checks passed · claims done 0\.90 /);
 });
@@ -2387,9 +2387,9 @@ test("done-check: a UI change needs a visual check after it, even after passing 
   await newPrompt("and the footer");
   await toolResult("edit", { path: "web/app.css", edits: [] }, "ok", false);
   await toolResult("bash", { command: "npm test" }, "31 passing", false);
-  await toolResult("bash", { command: "agent-browser open http://localhost:3000 && agent-browser screenshot /tmp/footer.png" }, "saved", false);
+  await toolResult("bash", { command: "agent-browser open http://localhost:3000 && agent-browser snapshot -i" }, "Heading\nFooter", false);
   await agentEnd("Done: the footer is fixed.");
-  assert.equal(networkCalls, 1, "a screenshot after the last UI edit is the proof: no done-check");
+  assert.equal(networkCalls, 1, "a page snapshot after the last UI edit is the proof: no done-check");
 
   await newPrompt("and the sidebar");
   await toolResult("mcp__chrome_devtools", { tool: "take_screenshot" }, "image", false);

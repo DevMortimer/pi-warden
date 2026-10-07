@@ -59,9 +59,9 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "enabled": true, "claimsDone": 0.7, "nudge": true, "uiProof": true,
     "uiFiles": ["**/*.{css,scss,sass,less,html,htm,vue,svelte,jsx,tsx,astro,dart}", "**/web/**/*.js", "**/public/**/*.js", "!**/*.{test,spec}.*", "!**/*_test.dart", "!**/{test,tests,__tests__}/**"],
     "visualTools": {
-      "commands": ["agent-browser", "playwright", "npx playwright", "flutter test", "fvm flutter test", "idb", "xcrun simctl io", "chrome", "chromium", "google-chrome"],
-      "commandWords": ["screenshot"],
-      "tools": ["screenshot", "take_snapshot", "navigate"],
+      "commands": ["agent-browser snapshot", "agent-browser get text", "playwright test", "npx playwright test", "flutter test", "fvm flutter test"],
+      "commandWords": [],
+      "tools": ["take_snapshot"],
       "images": ["png", "jpg", "jpeg", "webp"]
     }
   },
@@ -123,7 +123,7 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `done.*` | Completion-claim threshold and whether the agent gets a follow-up turn. |
 | `done.uiProof` | Default `true`. After a change to a `done.uiFiles` path, only a `done.visualTools` call after that change counts as proof; passing tests and builds do not. `false` restores the test/build/lint-only rule. |
 | `done.uiFiles` | Globs for files whose change shows on screen, matched against `write`/`edit` paths and files a `bash` command writes. `{a,b}` alternatives work; a glob that starts with `!` excludes. The defaults exclude test files. |
-| `done.visualTools` | What counts as looking at the result, case-insensitive, successful calls only. `commands`: heads of a shell command segment; `flutter test` counts only for an `integration_test/` or golden path (or `--update-goldens`), `idb` only for its `screenshot` or `ui` subcommand, and `chrome`, `chromium`, or `google-chrome` only with a `commandWords` flag (`--headless --screenshot`). `commandWords`: a word that stands alone as an argument or flag after a `commands` head (`idb screenshot`, `flutter test --screenshot`); the same word after another command (`grep -rn screenshot src`), quoted messages, heredoc bodies, and paths such as `screenshots/` do not count. `tools`: text in a tool name, or in the `tool` an MCP proxy (`mcp`, `mcp__…`) calls. `images`: extensions whose `read` counts. |
+| `done.visualTools` | What counts as looking at the result, case-insensitive, successful calls only. `commands`: heads of a shell command segment; each head names a command that shows the page (`agent-browser snapshot`, `agent-browser get text`, `playwright test`, `npx playwright test`, `flutter test`, `fvm flutter test`), and `flutter test` counts only for an `integration_test/` or golden path (or `--update-goldens`). A screenshot command that only writes a file (`agent-browser screenshot PATH`, `idb screenshot`, `xcrun simctl io … screenshot`, `chrome --headless --screenshot`) is not a head: the saved image counts once something `read`s it. `commandWords`: a word that stands alone as an argument or flag after a `commands` head (`idb screenshot` when `idb` is a head); the same word after another command (`grep -rn screenshot src`), quoted messages, heredoc bodies, and paths such as `screenshots/` do not count. `tools`: text in a tool name, or in the `tool` an MCP proxy (`mcp`, `mcp__…`) calls; navigation tools (`navigate_page`) do not count. A successful result that contains an image counts whatever tool produced it. `images`: extensions whose `read` counts. |
 | `context.*` | Compression thresholds, retention confidence, duplicate size, recall tool. |
 | `context.compactAppendix` | Default `true`. Append a compact evidence appendix to the summary during compaction. |
 | `context.dedupeRuns` | Default `true`. A run of at least 20 lines and 1500 characters in a new tool result that exactly repeats (trailing spaces ignored) text already in context on the current branch becomes one line: `[pi-warden: the next N lines repeat an earlier bash result — omitted; full text: <path>]`. The full original is stored in that file. The last 2000 characters and images are never changed. Code only; no request. `false` also turns off `context.dedupeMessages`. |

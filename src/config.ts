@@ -188,9 +188,12 @@ export const DEFAULT_UI_FILES = [
 
 export function defaultVisualTools(): VisualToolsConfig {
   return {
-    commands: ["agent-browser", "playwright", "npx playwright", "flutter test", "fvm flutter test", "idb", "xcrun simctl io", "chrome", "chromium", "google-chrome"],
-    commandWords: ["screenshot"],
-    tools: ["screenshot", "take_snapshot", "navigate"],
+    // A head names the command that shows the page: a page text snapshot, or a browser or device test run. A screenshot
+    // subcommand only writes a file (`agent-browser screenshot PATH`, `idb screenshot`, `chrome --headless --screenshot`),
+    // so it is not a head; the saved image counts once something reads it.
+    commands: ["agent-browser snapshot", "agent-browser get text", "playwright test", "npx playwright test", "flutter test", "fvm flutter test"],
+    commandWords: [],
+    tools: ["take_snapshot"],
     images: ["png", "jpg", "jpeg", "webp"],
   };
 }

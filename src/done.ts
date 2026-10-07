@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { ask, choice, noul } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { DoneGuardConfig, VisualToolsConfig } from "./config.js";
@@ -10,8 +11,21 @@ import { DEFAULT_TEMPLATES, doneTokens, renderTemplate } from "./widget.js";
 
 export type ToolOutcome = "read" | "mutation" | "check-pass" | "check-fail" | "unknown";
 
-/** Commands whose success is evidence that the work was verified. */
-const CHECK_COMMAND = /\b(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lint|typecheck|build|verify|ci)\b|(?:npx|pnpm|bunx)\s+(?:tsc|jest|vitest|mocha|eslint|biome|prettier\s+--check)\b|pytest|jest|vitest|mocha|tsc|eslint|biome\s+check|ruff|mypy|flake8|pylint|black\s+--check|cargo\s+(?:test|check|build|clippy)|go\s+(?:test|vet|build)|make\s+(?:test|check|lint|build)|mvn\s+(?:test|verify)|gradle\w*\s+(?:test|check|build)|dotnet\s+(?:test|build)|node\s+--test|deno\s+(?:test|check|lint)|rspec|rake\s+test|mix\s+test|phpunit|swift\s+(?:test|build)|xcodebuild\s+test|ctest|zig\s+(?:test|build))\b/;
+/** A check runner invocation: a package-manager script, or a test, type-check, lint, or build tool. */
+const RUNNER_SOURCE = String.raw`(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lint|typecheck|build|verify|ci)\b|(?:npx|pnpm|bunx)\s+(?:tsc|jest|vitest|mocha|eslint|biome|prettier\s+--check)\b|pytest|jest|vitest|mocha|tsc|eslint|biome\s+check|ruff|mypy|flake8|pylint|black\s+--check|cargo\s+(?:test|check|build|clippy)|go\s+(?:test|vet|build)|make\s+(?:test|check|lint|build)|mvn\s+(?:test|verify)|gradle\w*\s+(?:test|check|build)|dotnet\s+(?:test|build)|node\s+--test|deno\s+(?:test|check|lint)|rspec|rake\s+test|mix\s+test|phpunit|swift\s+(?:test|build)|xcodebuild\s+test|ctest|zig\s+(?:test|build)`;
+
+/** A runner name anywhere in the text: enough to say the run names a runner, never enough to count it as a check. */
+const CHECK_COMMAND = new RegExp(`\\b(?:${RUNNER_SOURCE})\\b`);
+
+/** The same runner anchored at the start of a shell segment: only then does the command actually run one. */
+const RUNNER_START = new RegExp(`^(?:${RUNNER_SOURCE})\\b`);
+
+/** Launch wrappers that may sit between the start of a segment and its runner. */
+const WRAPPER_HEAD = /^(?:timeout\s+\S+|time(?:\s+-p)?|env|npx|pnpm\s+exec|bunx|yarn|uv\s+run|poetry\s+run|python\s+-m)\s+/;
+const ENV_ASSIGN = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
+
+/** The runner's own report that nothing ran: a run of zero tests proves nothing about the change. */
+const ZERO_TESTS = /Tests:\s+0 total\b|No tests found|\[no tests to run\]|running 0 tests\b|\u2139 tests 0\b|no tests ran/i;
 
 /** A write or edit whose resolved path lies outside the project root (a scratch file, a note in the home directory). */
 function isOutsideProject(input: Record<string, unknown>, cwd: string): boolean {
@@ -21,21 +35,87 @@ function isOutsideProject(input: Record<string, unknown>, cwd: string): boolean 
   return rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel);
 }
 
+/** Shell segments with the separator that follows each. The `&` of a `2>&1` redirect is not a separator. */
+interface ShellPiece { text: string; sep: string | undefined; next: string }
+
+function commandPieces(command: string): ShellPiece[] {
+  const separators = /\n|;|&&|\|\||\||(?<!>)&/g;
+  const pieces: ShellPiece[] = [];
+  let start = 0;
+  for (const match of command.matchAll(separators)) {
+    const index = match.index ?? 0;
+    pieces.push({ text: command.slice(start, index), sep: match[0], next: "" });
+    start = index + match[0].length;
+  }
+  pieces.push({ text: command.slice(start), sep: undefined, next: "" });
+  return pieces.map((piece, index) => ({ ...piece, next: pieces[index + 1]?.text ?? "" }));
+}
+
+/** Whether a check runner starts the segment, after environment assignments and launch wrappers. */
+function startsRunner(segment: string): boolean {
+  let rest = segment.replace(/^\(+/, "").replace(/\)+$/, "").trim();
+  for (;;) {
+    rest = rest.replace(ENV_ASSIGN, "").trimStart();
+    const wrapper = WRAPPER_HEAD.exec(rest);
+    if (!wrapper) break;
+    rest = rest.slice(wrapper[0].length);
+  }
+  return RUNNER_START.test(rest);
+}
+
+/** The first segment a check runner starts, and the separator after it when that separator can hide its exit code. */
+function runnerPiece(command: string): { hides: string | undefined; nextHead: string } | undefined {
+  for (const piece of commandPieces(command)) {
+    if (!startsRunner(piece.text)) continue;
+    // A pipe (whose exit code is the last command's), `||`, and `;` with more commands all mask the runner's exit code.
+    // A redirect to a file does not, and `&&` short-circuits on the runner's own status.
+    const hides = piece.sep === "||" ? "||"
+      : piece.sep === "|" && !/\bpipefail\b/.test(command) ? "|"
+      : piece.sep === ";" && piece.next.trim() ? ";"
+      : undefined;
+    return { hides, nextHead: piece.next.trim().split(/\s+/)[0] ?? "" };
+  }
+  return undefined;
+}
+
 /**
  * What a finished tool call contributes to the run's evidence. Only write/edit inside the project count as code changes: shell side effects
- * (deleting a temp dir, installing a package) are too varied to demand a test run for. Custom tools are unknown.
+ * (deleting a temp dir, installing a package) are too varied to demand a test run for. Custom tools are unknown. A shell command counts as a
+ * check only when a check runner starts one of its shell segments; a runner name in an argument (`grep -n jest package.json`) does not.
  */
 export function classifyToolResult(tool: string, input: Record<string, unknown>, failed: boolean, output?: string, cwd?: string): ToolOutcome {
-  if (tool === "write" || tool === "edit") return cwd !== undefined && isOutsideProject(input, cwd) ? "unknown" : "mutation";
-  if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return "read";
+  return classify(tool, input, failed, output, cwd).outcome;
+}
+
+/** Why a run that names a check runner is not counted as a check (for one trace detail); undefined when it counts or names no runner. */
+export function checkSkipReason(tool: string, input: Record<string, unknown>, failed: boolean, output?: string, cwd?: string): string | undefined {
+  return classify(tool, input, failed, output, cwd).reason;
+}
+
+interface Classification { outcome: ToolOutcome; reason?: string }
+
+function classify(tool: string, input: Record<string, unknown>, failed: boolean, output: string | undefined, cwd: string | undefined): Classification {
+  if (tool === "write" || tool === "edit") return { outcome: cwd !== undefined && isOutsideProject(input, cwd) ? "unknown" : "mutation" };
+  if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return { outcome: "read" };
   const view = commandOf(tool, input);
-  if (!view) return "unknown";
-  if (CHECK_COMMAND.test(view.command)) return failed ? "check-fail" : "check-pass";
+  if (!view) return { outcome: "unknown" };
+  const namesRunner = CHECK_COMMAND.test(view.command);
   // A test runner launched from inside a script (ctx_execute JavaScript, a Python wrapper) leaves no runner name in the
   // command text, but its output still carries the runner's summary. Judge that summary instead.
   const summary = output === undefined ? undefined : checkSummary(output);
-  if (summary) return summary === "fail" || failed ? "check-fail" : "check-pass";
-  return view.shell && isReadOnlyCommand(view.command) ? "read" : "unknown";
+  const runner = view.shell ? runnerPiece(view.command) : undefined;
+  if (runner !== undefined || summary !== undefined) {
+    if (output !== undefined && ZERO_TESTS.test(output.slice(-6000))) return { outcome: "unknown", reason: "runner summary reports zero tests" };
+    // The runner's own summary wins over the exit code.
+    if (summary === "fail") return { outcome: "check-fail" };
+    if (summary === "pass") return { outcome: "check-pass" };
+    if (runner !== undefined) {
+      if (runner.hides !== undefined) return { outcome: "unknown", reason: `exit code hidden by ${runner.hides}${runner.nextHead ? ` ${runner.nextHead}` : ""}; no runner summary` };
+      return { outcome: failed ? "check-fail" : "check-pass" };
+    }
+  }
+  const read: Classification = { outcome: view.shell && isReadOnlyCommand(view.command) ? "read" : "unknown" };
+  return namesRunner ? { ...read, reason: "runner name in an argument does not make a check" } : read;
 }
 
 /**
@@ -68,16 +148,15 @@ export function emptyEvidence(): RunEvidence {
   return { mutations: 0, checks: [] };
 }
 
-export function recordOutcome(evidence: RunEvidence, outcome: ToolOutcome, input: Record<string, unknown>, tool = "bash"): void {
+export function recordOutcome(evidence: RunEvidence, outcome: ToolOutcome, input: Record<string, unknown>, tool = "bash"): string | undefined {
   if (outcome === "mutation") {
     evidence.mutations++;
     evidence.checksBeforeMutation = evidence.checks.length;
   }
-  if (outcome === "check-pass" || outcome === "check-fail") {
-    const command = commandOf(tool, input)?.command;
-    const call = command !== undefined ? redact(command.length > 200 ? `${command.slice(0, 200)}…` : command) : "check";
-    evidence.checks.push({ call, passed: outcome === "check-pass" });
-  }
+  const command = commandOf(tool, input)?.command;
+  const call = command !== undefined ? redact(command.length > 200 ? `${command.slice(0, 200)}…` : command) : undefined;
+  if (outcome === "check-pass" || outcome === "check-fail") evidence.checks.push({ call: call ?? "check", passed: outcome === "check-pass" });
+  return call;
 }
 
 // `{a,b}` alternatives, which the rules glob matcher does not read, as in the default `*.{css,html,…}` UI glob.
@@ -114,11 +193,13 @@ function headShows(head: string, args: readonly string[]): boolean {
 }
 
 /**
- * Whether a successful tool call showed the rendered UI: a browser or device command, a screenshot, a browser MCP tool, or
- * reading an image. A test run proves the code runs; only this proves what the user will see.
+ * Whether a successful tool call showed the rendered UI to the agent: an image in the result, a page text snapshot, a browser or device test
+ * run, or reading an image file. A test run proves the code runs; only this proves what the user will see. A screenshot command that only
+ * writes a file shows nothing until something reads that file.
  */
-export function isVisualCheck(tool: string, input: Record<string, unknown>, failed: boolean, visual: VisualToolsConfig): boolean {
+export function isVisualCheck(tool: string, input: Record<string, unknown>, failed: boolean, visual: VisualToolsConfig, content?: ReadonlyArray<{ type: string }>): boolean {
   if (failed) return false;
+  if (content?.some(part => part.type === "image")) return true;
   if (tool === "read") {
     const path = typeof input.path === "string" ? input.path.toLowerCase() : "";
     return visual.images.some(extension => path.endsWith(`.${extension.toLowerCase()}`));
@@ -271,14 +352,80 @@ export async function evaluateDone(task: string | undefined, finalMessage: strin
   return { unverified, falseClaim, reasons, evidence, judgment, ...(unseenUi !== undefined ? { unseenUi } : {}) };
 }
 
+/** The last local URL a tool result printed: the page the agent was told to open lives there. */
+const LOCAL_URL = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s)\]"']*)?/gi;
+
+export function localUrl(text: string): string | undefined {
+  let last: string | undefined;
+  for (const match of text.matchAll(LOCAL_URL)) last = match[0];
+  return last;
+}
+
+function readRootFile(path: string): string {
+  try {
+    return existsSync(path) ? readFileSync(path, "utf8") : "";
+  } catch {
+    return "";
+  }
+}
+
+/** The package manager the project's lock file names, else npm. */
+function packageManager(root: string): string {
+  for (const [lock, manager] of [["pnpm-lock.yaml", "pnpm"], ["yarn.lock", "yarn"], ["bun.lockb", "bun"], ["bun.lock", "bun"]] as const) {
+    if (existsSync(join(root, lock))) return manager;
+  }
+  return "npm";
+}
+
+/**
+ * The project's own check command: the `check` then `test` script of its `package.json`, else the same Makefile targets. Only files in the
+ * project root are read; a project with neither keeps the generic nudge.
+ */
+export function projectCheckCommand(root: string): string | undefined {
+  const pkg = readRootFile(join(root, "package.json"));
+  const scripts: Record<string, unknown> = (() => {
+    if (!pkg) return {};
+    try {
+      const parsed: unknown = JSON.parse(pkg);
+      const value = (parsed as { scripts?: unknown }).scripts;
+      return value && typeof value === "object" ? value as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  })();
+  for (const name of ["check", "test"]) {
+    if (typeof scripts[name] === "string") return `${packageManager(root)} run ${name}`;
+  }
+  for (const name of ["check", "test"]) {
+    if (new RegExp(`^${name}\\s*:`, "m").test(readRootFile(join(root, "Makefile")))) return `make ${name}`;
+  }
+  return undefined;
+}
+
+/** Session facts the nudge can name instead of a generic ask. */
+export interface NudgeHint {
+  /** The last check command that passed earlier in this session in this project. */
+  lastCheck?: string | undefined;
+  /** The project's own check command (`projectCheckCommand`). */
+  projectCheck?: string | undefined;
+  /** The last local URL a tool result printed in this session. */
+  localUrl?: string | undefined;
+}
+
 /** Follow-up for the agent: verify or say plainly that nothing was verified. */
-export function doneNudge(verdict: DoneVerdict): string {
+export function doneNudge(verdict: DoneVerdict, hint: NudgeHint = {}): string {
   const failed = freshChecks(verdict.evidence).filter(check => !check.passed);
   const codeUnverified = verdict.unseenUi === undefined
     || (verdict.evidence.mutations > 0 && !freshChecks(verdict.evidence).some(check => check.passed) && (verdict.judgment?.verificationApplies ?? 1) >= APPLIES_THRESHOLD);
-  const detail = failed.length ? `The last check that ran failed: ${failed.at(-1)!.call}. Fix that first.` : "Run the project's tests, build, or lint (whatever exists) on what you changed.";
+  const command = hint.lastCheck ?? hint.projectCheck;
+  const detail = failed.length
+    ? `The last check that ran failed: ${failed.at(-1)!.call}. Fix that first.`
+    : command !== undefined
+      ? `Run ${redact(command)} on what you changed.`
+      : "Run the project's tests, build, or lint (whatever exists) on what you changed.";
   const code = codeUnverified ? ` ${detail} Then report the actual result. If no check exists or can run, say so explicitly instead of presenting the work as done.` : "";
-  const ui = verdict.unseenUi !== undefined ? ` You changed \`${redact(verdict.unseenUi)}\` but did not look at the result. Open it in a browser or take a screenshot before calling it done, or say it is unverified.` : "";
+  const open = hint.localUrl !== undefined ? `Open ${redact(hint.localUrl)} in a browser` : "Open it in a browser";
+  const ui = verdict.unseenUi !== undefined ? ` You changed \`${redact(verdict.unseenUi)}\` but did not look at the result. ${open} or take a screenshot before calling it done, or say it is unverified.` : "";
   return `pi-warden: ${verdict.reasons.join("; ")}.${code}${ui}`;
 }
 
