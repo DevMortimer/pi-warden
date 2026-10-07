@@ -343,6 +343,7 @@ test("action rules context is disclosed, rides the request only while a violatio
 
     const { disclosure } = await import("../src/extension.js");
     assert.match(disclosure, /unless the rules guard is on/i);
+    assert.match(disclosure, /when a guarded bash call runs a script from the project or a temp folder, up to five redacted lines of its body \(600 characters\) that match a floor pattern/i, "the script body lines ride the request");
     assert.match(disclosure, /one judged action call in twenty .*up to eight redacted earlier user\/assistant text messages and the resolved active rules file content/i, "earlier messages and the rules content ride the sample");
     assert.match(disclosure, /only while a rule violation is open/i);
     assert.match(disclosure, /short continuation or a relayed child report, which send nothing/i);
@@ -2366,7 +2367,7 @@ test("done-check: an edit after a passing run makes the run unverified again", a
   assert.deepEqual(requests.at(-1)!.state.run, { file_changes: 2, checks_run: [] }, "the stale pass is not verification");
   assert.equal(sentMessages.length, 1, "the agent is nudged to run the checks again");
   assert.match(sentMessages[0]!.message.content, /after 2 file changes with no test, build, or lint run since the last change/);
-  assert.match(sentMessages[0]!.message.content, /Run the project's tests, build, or lint/);
+  assert.match(sentMessages[0]!.message.content, /Run npm test on what you changed\./, "the nudge names the check that passed earlier in this session");
   assert.deepEqual(sentMessages[0]!.options, { deliverAs: "followUp", triggerTurn: true });
   assert.match(widgets.at(-1)!.at(-1)!, /^UNVERIFIED\s+done\s+done-check · 2 changes · 0\/0 checks passed · claims done 0\.90 /);
 });
@@ -2387,9 +2388,9 @@ test("done-check: a UI change needs a visual check after it, even after passing 
   await newPrompt("and the footer");
   await toolResult("edit", { path: "web/app.css", edits: [] }, "ok", false);
   await toolResult("bash", { command: "npm test" }, "31 passing", false);
-  await toolResult("bash", { command: "agent-browser open http://localhost:3000 && agent-browser screenshot /tmp/footer.png" }, "saved", false);
+  await toolResult("bash", { command: "agent-browser open http://localhost:3000 && agent-browser snapshot -i" }, "Heading\nFooter", false);
   await agentEnd("Done: the footer is fixed.");
-  assert.equal(networkCalls, 1, "a screenshot after the last UI edit is the proof: no done-check");
+  assert.equal(networkCalls, 1, "a page snapshot after the last UI edit is the proof: no done-check");
 
   await newPrompt("and the sidebar");
   await toolResult("mcp__chrome_devtools", { tool: "take_screenshot" }, "image", false);
@@ -2408,6 +2409,27 @@ test("done-check: a UI change needs a visual check after it, even after passing 
   await agentEnd("The page is done.");
   assert.equal(networkCalls - before, 1, "a UI file written from bash is a UI change too");
   assert.ok("claims_done" in requests.at(-1)!.questions);
+});
+
+test("done-check: an image in a successful result counts as UI proof", async () => {
+  await grantConsent();
+  await newPrompt("make the header sticky");
+  await toolResult("edit", { path: "web/app.css", edits: [] }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  await fire("tool_result", { toolName: "take_screenshot", toolCallId: "shot", input: {}, isError: false, content: [{ type: "image", data: "synthetic", mimeType: "image/png" }] }, context());
+  await agentEnd("Done: the header is sticky.");
+  assert.equal(networkCalls, 0, "the image is the proof: no done-check request");
+  assert.equal(sentMessages.length, 0, "no UI nudge at the end of the turn");
+});
+
+test("a skipped check is one trace line with the reason and no command", async () => {
+  await grantConsent();
+  await newPrompt("fix the parser bug");
+  await toolResult("bash", { command: "npm test 2>&1 | tail -20" }, "no runner summary in here", false);
+  await runCommand("trace", context({ hasUI: false }));
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.match(trace, /done: warden · done · check not counted\n  exit code hidden by \| tail; no runner summary(?:\nTrace file: .*)?$/);
+  assert.ok(!trace.includes("npm test"), "no trace line or detail names the command");
 });
 
 test("done-check: non-UI changes, and uiProof off, behave as before", async () => {
