@@ -343,6 +343,7 @@ test("action rules context is disclosed, rides the request only while a violatio
 
     const { disclosure } = await import("../src/extension.js");
     assert.match(disclosure, /unless the rules guard is on/i);
+    assert.match(disclosure, /when a guarded bash call runs a script from the project or a temp folder, up to five redacted lines of its body \(600 characters\) that match a floor pattern/i, "the script body lines ride the request");
     assert.match(disclosure, /one judged action call in twenty .*up to eight redacted earlier user\/assistant text messages and the resolved active rules file content/i, "earlier messages and the rules content ride the sample");
     assert.match(disclosure, /only while a rule violation is open/i);
     assert.match(disclosure, /short continuation or a relayed child report, which send nothing/i);

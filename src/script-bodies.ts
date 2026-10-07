@@ -80,7 +80,7 @@ function tempRoots(): string[] {
   const roots = new Set<string>();
   for (const root of [tmpdir(), process.env.TMPDIR, "/tmp", "/private/tmp"]) {
     if (!root || !isAbsolute(root)) continue;
-    try { roots.add(realpathSync(root)); } catch { /* absent on this system */ }
+    try { roots.add(realpathSync(root)); } catch { continue; }
   }
   return (tempRealCache = [...roots]);
 }
