@@ -107,9 +107,9 @@ export function doneDetails(verdict: DoneVerdict, finalMessage: string, told?: s
 
 export function causeDetails(verdict: CauseVerdict, finalMessage: string, told?: string): string[] {
   const lines = [`final message: ${clip(finalMessage.replace(/\s+/g, " "), 300)}`];
-  lines.push(`run: ${verdict.judgment === undefined ? "not judged" : `${verdict.topic} · checked ${percent(verdict.judgment.checked)}`}`);
+  lines.push(`run: ${verdict.judgment === undefined ? "not judged" : `checked ${percent(verdict.judgment.checked)}`}`);
   if (verdict.judgment) lines.push(`jev: states cause ${percent(verdict.judgment.statesCause)} · hands off ${percent(verdict.judgment.handsOff)} · checked ${percent(verdict.judgment.checked)} · ${verdict.judgment.model} · ${verdict.judgment.elapsedMs} ms`);
-  if (verdict.previous !== undefined) lines.push(`earlier unchecked cause on ${verdict.topic}: recorded ${new Date(verdict.previous.at).toISOString().slice(0, 10)}`);
+  if (verdict.previous !== undefined) lines.push(`earlier unchecked cause: recorded ${new Date(verdict.previous.at).toISOString().slice(0, 10)}`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
   if (told) lines.push(`agent told: ${clip(told, 400)}`);

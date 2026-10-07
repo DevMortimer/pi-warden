@@ -5734,7 +5734,7 @@ test("cause-check: a causal guess with no check in the run is sent back", async 
   await grantConsentCause();
   await newPrompt("why did the alert fire");
   await toolResult("bash", { command: "git status" }, "clean", false);
-  nextAnswers = { states_cause: 0.9, hands_off: 0.05, checked: 0.05, topic: "code" };
+  nextAnswers = { states_cause: 0.9, hands_off: 0.05, checked: 0.05 };
   const before = networkCalls;
   await agentEnd("The alert is probably from a manual edit.");
   assert.equal(networkCalls - before, 1);
@@ -5748,9 +5748,10 @@ test("cause-check: a causal guess with no check in the run is sent back", async 
 test("cause-check: a check handed to a person is sent back", async () => {
   await grantConsentCause();
   await newPrompt("why did the alert fire");
-  nextAnswers = { states_cause: 0.1, hands_off: 0.9, checked: 0.05, topic: "config" };
+  nextAnswers = { states_cause: 0.1, hands_off: 0.9, checked: 0.05 };
   await agentEnd("Ask the team whether the config changed.");
   assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0]!.message.content, /asks a person to check something/i);
   assert.match(sentMessages[0]!.message.content, /check it with your own tools/i);
 });
 
@@ -5758,7 +5759,7 @@ test("cause-check: a run that checked the claim is recorded but not steered", as
   await grantConsentCause();
   await newPrompt("why did the alert fire");
   await toolResult("bash", { command: "gh run view 7 --log" }, "the deploy at 09:00 printed the alert", false);
-  nextAnswers = { states_cause: 0.9, hands_off: 0.05, checked: 0.9, topic: "code" };
+  nextAnswers = { states_cause: 0.9, hands_off: 0.05, checked: 0.9 };
   await agentEnd("The alert is probably from the deploy at 09:00.");
   assert.equal(networkCalls, 1, "the reply was judged");
   assert.equal(sentMessages.length, 0, "no steer when the run checked the cause");
@@ -5779,7 +5780,7 @@ test("cause-check: when the done-check steers the same reply, the cause-check re
   await grantConsentCause();
   await newPrompt("fix the parser and explain the alert");
   await toolResult("edit", { path: "src/parser.ts", edits: [] }, "ok", false);
-  nextAnswers = { claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.9, outcome: "complete", states_cause: 0.9, hands_off: 0.05, checked: 0.05, topic: "code" };
+  nextAnswers = { claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.9, outcome: "complete", states_cause: 0.9, hands_off: 0.05, checked: 0.05 };
   await agentEnd("Fixed the parser; the alert is probably from a manual edit.");
   assert.equal(sentMessages.length, 1, "one steer for the reply");
   assert.match(sentMessages[0]!.message.content, /no test, build, or lint run/);
@@ -5802,8 +5803,8 @@ test("cause-check: a repeated unchecked cause is steered harder with the earlier
   await grantConsentCause();
   await newPrompt("why did the alert fire");
   const at = Date.now() - 86_400_000;
-  await recordCause("code", "a manual edit", temporary, at);
-  nextAnswers = { states_cause: 0.9, hands_off: 0.05, checked: 0.05, topic: "code" };
+  await recordCause("a manual edit", temporary, at);
+  nextAnswers = { states_cause: 0.9, hands_off: 0.05, checked: 0.05, same_cause: "c1" };
   await agentEnd("The alert is probably still from a manual edit.");
   assert.equal(sentMessages.length, 1);
   assert.match(sentMessages[0]!.message.content, new RegExp(new Date(at).toISOString().slice(0, 10)));

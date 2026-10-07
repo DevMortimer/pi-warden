@@ -23,7 +23,7 @@ A deterministic spread of 20 flagged replies was judged by hand:
 | Real unchecked cause | 4 |
 | Not a real unchecked cause | 16 |
 
-The four real replies: one hand-off that asked the user to confirm a CI lane the agent could check itself, one reply that named a likely cause and said it was not proven, one causal guess about a sign-in failure, and one causal guess that a message never reached its recipient. The 16 others were status reports, plans, and completed work that happened to contain a causal word (a source key that "points to" an entry, a reason named in passing, a "probably" in a sentence that was not a diagnosis).
+The 16 others were status reports, plans, and completed work that happened to contain a causal word (a source key that "points to" an entry, a reason named in passing, a "probably" in a sentence that was not a diagnosis).
 
 ## Method and limits
 
