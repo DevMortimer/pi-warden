@@ -30,11 +30,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Tests
 
 - A new offline session test loads pi-warden the way Pi does (`package.json` → `pi.extensions` → `extensions/index.js` → `dist/extension.js`) into a real agent session with a scripted model, and asserts on the session's messages: a held destructive bash call, a done-check nudge after an unverified completion, and the repeat note after the same failing read twice. It fails with `run npm run build first` when the shipped entry is missing.
-- `AGENTS.md` is checked against `src/`: every source file its Architecture block names must exist, and the file must state no test count.
 
 ### Docs
 
-- `AGENTS.md` Architecture now names the real flat `src/` files (it named `guard/`, `trace/`, `widget/`, `panel/`, and `extension/` directories that do not exist), and its Development block no longer states a test count.
 - `docs/commands.md` describes the `/warden status` build line; `docs/ci-cd.md` states the new `npm run check` order (typecheck, build, offline tests).
 
 
