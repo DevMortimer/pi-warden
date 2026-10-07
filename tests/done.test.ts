@@ -20,7 +20,7 @@ test("a shell command is a check only when a check runner starts one of its shel
   assert.equal(done.classifyToolResult("bash", { command: "npm install ajv" }, false), "unknown", "a runner name in an argument does not make a check");
 });
 
-test("the runner's own summary wins over the exit code", () => {
+test("a failure summary wins over exit code 0; a visible failure stays a failed check", () => {
   const failingJest = "FAIL src/a.test.ts\nTests: 2 failed, 5 total";
   const passingJest = "PASS src/a.test.ts\nTests: 5 total";
   assert.equal(done.classifyToolResult("bash", { command: "npm test" }, false, failingJest), "check-fail", "exit code 0, failing summary");
@@ -28,6 +28,39 @@ test("the runner's own summary wins over the exit code", () => {
   assert.equal(done.classifyToolResult("bash", { command: "npm test 2>&1 | tail -20" }, false, failingJest), "check-fail", "masked exit code, failing summary");
   assert.equal(done.classifyToolResult("bash", { command: "npm test 2>&1 | tail -20" }, false, passingJest), "check-pass", "masked exit code, passing summary");
   assert.equal(done.classifyToolResult("bash", { command: "npm test || true" }, false, failingJest), "check-fail", "masked exit code by ||, failing summary");
+  assert.equal(done.classifyToolResult("bash", { command: "npm run check" }, true, passingJest), "check-fail", "a failed run whose tests passed: a passing summary does not rescue it");
+  assert.equal(done.classifyToolResult("bash", { command: "npm test 2>&1 | tail -20" }, true, passingJest), "check-fail", "a visible failure behind a pipe stays failed");
+  assert.equal(done.classifyToolResult("ctx_execute", { language: "javascript", code: "runAll()" }, true, passingJest), "check-fail", "a script with a passing summary and a failed run");
+  assert.equal(done.classifyToolResult("ctx_execute", { language: "javascript", code: "runAll()" }, false, passingJest), "check-pass");
+});
+
+test("every runner segment is checked, and every separator after it", () => {
+  assert.equal(done.classifyToolResult("bash", { command: "npm run typecheck && npm test 2>&1 | tail -30" }, false), "unknown", "a pipe after a later runner segment hides that runner's exit code");
+  assert.equal(done.classifyToolResult("bash", { command: "npm test\necho ok" }, false), "unknown", "a newline with more commands after the runner hides its exit code");
+  assert.equal(done.classifyToolResult("bash", { command: "npm test && echo ok || true" }, false), "unknown", "a || anywhere after the runner hides its exit code");
+  assert.equal(done.classifyToolResult("bash", { command: "npm test && npm run build; echo done" }, false), "unknown", "; with more commands after a later segment hides the test's exit code");
+  assert.equal(done.classifyToolResult("bash", { command: "npm test && echo ok | cat" }, false), "check-pass", "a pipe after a segment no runner starts hides nothing");
+});
+
+test("a package-manager script is a check whatever runs it", () => {
+  for (const command of ["yarn test", "yarn run lint", "yarn jest", "yarn build"]) {
+    assert.equal(done.classifyToolResult("bash", { command }, false), "check-pass", command);
+    assert.equal(done.classifyToolResult("bash", { command }, true), "check-fail", command);
+  }
+});
+
+test("a zero-test line next to a real run is not a zero-test run", () => {
+  const cargo = "running 3 tests\ntest result: ok. 3 passed; 0 failed\n\nDoc-tests crate:\n\nrunning 0 tests\ntest result: ok. 0 passed; 0 failed";
+  assert.equal(done.classifyToolResult("bash", { command: "cargo test" }, false, cargo), "check-pass", "cargo prints running 0 tests for the doc-tests after real results");
+  const go = "ok  \texample.com/a\t0.2s\nexample.com/b [no tests to run]";
+  assert.equal(done.classifyToolResult("bash", { command: "go test ./... -run X" }, false, go), "check-pass", "a package the filter skipped reports no tests while another ran");
+  const cargoOnly = "running 0 tests\ntest result: ok. 0 passed; 0 failed";
+  assert.equal(done.classifyToolResult("bash", { command: "cargo test" }, false, cargoOnly), "unknown", "only zero-test lines: no real run");
+});
+
+test("the hidden-exit reason names only a bare command word", () => {
+  assert.equal(done.checkSkipReason("bash", { command: "npm test 2>&1 | tail -20" }, false), "exit code hidden by | tail; no runner summary");
+  assert.equal(done.checkSkipReason("bash", { command: "npm test | (cd out && cat)" }, false), "exit code hidden by |; no runner summary", "the word after the separator is not a bare command name");
 });
 
 test("when the shell hides the runner's exit code and there is no summary, the run is not a check", () => {

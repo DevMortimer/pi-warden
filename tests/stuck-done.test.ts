@@ -316,7 +316,7 @@ test("classifyToolResult separates reads, mutations, and checks", () => {
   assert.equal(classifyToolResult("bash", { command: "pytest -q" }, true), "check-fail");
   assert.equal(classifyToolResult("ctx_execute", { language: "shell", code: "cd app && npm test 2>&1 | tail -5" }, false), "unknown", "the pipe hides the exit code and there is no runner summary: not a check");
   assert.equal(classifyToolResult("ctx_execute", { language: "javascript", code: "console.log(require('fs').readdirSync('.'))" }, false), "unknown", "non-shell code is neither read nor check");
-  assert.equal(classifyToolResult("ctx_batch_execute", { commands: [{ label: "t", command: "pytest -q" }, { label: "s", command: "git status" }] }, true), "check-fail");
+  assert.equal(classifyToolResult("ctx_batch_execute", { commands: [{ label: "t", command: "pytest -q" }, { label: "s", command: "git status" }] }, true), "unknown", "a newline with more commands after the runner hides its exit code: not a check");
   assert.equal(classifyToolResult("ctx_execute", { language: "shell", code: "ls -la && git log -3" }, false), "read");
   assert.equal(classifyToolResult("mcp_something", { query: "x" }, false), "unknown");
   const viaCtx = emptyEvidence();

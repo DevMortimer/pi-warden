@@ -2410,6 +2410,27 @@ test("done-check: a UI change needs a visual check after it, even after passing 
   assert.ok("claims_done" in requests.at(-1)!.questions);
 });
 
+test("done-check: an image in a successful result counts as UI proof", async () => {
+  await grantConsent();
+  await newPrompt("make the header sticky");
+  await toolResult("edit", { path: "web/app.css", edits: [] }, "ok", false);
+  await toolResult("bash", { command: "npm test" }, "31 passing", false);
+  await fire("tool_result", { toolName: "take_screenshot", toolCallId: "shot", input: {}, isError: false, content: [{ type: "image", data: "synthetic", mimeType: "image/png" }] }, context());
+  await agentEnd("Done: the header is sticky.");
+  assert.equal(networkCalls, 0, "the image is the proof: no done-check request");
+  assert.equal(sentMessages.length, 0, "no UI nudge at the end of the turn");
+});
+
+test("a skipped check is one trace line with the reason and no command", async () => {
+  await grantConsent();
+  await newPrompt("fix the parser bug");
+  await toolResult("bash", { command: "npm test 2>&1 | tail -20" }, "no runner summary in here", false);
+  await runCommand("trace", context({ hasUI: false }));
+  const trace = sentMessages.at(-1)!.message.content;
+  assert.match(trace, /done: warden · done · check not counted\n  exit code hidden by \| tail; no runner summary(?:\nTrace file: .*)?$/);
+  assert.ok(!trace.includes("npm test"), "no trace line or detail names the command");
+});
+
 test("done-check: non-UI changes, and uiProof off, behave as before", async () => {
   await grantConsent();
   await newPrompt("fix the parser");

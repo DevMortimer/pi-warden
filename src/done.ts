@@ -27,6 +27,15 @@ const ENV_ASSIGN = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
 /** The runner's own report that nothing ran: a run of zero tests proves nothing about the change. */
 const ZERO_TESTS = /Tests:\s+0 total\b|No tests found|\[no tests to run\]|running 0 tests\b|\u2139 tests 0\b|no tests ran/i;
 
+/**
+ * Whether the summary reports zero tests with no sign of a real run: `cargo test` prints `running 0 tests` for the
+ * doc-tests after real results, and `go test -run X` prints `[no tests to run]` for the packages its filter skipped.
+ */
+function ranNoTests(output: string): boolean {
+  if (!ZERO_TESTS.test(output.slice(-6000))) return false;
+  return !output.split("\n").some(line => /^\s*running [1-9]\d* tests?\b/.test(line) || (/^\s*ok\s/.test(line) && !line.includes("[no tests to run]")));
+}
+
 /** A write or edit whose resolved path lies outside the project root (a scratch file, a note in the home directory). */
 function isOutsideProject(input: Record<string, unknown>, cwd: string): boolean {
   const path = typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : undefined;
@@ -56,26 +65,49 @@ function startsRunner(segment: string): boolean {
   let rest = segment.replace(/^\(+/, "").replace(/\)+$/, "").trim();
   for (;;) {
     rest = rest.replace(ENV_ASSIGN, "").trimStart();
+    // The runner pattern is tested first at every step: `yarn test` runs a script, so the `yarn` wrapper is not stripped
+    // before the test; a wrapper is stripped only when what follows does not start a runner.
+    if (RUNNER_START.test(rest)) return true;
     const wrapper = WRAPPER_HEAD.exec(rest);
-    if (!wrapper) break;
+    if (!wrapper) return false;
     rest = rest.slice(wrapper[0].length);
   }
-  return RUNNER_START.test(rest);
 }
 
-/** The first segment a check runner starts, and the separator after it when that separator can hide its exit code. */
-function runnerPiece(command: string): { hides: string | undefined; nextHead: string } | undefined {
-  for (const piece of commandPieces(command)) {
-    if (!startsRunner(piece.text)) continue;
-    // A pipe (whose exit code is the last command's), `||`, and `;` with more commands all mask the runner's exit code.
-    // A redirect to a file does not, and `&&` short-circuits on the runner's own status.
-    const hides = piece.sep === "||" ? "||"
-      : piece.sep === "|" && !/\bpipefail\b/.test(command) ? "|"
-      : piece.sep === ";" && piece.next.trim() ? ";"
-      : undefined;
-    return { hides, nextHead: piece.next.trim().split(/\s+/)[0] ?? "" };
+/** The separator that can hide a runner's exit code, and the segment it feeds. */
+interface HiddenCause { sep: string; after: string }
+
+/** Every segment a check runner starts, with the separator that hides its exit code when there is one. */
+function runnerSegments(command: string): Array<{ hides: HiddenCause | undefined }> {
+  const pieces = commandPieces(command);
+  const runners: Array<{ hides: HiddenCause | undefined }> = [];
+  for (let index = 0; index < pieces.length; index++) {
+    if (startsRunner(pieces[index]!.text)) runners.push({ hides: hiddenCause(pieces, index, command) });
+  }
+  return runners;
+}
+
+/**
+ * How the shell can hide one runner's exit code: a pipe right after its segment that the command does not make
+ * fail-fast, or a `||`, `;`, or newline with more commands anywhere after it. A redirect to a file does not hide the
+ * exit code, and `&&` short-circuits on the runner's own status.
+ */
+function hiddenCause(pieces: ShellPiece[], index: number, command: string): HiddenCause | undefined {
+  const own = pieces[index]!;
+  if (own.sep === "|" && !/\bpipefail\b/.test(command)) return { sep: "|", after: own.next };
+  for (let at = index; at < pieces.length; at++) {
+    const sep = pieces[at]!.sep;
+    if (sep === "||") return { sep: "||", after: pieces[at]!.next };
+    // A `;` or newline hides only with more commands after it; a trailing one changes nothing.
+    if ((sep === ";" || sep === "\n") && pieces.slice(at + 1).some(piece => piece.text.trim())) return { sep: ";", after: pieces[at]!.next };
   }
   return undefined;
+}
+
+function hiddenReason(cause: HiddenCause): string {
+  const word = cause.after.trim().split(/\s+/)[0] ?? "";
+  // Reasons name patterns and scores, never commands: only a bare command word after the separator is named.
+  return `exit code hidden by ${cause.sep}${/^[A-Za-z][\w.-]*$/.test(word) ? ` ${word}` : ""}; no runner summary`;
 }
 
 /**
@@ -103,16 +135,15 @@ function classify(tool: string, input: Record<string, unknown>, failed: boolean,
   // A test runner launched from inside a script (ctx_execute JavaScript, a Python wrapper) leaves no runner name in the
   // command text, but its output still carries the runner's summary. Judge that summary instead.
   const summary = output === undefined ? undefined : checkSummary(output);
-  const runner = view.shell ? runnerPiece(view.command) : undefined;
-  if (runner !== undefined || summary !== undefined) {
-    if (output !== undefined && ZERO_TESTS.test(output.slice(-6000))) return { outcome: "unknown", reason: "runner summary reports zero tests" };
-    // The runner's own summary wins over the exit code.
-    if (summary === "fail") return { outcome: "check-fail" };
-    if (summary === "pass") return { outcome: "check-pass" };
-    if (runner !== undefined) {
-      if (runner.hides !== undefined) return { outcome: "unknown", reason: `exit code hidden by ${runner.hides}${runner.nextHead ? ` ${runner.nextHead}` : ""}; no runner summary` };
-      return { outcome: failed ? "check-fail" : "check-pass" };
-    }
+  const runners = view.shell ? runnerSegments(view.command) : [];
+  if (runners.length > 0 || summary !== undefined) {
+    if (output !== undefined && ranNoTests(output)) return { outcome: "unknown", reason: "runner summary reports zero tests" };
+    // The exit code is no proof when any runner's exit code is hidden: the summary decides, and with none the run is
+    // not a check at all.
+    const hidden = runners.map(runner => runner.hides).find(cause => cause !== undefined);
+    if (hidden !== undefined && summary === undefined) return { outcome: "unknown", reason: hiddenReason(hidden) };
+    // A failure summary wins over exit code 0; a visible failure stays a failed check, also with a passing summary.
+    return { outcome: summary === "fail" || failed ? "check-fail" : "check-pass" };
   }
   const read: Classification = { outcome: view.shell && isReadOnlyCommand(view.command) ? "read" : "unknown" };
   return namesRunner ? { ...read, reason: "runner name in an argument does not make a check" } : read;

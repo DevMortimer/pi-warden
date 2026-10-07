@@ -2388,13 +2388,14 @@ export default function wardenExtension(host: ExtensionAPI): void {
       if (outcome === "check-pass" && call !== undefined) lastPassedCheck = { call, cwd: ctx.cwd };
       // Each run that names a check runner but does not count gets one trace detail with the reason.
       const skip = checkSkipReason(event.toolName, event.input, failed, text, ctx.cwd);
-      if (skip !== undefined) record(ctx, config, "done", `warden · done · check not counted · ${call ?? event.toolName}`, [skip]);
+      // Trace only: `record()` would put the line in the widget too, and the reasons name patterns, never commands.
+      if (skip !== undefined) trace.push({ at: Date.now(), guard: "done", line: "warden · done · check not counted", details: [skip] });
     }
     if (config.done.enabled && config.done.uiProof && !failed) {
       const input = event.input as Record<string, unknown>;
       const written = event.toolName === "write" || event.toolName === "edit" ? (typeof input.path === "string" ? [input.path] : [])
         : event.toolName === "bash" && typeof input.command === "string" ? shellWrites(input.command, { home: homedir() }).writes.map(write => write.path) : [];
-      recordUi(evidence, written.map(path => projectPath(path, ctx.cwd) ?? path), isVisualCheck(event.toolName, input, failed, config.done.visualTools), config.done.uiFiles);
+      recordUi(evidence, written.map(path => projectPath(path, ctx.cwd) ?? path), isVisualCheck(event.toolName, input, failed, config.done.visualTools, event.content), config.done.uiFiles);
     }
     // A stuck verdict on the same call carries its own steer; the quick one would say the same thing twice.
     if (quickRepeat && !verdict?.stuck) {
