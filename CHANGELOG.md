@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 1.2.0
+
 ### Added
 
 - The action guard reads a script a command runs from disk and applies the same pattern floor and ask gate to its body: `bash FILE`, `./FILE`, `source FILE` and `. FILE`, `npm`/`pnpm`/`yarn`/`bun` scripts from `package.json` (with `preNAME` and `postNAME`), `make TARGET` or the default target, and `node`/`python`/`python3`/`ruby`/`perl`/`deno run FILE`. A body is read only when it resolves, after symlinks, inside the project root or a temp root, as a regular file of at most 64 KB, and one level deep. A body hit keeps the id and severity it has when typed directly and its label names the source (`(via cleanup.sh)`, `(via npm run clean)`); `action.exemptRules` and user `commandRules` apply to it; a body hit makes the ask gate ask with `runs a script with <shape>`; and the body lines that hit ride the request to Jev as `script_lines`, redacted and bounded to five lines and 600 characters.
