@@ -164,3 +164,135 @@ test("projectCheckCommand reads the project root only: check script, test script
   assert.equal(done.projectCheckCommand(project({ "package.json": '{"scripts":{"build":"tsc"}}', "Makefile": "check:\n\ttrue\n" })), "make check", "no script: the Makefile target");
   assert.equal(done.projectCheckCommand(project({ "README.md": "no check here" })), undefined);
 });
+
+// ---------------------------------------------------------------------------
+// Summary lines, printed exit codes, runner forms, and shell text.
+
+const verdict = (command: string, output?: string, failed = false) => done.classifyToolResult("bash", { command }, failed, output);
+
+test("vitest and pytest -q summary lines decide a check", () => {
+  assert.equal(done.checkSummary("Test Files  1 failed | 3 passed (4)"), "fail");
+  assert.equal(done.checkSummary("Tests  2 failed | 10 passed (12)"), "fail");
+  assert.equal(done.checkSummary("Tests  12 passed (12)"), "pass");
+  assert.equal(done.checkSummary("1 failed, 2 passed in 0.31s"), "fail");
+  assert.equal(done.checkSummary("1 error in 0.20s"), "fail");
+  assert.equal(done.checkSummary("2 passed, 1 warning in 0.12s"), "pass");
+  assert.equal(verdict("npx vitest run", "Tests  2 failed | 10 passed (12)"), "check-fail", "a failing summary wins over exit code 0");
+});
+
+test("mypy, ruff, tsc and format-check summary lines decide a check", () => {
+  assert.equal(done.checkSummary("Success: no issues found in 12 source files"), "pass");
+  assert.equal(done.checkSummary("Found 2 errors in 1 file (checked 12 source files)"), "fail");
+  assert.equal(done.checkSummary("All checks passed!"), "pass");
+  assert.equal(done.checkSummary("Found 3 errors."), "fail");
+  assert.equal(done.checkSummary("Found 3 errors (3 fixed, 0 remaining)."), "pass");
+  assert.equal(done.checkSummary("Found 3 errors in 2 files."), "fail");
+  assert.equal(done.checkSummary("Found 1 error in src/a.ts:4"), "fail");
+  assert.equal(done.checkSummary("5 files already formatted"), "pass");
+  assert.equal(done.checkSummary("5 files would be left unchanged."), "pass");
+  assert.equal(done.checkSummary("Would reformat: a.py"), "fail");
+  assert.equal(done.checkSummary("would reformat a.py"), "fail");
+  assert.equal(done.checkSummary("2 files would be reformatted"), "fail");
+});
+
+test("eslint, bun, mocha, playwright, flutter and deno summary lines decide a check", () => {
+  assert.equal(done.checkSummary("\u2716 5 problems (2 errors, 3 warnings)"), "fail");
+  assert.equal(done.checkSummary("\u2716 3 problems (0 errors, 3 warnings)"), "pass");
+  assert.equal(done.checkSummary("\u2716 3 problems (0 errors, 3 warnings)", "eslint . --max-warnings 0"), undefined, "--max-warnings gives no verdict");
+  assert.equal(done.checkSummary("12 pass\n0 fail\nRan 12 tests across 3 files."), "pass");
+  assert.equal(done.checkSummary("2 fail"), "fail");
+  assert.equal(done.checkSummary("12 passing (40ms)"), "pass");
+  assert.equal(done.checkSummary("2 failing"), "fail");
+  assert.equal(done.checkSummary("12 passed (3.1s)"), "pass");
+  assert.equal(done.checkSummary("2 failed"), "fail");
+  assert.equal(done.checkSummary("All tests passed!"), "pass");
+  assert.equal(done.checkSummary("Some tests failed."), "fail");
+  assert.equal(done.checkSummary("ok | 3 passed | 0 failed"), "pass");
+  assert.equal(done.checkSummary("FAILED | 2 passed | 1 failed"), "fail");
+});
+
+test("prettier, biome and cargo build-style summary lines decide a check", () => {
+  assert.equal(done.checkSummary("All matched files use Prettier code style!"), "pass");
+  assert.equal(done.checkSummary("Code style issues found"), "fail");
+  assert.equal(done.checkSummary("Checked 5 files in 2ms. No fixes applied."), "pass");
+  assert.equal(done.checkSummary("Found 2 errors."), "fail");
+  assert.equal(done.checkSummary("    Finished dev [unoptimized + debuginfo] target(s) in 1.20s"), "pass");
+  assert.equal(done.checkSummary("error: could not compile `app` due to 2 previous errors"), "fail");
+});
+
+test("generic wrapper failure lines decide only when a runner starts the command", () => {
+  assert.equal(verdict("make test", "make: *** [Makefile:12: test] Error 2"), "check-fail");
+  assert.equal(verdict("make test", "make[1]: *** [Makefile:12: test] Error 2"), "check-fail");
+  assert.equal(verdict("npm test", 'npm error Lifecycle script "test" failed'), "check-fail");
+  assert.equal(verdict("npm test", "npm ERR! code ELIFECYCLE"), "check-fail");
+  assert.equal(verdict("pnpm test", "ELIFECYCLE  Command failed with exit code 1."), "check-fail");
+  assert.equal(verdict("yarn test", "error Command failed with exit code 1."), "check-fail");
+  assert.equal(verdict("npm install", "npm error code E404"), "unknown", "without a runner a failed install is not a failed check");
+});
+
+test("the exit code the agent printed decides the runner", () => {
+  assert.equal(verdict('npm test; echo "EXIT=$?"', "EXIT=0"), "check-pass");
+  assert.equal(verdict('npm test; echo "EXIT=$?"', "EXIT=1"), "check-fail");
+  assert.equal(verdict("npm test\necho $?", "0"), "check-pass");
+  assert.equal(verdict("npm test; echo $?", "1"), "check-fail");
+  assert.equal(verdict("npm test | tail -5; echo $?", "0"), "unknown", "after a pipe $? is the last command's status");
+  assert.equal(verdict("npm test | tail -5; echo ${PIPESTATUS[0]}", "1"), "check-fail", "PIPESTATUS[0] is the runner's status");
+  assert.equal(verdict("npm test | tail -5; echo ${PIPESTATUS[0]}", "0"), "check-pass");
+});
+
+test("a silent runner behind a pass-through pipe is a passing check", () => {
+  assert.equal(verdict("npx tsc --noEmit 2>&1 | tail -5", "> app@1.0.0 typecheck\n> tsc --noEmit"), "check-pass");
+  assert.equal(verdict("eslint . | head -20", ""), "check-pass");
+  assert.equal(verdict("go vet ./... | cat", ""), "check-pass");
+  assert.equal(verdict("npx tsc --noEmit 2>&1 | grep error", ""), "unknown", "a filter can cut the output: empty proves nothing");
+  assert.equal(verdict("npx tsc --noEmit 2>&1 | tail -5", "note: something"), "unknown", "non-empty output is not the runner's own silence");
+});
+
+test("runner forms: a path, python -m, wrapper options, manager options, make options and shell -c", () => {
+  for (const command of [
+    ".venv/bin/pytest -q",
+    "./node_modules/.bin/vitest run",
+    "node_modules/.bin/tsc --noEmit",
+    "python3 -m pytest",
+    "python3.12 -m pytest",
+    ".venv/bin/python -m pytest",
+    "python3 -m unittest",
+    "timeout -s KILL 60 npm test",
+    "timeout 5m npm test",
+    "uv run --with httpx pytest",
+    "npx -y tsc --noEmit",
+    "npx --no-install tsc --noEmit",
+    "poetry run pytest",
+    "pnpm -C web test",
+    "pnpm --filter api test",
+    "npm --prefix web test",
+    "npm -w api run test",
+    "yarn workspace api test",
+    "make -C web test",
+    "make -j4 check",
+    'bash -c "npm test"',
+    "bash -lc 'npm test'",
+  ]) {
+    assert.equal(verdict(command), "check-pass", command);
+    assert.equal(verdict(command, undefined, true), "check-fail", command);
+  }
+});
+
+test("a backgrounded runner and a bare ci install are not checks", () => {
+  assert.equal(verdict("nohup npm test > log 2>&1 &"), "unknown");
+  assert.equal(verdict("npm test &"), "unknown");
+  assert.equal(verdict("npm ci"), "unknown");
+  assert.equal(verdict("bun ci"), "unknown");
+  for (const command of ["npm run ci", "pnpm run ci", "yarn run ci", "bun run ci"]) assert.equal(verdict(command), "check-pass", command);
+});
+
+test("shell text is data until a sink runs it, and a continuation is one command", () => {
+  assert.equal(verdict('git commit -m "fix: x\n\nnpm test passes"'), "unknown", "a runner word in a commit message is not a command");
+  assert.equal(verdict("npm test \\\n-- --coverage"), "check-pass", "a backslash-newline continuation is one command");
+  assert.equal(verdict("cat > run.sh <<'EOF'\npytest -q\nEOF"), "unknown", "a heredoc body written to a file is not a command");
+  assert.equal(verdict('bash -c "npm test"'), "check-pass", "a shell sink runs the runner inside the quotes");
+});
+
+test("a visible failure stays visible when another runner's exit code is hidden", () => {
+  assert.equal(verdict("npm run lint; npm test", undefined, true), "check-fail", "the test's visible failure is a failed check even though the lint exit code is hidden");
+});
