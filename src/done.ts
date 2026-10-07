@@ -56,7 +56,7 @@ function silentOutput(output: string): boolean {
 }
 
 /** Failure lines a runner's script wrapper prints; they decide a check only when a runner starts the command. */
-const GENERIC_FAILURE = /^(?:make(?:\[\d+\])?:\s+\*\*\*.*Error \d+|npm error (?:Lifecycle script .* failed|code ELIFECYCLE)|npm ERR! code ELIFECYCLE|ELIFECYCLE\s+Command failed with exit code \d+|error Command failed with exit code \d+)/m;
+const GENERIC_FAILURE = /^\s*(?:make(?:\[\d+\])?:\s+\*\*\*.*Error \d+|npm error (?:Lifecycle script .* failed|code ELIFECYCLE)|npm ERR! code ELIFECYCLE|ELIFECYCLE\s+Command failed with exit code \d+|error Command failed with exit code \d+)/m;
 
 function genericCheckFailure(output: string): boolean {
   return GENERIC_FAILURE.test(output.slice(-6000));
@@ -119,16 +119,28 @@ function startsRunner(segment: string, depth = 0): boolean {
   }
 }
 
+/** Whether a cargo build, check or clippy starts the segment: only those print the `Finished` line. */
+function startsCargoBuild(segment: string): boolean {
+  let rest = segment.replace(/^\(+/, "").replace(/\)+$/, "").trim();
+  for (;;) {
+    rest = rest.replace(ENV_ASSIGN, "").trimStart();
+    if (/^(?:[^\s;&|()]*\/)?cargo\s+(?:build|check|clippy)\b/.test(rest)) return true;
+    const wrapper = WRAPPER_HEAD.exec(rest);
+    if (!wrapper) return false;
+    rest = rest.slice(wrapper[0].length);
+  }
+}
+
 /** The separator that can hide a runner's exit code, and the segment it feeds. */
 interface HiddenCause { sep: string; after: string }
 
-/** Every segment a check runner starts, with the separator that hides its exit code and any echo that prints it. */
-function runnerSegments(command: string): Array<{ hides: HiddenCause | undefined; printed: RegExp | undefined }> {
+/** Every segment a check runner starts, with its own text, the separator that hides its exit code, and any exit echo. */
+function runnerSegments(command: string): Array<{ text: string; hides: HiddenCause | undefined; printed: RegExp | undefined }> {
   const pieces = commandPieces(command);
-  const runners: Array<{ hides: HiddenCause | undefined; printed: RegExp | undefined }> = [];
+  const runners: Array<{ text: string; hides: HiddenCause | undefined; printed: RegExp | undefined }> = [];
   for (let index = 0; index < pieces.length; index++) {
     if (!startsRunner(pieces[index]!.text)) continue;
-    runners.push({ hides: hiddenCause(pieces, index, command), printed: printedCodePattern(pieces, index) });
+    runners.push({ text: pieces[index]!.text, hides: hiddenCause(pieces, index, command), printed: printedCodePattern(pieces, index) });
   }
   return runners;
 }
@@ -196,17 +208,19 @@ function codeEcho(text: string): RegExp | undefined {
   return new RegExp(`^\\s*${escaped}\\s*$`, "m");
 }
 
-/** The number a visible exit-code echo printed, or undefined when the output does not show it. */
+/** The last number a visible exit-code echo printed: the echo runs after the runner, so its line comes last. */
 function printedCode(pattern: RegExp, output: string): number | undefined {
-  const match = pattern.exec(output.slice(-6000));
-  return match ? Number(match[1]) : undefined;
+  const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+  let last: RegExpExecArray | null = null;
+  for (const match of output.slice(-6000).matchAll(global)) last = match;
+  return last ? Number(last[1]) : undefined;
 }
 
-/** True when a silent runner's exit code is hidden only by a pass-through pipe, so empty output is its own report. */
-function silentRunnerPass(runner: { hides: HiddenCause | undefined }, output: string | undefined, command: string): boolean {
+/** True when a silent runner's own segment is behind a pass-through pipe and its output is empty. */
+function silentRunnerPass(runner: { text: string; hides: HiddenCause | undefined }, output: string | undefined): boolean {
   if (runner.hides?.sep !== "|" || output === undefined) return false;
   const head = runner.hides.after.trim().split(/\s+/)[0]?.replace(/^-+/, "") ?? "";
-  return PASS_THROUGH.has(head) && SILENT_RUNNER.test(command) && silentOutput(output);
+  return PASS_THROUGH.has(head) && SILENT_RUNNER.test(runner.text) && silentOutput(output);
 }
 
 /**
@@ -239,86 +253,97 @@ function classify(tool: string, input: Record<string, unknown>, failed: boolean,
   const runners = view.shell ? runnerSegments(command) : [];
   if (runners.length > 0 || summary !== undefined) {
     if (output !== undefined && ranNoTests(output)) return { outcome: "unknown", reason: "runner summary reports zero tests" };
-    const printed = output === undefined ? [] : runners.map(runner => (runner.printed === undefined ? undefined : printedCode(runner.printed, output)));
-    const printedFail = printed.some(code => code !== undefined && code !== 0);
-    const printedPass = printed.some(code => code === 0);
-    const silent = runners.some(runner => silentRunnerPass(runner, output, command));
     // The generic failure lines of npm, make and friends name a script that failed; without a runner they are not a check.
     const generic = runners.length > 0 && output !== undefined && genericCheckFailure(output);
-    const verdict = summary ?? (generic ? "fail" : undefined);
+    // A generic failure line decides even when another line reads as a pass; otherwise the summary decides.
+    const verdict = generic ? "fail" : summary;
+    // Each hidden runner is covered only by its own printed exit code, its own silent pass, or the summary verdict.
+    const evidence = runners.map(runner => ({
+      code: output === undefined || runner.printed === undefined ? undefined : printedCode(runner.printed, output),
+      silent: silentRunnerPass(runner, output),
+    }));
+    const anyPrintedFail = evidence.some(entry => entry.code !== undefined && entry.code !== 0);
+    const someVisible = runners.some((runner, index) => runner.hides === undefined || evidence[index]!.code !== undefined || evidence[index]!.silent);
+    const allCovered = runners.every((runner, index) => verdict !== undefined || runner.hides === undefined || evidence[index]!.code !== undefined || evidence[index]!.silent);
     const hidden = runners.map(runner => runner.hides).find(cause => cause !== undefined);
-    if (hidden !== undefined && verdict === undefined && !printedPass && !printedFail && !silent) {
+    if (hidden !== undefined && verdict === undefined && !anyPrintedFail && !allCovered) {
       // A visible failure stays a failed check when another runner in the same call had a visible exit code.
-      if (failed && runners.some(runner => runner.hides === undefined)) return { outcome: "check-fail" };
+      if (failed && someVisible) return { outcome: "check-fail" };
       return { outcome: "unknown", reason: hiddenReason(hidden) };
     }
     // A failure summary wins over exit code 0; a visible failure stays a failed check, also with a passing summary.
-    return { outcome: verdict === "fail" || failed || printedFail ? "check-fail" : "check-pass" };
+    return { outcome: verdict === "fail" || failed || anyPrintedFail ? "check-fail" : "check-pass" };
   }
   const read: Classification = { outcome: view.shell && isReadOnlyCommand(view.command) ? "read" : "unknown" };
   return namesRunner ? { ...read, reason: "runner name in an argument does not make a check" } : read;
 }
 
 /**
- * Recognise a test/type-check runner's own summary in tool output: node:test, jest/vitest, pytest, cargo, go test,
- * tsc. Returns the outcome the summary reports, or undefined when no runner summary is present.
+ * Recognise a runner's own summary in tool output. A failure marker anywhere in the tail wins over a passing one; the
+ * caller sees a pass only when no failure marker is present.
  */
 export function checkSummary(output: string, command = ""): "pass" | "fail" | undefined {
   const tail = output.slice(-6000);
-  const nodeTest = /\u2139 (?:tests|pass|fail) \d+/.test(tail) && /\u2139 fail (\d+)/.exec(tail);
-  if (nodeTest) return Number(nodeTest[1]) > 0 ? "fail" : "pass";
-  const jest = /^Tests:\s+(?:(\d+) failed, )?.*?\d+ total/m.exec(tail);
-  if (jest) return jest[1] && Number(jest[1]) > 0 ? "fail" : "pass";
-  const pytest = /^=+ .*?(?:(\d+) failed|(\d+) error).*?in [\d.]+s/m.exec(tail) ?? /^=+ (\d+) passed.*? in [\d.]+s =+$/m.exec(tail);
-  if (pytest) return /\d+ (?:failed|error)/.test(pytest[0]) ? "fail" : "pass";
-  // pytest without the `===` frame (`-q`).
-  const pytestQuiet = /^(\d+) (?:failed|errors?)\b.*? in [\d.]+s/m.exec(tail);
-  if (pytestQuiet && Number(pytestQuiet[1]) > 0) return "fail";
-  if (/^\d+ passed\b.* in [\d.]+s/m.test(tail)) return "pass";
-  const cargoOrGo = /^test result: (ok|FAILED)\./m.exec(tail) ?? /^(ok|FAIL)\s+\S+\s+[\d.]+s$/m.exec(tail);
-  if (cargoOrGo) return cargoOrGo[1] === "ok" ? "pass" : "fail";
-  if (/\berror TS\d{4}:/.test(tail)) return "fail";
-  // vitest
-  if (/^(?:Tests|Test Files)\s+[^\n]*?\b[1-9]\d* failed\b/m.test(tail)) return "fail";
-  if (/^Tests\s+\d+ passed\b/m.test(tail) || /^Test Files\s+[^\n]*?\b\d+ passed\b/m.test(tail)) return "pass";
-  // mypy
-  if (/^Success: no issues found\b/m.test(tail)) return "pass";
-  // ruff with --fix: every error fixed is a pass; a remainder is not.
-  const ruffFixed = /^Found (\d+) errors? \((\d+) fixed, (\d+) remaining\)/m.exec(tail);
-  if (ruffFixed) return Number(ruffFixed[3]) === 0 ? "pass" : "fail";
-  // tsc pretty, mypy, ruff and biome: "Found N errors"
-  if (/^Found [1-9]\d* errors?\b/m.test(tail)) return "fail";
-  if (/^All checks passed!/m.test(tail)) return "pass";
-  if (/\b\d+ files? already formatted\b/.test(tail) || /\b\d+ files? would be left unchanged\./.test(tail)) return "pass";
-  if (/All matched files use Prettier code style!/.test(tail)) return "pass";
-  if (/^Checked \d+ files?\b.*No fixes applied\./m.test(tail)) return "pass";
-  if (/\bWould reformat\b/.test(tail) || /\bwould reformat\b/.test(tail) || /\b\d+ files? would be reformatted\b/.test(tail)) return "fail";
-  if (/Code style issues found/.test(tail)) return "fail";
+  if (summaryFailure(tail, command)) return "fail";
+  return summaryPass(tail, command) ? "pass" : undefined;
+}
+
+/** Whether any runner's failure marker appears anywhere in the output. */
+function summaryFailure(tail: string, command: string): boolean {
+  // node:test: any `ℹ fail N` line with N above 0.
+  for (const match of tail.matchAll(/\u2139 fail (\d+)/g)) if (Number(match[1]) > 0) return true;
+  // jest: any `Tests:` line with a failed count above 0.
+  if (/^Tests:\s+[^\n]*?\b[1-9]\d* failed\b/m.test(tail)) return true;
+  // pytest, framed or `-q`: any summary line with a failed or error count above 0.
+  if (/\b[1-9]\d* (?:failed|errors?)\b[^\n]*\bin [\d.]+s\b/.test(tail)) return true;
+  // cargo and go test: any failed result or package.
+  if (/^test result: FAILED\./m.test(tail) || /^FAIL\b/m.test(tail) || /^--- FAIL:/m.test(tail)) return true;
+  if (/\berror TS\d{4}:/.test(tail)) return true;
+  // vitest, indented or with a runner prefix such as turbo's `pkg:test:`.
+  if (/^\s*(?:\S+:\s*)?(?:Tests|Test Files)\s+[^\n]*?\b[1-9]\d* failed\b/m.test(tail)) return true;
+  // tsc pretty, mypy, ruff and biome: `Found N errors`, unless every error was fixed.
+  if (/^Found [1-9]\d* errors?\b(?![^\n]*\(\d+ fixed, 0 remaining\))/m.test(tail)) return true;
+  // format checkers
+  if (/\bWould reformat\b/.test(tail) || /\bwould reformat\b/.test(tail) || /\b\d+ files? would be reformatted\b/.test(tail)) return true;
+  if (/Code style issues found/.test(tail)) return true;
   // eslint: --max-warnings moves the threshold, so its problem count says nothing on its own.
   const eslint = /\u2716 (\d+) problems? \((\d+) errors?, (\d+) warnings?\)/.exec(tail);
-  if (eslint) {
-    if (/--max-warnings/.test(command)) return undefined;
-    return Number(eslint[2]) > 0 ? "fail" : "pass";
-  }
-  // mocha
-  if (/^\s*\d+ failing\s*$/m.test(tail)) return "fail";
-  if (/^\s*\d+ passing \(/m.test(tail)) return "pass";
-  // playwright
-  if (/^\s*[1-9]\d* failed\s*$/m.test(tail)) return "fail";
-  if (/^\s*\d+ passed \(/m.test(tail)) return "pass";
-  // flutter
-  if (/Some tests failed\./.test(tail)) return "fail";
-  if (/All tests passed!/.test(tail)) return "pass";
-  // bun test
-  if (/^\s*[1-9]\d* fail\s*$/m.test(tail)) return "fail";
-  if (/^\s*\d+ pass\s*$/m.test(tail) || /^Ran \d+ tests? across \d+ files?\./m.test(tail)) return "pass";
-  // deno
+  if (eslint && !/--max-warnings/.test(command) && Number(eslint[2]) > 0) return true;
+  if (/^\s*[1-9]\d* failing\s*$/m.test(tail)) return true;
+  if (/^\s*[1-9]\d* failed\s*$/m.test(tail)) return true;
+  if (/Some tests failed\./.test(tail)) return true;
+  if (/^\s*[1-9]\d* fail\s*$/m.test(tail)) return true;
   const deno = /\b(?:ok|FAILED)\s*\|[^\n]*?(\d+) passed\s*\|\s*(\d+) failed/.exec(tail);
-  if (deno) return Number(deno[2]) > 0 ? "fail" : "pass";
-  // cargo build, check and clippy
-  if (/error: could not compile/m.test(tail)) return "fail";
-  if (/^\s*Finished\b.*\bin \d+(?:\.\d+)?s\b/m.test(tail)) return "pass";
-  return undefined;
+  if (deno && Number(deno[2]) > 0) return true;
+  if (/error: could not compile/m.test(tail)) return true;
+  return false;
+}
+
+/** Whether a runner's passing marker appears in the output. */
+function summaryPass(tail: string, command: string): boolean {
+  if (/\u2139 (?:tests|pass|fail) \d+/.test(tail)) return true;
+  if (/^Tests:\s+[^\n]*?\d+ total/m.test(tail)) return true;
+  if (/^=+ \d+ passed.*? in [\d.]+s =+$/m.test(tail)) return true;
+  if (/^\d+ passed\b.* in [\d.]+s/m.test(tail)) return true;
+  if (/^test result: ok\./m.test(tail) || /^ok\s+\S+\s+[\d.]+s$/m.test(tail)) return true;
+  if (/^\s*(?:\S+:\s*)?Tests\s+\d+ passed\b/m.test(tail) || /^\s*(?:\S+:\s*)?Test Files\s+[^\n]*?\b\d+ passed\b/m.test(tail)) return true;
+  if (/^Success: no issues found\b/m.test(tail)) return true;
+  if (/^Found \d+ errors? \(\d+ fixed, 0 remaining\)/m.test(tail)) return true;
+  if (/^All checks passed!/m.test(tail)) return true;
+  if (/\b\d+ files? already formatted\b/.test(tail) || /\b\d+ files? would be left unchanged\./.test(tail)) return true;
+  if (/All matched files use Prettier code style!/.test(tail)) return true;
+  if (/^Checked \d+ files?\b.*No fixes applied\./m.test(tail)) return true;
+  const eslint = /\u2716 (\d+) problems? \((\d+) errors?, (\d+) warnings?\)/.exec(tail);
+  if (eslint && !/--max-warnings/.test(command) && Number(eslint[2]) === 0) return true;
+  if (/^\s*\d+ passing \(/m.test(tail)) return true;
+  if (/^\s*\d+ passed \(/m.test(tail)) return true;
+  if (/All tests passed!/.test(tail)) return true;
+  if (/^\s*\d+ pass\s*$/m.test(tail) || /^Ran \d+ tests? across \d+ files?\./m.test(tail)) return true;
+  const deno = /\b(?:ok|FAILED)\s*\|[^\n]*?(\d+) passed\s*\|\s*(\d+) failed/.exec(tail);
+  if (deno && Number(deno[2]) === 0) return true;
+  // The `Finished` line proves a cargo build, check or clippy compiled; it never proves `cargo test` or a command without a runner.
+  if (/^\s*Finished\b.*\btargets?\b.*\bin \d+(?:\.\d+)?s\b/m.test(tail) && commandPieces(command).some(piece => startsCargoBuild(piece.text))) return true;
+  return false;
 }
 
 export interface RunEvidence {

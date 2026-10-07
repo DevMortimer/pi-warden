@@ -174,6 +174,9 @@ test("vitest and pytest -q summary lines decide a check", () => {
   assert.equal(done.checkSummary("Test Files  1 failed | 3 passed (4)"), "fail");
   assert.equal(done.checkSummary("Tests  2 failed | 10 passed (12)"), "fail");
   assert.equal(done.checkSummary("Tests  12 passed (12)"), "pass");
+  assert.equal(done.checkSummary(" Test Files  4 passed (4)"), "pass", "vitest indents its summary");
+  assert.equal(done.checkSummary("pkg:test:  Test Files  4 passed (4)"), "pass", "a runner prefix such as turbo's");
+  assert.equal(done.checkSummary("pkg:test:  Test Files  1 failed | 3 passed (4)"), "fail");
   assert.equal(done.checkSummary("1 failed, 2 passed in 0.31s"), "fail");
   assert.equal(done.checkSummary("1 error in 0.20s"), "fail");
   assert.equal(done.checkSummary("2 passed, 1 warning in 0.12s"), "pass");
@@ -216,7 +219,11 @@ test("prettier, biome and cargo build-style summary lines decide a check", () =>
   assert.equal(done.checkSummary("Code style issues found"), "fail");
   assert.equal(done.checkSummary("Checked 5 files in 2ms. No fixes applied."), "pass");
   assert.equal(done.checkSummary("Found 2 errors."), "fail");
-  assert.equal(done.checkSummary("    Finished dev [unoptimized + debuginfo] target(s) in 1.20s"), "pass");
+  assert.equal(done.checkSummary("    Finished dev [unoptimized + debuginfo] target(s) in 1.20s", "cargo build"), "pass");
+  assert.equal(done.checkSummary("    Finished dev [unoptimized + debuginfo] target(s) in 1.20s", "cargo check"), "pass");
+  assert.equal(done.checkSummary("    Finished dev [unoptimized + debuginfo] target(s) in 1.20s", "cargo clippy"), "pass");
+  assert.equal(done.checkSummary("    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.20s", "cargo test"), undefined, "Finished before cargo test's results proves nothing");
+  assert.equal(done.checkSummary("Finished deploying in 3.2s", "make deploy"), undefined, "Finished without a cargo build is not a check");
   assert.equal(done.checkSummary("error: could not compile `app` due to 2 previous errors"), "fail");
 });
 
@@ -295,4 +302,19 @@ test("shell text is data until a sink runs it, and a continuation is one command
 
 test("a visible failure stays visible when another runner's exit code is hidden", () => {
   assert.equal(verdict("npm run lint; npm test", undefined, true), "check-fail", "the test's visible failure is a failed check even though the lint exit code is hidden");
+});
+
+test("a failure marker anywhere in the output wins over a passing one", () => {
+  assert.equal(verdict("black --check . 2>&1 | tail -5", "would reformat src/a.py\n\nOh no! \u{1F4A5} \u{1F494} \u{1F4A5}\n1 file would be reformatted, 4 files would be left unchanged.\n"), "check-fail");
+  assert.equal(verdict("ruff format --check . | tail -3", "Would reformat: src/a.py\n1 file would be reformatted, 4 files already formatted\n"), "check-fail");
+  assert.equal(verdict("go test ./... 2>&1 | tail -20", "ok  \texample.com/a\t0.12s\n--- FAIL: TestB (0.00s)\n    b_test.go:9: boom\nFAIL\nFAIL\texample.com/b\t0.20s\nFAIL\n"), "check-fail");
+  assert.equal(verdict("cargo test 2>&1 | tail -30", "running 3 tests\ntest a ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n   Doc-tests x\n\nrunning 1 test\ntest src/lib.rs - f (line 3) ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n"), "check-fail");
+  assert.equal(verdict("cargo test 2>&1 | head -5", "   Compiling x v0.1.0 (/p)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.20s\n     Running unittests src/lib.rs (target/debug/deps/x-1)\n\nrunning 3 tests\n"), "unknown");
+  assert.equal(verdict("make deploy", "Finished deploying in 3.2s\n"), "unknown");
+  assert.equal(verdict("npx vitest run 2>&1 | tail -8", " Test Files  1 failed | 3 passed (4)\n      Tests  2 failed | 10 passed (12)\n   Start at  10:00:00\n   Duration  1.23s\n"), "check-fail");
+  assert.equal(verdict("npx vitest run 2>&1 | tail -8", " Test Files  4 passed (4)\n      Tests  12 passed (12)\n   Start at  10:00:00\n   Duration  1.23s\n"), "check-pass");
+  assert.equal(verdict("npm test 2>&1 | tail -15", "Tests  12 passed (12)\n\n> app@1.0.0 lint\n> eslint .\n\n/src/a.ts\n  1:1  error  'x' is not defined  no-undef\n\n\u2716 1 problem (1 error, 0 warnings)\n\nnpm error Lifecycle script `test` failed with error:\nnpm error code 1\n"), "check-fail", "a passing summary does not cover a generic failure line");
+  assert.equal(verdict("npm test; echo $?", "> app@1.0.0 test\n> node t.js\n\n0\nFAIL something\n1\n"), "check-fail", "the last printed exit code is the one the echo wrote");
+  assert.equal(verdict("npm test; echo \"rc=$?\"; npm run build 2>&1 | tail -3", "> app test\nok\nrc=0\n> app build\nsrc/a.ts(1,1): something broke\n"), "unknown", "the test's printed code does not vouch for the hidden build");
+  assert.equal(verdict("pytest -q 2>&1 | tail -3", "..E\n2 passed, 1 error in 0.20s\n"), "check-fail", "an error count above 0 wins over the passed count");
 });
