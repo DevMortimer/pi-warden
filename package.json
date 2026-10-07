@@ -59,7 +59,7 @@
     "dev:pi": "node scripts/dev-pi.mjs",
     "preview": "node scripts/render-preview.mjs",
     "hero": "node scripts/render-hero.mjs",
-    "check": "npm run typecheck && npm test && npm run build",
+    "check": "npm run typecheck && npm run build && npm test",
     "prepack": "npm run build",
     "eval:ab": "node scripts/eval-ab.mjs",
     "eval:power": "node eval/power.mjs",

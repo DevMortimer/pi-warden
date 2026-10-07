@@ -10,11 +10,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - The action guard reads a script a command runs from disk and applies the same pattern floor and ask gate to its body: `bash FILE`, `./FILE`, `source FILE` and `. FILE`, `npm`/`pnpm`/`yarn`/`bun` scripts from `package.json` (with `preNAME` and `postNAME`), `make TARGET` or the default target, and `node`/`python`/`python3`/`ruby`/`perl`/`deno run FILE`. A body is read only when it resolves, after symlinks, inside the project root or a temp root, as a regular file of at most 64 KB, and one level deep. A body hit keeps the id and severity it has when typed directly and its label names the source (`(via cleanup.sh)`, `(via npm run clean)`); `action.exemptRules` and user `commandRules` apply to it; a body hit makes the ask gate ask with `runs a script with <shape>`; and the body lines that hit ride the request to Jev as `script_lines`, redacted and bounded to five lines and 600 characters.
 
+- `/warden status` shows the build that runs: the pi-warden version, the checkout commit when the package is a git tree, the `dist/extension.js` build time, and the loaded pi-typesafe version. Session start warns once when a `src/` file is newer than the build (`pi-warden runs an old build: run npm run build`) and once when the loaded pi-typesafe version is outside the range in `package.json`.
+
 ### Changed
 
 - The done-check nudge names one check command instead of "whatever exists": the last check that passed earlier in this session in this project, else the `check` then `test` script of the project's `package.json` run with the package manager its lock file names (`pnpm-lock.yaml`, `yarn.lock`, `bun.lockb` or `bun.lock`, else npm), else the same `Makefile` targets; with none of those it keeps the generic ask. The UI nudge names the last local URL a tool result printed this session (`http://localhost:PORT`, `127.0.0.1`, `[::1]`) when there is one.
 - Done-check UI proof now counts only what shows the page to the agent: a successful tool result that contains an image, a page text snapshot (`agent-browser snapshot`, `agent-browser get text`, the MCP `take_snapshot` tool), a browser or device test run (`playwright test`, `flutter test` with `integration_test` or golden tests), or a `read` of an image file. A screenshot command that only writes a file (`agent-browser screenshot PATH`, `idb screenshot`, `xcrun simctl io … screenshot`, `chrome --headless --screenshot`), `agent-browser` `open`/`close`/`click`/`fill`/`set`/`wait`/`eval`, and MCP navigation tools no longer count; a saved screenshot counts once something reads it. The `done.visualTools` defaults match, and every config key still works.
 - pi-typesafe `^0.9.1` (was `^0.9.0`).
+- `npm run check` builds before it tests, so the offline suite exercises a fresh `dist/` (the entry Pi ships) instead of a stale one.
 
 ### Fixed
 
@@ -23,6 +26,16 @@ How to keep this current: add the entry in the same pull request as the change, 
 - The done-check reads more runner summaries as proof: vitest, pytest without the `===` frame (`-q`), mypy, ruff (check, format, and `--fix`), black, prettier, biome, tsc pretty output, eslint, bun, mocha, playwright, flutter, deno, and cargo build, check and clippy; and the generic wrapper failure lines (`make: *** … Error N`, `npm error Lifecycle script … failed`, `npm ERR! code ELIFECYCLE`, pnpm and yarn `Command failed with exit code N`). The generic lines decide only when a runner starts the command, so a failed `npm install` is not a failed check. A failure marker anywhere in the tail wins over a passing one (black and ruff format `N files would be reformatted` beside `N files would be left unchanged.`, any go `FAIL` line, any cargo `test result: FAILED.` after an `ok`, pytest `2 passed, 1 error`, an indented or `pkg:test:`-prefixed vitest summary), a generic failure line overrides a passing summary in the same output, and the `Finished` line proves a `cargo build`, `cargo check` or `cargo clippy` segment only.
 - The done-check recognises more runner forms and reports: a runner started by a path (`.venv/bin/pytest`, `node_modules/.bin/tsc`), `python3.12 -m` and `.venv/bin/python -m` followed by a runner or `unittest`, wrappers with options (`timeout -s KILL 60`, `uv run --with httpx`, `npx -y`), package-manager options (`pnpm -C web test`, `npm --prefix web test`, `yarn workspace api test`), `make -C web test`, and `bash -c "npm test"`; the last exit code the agent printed with `echo`/`printf` (`$?`, or `${PIPESTATUS[0]}` after a pipe); a silent runner (`tsc`, `eslint`, `flake8`, `go vet`, `go build`) named in its own segment whose output is empty behind a pipe to `tail`, `head`, `tee`, or `cat`; and a hidden runner is covered only by its own printed exit code, its own silent pass, or a summary verdict. A command is first stripped of data text and a backslash-newline continuation is joined, so a runner word in a commit message or heredoc body is not a check. A bare `npm ci` or `bun ci` installs and does not count, a runner sent to the background with `&` does not count, and a visible failure stays a failed check when another runner's exit code is hidden.
 - With pi-typesafe 0.9.1 the usage ledger no longer loses counts when several Pi sessions run at once, so the reported spend and the daily caps count every session.
+
+### Tests
+
+- A new offline session test loads pi-warden the way Pi does (`package.json` → `pi.extensions` → `extensions/index.js` → `dist/extension.js`) into a real agent session with a scripted model, and asserts on the session's messages: a held destructive bash call, a done-check nudge after an unverified completion, and the repeat note after the same failing read twice. It fails with `run npm run build first` when the shipped entry is missing.
+- `AGENTS.md` is checked against `src/`: every source file its Architecture block names must exist, and the file must state no test count.
+
+### Docs
+
+- `AGENTS.md` Architecture now names the real flat `src/` files (it named `guard/`, `trace/`, `widget/`, `panel/`, and `extension/` directories that do not exist), and its Development block no longer states a test count.
+- `docs/commands.md` describes the `/warden status` build line; `docs/ci-cd.md` states the new `npm run check` order (typecheck, build, offline tests).
 
 
 
