@@ -14,6 +14,16 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Tests
 
 - A real-session e2e runs `/warden init` the way Pi does (the shipped entry in a real agent session with a scripted model): the injected prompt reaches the model, the agent's write call lands, and "pi-warden.md created" is recorded only after the run ended. Two unit tests pin the guard (extension input passes while a flag is set, operator input waits) and the wait (the command does not report before the run starts or ends). The session-test `write` stub now really writes, relative to the session directory, so the e2e can prove the file on disk.
+## 1.3.0
+
+### Added
+
+- The cause-check guard (on by default, `cause.enabled`): when the final reply of a run states a likely cause, or asks a person to check something the agent could inspect itself, and no tool result in that run checked it, pi-warden sends the reply back with one follow-up turn: check the cause with its own tools (a query, a log, a file, or a command) and give the evidence, or say plainly that the cause is unverified and why it cannot check it. It is the sibling of the done-check. An offline pre-filter (`causePreFilter`) fires on causal and hand-off wording, so a reply about results or next steps spends no request; the guard asks Jev whether the reply states a cause or hands off a check, whether the run checked it, and, when the project has an earlier unchecked cause inside the window, which earlier cause the reply repeats. The request carries the task, the final message, the last 40 of the run's tool calls, and up to five earlier redacted cause sentences with their keys and dates. Each unchecked cause is stored per project for `cause.windowDays` (default 7) as the redacted sentence that states it; a later reply whose cause Jev matches to an earlier one gets a stronger steer that names the earlier date, and a reply that hands a check to a person gets a steer that says so. When the done-check steers the same reply, the cause-check records its decision in the trace and sends no steer, so one reply gets at most one end-of-run steer. The repeat history lives in a `causes` table in the same owner-only database as the hold log, and every request, stored summary, and trace line passes through `redact()`.
+
+### Docs
+
+- `docs/guards.md` describes the new cause-check; `docs/configuration.md` lists its keys, widget template, and tokens; `docs/data-handling.md` and the consent notice name the cause-check request and its stored repeat history; `README.md` lists the guard next to the done-check.
+- `eval/reports/2026-10-07-cause-check/` measures the offline pre-filter on recorded sessions: the totals, the flagged count, and how many of a 20-reply sample were real unchecked causes.
 
 ## 1.2.0
 
