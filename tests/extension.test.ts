@@ -252,7 +252,7 @@ before(async () => {
     additionalExtensionPaths: [resolve("src/extension.ts")],
   });
   await loader.reload();
-  if (busEvents.length === 0) eventBus.on("herdr:blocked", (data: unknown) => { busEvents.push({ channel: "herdr:blocked", data }); });
+  eventBus.on("herdr:blocked", (data: unknown) => { busEvents.push({ channel: "herdr:blocked", data }); });
   const result = loader.getExtensions();
   assert.deepEqual(result.errors, [], "native Pi loader must accept the extension");
   const loaded = result.extensions[0];
@@ -1718,16 +1718,13 @@ test("herdr reports blocking while a warden confirm dialog waits, clears it afte
   assert.deepEqual(pairs[2], { channel: "herdr:blocked", data: { active: true, label: "warden: allow this bash call?" } });
   assert.deepEqual(pairs[3], { channel: "herdr:blocked", data: { active: false } });
 
-  // A headless confirm falls back to steer without a dialog: nothing blocks a pane that cannot display one.
+  // A headless confirm falls back to steer: no dialog opens, so no pane reports blocked, and the call is held.
   busEvents.length = 0;
-  process.env.PI_WARDEN_MODE = "advise";
-  try {
-    assert.equal(await toolCall("bash", { command: "git push --force origin main" }, context({ hasUI: false })), undefined, "advise never holds");
-    assert.ok(sentMessages.some(entry => String(entry.message.content).includes("ran with a warning")), "the agent is told the risk instead of a dialog");
-    assert.equal(busEvents.length, 0, "headless runs emit nothing: no pane can show them");
-  } finally {
-    delete process.env.PI_WARDEN_MODE;
-  }
+  const confirmsBefore = confirms.length;
+  const headless = await toolCall("bash", { command: "git push --force origin main" }, context({ hasUI: false }));
+  assert.equal(headless?.block, true, "confirm without a UI falls back to steer and holds the call");
+  assert.equal(confirms.length, confirmsBefore, "headless runs open no confirm dialog");
+  assert.equal(busEvents.length, 0, "headless runs emit nothing: no pane can show them");
 });
 
 test("mode confirm shows a dialog; mode advise only reports; PI_WARDEN_MODE overrides the file", async () => {

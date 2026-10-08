@@ -2,7 +2,7 @@
 
 Every guard, what it looks at, the questions it asks Jev, the thresholds, and the numbers behind them. The [README](../README.md) has the short version. Defaults live in [configuration.md](configuration.md); what leaves the machine is in [data-handling.md](data-handling.md).
 
-Contents: [Action guard](#action-guard) · [Why Jev](#why-jev-and-not-a-second-llm-call) · [Calibration](#calibration) · [Rules](#rules) · [Rules at turn start](#rules-at-turn-start) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Context saver](#context-saver) · [Subagent triage](#subagent-triage) · [Desktop notifications](#desktop-notifications) · [Steer messages](#steer-messages)
+Contents: [Action guard](#action-guard) · [Why Jev](#why-jev-and-not-a-second-llm-call) · [Calibration](#calibration) · [Rules](#rules) · [Rules at turn start](#rules-at-turn-start) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Context saver](#context-saver) · [Subagent triage](#subagent-triage) · [Desktop notifications](#desktop-notifications) · [Herdr pane state](#herdr-pane-state) · [Steer messages](#steer-messages)
 
 ## Action guard
 
