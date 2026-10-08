@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 12;
+export const EXPECTED_SCHEMA = 13;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -51,6 +51,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, traceSample: 0, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "all", shouldProceed: { threshold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
+    cause: section("cause", { ...off, claimsCause: 1, nudge: false, windowDays: 7 }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false }),
     rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
@@ -62,7 +63,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     // A stale config module leaves the judge trusted: never pausing is today's behaviour, not a new failure mode.
     judge: section("judge", { failuresBeforeCooldown: Number.MAX_SAFE_INTEGER, cooldownMs: 0 }),
     subagent: section("subagent", { ...off, wake: false, threshold: 1, cooldownMs: 0 }),
-    widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
+    widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", cause: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
     // A missing section turns adaptation off: every steer is sent, as before the section existed.
     steers: section("steers", { adaptive: false, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 }),
     // A missing section turns the notes off: the guard is new, so nothing it says was expected.
@@ -146,6 +147,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.widget.runaway !== "string") config.widget = { ...config.widget, runaway: DEFAULT_TEMPLATES.runaway };
   if (typeof config.widget.rules !== "string") config.widget = { ...config.widget, rules: DEFAULT_TEMPLATES.rules };
   if (typeof config.widget.subagent !== "string") config.widget = { ...config.widget, subagent: DEFAULT_TEMPLATES.subagent };
+  if (typeof config.widget.cause !== "string") config.widget = { ...config.widget, cause: DEFAULT_TEMPLATES.cause };
   return { config, missing };
 }
 

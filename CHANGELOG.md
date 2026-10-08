@@ -10,6 +10,27 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - When the session runs in a [herdr](https://herdr.dev) pane, a warden confirm dialog now reports through herdr's `herdr:blocked` channel while it waits, so the pane's sidebar shows blocked instead of working. Interactive sessions only; no emission on hold-steers or headless runs. ([Guards](docs/guards.md#herdr-pane-state))
 
+## 1.3.1
+
+### Fixed
+
+- The commands that send their own prompt to the agent (`/warden init`, `/warden rules tune`, `/warden audit`, `/warden index`) no longer swallow it. Each set its busy flag before `sendUserMessage`, and the busy-flag guard on the `input` event saw the command's own prompt (which arrives with `source: "extension"`) and answered "handled", so no run ever started and the command reported the file (or report, or index) was never created — every time, deterministically. The guard now waits only for operator input (`interactive`/`rpc`); warden's own prompt passes and, like any user prompt, invalidates in-flight conscience assessments.
+- Those commands also no longer report before the run they injected ends. Pi's extension-facing `sendUserMessage` is fire-and-forget, so the `await ctx.waitForIdle()` that followed it could return before the injected run even flipped the session busy — the command reported while the agent was still working, or its status message was steered into the next run instead of recorded. Each command now waits in two phases: first for `before_agent_start` carrying the prompt it sent (30 seconds; on a miss — a preflight failure or another extension handling the input — it clears its flag and reports right away instead of blocking operator input), then for `agent_end` of that run with no cap (pi emits it on an abort too, so Esc still ends the wait), and finally for the host to go idle so the status message is recorded rather than steered.
+
+### Tests
+
+- A real-session e2e runs `/warden init` the way Pi does (the shipped entry in a real agent session with a scripted model): the injected prompt reaches the model, the agent's write call lands, and "pi-warden.md created" is recorded only after the run ended. Two unit tests pin the guard (extension input passes while a flag is set, operator input waits) and the wait (the command does not report before the run starts or ends). The session-test `write` stub now really writes, relative to the session directory, so the e2e can prove the file on disk.
+## 1.3.0
+
+### Added
+
+- The cause-check guard (on by default, `cause.enabled`): when the final reply of a run states a likely cause, or asks a person to check something the agent could inspect itself, and no tool result in that run checked it, pi-warden sends the reply back with one follow-up turn: check the cause with its own tools (a query, a log, a file, or a command) and give the evidence, or say plainly that the cause is unverified and why it cannot check it. It is the sibling of the done-check. An offline pre-filter (`causePreFilter`) fires on causal and hand-off wording, so a reply about results or next steps spends no request; the guard asks Jev whether the reply states a cause or hands off a check, whether the run checked it, and, when the project has an earlier unchecked cause inside the window, which earlier cause the reply repeats. The request carries the task, the final message, the last 40 of the run's tool calls, and up to five earlier redacted cause sentences with their keys and dates. Each unchecked cause is stored per project for `cause.windowDays` (default 7) as the redacted sentence that states it; a later reply whose cause Jev matches to an earlier one gets a stronger steer that names the earlier date, and a reply that hands a check to a person gets a steer that says so. When the done-check steers the same reply, the cause-check records its decision in the trace and sends no steer, so one reply gets at most one end-of-run steer. The repeat history lives in a `causes` table in the same owner-only database as the hold log, and every request, stored summary, and trace line passes through `redact()`.
+
+### Docs
+
+- `docs/guards.md` describes the new cause-check; `docs/configuration.md` lists its keys, widget template, and tokens; `docs/data-handling.md` and the consent notice name the cause-check request and its stored repeat history; `README.md` lists the guard next to the done-check.
+- `eval/reports/2026-10-07-cause-check/` measures the offline pre-filter on recorded sessions: the totals, the flagged count, and how many of a 20-reply sample were real unchecked causes.
+
 ## 1.2.0
 
 ### Added
