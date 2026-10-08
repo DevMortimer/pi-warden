@@ -1087,6 +1087,18 @@ export default function wardenExtension(host: ExtensionAPI): void {
     for (const outcome of outcomes) steerStats.observe(outcome.model, outcome.kind, outcome, config.steers);
   };
   /**
+   * herdr (terminal workspace manager) shows an agent pane's state; its Pi integration marks blocked from this
+   * host-wide event bus channel, which nothing else emits. Herdr's own prompts otherwise read as working, so a wait
+   * at a warden dialog looks identical to a wait at the model. Interactive sessions only: a headless run cannot be a
+   * pane a human watches, and herdr ignores reports for panes it cannot display. Fire-and-forget like the desktop
+   * notification; if the host has no event bus the wait stays what it already was.
+   */
+  const reportHerdrBlocked = (ctx: ExtensionContext, active: boolean, label?: string) => {
+    if (!ctx.hasUI) return;
+    try { pi.events.emit("herdr:blocked", active ? { active: true, label } : { active: false }); }
+    catch { /* hosts without the bus keep the pane state they already show. */ }
+  };
+  /**
    * Desktop notification for a moment that needs the user back at the terminal. Interactive sessions only: a headless run
    * or a subagent has nobody to call, and several of them would flood the desktop. Fire-and-forget; failures are silent.
    */
@@ -2113,7 +2125,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const dialogRule = verdict.patterns.some(hit => hit.action === "dialog");
     if (dialogRule && ctx.hasUI) {
       notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
-      const allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {});
+      reportHerdrBlocked(ctx, true, `warden: allow this ${event.toolName} call?`);
+      let allowed: boolean;
+      try { allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {}); }
+      finally { reportHerdrBlocked(ctx, false); }
       deliverNotes(allowed);
       if (allowed) { track(true, "approved", "dialog"); return undefined; }
       stats.held++;
@@ -2130,7 +2145,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
     if (mode === "confirm") {
       notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
-      const allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {});
+      reportHerdrBlocked(ctx, true, `warden: allow this ${event.toolName} call?`);
+      let allowed: boolean;
+      try { allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {}); }
+      finally { reportHerdrBlocked(ctx, false); }
       deliverNotes(allowed);
       if (allowed) { track(true, "approved", "dialog"); return undefined; }
       stats.held++;

@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
-import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, SettingsManager, createEventBus, type EventBus } from "@earendil-works/pi-coding-agent";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject, recordCause } from "../src/learning.js";
 import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
@@ -27,6 +27,9 @@ const savedDb = process.env.PI_WARDEN_DB;
 const originalFetch = globalThis.fetch;
 
 const notices: Array<{ text: string; level: string }> = [];
+/** Events the extension emitted on the host bus, herdr:blocked included: (channel, payload). */
+const eventBus: EventBus = createEventBus();
+const busEvents: Array<{ channel: string; data: unknown }> = [];
 const widgets: Array<string[] | undefined> = [];
 const confirms: Array<{ title: string; message: string }> = [];
 let confirmResult = true;
@@ -246,10 +249,12 @@ before(async () => {
     cwd: temporary,
     agentDir: join(temporary, "agent"),
     settingsManager: SettingsManager.inMemory(),
+    eventBus,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     additionalExtensionPaths: [resolve("src/extension.ts")],
   });
   await loader.reload();
+  eventBus.on("herdr:blocked", (data: unknown) => { busEvents.push({ channel: "herdr:blocked", data }); });
   const result = loader.getExtensions();
   assert.deepEqual(result.errors, [], "native Pi loader must accept the extension");
   const loaded = result.extensions[0];
@@ -266,7 +271,7 @@ before(async () => {
 
 beforeEach(async () => {
   testStartedAt = Date.now();
-  notices.length = 0; widgets.length = 0; confirms.length = 0;
+  notices.length = 0; widgets.length = 0; confirms.length = 0; busEvents.length = 0;
   confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; hangNetwork = false; failStatus = undefined; prompt = "Run the test suite";
   keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0; requestUrls.length = 0; requestAuth.length = 0;
   answeredRequests = 0; judgeGate = undefined; releaseJudge = undefined;
@@ -1699,6 +1704,35 @@ test("the Action guard is wired to the session: the prompt is the task, siblings
   assert.equal(networkCalls, 2, "the sibling from the session branch is judged with the first call");
   assert.equal(await fire("tool_call", { toolName: "bash", toolCallId: "call-b", input: { command: "npm run lint" } }, ctx), undefined);
   assert.equal(networkCalls, 2, "and its judgment is reused for its own hook");
+});
+
+test("herdr reports blocking while a warden confirm dialog waits, clears it after, and headless never emits", async () => {
+  await writeConfig(JSON.stringify({  mode: "confirm", notices: true , ...STACK_BAR }));
+  prompt = "push to origin";
+  const allowed = await toolCall("bash", { command: "git push --force origin main" });
+  assert.equal(allowed, undefined, "approved at the dialog");
+  const open = busEvents.filter(entry => entry.channel === "herdr:blocked");
+  assert.deepEqual(open, [
+    { channel: "herdr:blocked", data: { active: true, label: "warden: allow this bash call?" } },
+    { channel: "herdr:blocked", data: { active: false } },
+  ], "one active pair around the dialog: herdr marks the pane blocked then unblocked");
+
+  // A decline ends the dialog too, so the clear emission is the same: herdr cannot tell an answer from an abort.
+  confirmResult = false;
+  const declined = await toolCall("bash", { command: "git push --force origin main" });
+  assert.equal(declined?.block, true);
+  const pairs = busEvents.filter(entry => entry.channel === "herdr:blocked");
+  assert.equal(pairs.length, 4, "the next dialog adds exactly one more active/clear pair");
+  assert.deepEqual(pairs[2], { channel: "herdr:blocked", data: { active: true, label: "warden: allow this bash call?" } });
+  assert.deepEqual(pairs[3], { channel: "herdr:blocked", data: { active: false } });
+
+  // A headless confirm falls back to steer: no dialog opens, so no pane reports blocked, and the call is held.
+  busEvents.length = 0;
+  const confirmsBefore = confirms.length;
+  const headless = await toolCall("bash", { command: "git push --force origin main" }, context({ hasUI: false }));
+  assert.equal(headless?.block, true, "confirm without a UI falls back to steer and holds the call");
+  assert.equal(confirms.length, confirmsBefore, "headless runs open no confirm dialog");
+  assert.equal(busEvents.length, 0, "headless runs emit nothing: no pane can show them");
 });
 
 test("mode confirm shows a dialog; mode advise only reports; PI_WARDEN_MODE overrides the file", async () => {

@@ -2,7 +2,7 @@
 
 Every guard, what it looks at, the questions it asks Jev, the thresholds, and the numbers behind them. The [README](../README.md) has the short version. Defaults live in [configuration.md](configuration.md); what leaves the machine is in [data-handling.md](data-handling.md).
 
-Contents: [Action guard](#action-guard) · [Why Jev](#why-jev-and-not-a-second-llm-call) · [Calibration](#calibration) · [Rules](#rules) · [Rules at turn start](#rules-at-turn-start) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Cause-check](#cause-check) · [Context saver](#context-saver) · [Subagent triage](#subagent-triage) · [Desktop notifications](#desktop-notifications) · [Steer messages](#steer-messages)
+Contents: [Action guard](#action-guard) · [Why Jev](#why-jev-and-not-a-second-llm-call) · [Calibration](#calibration) · [Rules](#rules) · [Rules at turn start](#rules-at-turn-start) · [Slop](#slop) · [Security](#security) · [Stuck](#stuck) · [Runaway](#runaway) · [Done-check](#done-check) · [Cause-check](#cause-check) · [Context saver](#context-saver) · [Subagent triage](#subagent-triage) · [Desktop notifications](#desktop-notifications) · [Herdr pane state](#herdr-pane-state) · [Steer messages](#steer-messages)
 
 ## Action guard
 
@@ -826,6 +826,10 @@ A dead backend, an expired key, or a misconfigured one would otherwise cost ever
 ## Desktop notifications
 
 Off by default. With `"notify": { "enabled": true }` in your config, a held call the agent will ask you about, a confirm dialog waiting for an answer, and a runaway stop reach the desktop. macOS uses `osascript`; Linux tries `notify-send`, `dunstify`, `gdbus`, `kdialog`, `zenity`, then `powershell.exe` for WSL; Windows shows a toast through PowerShell. Interactive sessions only, one notification per `cooldownMs` (10 s), the reason but never the command. `"command": ["curl", "-d", "{body}", "https://ntfy.sh/your-topic"]` in the user file replaces the desktop tool with your own relay (no shell; `{title}` and `{body}` are replaced and set as `PI_WARDEN_TITLE` / `PI_WARDEN_BODY`). A project file may switch notifications off but never names a command.
+
+## Herdr pane state
+
+When the session runs in a [herdr](https://herdr.dev) pane, warden additionally reports a confirm dialog through herdr's `herdr:blocked` event-bus channel (a contract herdr's Pi extension already listens on), so the pane reads blocked while the dialog waits and back to working when it closes. Interactive sessions only; headless runs and steer/advise paths (no dialog) emit nothing, and a failure to emit changes nothing.
 
 ## Steer messages
 
