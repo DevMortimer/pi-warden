@@ -1,4 +1,5 @@
 import { freshChecks } from "./done.js";
+import type { CauseVerdict } from "./cause.js";
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
 import type { ProseVerdict } from "./prose.js";
@@ -42,6 +43,7 @@ export interface WidgetConfig {
   action: string;
   stuck: string;
   done: string;
+  cause: string;
   prose: string;
   security: string;
   context: string;
@@ -55,6 +57,7 @@ export const DEFAULT_TEMPLATES = {
   action: "warden · {tool} · irreversible {irreversible} · off-task {offTask} · {scope} · slop: {slop} · patterns: {patterns} · {flags} · {level}",
   stuck: "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
   done: "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
+  cause: "warden · cause-check · {states} · checked {checked} · {repeat} · {status}",
   prose: "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}",
   security: "warden · security · {tool} · injection {injection} · exfiltration {exfiltration} · {status}",
   context: "warden · context · {tool} · {retention} · saved {bytesSaved} bytes",
@@ -423,6 +426,21 @@ export function doneTokens(verdict: DoneVerdict, at = Date.now()): Tokens {
   };
 }
 
+export function causeTokens(verdict: CauseVerdict, at = Date.now()): Tokens {
+  return {
+    guard: "cause",
+    time: time(at),
+    states: verdict.judgment === undefined ? undefined : fixed(Math.max(verdict.judgment.statesCause, verdict.judgment.handsOff)),
+    checked: fixed(verdict.judgment?.checked),
+    repeat: verdict.previous === undefined ? undefined : `repeat ${new Date(verdict.previous.at).toISOString().slice(0, 10)}`,
+    status: verdict.error ? "typesafe error" : verdict.unchecked ? "unchecked" : "checked",
+    reasons: verdict.reasons.length ? verdict.reasons.join("; ") : undefined,
+    model: verdict.judgment?.model,
+    ms: verdict.judgment ? String(verdict.judgment.elapsedMs) : undefined,
+    flags: verdict.error ? "typesafe error" : undefined,
+  };
+}
+
 export function proseTokens(verdict: ProseVerdict, at = Date.now()): Tokens {
   return {
     guard: "prose",
@@ -465,5 +483,6 @@ export const TOKEN_NAMES = {
   prose: ["wordy", "cliches", "jargon", "status", "reasons", "model", "ms", "flags", "time", "guard"],
   stuck: ["failures", "sameStrategy", "approachChange", "progress", "status", "source", "reasons", "model", "ms", "flags", "time", "guard"],
   done: ["changes", "checks", "checksPassed", "claimsDone", "claimsVerified", "checksApply", "outcome", "status", "reasons", "model", "ms", "flags", "time", "guard"],
+  cause: ["states", "checked", "repeat", "status", "reasons", "model", "ms", "flags", "time", "guard"],
   subagent: ["agent", "kind", "wake", "status", "time", "guard"],
 } as const;
