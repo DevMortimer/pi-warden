@@ -2566,7 +2566,12 @@ test("/warden init --force overwrites an existing pi-warden.md in headless mode"
   const targetPath = join(temporary, "pi-warden.md");
   await writeFile(targetPath, "# Old rules\nKeep these.\n");
   sentMessages.length = 0; sentUserMessages.length = 0;
-  await runCommand("init --force", context({ hasUI: false }));
+  // The command waits for the injected run's lifecycle (the session tests cover the real flow); drive it here.
+  const initCommand = runCommand("init --force", context({ hasUI: false }));
+  while (sentUserMessages.length === 0) await new Promise(resolve => setImmediate(resolve));
+  await fire("before_agent_start", { prompt: sentUserMessages.at(-1) }, context({ hasUI: false }));
+  await fire("agent_end", { messages: [] }, context({ hasUI: false }));
+  await initCommand;
   const msg = sentMessages.find(m => /did not create/.test(m.message.content) || /created/.test(m.message.content));
   assert.ok(msg, "reports the outcome via pi.sendMessage");
   const sentPrompt = sentUserMessages.at(-1);
@@ -2589,6 +2594,78 @@ test("/warden init without --force refuses to overwrite in headless mode", async
   assert.match(content, /Existing rules/, "file unchanged");
   const msg = sentMessages.find(m => /Pass --force to overwrite/.test(m.message.content));
   assert.ok(msg, "refuses with --force hint");
+});
+
+test("warden's own extension-sourced prompt passes the input handler while a busy flag is set", async () => {
+  // Regression: /warden init set initRunning and THEN sendUserMessage'd its prompt. The input
+  // handler saw the flag and swallowed the prompt as "handled", so no agent turn ever started and
+  // init always reported "Agent did not create pi-warden.md". The input event the command's own
+  // sendUserMessage emits carries source "extension"; operator input does not.
+  // The busy-guards apply only to operator input; warden-injected input passes, so the command's
+  // own prompt reaches the agent while its flag is up.
+  const inputHandlers = extension.handlers.get("input") ?? [];
+  assert.equal(inputHandlers.length, 1);
+  const handler = inputHandlers[0] as (event: Record<string, unknown>, ctx: unknown) => Promise<{ action?: string } | undefined>;
+  // Idle: extension prompts pass through.
+  let result = await Reflect.apply(handler, undefined, [
+    { type: "input", text: "anything", source: "extension" },
+    context(),
+  ]);
+  assert.ok(!result || result.action === "continue", "extension input passes through when idle");
+  // Start init and hold the command until its prompt was sent, then run the handler the way the
+  // host does: the injected prompt's input event fires during sendUserMessage.
+  sentUserMessages.length = 0;
+  const targetPath = join(temporary, "pi-warden.md");
+  await rm(targetPath, { force: true });
+  const initPromise = runCommand("init", context({ hasUI: false }));
+  while (sentUserMessages.length === 0) await new Promise(resolve => setImmediate(resolve));
+  result = await Reflect.apply(handler, undefined, [
+    { type: "input", text: sentUserMessages.at(-1), source: "extension" },
+    context(),
+  ]);
+  assert.ok(!result || result.action === "continue", "init's own prompt is not swallowed while its flag is set");
+  // The abandoned command is waiting on the completion gate, not the semaphore: settle it.
+  await fire("before_agent_start", { prompt: sentUserMessages.at(-1) }, context({ hasUI: false }));
+  await fire("agent_end", { messages: [] }, context({ hasUI: false }));
+  await initPromise;
+  // While init is in flight, operator input still waits.
+  await rm(targetPath, { force: true });
+  const initPromise2 = runCommand("init --force", context({ hasUI: false }));
+  while (sentUserMessages.length === 1) await new Promise(resolve => setImmediate(resolve));
+  result = await Reflect.apply(handler, undefined, [
+    { type: "input", text: "hello operator", source: "interactive" },
+    context(),
+  ]);
+  assert.ok(result && result.action === "handled", "operator input is swallowed while init is running");
+  await fire("before_agent_start", { prompt: sentUserMessages.at(-1) }, context({ hasUI: false }));
+  await fire("agent_end", { messages: [] }, context({ hasUI: false }));
+  await initPromise2;
+});
+
+test("/warden init waits for the agent run it injected, not for the idle agent", async () => {
+  // Pi's extension-facing sendUserMessage is fire-and-forget, so a plain `await ctx.waitForIdle()` after it can return
+  // before the injected run even flips the session busy — the command would report while the agent is still working, or
+  // report the file as missing when it just needed a moment. The command waits on the run's own lifecycle instead.
+  const targetPath = join(temporary, "pi-warden.md");
+  await rm(targetPath, { force: true });
+  sentMessages.length = 0; sentUserMessages.length = 0;
+  const initCommand = runCommand("init", context({ hasUI: false }));
+  while (sentUserMessages.length === 0) await new Promise(resolve => setImmediate(resolve));
+  // The wait passes without any waitForIdle involvement: while the run is un-started, the command must not proceed.
+  let settled = false;
+  void initCommand.then(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(sentUserMessages.length, 1);
+  assert.equal(settled, false, "the command does not report before the injected run started");
+  await fire("before_agent_start", { prompt: sentUserMessages.at(-1) }, context({ hasUI: false }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(settled, false, "the command does not report before the injected run ended");
+  // Once the run has both started and ended, the command proceeds and reads the file from disk.
+  await fire("agent_end", { messages: [] }, context({ hasUI: false }));
+  await initCommand;
+  const msg = sentMessages.find(m => /did not create|created/.test(m.message.content));
+  assert.ok(msg, "the command reports the disk state after the run");
+  assert.match(msg.message.content, /did not create/, "the sendUserMessage stub is a no-op, so the honest report is that the file is absent");
 });
 
 test("/warden enable with an existing key does not prompt for one", async () => {

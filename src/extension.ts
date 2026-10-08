@@ -484,6 +484,40 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let warnedMissingRules = false;
   /** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
   let initRunning = false;
+  /** The run a warden command injected, in flight. `started` is released by before_agent_start, `ended` by agent_end. At most
+   * one inject lives at a time; a second command overwrites it and the first falls back to its deadline. */
+  let injectedRun: { started: Promise<void>; ended: Promise<void>; release: (phase: "start" | "end") => void } | undefined;
+  /** How long a command waits for the run its own sendUserMessage injected before it declares the inject dead. The host
+   * delivers the prompt and starts the run within milliseconds, and one round of skill reads and turns finishes far inside
+   * this limit in practice; the deadline only catches a host that never delivers or a run that lost its way. */
+  const INJECT_DEADLINE_MS = 300_000;
+  /**
+   * Arm the completion gate for one warden-injected run. Pi's extension-facing sendUserMessage is fire-and-forget and
+   * a following await ctx.waitForIdle() can return before the injected run even flips the session busy, so the command
+   * waits on the run's own lifecycle events instead: before_agent_start says the prompt reached a run, agent_end says it
+   * finished. A preflight failure (no model, no key) never reaches the agent and the runtime only logs it, so the
+   * deadline resolves the wait and the caller reports the honest failure it observes on disk.
+   */
+  const injectRun = (): { started: Promise<void>; ended: Promise<void> } => {
+    let releaseStarted: () => void = () => {};
+    let releaseEnded: () => void = () => {};
+    const started = new Promise<void>(resolve => { releaseStarted = resolve; });
+    const ended = new Promise<void>(resolve => { releaseEnded = resolve; });
+    const deadline = new Promise<void>(resolve => setTimeout(resolve, INJECT_DEADLINE_MS).unref());
+    injectedRun = { started, ended, release: phase => { if (phase === "start") releaseStarted(); else releaseEnded(); } };
+    // Never reject and never settle early: whichever comes first wins, and a stale gate is inert by the next command.
+    void started.then(() => Promise.race([ended, deadline])).then(() => { if (injectedRun && injectedRun.started === started) injectedRun = undefined; });
+    return { started: Promise.race([started, deadline]), ended: Promise.race([ended, deadline]) };
+  };
+  /** After an injected run ends, the host may still count itself streaming while it settles the queue; a status message
+   * sent in that window is steered into the next run instead of recorded. Poll until the host reports idle, bounded like
+   * the deadline above so a host that never goes idle cannot hang the command. */
+  const awaitHostIdle = async (ctx: ExtensionCommandContext): Promise<void> => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (ctx.isIdle()) return;
+      await new Promise(resolve => setTimeout(resolve, 250).unref());
+    }
+  };
   /** The most recent /warden rules calibrate result; /warden rules tune reads its flagged rules. */
   let lastCalibration: Calibration | undefined;
   /** The most recent /warden rules check result of this session; /warden rules tune reads its flagged rules. */
@@ -1332,6 +1366,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     promptEpoch++;
     agentRunActive = true;
     attempts = new AttemptWindow(config.stuck.window);
+    if (injectedRun) injectedRun.release("start");
     // ── Call waste: the session tip ──
     // The tip is appended to the prompt, so every other part of the prompt stays where it was and the host records the
     // change as a prompt-section delta. It is offered once per session; the trace line says so, and the next runs
@@ -2550,17 +2585,22 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
   });
 
-  // Block new user messages while /warden init or /warden audit is running.
+  // Block new user messages while /warden init or /warden audit is running. Extension-originated input passes the
+  // busy-guards: /warden init, tune, audit, and index set their *Running flag and THEN send their prompt with
+  // sendUserMessage, which fires this same `input` event — swallowing it made the command wait on an idle agent and
+  // report the file (or report, or index) was never created. The guards exist to queue operator input, and only
+  // messages a person sends ("interactive", "rpc") are that.
   pi.on("input", async (event, ctx) => {
-    if (initRunning) {
+    const operatorInput = event.source !== "extension";
+    if (operatorInput && initRunning) {
       ctx.ui.notify("pi-warden is generating rules. Please wait...", "warning");
       return { action: "handled" };
     }
-    if (auditRunning) {
+    if (operatorInput && auditRunning) {
       ctx.ui.notify("pi-warden is running an audit. Please wait...", "warning");
       return { action: "handled" };
     }
-    if (indexRunning) {
+    if (operatorInput && indexRunning) {
       ctx.ui.notify("pi-warden is building the capability index. Please wait...", "warning");
       return { action: "handled" };
     }
@@ -2591,6 +2631,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
   };
 
   pi.on("agent_end", async (event, ctx) => {
+    if (injectedRun) injectedRun.release("end");
     const config = configFor(ctx);
     // The run is over: a notice that no turn of a continuing loop delivered may not be appended now, because a delivery must
     // never start a turn of its own. It is dropped and traced.
@@ -2984,14 +3025,15 @@ export default function wardenExtension(host: ExtensionAPI): void {
             let sent = true;
             if (ctx.hasUI) ctx.ui.notify("pi-warden: Sending the rules rewrite prompt...", "info");
             try {
-              // sendUserMessage throws when the agent is not idle. Brief wait so a
-              // just-closing confirm dialog does not cause a race.
+              // Send in the idle window; the completion gate below waits for the run itself.
               for (let attempt = 0; attempt < 40; attempt++) {
                 if (ctx.isIdle()) break;
                 await new Promise(resolve => setTimeout(resolve, 250));
               }
+              const { ended } = injectRun();
               pi.sendUserMessage(request.prompt);
-              await ctx.waitForIdle();
+              await ended;
+              await awaitHostIdle(ctx);
             } catch (err) {
               sent = false;
               const detail = err instanceof Error ? err.message : String(err);
@@ -3187,8 +3229,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
               if (ctx.isIdle()) break;
               await new Promise(resolve => setTimeout(resolve, 250));
             }
+            const { ended } = injectRun();
             pi.sendUserMessage(prompt);
-            await ctx.waitForIdle();
+            await ended;
+            await awaitHostIdle(ctx);
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             report(`pi-warden init failed: ${detail}. Try creating pi-warden.md manually.`, "error");
@@ -3213,8 +3257,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
               if (ctx.isIdle()) break;
               await new Promise(resolve => setTimeout(resolve, 250));
             }
+            const { ended } = injectRun();
             pi.sendUserMessage(prompt);
-            await ctx.waitForIdle();
+            await ended;
+            await awaitHostIdle(ctx);
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             report(`pi-warden audit failed: ${detail}.`, "error");
@@ -3301,8 +3347,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
               if (ctx.isIdle()) break;
               await new Promise(resolve => setTimeout(resolve, 250));
             }
+            const { ended } = injectRun();
             pi.sendUserMessage(prompt);
-            await ctx.waitForIdle();
+            await ended;
+            await awaitHostIdle(ctx);
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             report(`pi-warden index failed: ${detail}.`, "error");

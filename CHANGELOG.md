@@ -6,6 +6,15 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Fixed
+
+- The commands that send their own prompt to the agent (`/warden init`, `/warden rules tune`, `/warden audit`, `/warden index`) no longer swallow it. Each set its busy flag before `sendUserMessage`, and the busy-flag guard on the `input` event saw the command's own prompt (which arrives with `source: "extension"`) and answered "handled", so no run ever started and the command reported the file (or report, or index) was never created — every time, deterministically. The guard now waits only for operator input (`interactive`/`rpc`); warden's own prompt passes and, like any user prompt, invalidates in-flight conscience assessments.
+- Those commands also no longer report before the run they injected ends. Pi's extension-facing `sendUserMessage` is fire-and-forget, so the `await ctx.waitForIdle()` that followed it could return before the injected run even flipped the session busy — the command reported while the agent was still working, or its status message was steered into the next run instead of recorded. Each command now waits for the run's own lifecycle (`before_agent_start` released by the run starting, `agent_end` released by it ending, a five-minute deadline covering a preflight failure the runtime only logs) and for the host to go idle, so the status message lands in the transcript after the run.
+
+### Tests
+
+- A real-session e2e runs `/warden init` the way Pi does (the shipped entry in a real agent session with a scripted model): the injected prompt reaches the model, the agent's write call lands, and "pi-warden.md created" is recorded only after the run ended. Two unit tests pin the guard (extension input passes while a flag is set, operator input waits) and the wait (the command does not report before the run starts or ends). The session-test `write` stub now really writes, relative to the session directory, so the e2e can prove the file on disk.
+
 ## 1.2.0
 
 ### Added
