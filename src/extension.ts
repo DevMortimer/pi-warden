@@ -494,6 +494,49 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let warnedMissingRules = false;
   /** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
   let initRunning = false;
+  /** How long a command waits for the run its own sendUserMessage injected to start before it gives up. The host delivers
+   * the prompt and starts the run within milliseconds; a miss means a preflight failure (no model, no key — the runtime
+   * only logs those) or another extension handling the input, and staying busy would block operator input for nothing. */
+  const INJECT_START_TIMEOUT_MS = 30_000;
+  /** One command's injected run, in flight. A command matches its own run by the prompt text, because the operator can
+   * have typed one of their own in the send window; at most one inject lives at a time and the next command replaces it. */
+  let injectedRun: { prompt: string; release: (phase: "start" | "end") => void } | undefined;
+  /**
+   * Arm the completion gate for one warden-injected run, in two phases:
+   *
+   * - `started` resolves true when the run carrying this prompt text reaches `before_agent_start`, and false on a
+   *   30-second timeout. False means the prompt never became a run (preflight failure or another extension handling
+   *   the input): the caller reports right away and clears its flag, so operator input is not blocked for nothing.
+   * - `ended` resolves when that run's `agent_end` fires — no cap on the phase that is really running. Pi emits
+   *   `agent_end` on an abort too, so Esc still ends the wait.
+   *
+   * The 30-second timer is cleared the moment the phase resolves, so a command never parks an unref'd handle on the
+   * event loop (node:test runs would otherwise drain or stall waiting for it).
+   */
+  const injectRun = (prompt: string): { started: Promise<boolean>; ended: Promise<void> } => {
+    let releaseStarted!: (started: boolean) => void;
+    let releaseEnded!: () => void;
+    let startTimer: ReturnType<typeof setTimeout> | undefined;
+    const started = new Promise<boolean>(resolve => {
+      releaseStarted = (timedOut: boolean) => {
+        if (startTimer) { clearTimeout(startTimer); startTimer = undefined; }
+        resolve(!timedOut);
+      };
+    });
+    const ended = new Promise<void>(resolve => { releaseEnded = resolve; });
+    startTimer = setTimeout(() => releaseStarted(true), INJECT_START_TIMEOUT_MS);
+    injectedRun = { prompt, release: phase => { if (phase === "start") releaseStarted(false); else releaseEnded(); } };
+    return { started, ended };
+  };
+  /** After an injected run ends, the host may still count itself streaming while it settles the queue; a status message
+   * sent in that window is steered into the next run instead of recorded. Poll until the host reports idle, bounded so a
+   * host that never goes idle cannot hang the command. */
+  const awaitHostIdle = async (ctx: ExtensionCommandContext): Promise<void> => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (ctx.isIdle()) return;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  };
   /** The most recent /warden rules calibrate result; /warden rules tune reads its flagged rules. */
   let lastCalibration: Calibration | undefined;
   /** The most recent /warden rules check result of this session; /warden rules tune reads its flagged rules. */
@@ -1344,6 +1387,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
     promptEpoch++;
     agentRunActive = true;
     attempts = new AttemptWindow(config.stuck.window);
+    // The prompt match releases only the run a command injected: an operator prompt typed in the send window does not
+    // satisfy the gate, and the command falls back to its start timeout instead of reporting on someone else's run.
+    if (injectedRun && (event as { prompt?: unknown }).prompt === injectedRun.prompt) injectedRun.release("start");
     // ── Call waste: the session tip ──
     // The tip is appended to the prompt, so every other part of the prompt stays where it was and the host records the
     // change as a prompt-section delta. It is offered once per session; the trace line says so, and the next runs
@@ -2565,17 +2611,22 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
   });
 
-  // Block new user messages while /warden init or /warden audit is running.
+  // Block new user messages while /warden init or /warden audit is running. Extension-originated input passes the
+  // busy-guards: /warden init, tune, audit, and index set their *Running flag and THEN send their prompt with
+  // sendUserMessage, which fires this same `input` event — swallowing it made the command wait on an idle agent and
+  // report the file (or report, or index) was never created. The guards exist to queue operator input, and only
+  // messages a person sends ("interactive", "rpc") are that.
   pi.on("input", async (event, ctx) => {
-    if (initRunning) {
+    const operatorInput = event.source !== "extension";
+    if (operatorInput && initRunning) {
       ctx.ui.notify("pi-warden is generating rules. Please wait...", "warning");
       return { action: "handled" };
     }
-    if (auditRunning) {
+    if (operatorInput && auditRunning) {
       ctx.ui.notify("pi-warden is running an audit. Please wait...", "warning");
       return { action: "handled" };
     }
-    if (indexRunning) {
+    if (operatorInput && indexRunning) {
       ctx.ui.notify("pi-warden is building the capability index. Please wait...", "warning");
       return { action: "handled" };
     }
@@ -2606,6 +2657,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
   };
 
   pi.on("agent_end", async (event, ctx) => {
+    if (injectedRun) { injectedRun.release("end"); injectedRun = undefined; }
     const config = configFor(ctx);
     // The run is over: a notice that no turn of a continuing loop delivered may not be appended now, because a delivery must
     // never start a turn of its own. It is dropped and traced.
@@ -3019,14 +3071,20 @@ export default function wardenExtension(host: ExtensionAPI): void {
             let sent = true;
             if (ctx.hasUI) ctx.ui.notify("pi-warden: Sending the rules rewrite prompt...", "info");
             try {
-              // sendUserMessage throws when the agent is not idle. Brief wait so a
-              // just-closing confirm dialog does not cause a race.
+              // Send in the idle window; the completion gate below waits for the run itself.
               for (let attempt = 0; attempt < 40; attempt++) {
                 if (ctx.isIdle()) break;
                 await new Promise(resolve => setTimeout(resolve, 250));
               }
+              const { started, ended } = injectRun(request.prompt);
               pi.sendUserMessage(request.prompt);
-              await ctx.waitForIdle();
+              if (await started) {
+                await ended;
+                await awaitHostIdle(ctx);
+              } else {
+                // The prompt never became a run (preflight failure, or another extension handled it): unblock the user.
+                injectedRun = undefined;
+              }
             } catch (err) {
               sent = false;
               const detail = err instanceof Error ? err.message : String(err);
@@ -3222,8 +3280,15 @@ export default function wardenExtension(host: ExtensionAPI): void {
               if (ctx.isIdle()) break;
               await new Promise(resolve => setTimeout(resolve, 250));
             }
+            const { started, ended } = injectRun(prompt);
             pi.sendUserMessage(prompt);
-            await ctx.waitForIdle();
+            if (await started) {
+              await ended;
+              await awaitHostIdle(ctx);
+            } else {
+              // The prompt never became a run (preflight failure, or another extension handled it): unblock the user.
+              injectedRun = undefined;
+            }
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             report(`pi-warden init failed: ${detail}. Try creating pi-warden.md manually.`, "error");
@@ -3248,8 +3313,15 @@ export default function wardenExtension(host: ExtensionAPI): void {
               if (ctx.isIdle()) break;
               await new Promise(resolve => setTimeout(resolve, 250));
             }
+            const { started, ended } = injectRun(prompt);
             pi.sendUserMessage(prompt);
-            await ctx.waitForIdle();
+            if (await started) {
+              await ended;
+              await awaitHostIdle(ctx);
+            } else {
+              // The prompt never became a run (preflight failure, or another extension handled it): unblock the user.
+              injectedRun = undefined;
+            }
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             report(`pi-warden audit failed: ${detail}.`, "error");
@@ -3336,8 +3408,15 @@ export default function wardenExtension(host: ExtensionAPI): void {
               if (ctx.isIdle()) break;
               await new Promise(resolve => setTimeout(resolve, 250));
             }
+            const { started, ended } = injectRun(prompt);
             pi.sendUserMessage(prompt);
-            await ctx.waitForIdle();
+            if (await started) {
+              await ended;
+              await awaitHostIdle(ctx);
+            } else {
+              // The prompt never became a run (preflight failure, or another extension handled it): unblock the user.
+              injectedRun = undefined;
+            }
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             report(`pi-warden index failed: ${detail}.`, "error");

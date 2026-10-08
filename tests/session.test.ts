@@ -65,6 +65,8 @@ async function stubFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
 }
 
 interface Recorded { bashRan: boolean; bashCommand: string | undefined; readCalls: number; written: string[] }
+/** Where the session's stub tools resolve relative paths. Set by runSession to the session dir; undefined falls back to process cwd (the old behavior for tests that pass absolute paths). */
+let toolCwd: string | undefined;
 
 /** The session's own tools. `bash` records a run and returns ok; `read` always fails with the same message. */
 function recordingTools(record: Recorded): InlineExtension {
@@ -90,7 +92,12 @@ function recordingTools(record: Recorded): InlineExtension {
       name: "write", label: "write", description: "Writes a file.",
       parameters: Type.Object({ path: Type.String(), content: Type.String() }),
       async execute(_id, params) {
-        record.written.push((params as { path: string }).path);
+        const { writeFileSync, mkdirSync } = await import("node:fs");
+        const { dirname, resolve } = await import("node:path");
+        const target = resolve(toolCwd ?? ".", (params as { path: string }).path);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, (params as { content: string }).content);
+        record.written.push(target);
         return { content: [{ type: "text", text: "wrote" }], details: undefined };
       },
     });
@@ -107,6 +114,7 @@ async function runSession(script: ScriptedReply[], record: Recorded): Promise<{ 
   const modelRuntime = await ModelRuntime.create({ authPath: join(dir, "auth.json"), modelsPath: null, refreshOnCreate: false });
   modelRuntime.registerNativeProvider(provider.provider);
   await modelRuntime.setRuntimeApiKey(provider.provider.id, "offline");
+  toolCwd = dir;
   const loader = new DefaultResourceLoader({
     cwd: dir, agentDir, settingsManager: SettingsManager.inMemory(),
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
@@ -193,7 +201,8 @@ test("the shipped pi-warden nudges an unverified done claim into the model's con
     (context: { messages: unknown[] }) => { seenAfterNudge = JSON.stringify(context.messages); return faux.fauxAssistantMessage("Understood."); },
   ], record);
   await session.prompt("add a note");
-  assert.deepEqual(record.written, ["note.txt"], "the edit ran");
+  assert.equal(record.written.length, 1, "the edit ran once");
+  assert.ok(record.written[0]!.endsWith("note.txt"), "the edit ran");
   assert.match(seenAfterNudge, /no test, build, or lint run/, "the model's next request carries the done-check nudge");
   assert.match(customMessages(session), /no test, build, or lint run/, "the session recorded the done-check nudge");
 });
@@ -211,4 +220,23 @@ test("the shipped pi-warden repeats note reaches the model after the same failin
   assert.equal(record.readCalls, 2, "the same failing read ran twice");
   assert.match(seenAfterRepeat, /you already ran/, "the model's next request carries the repeat note");
   assert.match(customMessages(session), /you already ran/, "the session recorded the repeat note");
+});
+
+test("/warden init in a real session injects its prompt, waits for the agent, and reports the file created", async () => {
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
+  const record: Recorded = { bashRan: false, bashCommand: undefined, readCalls: 0, written: [] };
+  const { session, dir } = await runSession([
+    // The injected prompt reaches the model (this factory runs only for the init prompt).
+    (context: { messages: unknown[] }) => {
+      assert.ok(JSON.stringify(context.messages).includes("pi-warden.md"), "the model's request carries the init prompt");
+      return faux.fauxAssistantMessage(faux.fauxToolCall("write", { path: "pi-warden.md", content: "# Project rules\nWrite real tests.\n" }));
+    },
+    // One request after the tool call is enough: the file exists, the run loop has no reason to continue,
+    // and the command's status message should land only after this run ended.
+    () => faux.fauxAssistantMessage("Done."),
+  ], record);
+  await session.prompt("/warden init");
+  assert.deepEqual(record.written, [join(dir, "pi-warden.md")], "the agent ran the init task and called write");
+  assert.ok(existsSync(join(dir, "pi-warden.md")), "the rules file exists after the run");
+  assert.match(customMessages(session), /pi-warden\.md created/, "the command reported the file created only after the run ended");
 });
