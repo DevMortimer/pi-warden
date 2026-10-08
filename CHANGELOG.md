@@ -6,6 +6,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+- When the session runs in a [herdr](https://herdr.dev) pane, a warden confirm dialog now reports through herdr's `herdr:blocked` channel while it waits, so the pane's sidebar shows blocked instead of working. Interactive sessions only; no emission on hold-steers or headless runs. ([Guards](docs/guards.md#herdr-pane-state))
 ## 1.2.0
 
 ### Added
