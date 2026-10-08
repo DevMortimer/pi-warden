@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 1.3.1
+
 ### Fixed
 
 - The commands that send their own prompt to the agent (`/warden init`, `/warden rules tune`, `/warden audit`, `/warden index`) no longer swallow it. Each set its busy flag before `sendUserMessage`, and the busy-flag guard on the `input` event saw the command's own prompt (which arrives with `source: "extension"`) and answered "handled", so no run ever started and the command reported the file (or report, or index) was never created — every time, deterministically. The guard now waits only for operator input (`interactive`/`rpc`); warden's own prompt passes and, like any user prompt, invalidates in-flight conscience assessments.
