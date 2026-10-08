@@ -5447,7 +5447,12 @@ test("/warden rules tune: a rule flagged by rules check sends one rewrite prompt
   nextAnswers = { "judgeable_no-duplicate-logic": "too_vague" };
   await runCommand("rules check", ctx);
   sentUserMessages.length = 0;
-  await runCommand("rules tune", ctx);
+  // The tune command waits for the run its prompt injects; drive the gate the way the host does.
+  const tuneCommand = runCommand("rules tune", ctx);
+  while (sentUserMessages.length === 0) await new Promise(resolve => setImmediate(resolve));
+  await fire("before_agent_start", { prompt: sentUserMessages.at(-1) }, ctx);
+  await fire("agent_end", { messages: [] }, ctx);
+  await tuneCommand;
   assert.equal(sentUserMessages.length, 1, "one prompt for the session's agent");
   const prompt = sentUserMessages[0]!;
   assert.match(prompt, /Rewrite the flagged project rules in `pi-warden\.md` with your file tools/);
