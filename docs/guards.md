@@ -799,7 +799,7 @@ Two agent tools let the agent hand warden what it must not lose in a long sessio
 
 The candidate questions were frozen at SHA-256 `3fe9064f0de2f6e96373a1942dcba524c0ceb66bb1c9ebd5a98b86f281e11d5e`. Thirty synthetic-v2 rows were frozen before the run: 15 development and 15 held-out, each split with three of each label (healthy, loop, no_progress, safe_to_resume, unavailable). They exercise early discovery, thresholds (6 repeats, 3 equivalent errors, 20 reads), recent versus stale progress, provider retries and repeated failures, and unavailable MCP. Counters are evidence, not instructions; no private fields are added. Inverse progress is eligible only with 60 seconds since progress, or with no material progress and observed spend at least half the soft limit.
 
-The completed one-shot run used model `jev-1.13.0`: **30 requests**, 26,211 input and 3,300 output tokens. Incremental estimated spend was **$0.001104**; combined with the tracked $0.000350 prior spend, **$0.001454**. No retry was made. At the unchanged P ≥0.90 and confidence ≥0.80 gates, every row was gated **unavailable**:
+The completed one-shot run used model `jev-1.13.0`: **30 requests**, 26,211 input and 3,300 output tokens, estimated spend **$0.001104**. No retry was made. At the P ≥0.90 gate (confidence ≥0.80 follows from confidence = |2p − 1|), every row was gated **unavailable**:
 
 | expected / gated prediction | unavailable (development) | unavailable (holdout) | unavailable (total) |
 | --- | ---: | ---: | ---: |
@@ -809,13 +809,13 @@ The completed one-shot run used model `jev-1.13.0`: **30 requests**, 26,211 inpu
 | safe_to_resume | 3 | 3 | 6 |
 | unavailable | 3 | 3 | 6 |
 
-Anomaly TP=0, FP=0, FN=12: precision **n/a**, recall **0**. False safe resume=0; safe-resume precision **n/a**. The frozen activation gate (anomaly precision ≥0.90, anomaly recall ≥0.70, zero false safe resume for unsafe/MCP, and safe-resume precision 1.0) was **NOT MET**. A passing synthetic run would still require separate review, not automatic activation. Production remains **trace-only/unavailable**; no threshold or enforcement change follows this measurement. The v1 results below are separate historical evidence.
+Anomaly TP=0, FP=0, FN=12: precision **n/a**, recall **0**. False safe resume=0; safe-resume precision **n/a**. The frozen activation gate (anomaly precision ≥0.90, anomaly recall ≥0.70, zero false safe resume for unsafe/MCP, and safe-resume precision 1.0) was **NOT MET**. A passing synthetic run would still require separate review, not automatic activation. Production records answers and never acts on them; no threshold or enforcement change follows this measurement. The v1 results below are separate historical evidence.
 
 ### Synthetic observer calibration (2026-10-06)
 
-Synthetic fixture version `synthetic-v1`; 12 batched five-question TypeSafe requests, model `jev-1.13.0`; input tokens 7,627, output tokens 1,320; estimated USD **$0.000323** (microdollar-rounded request totals). The local pre-request calibration ceiling was $0.08 within the $0.10 combined authorization, leaving **$0.099677** of the total and $0.02 reserved for the already-authorized Task 5 smoke. No Task 5 request was made here.
+Synthetic fixture version `synthetic-v1`; 12 batched five-question TypeSafe requests, model `jev-1.13.0`; input tokens 7,627, output tokens 1,320; estimated USD **$0.000323** (microdollar-rounded request totals). The run stopped at its own per-run ceiling; no cumulative spend ledger is kept.
 
-At the unchanged P >= 0.90 and confidence >= 0.80 gates, aggregate confusion counts (rows are expected labels, columns are gated predictions):
+At the P ≥0.90 gate, aggregate confusion counts (rows are expected labels, columns are gated predictions):
 
 | expected / predicted | healthy | loop | no_progress | safe_to_resume | unavailable |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -825,11 +825,11 @@ At the unchanged P >= 0.90 and confidence >= 0.80 gates, aggregate confusion cou
 | safe_to_resume | 0 | 0 | 0 | 0 | 1 |
 | unavailable | 0 | 0 | 0 | 0 | 2 |
 
-Anomaly TP 1, FP 1, FN 2: precision 50%, recall 33.3%. Policy is frozen as question SHA-256 `bbf5b1e20d38e54949d1c633bd0b2cb4490be385325531c2249a989f4a39ca66`, model `jev-1.13.0`, gates 0.90/0.80, **trace-only/unavailable**. No gate was lowered. These synthetic labels alone cannot establish production accuracy.
+Anomaly TP 1, FP 1, FN 2: precision 50%, recall 33.3%. The v1 policy was question SHA-256 `bbf5b1e20d38e54949d1c633bd0b2cb4490be385325531c2249a989f4a39ca66`, model `jev-1.13.0`, gate 0.90. No gate was lowered. These synthetic labels alone cannot establish production accuracy.
 
-When `pi-subagents` emits a version-1 evaluation trigger, Warden synchronously validates its metrics and claims an asynchronous answer only if `subagent.observer` is on, Jev consent and a usable key exist, and the shared request budget and judge cooldown permit it. **One claimed trigger makes at most one Jev request**, containing exactly five Noul questions: repetition without progress, equivalent-failure loop, excessive reading, material progress, and safety of resuming after failure. A status tick makes no request. The answer's estimated microdollar cost is returned to Guardian for its recursive budget; Guardian alone decides whether to pause, resume, stop, signal, or write a ledger entry. Neither the synthetic-v1 nor synthetic-v2 calibration established the frozen activation gate. The listener is **trace-only/unavailable**: it does not claim events or spend requests, and Guardian cannot enforce an observer answer. Do not treat a judgment as proof or authorization.
+When `pi-subagents` emits a version-1 evaluation trigger, Warden validates its metrics and, only if `subagent.observer` is on, Jev consent and a usable key exist, and the shared request budget and judge cooldown permit it, makes **one Jev request containing exactly five Noul questions**: repetition without progress, equivalent-failure loop, excessive reading, material progress, and safety of resuming after failure. The answers (each probability) and the answering model are recorded as one `subagent` trace entry. The observer **never claims the event or returns an answer to Guardian**: no answer steers, wakes, or holds a worker, and Guardian alone still controls workers. A status tick makes no request. Neither the synthetic-v1 nor synthetic-v2 calibration established the activation gate; a later change can add the answer path back when a calibration passes. Do not treat a recorded judgment as proof or authorization.
 
-Only allow-listed redacted metrics are sent (see [data handling](data-handling.md#token-guardian-observer)) when a calibrated policy is active. Invalid events, trace-only policy, absent/disabled Warden, no consent or key, exhausted budget, active cooldown, malformed answers, timeout, and network errors **fail unavailable, never healthy**. A claimed trigger is consumed even if its request fails; no replay, notification, wake, or steer follows an observer error. Report triage below is separate and retains its own wake settings.
+Only allow-listed redacted metrics are sent (see [data handling](data-handling.md#token-guardian-observer)); the root ID stays local. The calibration script `node --import tsx scripts/supervision-calibrate.mjs` is a dry run that prints the request count and the per-run cap; `--yes` spends. It records every row's five probabilities, chooses the probability threshold on the development split, re-checks it on the held-out split, and prints the score distribution, following [Calibration](#calibration). A run is capped at its own per-run ceiling with a per-request reserve; there is no cumulative spend ledger and no one-time marker, so maintainers can rerun it. Invalid events, observer off, absent/disabled Warden, no consent or key, exhausted budget, active cooldown, malformed answers, timeout, and network errors **fail quietly**: the failure reason is recorded in the trace, and no replay, notification, wake, or steer follows an observer error. Report triage below is separate and retains its own wake settings.
 
 ## Subagent triage
 
