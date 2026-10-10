@@ -94,7 +94,6 @@ import { TraceFile, judgmentsState, traceDir, traceFilePath } from "./trace-file
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, rulesTokens, SENTENCE_TEMPLATES, TOKEN_NAMES } from "./widget.js";
 import { statusWidget } from "./widget-render.js";
 import { createSupervisionHandler } from "./supervision-handler.js";
-
 import { readWardenBuild, satisfiesCaret } from "./build-info.js";
 import type { WardenBuild } from "./build-info.js";
 
@@ -349,9 +348,9 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
   // Same shape trap for the subagent section: 0.14 added it, and a stale shape module hands the config over without it.
   if (typeof config.subagent !== "object" || config.subagent === null || !Number.isFinite(config.subagent.threshold)) {
     if (!missing.includes("subagent")) missing.push("subagent");
-    config.subagent = { enabled: false, wake: false, observer: true, threshold: 1, cooldownMs: 0 };
+    config.subagent = { enabled: false, wake: false, observer: false, threshold: 1, cooldownMs: 0 };
   }
-  if (typeof config.subagent.observer !== "boolean") config.subagent = { ...config.subagent, observer: true };
+  if (typeof config.subagent.observer !== "boolean") config.subagent = { ...config.subagent, observer: false };
   if (typeof config.widget.subagent !== "string") config.widget = { ...config.widget, subagent: DEFAULT_TEMPLATES.subagent };
   return { config, missing };
 }
@@ -1156,15 +1155,16 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
   };
 
-  // The observer records what Jev answers and never claims, steers, wakes, or holds; Guardian can re-add the answer path when a calibration passes.
+  let sessionCwd = process.cwd();
+  let sessionTrusted = false;
+
+  // Record-only: neither calibration met the activation gate, so nothing claims the event or acts on the answers.
   pi.events?.on("pi-subagents/supervision-evaluate/v1", createSupervisionHandler({
     config: () => guardCurrentSections(completeConfig(loadConfig({ cwd: sessionCwd, projectTrusted: sessionTrusted, dirs }))).config,
     judge: config => judgeFor(config, true),
     quietSignal: signal => quietSignals.add(signal),
     record: (line, details) => { trace.push({ at: Date.now(), guard: "subagent", line, details }); },
   }));
-  let sessionCwd = process.cwd();
-  let sessionTrusted = false;
   pi.on("session_start", async (_event, ctx) => {
     sessionCwd = ctx.cwd;
     sessionTrusted = ctx.isProjectTrusted();
