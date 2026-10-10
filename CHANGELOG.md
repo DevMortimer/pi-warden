@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 1.5.0
+
 ### Added
 
 - The config panel has selectors for mode, judgment backend, widget placement and bar mode, conscience skill mode, and recall tool. Left/right wraps through supported values; Enter saves the chosen field and Esc cancels. Invalid values and custom backends remain intact until a choice is made, and other staged edits keep their existing `s` save behavior. ([Configuration](docs/configuration.md#user-config))
