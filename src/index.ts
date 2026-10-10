@@ -2,8 +2,6 @@ export { evaluateAction, describeAction, describePlan, matchPatterns, isReadOnly
 export type { ActionInput, ActionSummary, ApprovalAnswer, EvaluateOptions, Judge, Judgment, SlopJudgment, SlopSymptom, Level, PatternHit, PreviousAction, ScannedCommand, ScopeLabel, Severity, Verdict, Violation, ViolationSource, ViolationScope, Authorization, EscalatedViolation, ViolationJudgmentAnswer } from "./guard.js";
 export { SLOP_SYMPTOMS, SLOP_LABELS } from "./guard.js";
 export { ActionGuard } from "./action-guard.js";
-export { validateSupervisionRequest, buildSupervisionRequest, evaluateSupervision, supervisionQuestions } from "./supervision.js";
-export type { RedactedSupervisionMetrics, ValidatedSupervisionRequest, SupervisionResult, SupervisionOptions } from "./supervision.js";
 export type { Conversation, InspectOptions, ToolCallRef } from "./action-guard.js";
 export { evaluateProse, buildProseRequest, proseQuestions, proseNudge, describeAudience, ProseTrend, PROSE_SYMPTOMS, PROSE_LABELS } from "./prose.js";
 export type { ProseSymptom, ProseVerdict, ProseOptions } from "./prose.js";
