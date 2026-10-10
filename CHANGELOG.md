@@ -8,7 +8,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Added
 
-- The Token Guardian observer records Jev's answers to redacted supervision events in the warden trace and never answers Guardian, steers, wakes, or holds. The root ID stays local and the answering model is recorded, so answers from any model or backend survive the next Jev release. ([Guards](docs/guards.md#token-guardian-observer))
+- The Token Guardian observer: for each valid `pi-subagents/supervision-evaluate/v1` event it makes one Jev request with five questions over allow-listed redacted metrics (the root ID is not sent), and records the answers and the answering model as one `subagent` trace entry. Nothing claims the event, steers, wakes, or holds. The new key `subagent.observer` defaults to `true` and needs Jev consent. ([Guards](docs/guards.md#token-guardian-observer))
 
 ## 1.4.0
 
