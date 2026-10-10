@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 1.6.0
+
 ### Added
 
 - The Token Guardian observer: for each valid `pi-subagents/supervision-evaluate/v1` event it makes one Jev request with five questions over allow-listed redacted metrics (the root ID is not sent), and records the answers and the answering model as one `subagent` trace entry. Nothing claims the event, steers, wakes, or holds. The new key `subagent.observer` defaults to `true` and needs Jev consent. ([Guards](docs/guards.md#token-guardian-observer))
