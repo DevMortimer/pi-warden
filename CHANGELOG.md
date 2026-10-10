@@ -10,6 +10,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - The Token Guardian observer: for each valid `pi-subagents/supervision-evaluate/v1` event it makes one Jev request with five questions over allow-listed redacted metrics (the root ID is not sent), and records the answers and the answering model as one `subagent` trace entry. Nothing claims the event, steers, wakes, or holds. The new key `subagent.observer` defaults to `true` and needs Jev consent. ([Guards](docs/guards.md#token-guardian-observer))
 
+## 1.5.0
+
+### Added
+
+- The config panel has selectors for mode, judgment backend, widget placement and bar mode, conscience skill mode, and recall tool. Left/right wraps through supported values; Enter saves the chosen field and Esc cancels. Invalid values and custom backends remain intact until a choice is made, and other staged edits keep their existing `s` save behavior. ([Configuration](docs/configuration.md#user-config))
+
 ## 1.4.0
 
 ### Added

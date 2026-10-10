@@ -7,8 +7,10 @@ import type { RulesVerdict } from "./rules.js";
 import type { RunawayVerdict } from "./runaway.js";
 import type { StuckVerdict } from "./stuck.js";
 
-export type WidgetPlacement = "aboveEditor" | "belowEditor";
-export type WidgetBarMode = "stack" | "live";
+export const WIDGET_PLACEMENTS = ["aboveEditor", "belowEditor"] as const;
+export type WidgetPlacement = typeof WIDGET_PLACEMENTS[number];
+export const WIDGET_BAR_MODES = ["stack", "live"] as const;
+export type WidgetBarMode = typeof WIDGET_BAR_MODES[number];
 
 /** Palette shared by the status line and the trace sidebar: one place decides what a verdict looks like. */
 export interface ThemeLike { fg(color: string, text: string): string; bold(text: string): string }
