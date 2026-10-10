@@ -18,7 +18,9 @@ export interface RedactedSupervisionMetrics {
   mcp: { state: "unknown" | "available" | "unavailable"; capabilityCount: number | null };
 }
 export interface ValidatedSupervisionRequest { version: 1; metrics: RedactedSupervisionMetrics }
-export interface WardenResult { rootId: string; kind: "healthy" | "loop" | "no_progress" | "safe_to_resume"; probability: number; confidence: number; evaluatedAt: number; costUsd: number }
+export interface SupervisionResult { rootId: string; kind: "healthy" | "loop" | "no_progress" | "safe_to_resume"; probability: number; confidence: number; answers: Record<string, number>; model: string; evaluatedAt: number; costUsd: number }
+/** A failure carries a reason, so the handler can record why the observer did not answer. */
+export type SupervisionEvaluation = { ok: true; result: SupervisionResult } | { ok: false; reason: string };
 
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const keys = (value: Record<string, unknown>, expected: readonly string[]) => Object.keys(value).length === expected.length && expected.every(key => Object.hasOwn(value, key));
@@ -64,15 +66,14 @@ export const supervisionPolicy = Object.freeze({
   questionHash: "3fe9064f0de2f6e96373a1942dcba524c0ceb66bb1c9ebd5a98b86f281e11d5e",
   model: "jev-1.13.0",
   probabilityThreshold: 0.90,
-  confidenceThreshold: 0.80,
-  enforcement: "trace_only" as "active" | "trace_only",
 });
 
 export function buildSupervisionRequest(metrics: RedactedSupervisionMetrics) {
   const validated = validateSupervisionRequest({ version: 1, metrics });
   if (!validated) throw new TypeError("invalid redacted supervision metrics");
-  const m = validated.metrics;
-  const state = { ...m, progress: m.progress === null ? null : { ...m.progress }, mcp: { ...m.mcp } } as EntryType;
+  // No question reads rootId, so it stays local and never leaves the machine.
+  const { rootId: _rootId, ...sent } = validated.metrics;
+  const state = { ...sent, progress: sent.progress === null ? null : { ...sent.progress }, mcp: { ...sent.mcp } } as EntryType;
   return { state, questions: supervisionQuestions };
 }
 
@@ -84,30 +85,30 @@ export interface SupervisionOptions {
   price?: (backend: ReturnType<typeof resolveBackend>, model: string) => number | undefined;
 }
 
-/** One paid request at most; invalid inputs, answers, usage, prices and failures remain unavailable. */
-export async function evaluateSupervision(metrics: unknown, options: SupervisionOptions): Promise<WardenResult | undefined> {
+/** One paid request at most; invalid inputs, answers, usage, prices and failures return a reason, never a throw. */
+export async function evaluateSupervision(metrics: unknown, options: SupervisionOptions): Promise<SupervisionEvaluation> {
   const valid = validateSupervisionRequest({ version: 1, metrics });
-  if (!valid) return undefined;
+  if (!valid) return { ok: false, reason: "invalid metrics" };
   try {
     const backend = resolveBackend(options.backend);
     const result = await ask(options.judge, buildSupervisionRequest(valid.metrics), { timeoutMs: options.timeoutMs });
     if (!result.ok || !record(result.answers) || !keys(result.answers, Object.keys(supervisionQuestions))
-      || result.model !== supervisionPolicy.model
-      || !record(result.usage) || !count(result.usage.input_tokens)) return undefined;
+      || typeof result.model !== "string"
+      || !record(result.usage) || !count(result.usage.input_tokens)) return { ok: false, reason: "unusable judge result" };
     const values = Object.keys(supervisionQuestions).map(id => {
       const answer = (result.answers as Record<string, unknown>)[id];
       return record(answer) && answer.type === "noul" && typeof answer.noul === "number" && Number.isFinite(answer.noul) && answer.noul >= 0 && answer.noul <= 1 ? answer.noul : undefined;
     });
-    if (values.some(value => value === undefined)) return undefined;
+    if (values.some(value => value === undefined)) return { ok: false, reason: "invalid answer values" };
     const [repeating, failure, reading, progress, safe] = values as number[];
     const p = valid.metrics.progress;
     const failureGate = valid.metrics.lifecycle === "paused" && oneOf(valid.metrics.reason, ["provider_failure", "mcp_failure", "process_failure"]);
-    let kind: WardenResult["kind"];
+    let kind: SupervisionResult["kind"];
     let probability: number;
     if (failureGate) { kind = "safe_to_resume"; probability = safe!; }
     else {
       // Stable tie order: failure loop, repetition, reading, absence of material progress.
-      const candidates: { kind: WardenResult["kind"]; probability: number; evidence: boolean }[] = [
+      const candidates: { kind: SupervisionResult["kind"]; probability: number; evidence: boolean }[] = [
         { kind: "loop", probability: failure!, evidence: (p?.equivalentErrorCount ?? 0) >= 3 },
         { kind: "loop", probability: repeating!, evidence: (p?.repeatedOperationCount ?? 0) >= 6 },
         { kind: "no_progress", probability: reading!, evidence: (p?.readsSinceProgress ?? 0) >= 20 },
@@ -120,9 +121,12 @@ export async function evaluateSupervision(metrics: unknown, options: Supervision
     }
     const price = (options.price ?? backendPrice)(backend, result.model) ?? DEFAULT_USD_PER_MTOK;
     const evaluatedAt = options.now();
-    if (!amount(price) || !Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0) return undefined;
+    if (!amount(price) || !Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0) return { ok: false, reason: "invalid cost" };
     const costUsd = estimateUsd(result.usage.input_tokens, price);
-    if (!amount(costUsd)) return undefined;
-    return { rootId: valid.metrics.rootId, kind, probability, confidence: Math.abs(2 * probability - 1), evaluatedAt, costUsd };
-  } catch { return undefined; }
+    if (!amount(costUsd)) return { ok: false, reason: "invalid cost" };
+    const answers = Object.fromEntries(Object.keys(supervisionQuestions).map((id, index) => [id, values[index]!]));
+    return { ok: true, result: { rootId: valid.metrics.rootId, kind, probability, confidence: Math.abs(2 * probability - 1), answers, model: result.model, evaluatedAt, costUsd } };
+  } catch (error) {
+    return { ok: false, reason: `judge request failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }

@@ -353,7 +353,7 @@ export interface NotifyConfig {
 }
 
 export interface SubagentConfig {
-  /** Observe redacted Token Guardian evaluation events; independent of report triage. */
+  /** Record Jev's answers to redacted Token Guardian evaluation events; never claims or acts. Independent of report triage. */
   observer: boolean;
   /** Read async subagent reports at all. Off: warden ignores them, as before 0.14. */
   enabled: boolean;

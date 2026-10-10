@@ -3,7 +3,7 @@ export type { ActionInput, ActionSummary, ApprovalAnswer, EvaluateOptions, Judge
 export { SLOP_SYMPTOMS, SLOP_LABELS } from "./guard.js";
 export { ActionGuard } from "./action-guard.js";
 export { validateSupervisionRequest, buildSupervisionRequest, evaluateSupervision, supervisionQuestions } from "./supervision.js";
-export type { RedactedSupervisionMetrics, ValidatedSupervisionRequest, WardenResult, SupervisionOptions } from "./supervision.js";
+export type { RedactedSupervisionMetrics, ValidatedSupervisionRequest, SupervisionResult, SupervisionOptions } from "./supervision.js";
 export type { Conversation, InspectOptions, ToolCallRef } from "./action-guard.js";
 export { evaluateProse, buildProseRequest, proseQuestions, proseNudge, describeAudience, ProseTrend, PROSE_SYMPTOMS, PROSE_LABELS } from "./prose.js";
 export type { ProseSymptom, ProseVerdict, ProseOptions } from "./prose.js";
