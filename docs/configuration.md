@@ -77,7 +77,7 @@ Missing keys use these defaults:
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
   "notify": { "enabled": false, "cooldownMs": 10000, "command": [] },
   "judge": { "cooldownMs": 60000, "failuresBeforeCooldown": 3 },
-  "subagent": { "enabled": true, "wake": true, "threshold": 0.8, "cooldownMs": 120000 },
+  "subagent": { "enabled": true, "wake": true, "observer": true, "threshold": 0.8, "cooldownMs": 120000 },
   "widget": { "enabled": true, "placement": "aboveEditor", "barMode": "live", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "steerVisible": false,
   "notices": false,
@@ -152,6 +152,7 @@ Missing keys use these defaults:
 | `notify.*` | Desktop notifications, cooldown, optional relay command (user file only). |
 | `judge.failuresBeforeCooldown` | Consecutive timeout, network, or other judge failures before judgments pause for the session (3). One auth or configuration failure pauses at once. |
 | `judge.cooldownMs` | How long a failing judge is left alone before the next action asks it again (60000), capped at 600000 (10 minutes). |
+| `subagent.observer` | Record Jev's answers to Token Guardian's redacted evaluation events when Jev consent, key, cooldown and request budget permit. Defaults to `true`, including older configs without this field; independent of report triage (`subagent.enabled` and `subagent.wake`). The observer never claims an event, steers, wakes, or holds. `false` sends nothing. |
 | `subagent.enabled` | Read async subagent reports at all. `false` ignores them, as before 0.14. |
 | `subagent.wake` | Ask Jev whether a report that names trouble deserves a wake. `false` keeps the offline layer, which never wakes. |
 | `subagent.threshold` | P(report needs the agent awake) that wakes it. Conservative on purpose. |

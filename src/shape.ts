@@ -62,7 +62,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
     // A stale config module leaves the judge trusted: never pausing is today's behaviour, not a new failure mode.
     judge: section("judge", { failuresBeforeCooldown: Number.MAX_SAFE_INTEGER, cooldownMs: 0 }),
-    subagent: section("subagent", { ...off, wake: false, threshold: 1, cooldownMs: 0 }),
+    subagent: section("subagent", { ...off, wake: false, observer: false, threshold: 1, cooldownMs: 0 }),
     widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", cause: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
     // A missing section turns adaptation off: every steer is sent, as before the section existed.
     steers: section("steers", { adaptive: false, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 }),
@@ -146,6 +146,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   // The runaway guard added its template later than the other sections; an older widget section renders the default line.
   if (typeof config.widget.runaway !== "string") config.widget = { ...config.widget, runaway: DEFAULT_TEMPLATES.runaway };
   if (typeof config.widget.rules !== "string") config.widget = { ...config.widget, rules: DEFAULT_TEMPLATES.rules };
+  if (typeof config.subagent.observer !== "boolean") config.subagent = { ...config.subagent, observer: false };
   if (typeof config.widget.subagent !== "string") config.widget = { ...config.widget, subagent: DEFAULT_TEMPLATES.subagent };
   if (typeof config.widget.cause !== "string") config.widget = { ...config.widget, cause: DEFAULT_TEMPLATES.cause };
   return { config, missing };

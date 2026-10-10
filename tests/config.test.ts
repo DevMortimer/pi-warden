@@ -40,6 +40,17 @@ test("defaults: guards on, steer mode, TypeSafe consent off, nudges on", () => {
   assert.equal(config.timeoutMs, config.action.timeoutMs);
 });
 
+test("subagent observer defaults on and accepts only boolean overrides", () => {
+  const base = defaultConfig();
+  assert.equal(base.subagent.observer, true);
+  for (const apply of [applyUserOverrides, applyProjectOverrides]) {
+    assert.equal(apply(base, { subagent: { observer: false } }).subagent.observer, false);
+    for (const observer of [undefined, "false", 0, null]) {
+      assert.equal(apply(base, { subagent: { observer } }).subagent.observer, true);
+    }
+  }
+});
+
 test("should-proceed steer parser accepts booleans and defaults invalid or missing values", () => {
   const base = defaultConfig();
   assert.deepEqual(base.action.shouldProceed, { threshold: 0.6, steer: false });
