@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
+import { TypeSafeIntegrationError } from "pi-typesafe";
 // @ts-expect-error calibration fixtures are an executable JavaScript module
 import { cases, developmentCases, holdoutCases, fixtureVersion } from "../scripts/supervision-cases.mjs";
 // @ts-expect-error the calibration runner is an executable JavaScript module
@@ -179,7 +180,10 @@ test("malformed, unavailable and judge failures return a reason, never a healthy
   }
   const thrown = await evaluateSupervision(metrics, options({ evaluate: async () => { throw new Error("offline"); } }));
   assert.equal(thrown.ok, false);
-  assert.equal(thrown.ok === false ? thrown.reason : "", "unusable judge result");
+  assert.equal(thrown.ok === false ? thrown.reason : "", "judge error: TypeSafe request failed.");
+  const judged = await evaluateSupervision(metrics, options({ evaluate: async () => { throw new TypeSafeIntegrationError("http", "TypeSafe returned HTTP 503.", 503); } }));
+  assert.equal(judged.ok, false);
+  assert.equal(judged.ok === false ? judged.reason : "", "judge error: TypeSafe returned HTTP 503. (http)");
   const caught = await evaluateSupervision(metrics, { ...options(judge), now: () => { throw new Error("clock"); } });
   assert.equal(caught.ok, false);
   assert.match(caught.ok === false ? caught.reason : "", /judge request failed: clock/);

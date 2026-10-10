@@ -92,7 +92,8 @@ export async function evaluateSupervision(metrics: unknown, options: Supervision
   try {
     const backend = resolveBackend(options.backend);
     const result = await ask(options.judge, buildSupervisionRequest(valid.metrics), { timeoutMs: options.timeoutMs });
-    if (!result.ok || !record(result.answers) || !keys(result.answers, Object.keys(supervisionQuestions))
+    if (!result.ok) return { ok: false, reason: `judge error: ${result.error}${result.errorCode ? ` (${result.errorCode})` : ""}` };
+    if (!record(result.answers) || !keys(result.answers, Object.keys(supervisionQuestions))
       || typeof result.model !== "string"
       || !record(result.usage) || !count(result.usage.input_tokens)) return { ok: false, reason: "unusable judge result" };
     const values = Object.keys(supervisionQuestions).map(id => {

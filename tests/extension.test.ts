@@ -375,7 +375,9 @@ test("a Jev error is recorded with its reason and never throws", async () => {
     const records = await readLog(join(dir, `${process.pid}.jsonl`), 2, false);
     const entry = records.find(record => record.kind === "entry")!;
     assert.equal(entry.guard, "subagent");
-    assert.ok((entry.details as string[]).some(detail => detail.startsWith("failed: ")), "the failure reason is recorded");
+    const failed = (entry.details as string[]).find(detail => detail.startsWith("failed: "));
+    assert.ok(failed, "the failure reason is recorded");
+    assert.ok(failed.includes("TypeSafe returned HTTP 503"), "the recorded detail contains the judge error");
     assert.equal(notices.length, 0, "a quiet observer failure sends no notice");
     assert.equal(sentMessages.length, 0);
   } finally {
