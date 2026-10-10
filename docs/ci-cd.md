@@ -9,7 +9,7 @@ and manual runs from the Actions page. It does not publish to npm.
 - **Check (Node 22.19.0)** tests the minimum supported Node version.
 - **Check (Node 24)** and **Check (Node 26)** test the newer supported releases.
 - Each Node job installs the lockfile with `npm ci`, then runs `npm run check`
-  (typecheck, offline tests, build).
+  (typecheck, build, offline tests).
 - **Package** runs only after all checks pass. It builds an npm tarball, installs
   it in a clean directory with the Pi peer versions from the lockfile and install
   scripts disabled, imports the library and extension, and checks that the public

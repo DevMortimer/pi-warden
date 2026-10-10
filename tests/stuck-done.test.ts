@@ -314,9 +314,9 @@ test("classifyToolResult separates reads, mutations, and checks", () => {
   assert.equal(classifyToolResult("bash", { command: "npx tsc --noEmit && npm run lint" }, false), "check-pass");
   assert.equal(classifyToolResult("bash", { command: "cargo test" }, false), "check-pass");
   assert.equal(classifyToolResult("bash", { command: "pytest -q" }, true), "check-fail");
-  assert.equal(classifyToolResult("ctx_execute", { language: "shell", code: "cd app && npm test 2>&1 | tail -5" }, false), "check-pass", "context-mode shell runs count");
+  assert.equal(classifyToolResult("ctx_execute", { language: "shell", code: "cd app && npm test 2>&1 | tail -5" }, false), "unknown", "the pipe hides the exit code and there is no runner summary: not a check");
   assert.equal(classifyToolResult("ctx_execute", { language: "javascript", code: "console.log(require('fs').readdirSync('.'))" }, false), "unknown", "non-shell code is neither read nor check");
-  assert.equal(classifyToolResult("ctx_batch_execute", { commands: [{ label: "t", command: "pytest -q" }, { label: "s", command: "git status" }] }, true), "check-fail");
+  assert.equal(classifyToolResult("ctx_batch_execute", { commands: [{ label: "t", command: "pytest -q" }, { label: "s", command: "git status" }] }, true), "unknown", "a newline with more commands after the runner hides its exit code: not a check");
   assert.equal(classifyToolResult("ctx_execute", { language: "shell", code: "ls -la && git log -3" }, false), "read");
   assert.equal(classifyToolResult("mcp_something", { query: "x" }, false), "unknown");
   const viaCtx = emptyEvidence();
@@ -512,25 +512,25 @@ test("isUiFile reads brace alternatives and `!` exclusions; tests of UI code are
   for (const path of ["src/parser.ts", "src/server.js", "README.md", "src/App.test.tsx", "src/row.dom.test.tsx", "test/widgets/chip_test.dart", "tests/web/app.js"]) assert.equal(isUiFile(path, globs), false, path);
 });
 
-test("isVisualCheck counts browser, device, screenshot, and image reads, not mentions of them", () => {
+test("isVisualCheck counts page snapshots, test runs, and image reads, not mentions of them", () => {
   const visual = defaultConfig().done.visualTools;
   const shows = (tool: string, input: Record<string, unknown>, failed = false) => isVisualCheck(tool, input, failed, visual);
-  assert.equal(shows("bash", { command: "agent-browser open http://localhost:3000" }), true);
+  assert.equal(shows("bash", { command: "agent-browser open http://localhost:3000" }), false, "opening a page shows nothing");
   assert.equal(shows("bash", { command: "cd web && PORT=3000 npx playwright test" }), true);
   assert.equal(shows("bash", { command: "cd app && fvm flutter test integration_test/app_test.dart" }), true);
   assert.equal(shows("bash", { command: "flutter test test/goldens/header_golden_test.dart" }), true);
   assert.equal(shows("bash", { command: "flutter test --update-goldens" }), true);
-  assert.equal(shows("bash", { command: "xcrun simctl io booted screenshot /tmp/s.png" }), true);
-  assert.equal(shows("bash", { command: "idb screenshot /tmp/s.png" }), true);
-  assert.equal(shows("bash", { command: "idb ui tap 10 20" }), true);
+  assert.equal(shows("bash", { command: "xcrun simctl io booted screenshot /tmp/s.png" }), false, "a screenshot that only writes a file shows nothing");
+  assert.equal(shows("bash", { command: "idb screenshot /tmp/s.png" }), false);
+  assert.equal(shows("bash", { command: "idb ui tap 10 20" }), false);
   assert.equal(shows("bash", { command: "npx playwright test --screenshot=on" }), true);
-  assert.equal(shows("bash", { command: "chrome --headless --screenshot=/tmp/s.png http://localhost" }), true, "a headless-browser screenshot is visual proof");
-  assert.equal(shows("bash", { command: "chromium --headless --screenshot http://localhost" }), true);
-  assert.equal(shows("bash", { command: "google-chrome --headless=new --screenshot=/tmp/s.png http://localhost" }), true);
+  assert.equal(shows("bash", { command: "chrome --headless --screenshot=/tmp/s.png http://localhost" }), false, "a headless-browser screenshot only writes a file");
+  assert.equal(shows("bash", { command: "chromium --headless --screenshot http://localhost" }), false);
+  assert.equal(shows("bash", { command: "google-chrome --headless=new --screenshot=/tmp/s.png http://localhost" }), false);
   assert.equal(shows("ctx_execute", { language: "shell", code: "agent-browser snapshot -i" }), true);
   assert.equal(shows("read", { path: "/tmp/shot.PNG" }), true);
-  assert.equal(shows("mcp__chrome_devtools", { tool: "take_screenshot" }), true);
-  assert.equal(shows("mcp", { tool: "navigate_page", args: {} }), true);
+  assert.equal(shows("mcp__chrome_devtools", { tool: "take_screenshot" }), false, "a screenshot tool name alone proves nothing");
+  assert.equal(shows("mcp", { tool: "navigate_page", args: {} }), false, "a navigation tool shows nothing");
   assert.equal(shows("take_snapshot", {}), true);
   assert.equal(shows("bash", { command: "agent-browser open http://localhost:3000" }, true), false, "a failed call showed nothing");
   assert.equal(shows("bash", { command: "gh pr create --title x --body \"see the screenshot\"" }), false, "a PR body is data");
@@ -540,7 +540,7 @@ test("isVisualCheck counts browser, device, screenshot, and image reads, not men
   assert.equal(shows("bash", { command: "grep -rn screenshot src" }), false, "a command word counts only after a visual head");
   assert.equal(shows("bash", { command: "chromium --version" }), false, "a browser binary without a screenshot flag shows nothing");
   assert.equal(shows("bash", { command: "google-chrome --headless http://localhost" }), false);
-  assert.equal(shows("bash", { command: "idb list-targets" }), false, "idb shows the UI only through screenshot or ui");
+  assert.equal(shows("bash", { command: "idb list-targets" }), false, "idb lists targets; it shows no page");
   assert.equal(shows("bash", { command: "flutter test test/unit/x_test.dart" }), false, "a unit test shows no UI");
   assert.equal(shows("bash", { command: "cd app && fvm flutter test test/widget_test.dart" }), false, "a widget test is not a golden test");
   assert.equal(shows("read", { path: "web/app.css" }), false);

@@ -17,6 +17,7 @@ import { resolveRulesFile } from "./rules-file.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
 import { actionAskGate } from "./ask-gate.js";
+import { scriptSources, type ScriptSource } from "./script-bodies.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
 export type Level = "allow" | "warn" | "confirm" | "deny";
@@ -79,6 +80,10 @@ export interface PatternHit {
   action?: "dialog" | "hold";
   /** Optional user-defined message, shown instead of the derived label. */
   message?: string;
+  /** Set when the hit comes from a script body the command runs; names the source (`cleanup.sh`, `npm run clean`). */
+  via?: string;
+  /** Body lines that produced this hit, for the request's `script_lines` field. */
+  lines?: string[];
 }
 
 export interface ActionInput {
@@ -1837,6 +1842,8 @@ export interface PatternOptions {
   commandDenyRules?: readonly CommandRule[];
   exemptRules?: readonly string[];
   pathRules?: readonly PathRule[];
+  /** Script bodies already read for this command, so the floor and the ask gate do not read them twice. */
+  scripts?: readonly ScriptSource[] | undefined;
   /** Real paths the agent created under the temp directory in this session; a recursive rm of only these is not destructive. */
   scratch?: ScratchRecords | undefined;
   /** Scratch roots the host declared for this session; a recursive rm of a path strictly inside one is risky. */
@@ -1904,56 +1911,109 @@ function compileUserRule(raw: CommandRule, defaultSeverity: Severity): CompiledU
   }
 }
 
-export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?: string, options?: PatternOptions): PatternHit[] {
+/** The built-in shell rules and user command rules for one command body. `raw` is the text as written; `stripDataText`
+ * blanks the data that is not a command. Deduplicated by id. */
+function commandPatternHits(raw: string, cwd: string | undefined, options: PatternOptions | undefined, exempt: ReadonlySet<string>): PatternHit[] {
   const hits = new Map<string, PatternHit>();
   const add = (hit: PatternHit | undefined) => { if (hit && !hits.has(hit.id)) hits.set(hit.id, hit); };
-  const raw = commandOf(tool, input)?.command;
+  const command = stripDataText(raw).text;
+  for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
+  applySqlTargets(raw, hits, exempt);
+  applyGitState(raw, hits, cwd);
+  // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else,
+  // and one that moves, links, copies, or extracts data can fill a path after the birth-time walk: no recorded scratch.
+  const privileged = PRIVILEGED.test(command);
+  const movesIn = MOVES_IN.test(unquoted(raw)) || MOVES_IN.test(unquoted(command));
+  const scratch = privileged || movesIn || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
+  const segments = splitShell(command);
+  // A command that mounts, attaches, binds, or syncs data in with its source removed can put existing data under a
+  // path a later `rm` deletes, and the birth-time walk cannot see it: no release rule applies at all then.
+  const blocked = privileged || MOVES_DATA_IN.test(unquoted(command)) || MOVES_DATA_IN.test(unquoted(raw));
+  // Read the cheap volatile temp roots only when a recursive rm needs them; the macOS /var/folders walk is lazier.
+  let volatile: string[] | undefined;
+  const volatileRoots = () => (volatile ??= disposableTempRoots());
+  const scratchVars = blocked || unreadVariableSink(command) ? undefined : commandVars(segments, volatileRoots, variableWrites(command));
+  const scratchRoots = blocked ? undefined : options?.scratchPaths;
+  // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
+  // A mover word the per-segment parse cannot read (`bash -c 'mv a b'`, `xargs ln -s a b`) keeps every hold as well.
+  const { dirs, changed } = effectiveDirs(segments, cwd, scratchVars);
+  const moved = blocked ? [] : segments.map((segment, index) => moverDestination(segment, dirs[index] ?? cwdPath(cwd), scratchVars?.[index])).filter((mover): mover is Mover => mover !== undefined);
+  const unread = blocked ? false : unreadMover(segments);
+  for (let index = 0; index < segments.length; index++) {
+    const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, unreadMover: unread, recorded: options?.movedIn, dir: dirs[index], dirChanged: changed[index] });
+    // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
+    if (hit && !exempt.has(hit.id)) add(hit);
+  }
+  if (!exempt.has("sensitive-path") && SENSITIVE_PATH.test(command)) add({ id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
+  for (const rule of options?.commandDenyRules ?? []) {
+    if (exempt.has(rule.id)) continue;
+    const compiled = compileUserRule(rule, "deny");
+    if (compiled && compiled.test.test(command)) add({ id: compiled.id, severity: "deny", label: compiled.message ?? compiled.label });
+  }
+  for (const rule of options?.commandRules ?? []) {
+    if (exempt.has(rule.id)) continue;
+    const severity: Severity = rule.severity === "deny" ? "deny" : rule.severity === "confirm" ? "destructive" : "risky";
+    const compiled = compileUserRule(rule, severity);
+    if (compiled && compiled.test.test(command)) add({ id: compiled.id, severity, label: compiled.message ?? compiled.label, ...(rule.action ? { action: rule.action } as { action: string } : {}) } as PatternHit & { action?: string });
+  }
+  return [...hits.values()];
+}
+
+/** A shell deletion line, for the body lines a `script_lines` field reports. */
+const RM_LINE = /(?:^|[\s"'(`])rm\s|find\b[^\n]*(?:-delete\b|-exec\w*\s+rm\b)/;
+
+/** The body lines that match a rule, for the `script_lines` field of the request; the caller caps the count and length. */
+function matchingLines(body: string, options: PatternOptions | undefined, exempt: ReadonlySet<string>): string[] {
+  const userRules = [...(options?.commandDenyRules ?? []), ...(options?.commandRules ?? [])]
+    .filter(rule => !exempt.has(rule.id))
+    .map(rule => compileUserRule(rule, rule.severity === "deny" ? "deny" : "risky"))
+    .filter((rule): rule is NonNullable<ReturnType<typeof compileUserRule>> => rule !== undefined);
+  const lines: string[] = [];
+  for (const line of body.split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    const matched = SHELL_RULES.some(rule => !exempt.has(rule.id) && rule.test.test(text))
+      || RM_LINE.test(text)
+      || (!exempt.has("sensitive-path") && SENSITIVE_PATH.test(text))
+      || userRules.some(rule => rule.test.test(text));
+    if (!matched) continue;
+    lines.push(text);
+    if (lines.length >= 10) break;
+  }
+  return lines;
+}
+
+export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?: string, options?: PatternOptions): PatternHit[] {
+  const hits = new Map<string, PatternHit>();
   const exempt = new Set(options?.exemptRules ?? []);
+  // A body hit keeps its own entry even when the outer command has the same id: the label names the script, and the
+  // request needs its `lines`. Direct hits keep the id dedupe they always had.
+  const merge = (list: readonly PatternHit[], via?: string) => {
+    for (const hit of list) {
+      const key = via === undefined ? hit.id : `${hit.id}\u0000${via}`;
+      if (hits.has(key)) continue;
+      hits.set(key, via === undefined ? hit : { ...hit, via, label: `${hit.label} (via ${via})`, ...(hit.message !== undefined ? { message: `${hit.message} (via ${via})` } : {}) });
+    }
+  };
+  const view = commandOf(tool, input);
+  const raw = view?.command;
   if (raw) {
-    const command = stripDataText(raw).text;
-    for (const rule of SHELL_RULES) if (!exempt.has(rule.id) && rule.test.test(command)) add({ id: rule.id, severity: rule.severity, label: rule.label });
-    applySqlTargets(raw, hits, exempt);
-    applyGitState(raw, hits, cwd);
-    // A command that raises privileges anywhere (`sudo`, `doas`, `su -c`, a heredoc fed to `sudo bash`) deletes as someone else,
-    // and one that moves, links, copies, or extracts data can fill a path after the birth-time walk: no recorded scratch.
-    const privileged = PRIVILEGED.test(command);
-    const movesIn = MOVES_IN.test(unquoted(raw)) || MOVES_IN.test(unquoted(command));
-    const scratch = privileged || movesIn || !scratchPlatform(options?.platform) ? undefined : options?.scratch;
-    const segments = splitShell(command);
-    // A command that mounts, attaches, binds, or syncs data in with its source removed can put existing data under a
-    // path a later `rm` deletes, and the birth-time walk cannot see it: no release rule applies at all then.
-    const blocked = privileged || MOVES_DATA_IN.test(unquoted(command)) || MOVES_DATA_IN.test(unquoted(raw));
-    // Read the cheap volatile temp roots only when a recursive rm needs them; the macOS /var/folders walk is lazier.
-    let volatile: string[] | undefined;
-    const volatileRoots = () => (volatile ??= disposableTempRoots());
-    const scratchVars = blocked || unreadVariableSink(command) ? undefined : commandVars(segments, volatileRoots, variableWrites(command));
-    const scratchRoots = blocked ? undefined : options?.scratchPaths;
-    // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
-    // A mover word the per-segment parse cannot read (`bash -c 'mv a b'`, `xargs ln -s a b`) keeps every hold as well.
-    const { dirs, changed } = effectiveDirs(segments, cwd, scratchVars);
-    const moved = blocked ? [] : segments.map((segment, index) => moverDestination(segment, dirs[index] ?? cwdPath(cwd), scratchVars?.[index])).filter((mover): mover is Mover => mover !== undefined);
-    const unread = blocked ? false : unreadMover(segments);
-    for (let index = 0; index < segments.length; index++) {
-      const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, unreadMover: unread, recorded: options?.movedIn, dir: dirs[index], dirChanged: changed[index] });
-      // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
-      if (hit && !exempt.has(hit.id)) add(hit);
-    }
-    if (!exempt.has("sensitive-path") && SENSITIVE_PATH.test(command)) add({ id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
-    for (const raw of options?.commandDenyRules ?? []) {
-      if (exempt.has(raw.id)) continue;
-      const compiled = compileUserRule(raw, "deny");
-      if (compiled && compiled.test.test(command)) add({ id: compiled.id, severity: "deny", label: compiled.message ?? compiled.label });
-    }
-    for (const raw of options?.commandRules ?? []) {
-      if (exempt.has(raw.id)) continue;
-      const severity: Severity = raw.severity === "deny" ? "deny" : raw.severity === "confirm" ? "destructive" : "risky";
-      const compiled = compileUserRule(raw, severity);
-      if (compiled && compiled.test.test(command)) add({ id: compiled.id, severity, label: compiled.message ?? compiled.label, ...(raw.action ? { action: raw.action } as { action: string } : {}) } as PatternHit & { action?: string });
+    merge(commandPatternHits(raw, cwd, options, exempt));
+    // The bodies of scripts the command runs are read one level deep: a script the body calls is not read again.
+    if (view?.shell) {
+      const sources = options?.scripts ?? scriptSources(stripDataText(raw).text, cwd);
+      for (const source of sources) {
+        if (source.kind !== "shell") continue;
+        const bodyHits = commandPatternHits(source.body, cwd, options, exempt);
+        if (!bodyHits.length) continue;
+        const lines = matchingLines(source.body, options, exempt);
+        merge(bodyHits.map(hit => ({ ...hit, lines })), source.source);
+      }
     }
   }
   const path = typeof input.path === "string" ? input.path : undefined;
-  if (path && SENSITIVE_PATH.test(path)) add({ id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
-  for (const hit of matchPathRules(tool, input, cwd, options?.pathRules, exempt)) add(hit);
+  if (path && SENSITIVE_PATH.test(path) && !hits.has("sensitive-path")) hits.set("sensitive-path", { id: "sensitive-path", severity: "sensitive", label: "touches a secrets or credentials file" });
+  for (const hit of matchPathRules(tool, input, cwd, options?.pathRules, exempt)) if (!hits.has(hit.id)) hits.set(hit.id, hit);
   return [...hits.values()];
 }
 
@@ -2634,7 +2694,26 @@ export function describePlan(plan: string | undefined): string | undefined {
   return text ? truncate(redact(text), PLAN_LIMIT) : undefined;
 }
 
-export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; spine?: TaskSpine | undefined; largeOutput?: boolean; shouldProceed?: boolean; traceOnly?: boolean } = {}) {
+const SCRIPT_LINES_LIMIT = 5;
+const SCRIPT_LINES_CHARS = 600;
+
+/** The body lines that hit, each redacted, deduplicated, and bounded to five lines and 600 characters. */
+function capScriptLines(lines: readonly string[]): string | undefined {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const line of lines) {
+    const text = redact(line).trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    kept.push(text);
+    if (kept.length >= SCRIPT_LINES_LIMIT) break;
+  }
+  if (!kept.length) return undefined;
+  const joined = kept.join("\n");
+  return joined.length <= SCRIPT_LINES_CHARS ? joined : joined.slice(0, SCRIPT_LINES_CHARS);
+}
+
+export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; scriptLines?: string | undefined; spine?: TaskSpine | undefined; largeOutput?: boolean; shouldProceed?: boolean; traceOnly?: boolean } = {}) {
   const writesContent = (summary.tool === "write" || summary.tool === "edit" || summary.writes !== undefined) && hasContent(summary);
   const wantSlop = extras.slop && writesContent;
   const previous = (extras.previousActions ?? []).slice(-PREVIOUS_ACTIONS_LIMIT).map(action => ({ ...action, ...(action.command !== undefined ? { command: truncate(action.command, PREVIOUS_COMMAND_LIMIT) } : {}) }));
@@ -2661,6 +2740,7 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
       ...(previous.length ? { previous_actions: previous } : {}),
       ...(extras.rules ? { rules: extras.rules, ...(extras.rulesSource ? { rulesSource: extras.rulesSource } : {}) } : {}),
       ...(extras.floorHits ? { floor_hits: extras.floorHits } : {}),
+      ...(extras.scriptLines ? { script_lines: extras.scriptLines } : {}),
 
     },
     questions: traceOnly
@@ -2707,7 +2787,14 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   }
   const plan = describePlan(action.plan);
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
-  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
+  const view = commandOf(action.tool, action.input);
+  // Read the script bodies once: the floor labels their hits and the ask gate reads their shapes from the same list.
+  const scriptBodies = view?.shell ? scriptSources(stripDataText(view.command).text, action.cwd) : [];
+  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scripts: scriptBodies, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
+  // A script body the command runs that hit the floor: its lines ride the request, and the call is worth a judge even
+  // when the gate would have left the outer command offline.
+  const scriptLines = capScriptLines(patterns.flatMap(hit => hit.lines ?? []));
+  const bodyHit = patterns.some(hit => hit.via !== undefined);
   // Violation pipeline: authorize per-violation, remove authorized from level computation and Jev questions.
   const violationsByHit = hitViolations(patterns, action.tool, action.input);
   const allViolations = violationsByHit.flat();
@@ -2780,7 +2867,6 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   }
   // A deny-level pattern hit blocks the call immediately; no judge, no dialog.
   if (level === "deny") return withPlan({ level, source: "pattern", summary, patterns, reasons });
-  const view = commandOf(action.tool, action.input);
   if (view?.shell && patterns.length === 0 && isReadOnlyCommand(view.command)) {
     return { level, source: "read-only", summary, patterns, reasons };
   }
@@ -2796,8 +2882,8 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
 
   // Ask gate: a call that cannot change anything the agent sees is decided by the pattern pass and the floor alone.
   if (config.ask?.enabled !== false) {
-    const decision = actionAskGate(action.tool, action.input, view?.shell ? stripDataText(view.command).text : undefined, action.cwd);
-    if (!decision.ask) {
+    const decision = actionAskGate(action.tool, action.input, view?.shell ? stripDataText(view.command).text : undefined, action.cwd, scriptBodies);
+    if (!decision.ask && !bodyHit) {
       applyFloor();
       return withPlan({ level, source: "pattern", summary, patterns, reasons, notAsked: decision.why });
     }
@@ -2812,12 +2898,12 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   // should-proceed only when `shouldProceed.steer` is on. The rules content is only read by the per-violation questions, so it rides the request only while a
   // violation is open.
   const stateRules = remainingViolations.length ? resolved?.content : undefined;
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, security: options.security?.enabled ?? false, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false, shouldProceed: config.shouldProceed.steer });
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, security: options.security?.enabled ?? false, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, scriptLines, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false, shouldProceed: config.shouldProceed.steer });
   // One call in twenty also asks the trace-only questions, in a second request that goes out beside the first. Its
   // answers go through the off-task chain and the should-proceed block below, which keep them trace-only, so the
   // recorded signal keeps coming without anything new reaching the agent.
   const traceAnswer = traceSampled(options.traceSample)
-    ? ask(judge, buildRequest(summary, action.task, { traceOnly: true, context: action.context, plan, rules: resolved?.content, rulesSource: resolved?.source, floorHits, spine: action.spine }), { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) })
+    ? ask(judge, buildRequest(summary, action.task, { traceOnly: true, context: action.context, plan, rules: resolved?.content, rulesSource: resolved?.source, floorHits, scriptLines, spine: action.spine }), { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) })
     : undefined;
   const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {

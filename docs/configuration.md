@@ -59,12 +59,13 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
     "enabled": true, "claimsDone": 0.7, "nudge": true, "uiProof": true,
     "uiFiles": ["**/*.{css,scss,sass,less,html,htm,vue,svelte,jsx,tsx,astro,dart}", "**/web/**/*.js", "**/public/**/*.js", "!**/*.{test,spec}.*", "!**/*_test.dart", "!**/{test,tests,__tests__}/**"],
     "visualTools": {
-      "commands": ["agent-browser", "playwright", "npx playwright", "flutter test", "fvm flutter test", "idb", "xcrun simctl io", "chrome", "chromium", "google-chrome"],
-      "commandWords": ["screenshot"],
-      "tools": ["screenshot", "take_snapshot", "navigate"],
+      "commands": ["agent-browser snapshot", "agent-browser get text", "playwright test", "npx playwright test", "flutter test", "fvm flutter test"],
+      "commandWords": [],
+      "tools": ["take_snapshot"],
       "images": ["png", "jpg", "jpeg", "webp"]
     }
   },
+  "cause": { "enabled": true, "claimsCause": 0.7, "nudge": true, "windowDays": 7 },
   "context": { "enabled": true, "tailMinChars": 12000, "confidence": 0.8, "duplicateMinChars": 2000, "recallTool": "auto", "formatConfidence": 0.7, "dedupeRuns": true, "dedupeMessages": false, "largeOutput": { "enabled": true, "threshold": 0.85 } },
   "compaction": { "enabled": false, "keepThreshold": 0.5, "maxSummaryTokens": 20000, "timeoutMs": 20000, "maxRequests": 12, "skipProviders": ["claude-bridge"] },
   "runaway": { "enabled": true, "repeats": 4, "thinkingRepeats": 10, "minChars": 400, "recover": true },
@@ -123,7 +124,11 @@ User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` ope
 | `done.*` | Completion-claim threshold and whether the agent gets a follow-up turn. |
 | `done.uiProof` | Default `true`. After a change to a `done.uiFiles` path, only a `done.visualTools` call after that change counts as proof; passing tests and builds do not. `false` restores the test/build/lint-only rule. |
 | `done.uiFiles` | Globs for files whose change shows on screen, matched against `write`/`edit` paths and files a `bash` command writes. `{a,b}` alternatives work; a glob that starts with `!` excludes. The defaults exclude test files. |
-| `done.visualTools` | What counts as looking at the result, case-insensitive, successful calls only. `commands`: heads of a shell command segment; `flutter test` counts only for an `integration_test/` or golden path (or `--update-goldens`), `idb` only for its `screenshot` or `ui` subcommand, and `chrome`, `chromium`, or `google-chrome` only with a `commandWords` flag (`--headless --screenshot`). `commandWords`: a word that stands alone as an argument or flag after a `commands` head (`idb screenshot`, `flutter test --screenshot`); the same word after another command (`grep -rn screenshot src`), quoted messages, heredoc bodies, and paths such as `screenshots/` do not count. `tools`: text in a tool name, or in the `tool` an MCP proxy (`mcp`, `mcp__…`) calls. `images`: extensions whose `read` counts. |
+| `done.visualTools` | What counts as looking at the result, case-insensitive, successful calls only. `commands`: heads of a shell command segment; each head names a command that shows the page (`agent-browser snapshot`, `agent-browser get text`, `playwright test`, `npx playwright test`, `flutter test`, `fvm flutter test`), and `flutter test` counts only for an `integration_test/` or golden path (or `--update-goldens`). A screenshot command that only writes a file (`agent-browser screenshot PATH`, `idb screenshot`, `xcrun simctl io … screenshot`, `chrome --headless --screenshot`) is not a head: the saved image counts once something `read`s it. `commandWords`: a word that stands alone as an argument or flag after a `commands` head (`idb screenshot` when `idb` is a head); the same word after another command (`grep -rn screenshot src`), quoted messages, heredoc bodies, and paths such as `screenshots/` do not count. `tools`: text in a tool name, or in the `tool` an MCP proxy (`mcp`, `mcp__…`) calls; navigation tools (`navigate_page`) do not count. A successful result that contains an image counts whatever tool produced it. `images`: extensions whose `read` counts. |
+| `cause.*` | Unchecked-cause threshold, repeat window, and whether the agent gets a follow-up turn. |
+| `cause.claimsCause` | Default `0.7`. P(the final reply states a cause or hands a check to a person) at or above which the reply is judged. Below it, the offline pre-filter or the score sends no follow-up. |
+| `cause.nudge` | Default `true`. Send the agent one follow-up turn asking it to check the cause with its own tools or say plainly that it is unverified. |
+| `cause.windowDays` | Default `7`. Days an unchecked cause is remembered per project for the stronger repeat steer, which names the earlier date when Jev matches a later reply to an earlier cause. A cause older than the window, or one Jev does not match, counts as new. |
 | `context.*` | Compression thresholds, retention confidence, duplicate size, recall tool. |
 | `context.compactAppendix` | Default `true`. Append a compact evidence appendix to the summary during compaction. |
 | `context.dedupeRuns` | Default `true`. A run of at least 20 lines and 1500 characters in a new tool result that exactly repeats (trailing spaces ignored) text already in context on the current branch becomes one line: `[pi-warden: the next N lines repeat an earlier bash result — omitted; full text: <path>]`. The full original is stored in that file. The last 2000 characters and images are never changed. Code only; no request. `false` also turns off `context.dedupeMessages`. |
@@ -233,9 +238,9 @@ A wince-style setup for a backend repo (the full version is [`examples/pi-warden
 
 ### What leaves the machine
 
-For penetration testing, incident response, vulnerability research, CTF, and hardening work, where the day touches credentials, scanners, and hostile samples. Nothing leaves until `/warden enable`. After that, each guarded call sends a redacted, truncated summary of the call (tool, command or path, the agent's stated plan), your latest request, and the resolved rules content — `pi-warden.md`, or the files in `rules.files`, or the `AGENTS.md` / `CLAUDE.md` / `README.md` fallback — which rides the acting request only while a violation is open. Up to eight earlier messages as task context and the rules content ride only the trace sample, one judged call in twenty (`action.traceSample`). A `write` or `edit` adds a sample of the written code; the security and context guards add redacted tool-output samples; stuck sends recent commands and output tails, plus the parsed failures and capped edit diffs of its `evidence` section; the done-check sends the final message. Redaction (`src/redact.ts`) replaces credential shapes — `Authorization`, `TOKEN=`, `sk-`, `ghp_`, `AKIA`, JWTs, PEM blocks, URL passwords — and nothing else: it is not a path scrubber, so hostnames, IP addresses, and file paths travel as written. [data-handling.md](data-handling.md) lists every field per guard.
+For penetration testing, incident response, vulnerability research, CTF, and hardening work, where the day touches credentials, scanners, and hostile samples. Nothing leaves until `/warden enable`. After that, each guarded call sends a redacted, truncated summary of the call (tool, command or path, the agent's stated plan), your latest request, and the resolved rules content — `pi-warden.md`, or the files in `rules.files`, or the `AGENTS.md` / `CLAUDE.md` / `README.md` fallback — which rides the acting request only while a violation is open. Up to eight earlier messages as task context and the rules content ride only the trace sample, one judged call in twenty (`action.traceSample`). A `write` or `edit` adds a sample of the written code; the security and context guards add redacted tool-output samples; stuck sends recent commands and output tails, plus the parsed failures and capped edit diffs of its `evidence` section; the done-check sends the final message, and the cause-check sends the final message, the task, the last 40 of the run's redacted tool calls, and up to five earlier redacted cause sentences of the same project when the reply names a cause or hands a check to a person. Redaction (`src/redact.ts`) replaces credential shapes — `Authorization`, `TOKEN=`, `sk-`, `ghp_`, `AKIA`, JWTs, PEM blocks, URL passwords — and nothing else: it is not a path scrubber, so hostnames, IP addresses, and file paths travel as written. [data-handling.md](data-handling.md) lists every field per guard.
 
-For nothing at all, `/warden disable`: the offline layer keeps working: built-in patterns, your own `commandRules` and `pathRules`, `rules.sensitivePaths` notes, duplicate detection, and the runaway guard. Everything that needs a judgment stops with it, including the done-check.
+For nothing at all, `/warden disable`: the offline layer keeps working: built-in patterns, your own `commandRules` and `pathRules`, `rules.sensitivePaths` notes, duplicate detection, and the runaway guard. Everything that needs a judgment stops with it, including the done-check and the cause-check.
 
 ### Local-only profile
 
@@ -365,6 +370,7 @@ Templates in `config.widget` control the text. Segments are separated by ` · `;
   "rules": "warden · rules · {tool} {path} · {asked} rules · {violations} · {status}",
   "stuck": "warden · stuck · {failures} failures · same strategy {sameStrategy} · change {approachChange} · progress {progress} · {flags} · {status}",
   "done": "warden · done-check · {changes} changes · {checksPassed}/{checks} checks passed · claims done {claimsDone} · claims verified {claimsVerified} · checks apply {checksApply} · {outcome} · {status}",
+  "cause": "warden · cause-check · {states} · checked {checked} · {repeat} · {status}",
   "prose": "warden · prose · wordy {wordy} · clichés {cliches} · jargon {jargon} · {flags} · {status}",
   "security": "warden · security · {tool} · injection {injection} · exfiltration {exfiltration} · {status}",
   "context": "warden · context · {tool} · {retention} · saved {bytesSaved} bytes",
@@ -382,6 +388,7 @@ Tokens per guard:
 | prose | `wordy cliches jargon status reasons model ms flags time` |
 | stuck | `failures sameStrategy approachChange progress status source reasons model ms flags time` |
 | done | `changes checks checksPassed claimsDone claimsVerified checksApply outcome status reasons model ms flags time` |
+| cause | `states checked repeat status reasons model ms flags time` |
 | security | `tool injection exfiltration status` |
 | context | `tool retention bytesSaved` |
 | runaway | `kind count chars signal block status time` |
