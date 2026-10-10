@@ -6,67 +6,28 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
-import { CONFIG_DIR_NAME, createEventBus, DefaultResourceLoader, SettingsManager, type EventBus } from "@earendil-works/pi-coding-agent";
-import { authState, createTypeSafe } from "pi-typesafe";
-import type { TypeSafe } from "pi-typesafe";
+import { createEventBus, DefaultResourceLoader, SettingsManager, type EventBus } from "@earendil-works/pi-coding-agent";
+import { createTypeSafe } from "pi-typesafe";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject, recordCause } from "../src/learning.js";
 import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
 import { defaultConfig, loadConfig } from "../src/config.js";
-import { judgeOptions } from "../src/backend.js";
-import { JudgeCooldown, cooldownFailureKind } from "../src/judge-cooldown.js";
-import { createSupervisionHandler } from "../src/supervision-handler.js";
 import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
 import { _testSetIndexRunning, askedBeforeReply, assistantPlan } from "../src/extension.js";
 import { SHELL_RULES_CHECKS } from "../src/turn-rules.js";
 import { indexPath } from "../src/index-cmd.js";
-import { supervisionPolicy } from "../src/supervision.js";
 
 let temporary: string;
 let extension: Extension;
-const events = createEventBus();
-// Offline-only active handler on Pi's real EventBus; production extension always registers trace-only.
-let observerClient: TypeSafe | undefined;
-const observerCooldown = new JudgeCooldown();
-const quietSignals = new WeakSet<AbortSignal>();
-events.on("pi-subagents/supervision-evaluate/v1", createSupervisionHandler({
-  policy: Object.freeze({ enforcement: "active" as const }),
-  config: () => loadConfig({ cwd: temporary, projectTrusted: true, dirs: { agentDir: join(temporary, "agent"), configDirName: CONFIG_DIR_NAME } }),
-  judge: config => {
-    const backend = config.typesafeBackend;
-    if (!config.enabled || !config.typesafe || !backend || !authState({ backend }).usable || observerCooldown.active()) return undefined;
-    if (!observerClient) {
-      const client = createTypeSafe(judgeOptions({ maxRequests: config.maxRequests, timeoutMs: config.timeoutMs, typesafeBackend: backend }));
-      observerClient = new Proxy(client, {
-        get(target, prop, receiver) {
-          if (prop !== "evaluate") return Reflect.get(target, prop, receiver);
-          return async (...args: Parameters<TypeSafe["evaluate"]>) => {
-            try {
-              const result = await target.evaluate(...args);
-              observerCooldown.success();
-              return result;
-            } catch (error) {
-              const kind = cooldownFailureKind(error, args[1]?.signal);
-              if (kind) observerCooldown.failure(kind, config.judge);
-              throw error;
-            }
-          };
-        },
-      });
-    }
-    return observerClient;
-  },
-  quietSignal: signal => { quietSignals.add(signal); },
-}));
+const supervisionIds = ["is_repeating_without_progress", "is_failure_loop", "is_reading_beyond_reasonable_discovery", "has_material_progress", "is_safe_to_resume_after_failure"];
 const supervisionMetrics = () => ({ rootId: "root-1", role: "worker", lifecycle: "active", reason: null, continuationPlan: null,
   observedCostUsd: 0.1, observerCostUsd: 0, softLimitUsd: 1, hardLimitUsd: 2, descendantCount: 0,
   progress: { materialProgressCount: 1, readsSinceProgress: 0, writesSinceProgress: 0, repeatedOperationCount: 0, equivalentErrorCount: 0, lastOperationSignature: null, lastProgressAgeMs: 10 },
   mcp: { state: "unknown", capabilityCount: null } });
-const emitSupervision = (metrics: unknown = supervisionMetrics(), bus = events) => {
-  let claimed: Promise<unknown> | undefined;
-  const request = { version: 1, metrics, claim: (result: Promise<unknown>) => { if (claimed) return false; claimed = result; return true; } };
-  bus.emit("pi-subagents/supervision-evaluate/v1", request);
-  return claimed;
+/** The producer's claim callback is a spy: the observer must never call it. */
+let supervisionClaims = 0;
+const emitSupervision = (metrics: unknown = supervisionMetrics(), bus = eventBus) => {
+  bus.emit("pi-subagents/supervision-evaluate/v1", { version: 1, metrics, claim: () => { supervisionClaims++; return false; } });
 };
 let command: RegisteredCommand;
 const savedKey = process.env.TYPESAFE_API_KEY;
@@ -166,11 +127,7 @@ const fire = (type: string, event: Record<string, unknown>, ctx = context()) => 
   assert.equal(handlers.length, 1, `one ${type} handler`);
   return Reflect.apply(handlers[0]!, undefined, [{ type, ...event }, ctx]) as Promise<unknown>;
 };
-const sessionStart = (ctx = context()) => {
-  observerClient = undefined;
-  observerCooldown.reset();
-  return fire("session_start", {}, ctx);
-};
+const sessionStart = (ctx = context()) => fire("session_start", {}, ctx);
 const toolResult = (toolName: string, input: Record<string, unknown>, output: string, failed: boolean, ctx = context()) =>
   fire("tool_result", { toolName, toolCallId: "call-1", input, content: [{ type: "text", text: output }], isError: failed, details: toolName === "bash" ? { exitCode: failed ? 1 : 0 } : undefined }, ctx);
 const agentEnd = (finalText: string, ctx = context()) => fire("agent_end", { messages: [{ role: "user", content: prompt ?? "" }, { role: "assistant", content: [{ type: "text", text: finalText }], stopReason: "stop" }] }, ctx);
@@ -328,7 +285,7 @@ beforeEach(async () => {
   notices.length = 0; widgets.length = 0; confirms.length = 0; busEvents.length = 0;
   confirmResult = true; editorText = undefined; networkCalls = 0; failNetwork = false; hangNetwork = false; failStatus = undefined; prompt = "Run the test suite";
   keyPrompts = 0; keyInput = undefined; modelListCalls = 0; sentMessages.length = 0; requests.length = 0; requestUrls.length = 0; requestAuth.length = 0;
-  answeredRequests = 0; judgeGate = undefined; releaseJudge = undefined;
+  answeredRequests = 0; supervisionClaims = 0; judgeGate = undefined; releaseJudge = undefined;
   widgetComponent = undefined; widgetPlacement = undefined; customCalls.length = 0; openPanels.length = 0; panelClosed.length = 0; renders = 0;
   await rm(join(temporary, "agent", "pi-typesafe"), { recursive: true, force: true });
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
@@ -354,106 +311,93 @@ after(async () => {
   if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 
-test("production trace-only calibration never claims an event or spends even when consented", async () => {
-  const publicExtension = await import("../src/extension.js");
-  assert.equal("createWardenExtensionForTesting" in publicExtension, false);
-  assert.equal("createSupervisionHandler" in publicExtension, false);
-  assert.equal("createSupervisionHandler" in await import("../src/index.js"), false);
-  assert.equal(supervisionPolicy.enforcement, "trace_only");
-  assert.ok(Object.isFrozen(supervisionPolicy));
-  await writeConfig(JSON.stringify({ typesafe: true, subagent: { observer: true }, supervisionPolicy: { enforcement: "active" } }));
-  const previous = process.env.PI_WARDEN_SUPERVISION_ENFORCEMENT;
-  process.env.PI_WARDEN_SUPERVISION_ENFORCEMENT = "active";
-  const productionBus = createEventBus();
-  const loader = new DefaultResourceLoader({
-    cwd: temporary, agentDir: join(temporary, "agent"), settingsManager: SettingsManager.inMemory(), eventBus: productionBus,
-    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-    additionalExtensionPaths: [resolve("src/extension.ts")],
-  });
-  await loader.reload();
-  assert.deepEqual(loader.getExtensions().errors, []);
-  assert.equal(emitSupervision(supervisionMetrics(), productionBus), undefined);
-  await tick();
-  assert.equal(networkCalls, 0);
-  assert.equal(sentMessages.length, 0);
-  if (previous === undefined) delete process.env.PI_WARDEN_SUPERVISION_ENFORCEMENT;
-  else process.env.PI_WARDEN_SUPERVISION_ENFORCEMENT = previous;
-});
-
-test("supervision observer claims synchronously and batches five redacted questions in one async request", async () => {
+test("the observer records one five-question request without rootId and never claims", async () => {
   await grantConsent();
-  nextAnswers.has_material_progress = 0.9;
-  holdNextJudge();
-  const result = emitSupervision();
-  assert.ok(result, "claimed during synchronous event dispatch");
-  await waitFor(() => networkCalls === 1, "observer request");
-  assert.equal(answeredRequests, 0);
-  releaseJudge!();
-  const judgment = await result;
-  assert.equal((judgment as { kind: string }).kind, "healthy");
-  assert.equal(networkCalls, 1);
-  assert.deepEqual(Object.keys(requests[0]!.questions), ["is_repeating_without_progress", "is_failure_loop", "is_reading_beyond_reasonable_discovery", "has_material_progress", "is_safe_to_resume_after_failure"]);
-  assert.deepEqual(requests[0]!.state, supervisionMetrics());
-  assert.equal(sentMessages.length, 0);
-});
-
-test("supervision observer skips disabled, invalid, nonconsented and unavailable judge without claiming", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, subagent: { observer: false } }));
-  assert.equal(emitSupervision(), undefined);
-  await grantConsent();
-  assert.equal(emitSupervision({ ...supervisionMetrics(), path: "/private" }), undefined);
-  await writeConfig(JSON.stringify({ typesafe: false }));
-  assert.equal(emitSupervision(), undefined);
-  delete process.env.TYPESAFE_API_KEY;
-  await grantConsent();
-  assert.equal(emitSupervision(), undefined);
-  process.env.TYPESAFE_API_KEY = "offline-test-key";
-  assert.equal(networkCalls, 0);
-});
-
-test("supervision observer does not spend if an earlier EventBus listener owns the claim", async () => {
-  await grantConsent();
-  // Another synchronous listener may already own the claim.
-  let offered = 0;
-  events.emit("pi-subagents/supervision-evaluate/v1", { version: 1, metrics: supervisionMetrics(), claim: (_promise: Promise<unknown>) => { offered++; return false; } });
-  assert.equal(offered, 1, "active listener offers claim synchronously");
-  await tick();
-  assert.equal(networkCalls, 0);
-});
-
-test("supervision observer does not claim when shared request budget is spent", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, maxRequests: 1 }));
-  assert.ok(await emitSupervision());
-  assert.equal(networkCalls, 1);
-  assert.equal(emitSupervision(), undefined);
-  assert.equal(networkCalls, 1);
-});
-
-test("supervision observer does not claim when a daily request cap is blocked", async () => {
-  const previous = process.env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY;
-  process.env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY = "1";
+  const dir = join(temporary, "observer-record");
+  process.env.PI_WARDEN_TRACE_DIR = dir;
   try {
-    await writeConfig(JSON.stringify({ typesafe: true, maxRequests: 500 }));
-    await sessionStart(); // Recreate the client with the daily cap from the environment.
-    assert.ok(await emitSupervision());
-    assert.equal(networkCalls, 1);
-    assert.equal(emitSupervision(), undefined, "a blocked day cap must prevent claiming");
-    assert.equal(networkCalls, 1);
+    await sessionStart();
+    emitSupervision();
+    await waitFor(() => answeredRequests === 1, "observer request");
+    assert.equal(supervisionClaims, 0, "the observer never claims the event");
+    assert.equal(requests.length, 1);
+    assert.deepEqual(Object.keys(requests[0]!.questions), supervisionIds);
+    assert.equal("rootId" in requests[0]!.state, false, "rootId stays local");
+    assert.equal(sentMessages.length, 0);
+    const records = await readLog(join(dir, `${process.pid}.jsonl`), 2, false);
+    const entry = records.find(record => record.kind === "entry")!;
+    assert.equal(entry.guard, "subagent");
+    const details = entry.details as string[];
+    for (const id of supervisionIds) assert.ok(details.some(detail => detail.startsWith(`${id}: `)), `${id} is recorded`);
+    assert.ok(details.some(detail => detail.startsWith("model: ") && detail.includes("jev-1.13.0")), "the answering model is recorded");
   } finally {
-    if (previous === undefined) delete process.env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY;
-    else process.env.PI_TYPESAFE_MAX_REQUESTS_PER_DAY = previous;
+    delete process.env.PI_WARDEN_TRACE_DIR;
   }
 });
 
-test("supervision observer failures resolve unavailable quietly and cooldown prevents the next claim", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, judge: { failuresBeforeCooldown: 1, cooldownMs: 60000 } }));
-  failNetwork = true;
-  const result = emitSupervision();
-  assert.ok(result);
-  assert.equal(await result, undefined);
-  assert.equal(emitSupervision(), undefined);
-  assert.equal(notices.length, 0);
-  assert.equal(sentMessages.length, 0);
+test("the observer sends nothing when subagent.observer is off", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, subagent: { observer: false } }));
+  await sessionStart();
+  emitSupervision();
+  await tick();
+  assert.equal(requests.length, 0);
+  assert.equal(supervisionClaims, 0);
+});
+
+test("the observer sends nothing for an invalid event", async () => {
+  await grantConsent();
+  await sessionStart();
+  emitSupervision({ ...supervisionMetrics(), path: "/private" });
+  await tick();
+  assert.equal(requests.length, 0);
+});
+
+test("the observer sends nothing once the shared request budget is spent", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, maxRequests: 1 }));
+  await sessionStart();
+  emitSupervision();
+  await waitFor(() => answeredRequests === 1, "first observer request");
+  const answered = requests.length;
+  emitSupervision();
+  await tick();
+  assert.equal(requests.length, answered, "an exhausted budget makes no second request");
+});
+
+test("a Jev error is recorded with its reason and never throws", async () => {
+  await grantConsent();
+  failStatus = 503;
+  const dir = join(temporary, "observer-error");
+  process.env.PI_WARDEN_TRACE_DIR = dir;
+  try {
+    await sessionStart();
+    emitSupervision();
+    await waitFor(() => networkCalls === 1, "failed observer request");
+    const records = await readLog(join(dir, `${process.pid}.jsonl`), 2, false);
+    const entry = records.find(record => record.kind === "entry")!;
+    assert.equal(entry.guard, "subagent");
+    assert.ok((entry.details as string[]).some(detail => detail.startsWith("failed: ")), "the failure reason is recorded");
+    assert.equal(notices.length, 0, "a quiet observer failure sends no notice");
+    assert.equal(sentMessages.length, 0);
+  } finally {
+    delete process.env.PI_WARDEN_TRACE_DIR;
+  }
+});
+
+test("an answer from a model other than the calibration model is recorded", async () => {
+  await grantConsent();
+  nextModel = "jev-9.9.9";
+  const dir = join(temporary, "observer-model");
+  process.env.PI_WARDEN_TRACE_DIR = dir;
+  try {
+    await sessionStart();
+    emitSupervision();
+    await waitFor(() => answeredRequests === 1, "observer request");
+    const records = await readLog(join(dir, `${process.pid}.jsonl`), 2, false);
+    const entry = records.find(record => record.kind === "entry")!;
+    assert.ok((entry.details as string[]).some(detail => detail.startsWith("model: jev-9.9.9")), "any answering model is recorded");
+  } finally {
+    delete process.env.PI_WARDEN_TRACE_DIR;
+  }
 });
 
 test("PI_WARDEN_DB is set and not under the real home directory", () => {
@@ -517,7 +461,9 @@ test("action rules context is disclosed, rides the request only while a violatio
     assert.match(disclosure, /only while a rule violation is open/i);
     assert.match(disclosure, /short continuation or a relayed child report, which send nothing/i);
     assert.doesNotMatch(disclosure, /with every action request/i);
-    assert.match(disclosure, /Token Guardian.*allow-listed redacted metrics.*root ID.*role.*lifecycle.*pause reason.*failure continuation plan.*observed USD cost.*observer USD cost.*soft and hard USD limits.*descendant count/i);
+    assert.match(disclosure, /Token Guardian.*allow-listed redacted metrics.*role.*lifecycle.*pause reason.*failure continuation plan.*observed USD cost.*observer USD cost.*soft and hard USD limits.*descendant count/i);
+    assert.match(disclosure, /root ID stays local and is never sent/i);
+    assert.match(disclosure, /answers are recorded in the trace only.*never answers Guardian, steers, wakes, or holds/i);
     assert.match(disclosure, /progress material-progress count.*reads and writes since progress.*repeated-operation count.*equivalent-error count.*SHA-256 operation signature.*age since last progress.*MCP availability state.*capability count/i);
     assert.match(disclosure, /Token Guardian.*excludes.*prompt text.*source code.*raw commands.*command results.*filesystem paths.*raw errors.*credentials/i);
   } finally { await rm(rulesFile); }
