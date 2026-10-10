@@ -6,7 +6,7 @@ import { resolveJudgmentBackend } from "./backend.js";
 import { defaultHostDirs } from "./host-dirs.js";
 import type { HostDirs } from "./host-dirs.js";
 import { COMMAND_TOOLS } from "./tools.js";
-import { defaultWidgetConfig } from "./widget.js";
+import { WIDGET_BAR_MODES, WIDGET_PLACEMENTS, defaultWidgetConfig } from "./widget.js";
 import type { WidgetConfig } from "./widget.js";
 
 export interface Threshold {
@@ -363,14 +363,19 @@ export interface SubagentConfig {
   cooldownMs: number;
 }
 
-export type RecallTool = "auto" | "rg" | "ag" | "ugrep" | "git-grep" | "grep" | "select-string" | "findstr" | "none";
-const RECALL_TOOLS: readonly RecallTool[] = ["auto", "rg", "ag", "ugrep", "git-grep", "grep", "select-string", "findstr", "none"];
+export const RECALL_TOOLS = ["auto", "rg", "ag", "ugrep", "git-grep", "grep", "select-string", "findstr", "none"] as const;
+export type RecallTool = typeof RECALL_TOOLS[number];
 
-export function isRecallTool(value: unknown): value is RecallTool {
-  return typeof value === "string" && (RECALL_TOOLS as readonly string[]).includes(value);
+function isOption<T extends string>(value: unknown, options: readonly T[]): value is T {
+  return typeof value === "string" && (options as readonly string[]).includes(value);
 }
 
-export type WardenMode = "steer" | "confirm" | "advise";
+export function isRecallTool(value: unknown): value is RecallTool {
+  return isOption(value, RECALL_TOOLS);
+}
+
+export const WARDEN_MODES = ["steer", "confirm", "advise"] as const;
+export type WardenMode = typeof WARDEN_MODES[number];
 
 export interface WasteConfig {
   /** Master switch for the call-waste notes and the session tip. */
@@ -421,7 +426,8 @@ export interface LearningConfig {
   allowedRetentionDays: number;
 }
 
-export type ConscienceSkillMode = "off" | "recommend" | "load";
+export const CONSCIENCE_SKILL_MODES = ["off", "recommend", "load"] as const;
+export type ConscienceSkillMode = typeof CONSCIENCE_SKILL_MODES[number];
 
 export interface ConscienceSkillConfig {
   /** off: no automatic skill selection; recommend: name a skill and ask the agent to load it; load: supply instructions directly. */
@@ -659,7 +665,7 @@ function positiveInteger(value: unknown, fallback: number): number {
 }
 
 export function isMode(value: unknown): value is WardenMode {
-  return value === "steer" || value === "confirm" || value === "advise";
+  return isOption(value, WARDEN_MODES);
 }
 
 /** One config warning for a rule value no kind accepts; the rule still applies, at the level named. */
@@ -1021,8 +1027,8 @@ function applyWidget(base: WidgetConfig, raw: unknown): WidgetConfig {
   const template = (value: unknown, fallback: string) => (typeof value === "string" && value.trim() ? value : fallback);
   return {
     enabled: boolean(raw.enabled, base.enabled),
-    placement: raw.placement === "belowEditor" || raw.placement === "aboveEditor" ? raw.placement : base.placement,
-    barMode: raw.barMode === "live" || raw.barMode === "stack" ? raw.barMode : base.barMode,
+    placement: isOption(raw.placement, WIDGET_PLACEMENTS) ? raw.placement : base.placement,
+    barMode: isOption(raw.barMode, WIDGET_BAR_MODES) ? raw.barMode : base.barMode,
     shortcut: typeof raw.shortcut === "string" ? raw.shortcut.trim() : base.shortcut,
     panelWidth: typeof raw.panelWidth === "number" && Number.isSafeInteger(raw.panelWidth) && raw.panelWidth >= 20 ? raw.panelWidth
       : typeof raw.panelWidth === "string" && /^[1-9]\d?%$/.test(raw.panelWidth.trim()) ? raw.panelWidth.trim() : base.panelWidth,
@@ -1209,7 +1215,7 @@ function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig
   if (!isObject(raw)) return base;
   const skillsRaw = isObject(raw.skills) ? raw.skills : undefined;
   const toolsRaw = isObject(raw.tools) ? raw.tools : undefined;
-  const mode = typeof skillsRaw?.mode === "string" && ["off", "recommend", "load"].includes(skillsRaw.mode) ? skillsRaw.mode as ConscienceSkillMode : base.skills.mode;
+  const mode = isOption(skillsRaw?.mode, CONSCIENCE_SKILL_MODES) ? skillsRaw.mode : base.skills.mode;
   return {
     enabled: boolean(raw.enabled, base.enabled),
     skills: {
