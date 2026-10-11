@@ -8,21 +8,21 @@ import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Every number in the image. Each one is stated in a file in this repo; none is computed here.
-// FIELD = eval/reports/2026-09-24-field-usage/README.md (raw counts in usage.json next to it).
+// FIELD = eval/reports/2026-10-01-field-usage/README.md (raw counts in usage.json next to it).
 const numbers = {
-  sessions: 759,              // FIELD line 13, Totals table: "Sessions | 759"
-  from: '2026-09-16',         // FIELD line 1, title: "Field usage, 2026-09-16 to 2026-09-24"
-  to: '2026-09-24',           // FIELD line 1, same title
-  doneNudged: 75,             // FIELD line 22: "It nudged 75 times when an agent said it was done with no passing test ..."
-  doneRanCheck: 57,           // FIELD line 22: "In 57 of those (76%), the agent's next few calls ran a check."
+  sessions: 1168,             // FIELD line 13, Totals table: "Sessions | 1,168"
+  from: '2026-09-16',         // FIELD line 1, title: "Field usage, 2026-09-16 to 2026-10-01"
+  to: '2026-10-01',           // FIELD line 1, same title
+  doneNudged: 124,            // FIELD line 22: "It nudged 124 times when an agent said it was done with no passing test ..."
+  doneRanCheck: 94,           // FIELD line 22: "In 94 of those (76%), the agent's next few calls ran a check."
   doneRanCheckPct: 76,        // FIELD line 22: same sentence, "(76%)"
-  nextMessages: 'four',       // FIELD line 49: "one of the agent's next four messages ran a verification command"
-  holdsWithOutcome: 65,       // FIELD line 24: "Of the 65 holds with a recorded outcome"
-  holdsSaferRoute: 40,        // FIELD line 24: "the agent took a safer route 40 times"
-  holdsApproved: 24,          // FIELD line 24: "the user approved 24"
-  holdsDeclined: 1,           // FIELD line 24: "and declined 1"
-  ruleSteers: 349,            // FIELD line 26: "349 steers named a project rule, spread over 36 rules"
-  rulesDistinct: 36,          // FIELD line 26: same sentence
+  nextMessages: 'four',       // FIELD "Method and limits": "one of the agent's next four messages ran a verification command"
+  holdsWithOutcome: 111,      // FIELD line 24: "Of the 111 holds with a recorded outcome"
+  holdsSaferRoute: 79,        // FIELD line 24: "the agent took a safer route 79 times"
+  holdsApproved: 29,          // FIELD line 24: "the user approved 29"
+  holdsDeclined: 3,           // FIELD line 24: "and declined 3"
+  ruleSteers: 422,            // FIELD line 26: "422 steers named a project rule, spread over 41 rules"
+  rulesDistinct: 41,          // FIELD line 26: same sentence
   doneSteerScore: '0.99',     // eval/reports/2026-09-26-waste-nudges/report.md line 166: "reports completion (0.99) after 1 file change"
   ruleSteerScore: '0.88',     // docs/examples.md line 20: "No hardcoded secrets" (0.88)
 };

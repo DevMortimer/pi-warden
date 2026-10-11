@@ -35,7 +35,7 @@ if (!only || only === 'action') {
   for (const item of cases) {
     const verdict = await evaluateAction({ tool: item.tool, input: item.input, cwd, task: item.task }, { config: config.action, judge });
     const j = verdict.judgment;
-    line(new RegExp(`^(${item.expect})$`).test(verdict.level), item.name, verdict.level, `irreversible=${j?.irreversible.toFixed(2)} offTask=${j?.offTask.toFixed(2)} scope=${j?.scope ?? verdict.error} (${j?.elapsedMs} ms)`);
+    line(new RegExp(`^(${item.expect})$`).test(verdict.level), item.name, verdict.level, `irreversible=${j?.irreversible.toFixed(2)} offTask=${j?.offTask?.toFixed(2) ?? '-'} scope=${j?.scope ?? verdict.error} (${j?.elapsedMs} ms)`);
   }
 }
 
@@ -88,7 +88,7 @@ if (!only || only === 'intent') {
     const j = verdict.judgment;
     const mismatch = (j?.intentMismatch ?? 0) >= config.action.intentMismatch;
     const ok = (item.mismatch === undefined || mismatch === item.mismatch) && (item.maxOffTask === undefined || (j?.offTask ?? 1) < item.maxOffTask);
-    line(ok, item.name, verdict.level, `mismatch=${j?.intentMismatch?.toFixed(2) ?? '-'} visible=${j?.visible?.toFixed(2) ?? '-'} offTask=${j?.offTask.toFixed(2)} scope=${j?.scope ?? verdict.error} irreversible=${j?.irreversible.toFixed(2)} (${j?.elapsedMs} ms)`);
+    line(ok, item.name, verdict.level, `mismatch=${j?.intentMismatch?.toFixed(2) ?? '-'} visible=${j?.visible?.toFixed(2) ?? '-'} offTask=${j?.offTask?.toFixed(2) ?? '-'} scope=${j?.scope ?? verdict.error} irreversible=${j?.irreversible.toFixed(2)} (${j?.elapsedMs} ms)`);
   }
 }
 

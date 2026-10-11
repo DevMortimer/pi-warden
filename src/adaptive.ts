@@ -16,12 +16,12 @@ import type { SteersConfig } from "./config.js";
 export type SteerKind =
   | "intent-mismatch" | "off-task" | "should-proceed" | "warn-headless" | "large-output"
   | "slop" | "rules" | "sensitive-path" | "security-write"
-  | "stuck" | "repeat" | "done" | "prose" | "conscience" | "loops" | "runaway" | "subagent"
+  | "stuck" | "repeat" | "done" | "cause" | "prose" | "conscience" | "loops" | "runaway" | "subagent"
   | "hold" | "confirm" | "deny" | "masking" | "credential-notice";
 
 export const STEER_KINDS: readonly SteerKind[] = [
   "intent-mismatch", "off-task", "should-proceed", "warn-headless", "large-output", "slop", "rules", "sensitive-path",
-  "security-write", "stuck", "repeat", "done", "prose", "conscience", "loops", "runaway", "subagent",
+  "security-write", "stuck", "repeat", "done", "cause", "prose", "conscience", "loops", "runaway", "subagent",
   "hold", "confirm", "deny", "masking", "credential-notice",
 ];
 
@@ -61,7 +61,7 @@ const fresh = (): PairState => ({ ...zero(), muted: false, asked: 0, probe: zero
 /** Kinds whose "followed" can be read from the next calls or text; the rest are judged by disputes alone. */
 const FOLLOW_MEASURED: ReadonlySet<SteerKind> = new Set<SteerKind>([
   "intent-mismatch", "off-task", "should-proceed", "warn-headless", "large-output", "slop", "rules", "security-write",
-  "stuck", "repeat", "done", "conscience", "loops",
+  "stuck", "repeat", "done", "cause", "conscience", "loops",
 ]);
 
 /** True when the counts put the pair under the follow floor or over the dispute ceiling. */

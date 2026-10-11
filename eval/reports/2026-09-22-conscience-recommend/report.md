@@ -15,7 +15,7 @@ a gate before `load` is ever a default.
 | **combined** | **111** | **609** | **1212** | **5.14M** | **$0.22** |
 
 Plus 90 requests (0.88M tokens, $0.04) for the 30-prompt × 3-run instability test.
-**Voyage total: 1302 requests, about 6.0M input tokens, about $0.26.**
+**Run total: 1302 requests, about 6.0M input tokens, about $0.26.**
 
 The 50 newest sessions of pi-warden and millia; all sessions of pi-tiny-search and
 pi-typesafe. Skills discovered from the current installed catalog (42 skills, 22 eligible,

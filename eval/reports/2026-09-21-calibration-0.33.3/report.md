@@ -52,7 +52,7 @@ Input tokens, measured per completed process: pi-warden 15.26M (4238 requests, r
 first attempt made the other 4,007 requests before it stopped at the default request cap; 5.24M of
 its tokens are in the spend ledger and the rest (about 1,870 requests, about 11M tokens at millia's
 measured 5.7k tokens per request) are not, because that process was stopped before it wrote its
-ledger entry. Voyage total: **16,709 requests, about 79M input tokens, about $3.30.**
+ledger entry. Run total: **16,709 requests, about 79M input tokens, about $3.30.**
 
 Label errors: none. Replay errors: 11 of 16,709 requests (0.07%), all of them the TypeSafe limit of
 32 questions per request, hit on calls that carry many held siblings alongside the `--extra`

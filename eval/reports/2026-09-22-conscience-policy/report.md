@@ -26,7 +26,7 @@ Plus 99 requests (2.11M tokens, $0.09) to replay the 33 labelled-subset turns th
 50-newest cap had pushed out of the corpus (four sessions from 09-17 and 09-20; see
 Labelled subset below), and 264 requests (~1.5M tokens, ~$0.06) replayed twice by
 mistake during that replay.
-**Voyage total: 2076 requests, about 13.4M input tokens, about $0.56.**
+**Run total: 2076 requests, about 13.4M input tokens, about $0.56.**
 
 ## Findings
 

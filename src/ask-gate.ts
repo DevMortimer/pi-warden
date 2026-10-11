@@ -15,6 +15,7 @@
  * whether a judge is worth a request.
  */
 import { commandOf } from "./tools.js";
+import { scriptSources, type ScriptSource } from "./script-bodies.js";
 
 export interface AskDecision {
   /** True when the call goes to Jev; false when the offline pass decides it alone. */
@@ -237,7 +238,7 @@ function ghAsks(sub: string | undefined, segment: string): boolean {
  * Whether this call needs a Jev request, and the short reason when it does not.
  * `text` is the command with data text blanked (`stripDataText`), so a commit message that mentions a push is not a push.
  */
-export function actionAskGate(tool: string, input: Record<string, unknown>, text: string | undefined, cwd?: string): AskDecision {
+export function actionAskGate(tool: string, input: Record<string, unknown>, text: string | undefined, cwd?: string, scripts?: readonly ScriptSource[]): AskDecision {
   if (ALWAYS_ASK.has(tool)) return { ask: true, why: tool };
   const view = commandOf(tool, input);
   const command = view?.command ?? text;
@@ -248,11 +249,24 @@ export function actionAskGate(tool: string, input: Record<string, unknown>, text
   const scanned = text ?? command;
   const httpTool = /^(?:ctx_execute|ctx_batch_execute|ctx_execute_file)$/.test(tool);
   if (!httpTool && !view?.shell) return { ask: true, why: `${tool} code` };
-  return gateCommand(scanned, command);
+  return gateCommand(scanned, command, cwd, scripts);
 }
 
-/** The decision for one shell command. Exported for the replay and for tests. */
-export function gateCommand(scanned: string, raw: string = scanned): AskDecision {
+/** The decision for one shell command. Exported for the replay and for tests. A command that runs a body from disk
+ * also asks when that body holds a shape the gate would ask a typed command for. */
+export function gateCommand(scanned: string, raw: string = scanned, cwd?: string, scripts?: readonly ScriptSource[]): AskDecision {
+  const direct = gateText(scanned, raw);
+  if (direct.ask) return direct;
+  const sources = scripts ?? (cwd === undefined ? [] : scriptSources(scanned, cwd));
+  for (const source of sources) {
+    const decision = gateText(source.body, source.body);
+    if (decision.ask) return { ask: true, why: `runs a script with ${decision.why}` };
+  }
+  return direct;
+}
+
+/** The gate for one text, before any body it runs is read. */
+function gateText(scanned: string, raw: string = scanned): AskDecision {
   // A script given on the command line or on stdin is scanned as a command: `python3 -c "shutil.rmtree(...)"` asks.
   const sink = SCRIPT_SINK.test(raw);
   const texts = sink && scanned !== raw ? [scanned, raw] : [scanned];

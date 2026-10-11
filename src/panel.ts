@@ -1,11 +1,13 @@
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { DECISIONS_BACKENDS } from "pi-typesafe";
+import { resolveJudgmentBackend } from "./backend.js";
 import type { WardenConfig } from "./config.js";
-import { applyUserOverrides, defaultConfig, readUserConfig, writeUserConfig } from "./config.js";
+import { CONSCIENCE_SKILL_MODES, RECALL_TOOLS, WARDEN_MODES, applyUserOverrides, defaultConfig, getNestedValue, readUserConfig, setNestedValue, writeUserConfig } from "./config.js";
 import type { HostDirs } from "./host-dirs.js";
 import { defaultHostDirs } from "./host-dirs.js";
 import type { Trace } from "./trace.js";
-import { LEVEL_COLOR, parseVerdictLine, renderSegment } from "./widget.js";
+import { LEVEL_COLOR, WIDGET_BAR_MODES, WIDGET_PLACEMENTS, parseVerdictLine, renderSegment } from "./widget.js";
 import type { ThemeLike } from "./widget.js";
 
 export interface PanelActions {
@@ -172,21 +174,57 @@ export function openTracePanel(ui: PanelUi, trace: Trace, options: { width?: str
   return { closed, close: () => close(), built: () => built };
 }
 
-interface ConfigEntry {
+interface ConfigRow {
   path: string;
   label: string;
   level: number;
   value: unknown;
-  type: "boolean" | "number" | "string";
   editable: boolean;
+}
+
+type ConfigEntry = ConfigRow & (
+  | { type: "boolean" | "number" | "string" }
+  | { type: "select"; options: readonly string[] }
+);
+
+type ConfigDraft =
+  | { type: "text"; buffer: string }
+  | { type: "select"; value: unknown; cycled: boolean };
+
+const SELECTOR_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+  mode: WARDEN_MODES,
+  typesafeBackend: Object.keys(DECISIONS_BACKENDS),
+  "widget.placement": WIDGET_PLACEMENTS,
+  "widget.barMode": WIDGET_BAR_MODES,
+  "conscience.skills.mode": CONSCIENCE_SKILL_MODES,
+  "context.recallTool": RECALL_TOOLS,
+};
+
+function isCustomBackend(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    && resolveJudgmentBackend(value).backendRefusal === undefined;
+}
+
+function selectorValue(entry: ConfigEntry & { type: "select" }, value: unknown): string {
+  if (typeof value === "string" && entry.options.includes(value)) return value;
+  if (entry.path === "typesafeBackend" && isCustomBackend(value)) return "custom";
+  const raw = typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
+  return raw + " (invalid)";
 }
 
 function flattenConfig(obj: Record<string, unknown>, prefix = ""): ConfigEntry[] {
   const entries: ConfigEntry[] = [];
-  const skip = new Set(["action", "stuck", "done", "slop", "security", "rules", "context", "runaway", "notify", "subagent"]);
+  const skip = new Set(["action", "stuck", "done", "slop", "security", "rules", "runaway", "notify", "subagent", "backendRefusal"]);
   for (const [key, value] of Object.entries(obj)) {
     if (skip.has(key) && !prefix) continue;
     const path = prefix ? `${prefix}.${key}` : key;
+    const level = prefix ? prefix.split(".").length : 0;
+    const options = SELECTOR_OPTIONS[path];
+    if (options) {
+      entries.push({ path, label: key, level, value, type: "select", options, editable: true });
+      if (path === "typesafeBackend" && isCustomBackend(value)) entries.push(...flattenConfig(value, path));
+      continue;
+    }
     if (typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
       entries.push({ path, label: key, level: prefix ? prefix.split(".").length : 0, value, type: typeof value as "boolean" | "number" | "string", editable: true });
     } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
@@ -202,23 +240,35 @@ export class ConfigPanel implements Component {
   private cursor = 0;
   private scroll = 0;
   private viewport = 20;
-  private editing = false;
-  private editBuffer = "";
+  private keepCursorVisible = true;
+  private draft: ConfigDraft | undefined;
+  private notice = "";
   private readonly edits = new Map<string, unknown>();
   private readonly entries: ConfigEntry[];
 
   constructor(private readonly config: WardenConfig, private readonly theme: ThemeLike, private readonly actions: PanelActions, private readonly requestRender: () => void, private readonly dirs: HostDirs = defaultHostDirs()) {
-    this.entries = flattenConfig(config as unknown as Record<string, unknown>);
+    const raw = readUserConfig(dirs);
+    const user = applyUserOverrides(defaultConfig(), raw);
+    let visible: Record<string, unknown> = { ...config, context: { recallTool: user.context.recallTool } };
+    // Only selector rows use the user layer; never persist a trusted project's recall override here.
+    for (const path of Object.keys(SELECTOR_OPTIONS)) {
+      const value = getNestedValue(raw, path);
+      visible = setNestedValue(visible, path, value === undefined ? getNestedValue(user as unknown as Record<string, unknown>, path) : value);
+    }
+    this.entries = flattenConfig(visible);
   }
 
   invalidate(): void {}
 
   private lines(width: number): string[] {
-    const { theme, entries, cursor, scroll, editing, editBuffer, edits } = this;
+    const { theme, entries, cursor, draft, edits } = this;
     const out: string[] = [];
-    const modeLabel = editing ? "editing" : "browsing";
+    const modeLabel = draft?.type === "select" ? "selecting" : draft ? "editing" : "browsing";
+    const editingKeys = draft?.type === "select" ? "←→ choose · enter save · esc cancel"
+      : draft ? "enter stage · esc cancel · s saves after editing"
+      : "↑↓ navigate · enter toggle/edit · esc back · s save";
     const keys = this.focused
-      ? `↑↓ navigate · enter toggle/edit · esc ${editing ? "cancel" : "back"} · s save · ${modeLabel}`
+      ? editingKeys + " · " + modeLabel
       : `click for keys · /warden config closes`;
     out.push(theme.bold(theme.fg("accent", "pi-warden config")) + theme.fg("muted", ` · ${entries.length} keys`));
     out.push(theme.fg("muted", keys));
@@ -234,8 +284,11 @@ export class ConfigPanel implements Component {
         continue;
       }
       let valueStr: string;
-      if (isSelected && editing && entry.type !== "boolean") {
-        valueStr = editBuffer + "\u2588";
+      if (entry.type === "select") {
+        const value = isSelected && draft?.type === "select" ? draft.value : entry.value;
+        valueStr = "‹ " + selectorValue(entry, value) + " ›";
+      } else if (isSelected && draft?.type === "text") {
+        valueStr = draft.buffer + "\u2588";
       } else if (entry.type === "boolean") {
         valueStr = (entry.value as boolean) ? "●" : "○";
       } else if (entry.type === "number") {
@@ -258,45 +311,88 @@ export class ConfigPanel implements Component {
     const border = theme_fg(this.theme, "muted", "│ ");
     const inner = Math.max(10, width - 2);
     const all = this.lines(inner);
-    const maxScroll = Math.max(0, all.length - this.viewport);
+    const fixed = all.splice(0, 3);
+    if (this.notice) {
+      const notice = wrapTextWithAnsi(this.theme.fg("warning", this.notice), inner);
+      // Keep the notice outside the scrolling list, with room for at least one selected row.
+      fixed.push(...notice.slice(0, Math.max(1, this.viewport - fixed.length - 2)));
+    }
+    const available = Math.max(1, this.viewport - fixed.length);
+    const showFooter = all.length > available && available > 1;
+    const listRows = available - (showFooter ? 1 : 0);
+    const maxScroll = Math.max(0, all.length - listRows);
     if (this.scroll > maxScroll) this.scroll = maxScroll;
-    const visible = all.slice(this.scroll, this.scroll + this.viewport);
-    if (all.length > this.viewport) {
-      const last = visible.length - 1;
-      const below = all.length - this.scroll - this.viewport;
+    if (this.keepCursorVisible) {
+      if (this.cursor < this.scroll) this.scroll = this.cursor;
+      else if (this.cursor >= this.scroll + listRows) this.scroll = this.cursor - listRows + 1;
+      this.keepCursorVisible = false;
+    }
+    const visible = [...fixed, ...all.slice(this.scroll, this.scroll + listRows)];
+    if (showFooter) {
+      const below = all.length - this.scroll - listRows;
       const above = this.scroll;
       const label = below > 0 ? `… ${below} more below${above ? ` · ${above} above` : ""}` : `… end${above ? ` · ${above} above` : ""}`;
-      visible[last] = truncateToWidth(theme_fg(this.theme, "dim", label), inner, "");
+      visible.push(truncateToWidth(theme_fg(this.theme, "dim", label), inner, ""));
     }
     while (visible.length < this.viewport) visible.push("");
     return visible.map(line => border + line);
   }
 
-  setViewport(rows: number): void { this.viewport = Math.max(5, rows); }
+  setViewport(rows: number): void { this.viewport = Math.max(5, rows); this.keepCursorVisible = true; }
 
   handleInput(data: string): void {
-    const { entries, editing } = this;
+    const { entries, draft } = this;
     if (data === "q" || matchesKey(data, Key.ctrl("c"))) { this.actions.close(); return; }
+    this.keepCursorVisible = true;
     if (matchesKey(data, Key.escape)) {
-      if (editing) { this.editing = false; this.requestRender(); return; }
+      if (draft) { this.draft = undefined; this.notice = ""; this.requestRender(); return; }
       this.actions.unfocus(); this.requestRender(); return;
     }
-    if (editing) {
+    if (draft) {
       const entry = entries[this.cursor]!;
+      if (draft.type === "select" && entry.type === "select") {
+        if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
+          const step = matchesKey(data, Key.right) ? 1 : -1;
+          const index = typeof draft.value === "string" ? entry.options.indexOf(draft.value) : -1;
+          const next = index < 0 ? (step > 0 ? 0 : entry.options.length - 1)
+            : (index + step + entry.options.length) % entry.options.length;
+          draft.value = entry.options[next]!;
+          draft.cycled = true;
+          this.notice = "";
+        } else if (data === "enter" || matchesKey(data, Key.return)) {
+          if (!draft.cycled) this.draft = undefined;
+          else if (entry.path === "typesafeBackend" && [...this.edits.keys()].some(path => path.startsWith("typesafeBackend."))) {
+            this.notice = "Backend fields have pending edits. Press Esc, then s to save them before choosing a named backend.";
+          } else if (this.saveChanges(new Map([[entry.path, draft.value]]))) {
+            entry.value = draft.value;
+            this.draft = undefined;
+            if (entry.path === "typesafeBackend") {
+              // Replace only this subtree; rebuilding all rows would discard unrelated staged values.
+              let end = this.cursor + 1;
+              while (entries[end]?.path.startsWith("typesafeBackend.")) end++;
+              entries.splice(this.cursor + 1, end - this.cursor - 1);
+            }
+          }
+        } else return;
+        this.requestRender();
+        return;
+      }
+      if (draft.type !== "text") return;
       if (matchesKey(data, Key.return)) {
-        this.edits.set(entry.path, this.parseValue(this.editBuffer, entry.type));
-        (entries[this.cursor]!).value = this.parseValue(this.editBuffer, entry.type);
-        this.editing = false;
+        const value = this.parseValue(draft.buffer, entry.type);
+        this.edits.set(entry.path, value);
+        entry.value = value;
+        this.draft = undefined;
         this.requestRender();
         return;
       }
       if (matchesKey(data, Key.backspace)) {
-        this.editBuffer = this.editBuffer.slice(0, -1);
+        draft.buffer = draft.buffer.slice(0, -1);
         this.requestRender();
         return;
       }
       if (data.length === 1 && data >= " ") {
-        this.editBuffer += data;
+        draft.buffer += data;
         this.requestRender();
         return;
       }
@@ -310,25 +406,26 @@ export class ConfigPanel implements Component {
     else if (matchesKey(data, Key.end)) this.cursor = entries.length - 1;
     else if (data === "enter" || matchesKey(data, Key.return)) {
       const entry = entries[this.cursor]!;
-      if (entry.type === "boolean") {
+      if (!entry.editable) return;
+      this.notice = "";
+      if (entry.type === "select") {
+        this.draft = { type: "select", value: entry.value, cycled: false };
+      } else if (entry.type === "boolean") {
         this.edits.set(entry.path, !entry.value);
         entry.value = !entry.value;
       } else {
-        this.editing = true;
-        this.editBuffer = String(entry.value);
+        this.draft = { type: "text", buffer: String(entry.value) };
       }
     }
     else if (data === "s") { this.save(); return; }
     else return;
-    // Keep cursor visible
-    if (this.cursor < this.scroll) this.scroll = this.cursor;
-    else if (this.cursor >= this.scroll + this.viewport) this.scroll = this.cursor - this.viewport + 1;
     this.requestRender();
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     if (event.type === "wheel") {
       this.scroll = Math.max(0, this.scroll + (event.wheelDelta ?? 0) * 3);
+      this.keepCursorVisible = false;
       return { handled: true, render: true };
     }
     if (event.type === "press" && event.button === "left") return { handled: true, focus: true, render: true };
@@ -343,20 +440,32 @@ export class ConfigPanel implements Component {
 
   save(): void {
     if (this.edits.size === 0) return;
-    const raw = readUserConfig(this.dirs);
-    const obj = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw as Record<string, unknown> : {};
-    for (const [path, value] of this.edits) {
-      const keys = path.split(".");
-      let current: Record<string, unknown> = obj;
-      for (let i = 0; i < keys.length - 1; i++) {
-        const k = keys[i]!;
-        if (typeof current[k] !== "object" || current[k] === null) current[k] = {};
-        current = current[k] as Record<string, unknown>;
+    this.keepCursorVisible = true;
+    if (this.saveChanges(this.edits)) this.edits.clear();
+    this.requestRender();
+  }
+
+  private saveChanges(changes: ReadonlyMap<string, unknown>): boolean {
+    try {
+      const obj = readUserConfig(this.dirs);
+      for (const [path, value] of changes) {
+        const keys = path.split(".");
+        let current: Record<string, unknown> = obj;
+        for (let i = 0; i < keys.length - 1; i++) {
+          const key = keys[i]!;
+          if (typeof current[key] !== "object" || current[key] === null || Array.isArray(current[key])) current[key] = {};
+          current = current[key] as Record<string, unknown>;
+        }
+        current[keys.at(-1)!] = value;
       }
-      current[keys.at(-1)!] = value;
+      writeUserConfig(obj, this.dirs);
+      this.notice = "";
+      return true;
+    } catch (error) {
+      const retry = this.draft?.type === "select" ? "Enter" : "s";
+      this.notice = `Save failed. Retry ${retry}. ` + (error instanceof Error ? error.message : String(error));
+      return false;
     }
-    writeUserConfig(obj, this.dirs);
-    this.edits.clear();
   }
 }
 

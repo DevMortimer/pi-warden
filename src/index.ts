@@ -11,6 +11,8 @@ export { parseFailure, failureSignature, normaliseFailureText, editPairs, lineDe
 export type { ParsedFailure, EditDiff, EvidenceRun, EvidenceEdit, EvidenceDigest, StuckEvidence } from "./evidence.js";
 export { classifyToolResult, recordOutcome, recordUi, isUiFile, isVisualCheck, emptyEvidence, freshChecks, needsDoneCheck, finalAssistantText, evaluateDone, buildDoneRequest, doneQuestions, doneNudge, formatDone } from "./done.js";
 export type { ToolOutcome, RunEvidence, DoneJudgment, DoneVerdict, DoneOptions } from "./done.js";
+export { evaluateCause, buildCauseRequest, causeQuestions, causePreFilter, causeNudge, formatCause, recordCauseActivity, emptyCauseActivity } from "./cause.js";
+export type { CauseActivity, CauseJudgment, CauseVerdict, CauseOptions, CauseStore, CauseStoreRecord } from "./cause.js";
 export { evaluateOutput, buildOutputRequest, outputQuestions, compressOutput, saveOutput, securityNotice, outputKey, duplicateNote } from "./output.js";
 export type { Retention, OutputVerdict, OutputOptions } from "./output.js";
 export { formatExcerpt, formatQuestion } from "./excerpt.js";
@@ -36,16 +38,16 @@ export type { CallOutcome, CallRecord, CallScores, HoldSnapshot, OutcomeVia } fr
 export type { ContextLedgerSnapshot, RecallKind } from "./saver.js";
 export type { ShapeResult } from "./shape.js";
 export { CONFIG_SCHEMA, defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, isRecallTool, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, setNestedValue, getNestedValue, parseConfigValue, PACKAGE_NAME } from "./config.js";
-export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardConfig, VisualToolsConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, LargeOutputConfig, RunawayConfig, NotifyConfig, SubagentConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions, CompactionConfig } from "./config.js";
+export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardConfig, CauseGuardConfig, VisualToolsConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, LargeOutputConfig, RunawayConfig, NotifyConfig, SubagentConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions, CompactionConfig } from "./config.js";
 export { defaultHostDirs } from "./host-dirs.js";
 export type { HostDirs } from "./host-dirs.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
 export { actionAskGate, gateCommand } from "./ask-gate.js";
 export type { AskDecision } from "./ask-gate.js";
 export type { CommandView } from "./tools.js";
-export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, runawayTokens, rulesTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, SENTENCE_TEMPLATES, pickSentenceTemplate, TOKEN_NAMES } from "./widget.js";
+export { renderTemplate, actionTokens, stuckTokens, doneTokens, causeTokens, proseTokens, runawayTokens, rulesTokens, defaultWidgetConfig, DEFAULT_TEMPLATES, SENTENCE_TEMPLATES, pickSentenceTemplate, TOKEN_NAMES } from "./widget.js";
 export type { WidgetConfig, WidgetPlacement, WidgetBarMode, Tokens } from "./widget.js";
-export { Trace, actionDetails, stuckDetails, doneDetails, proseDetails, runawayDetails, rulesDetails } from "./trace.js";
+export { Trace, actionDetails, stuckDetails, doneDetails, causeDetails, proseDetails, runawayDetails, rulesDetails } from "./trace.js";
 export type { TraceEntry, GuardName } from "./trace.js";
 export { parseRules, condense, isRuleShaped, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, describeRuleSet, formatRuleSetDetails, describeTarget, buildRulesRequest, ruleQuestion, scoreRuleAnswers, evaluateRules, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, MAX_EDITS, EDIT_TEXT_LIMIT, EDIT_CONTEXT_LINES, AGGREGATE_QUESTION, LOCATOR_QUESTION, editRulesFor, turnRulesFor, evaluateRulesTarget, scoreAnswers } from "./rules.js";
 export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RuleAnswer, RuleScoring, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef, RulesTier, RulesSourceConfig, RuleWhen, RuleScoreEntry } from "./rules.js";
@@ -63,7 +65,7 @@ export { resolveRulesFile, extractRules, checkPiWardenMissing } from "./rules-fi
 export type { ResolvedRulesFile } from "./rules-file.js";
 export { writeStarterRules, generateStarterRules, detectProjectType, buildProjectContext, buildInitPrompt } from "./init.js";
 export type { InitResult } from "./init.js";
-export { initSchema, recordHold, recordOutcome as recordHoldOutcome, querySmartHistory, calculateSmartConfidence, shouldSkipHold, analyzeThresholds, analyzePatterns, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
+export { initSchema, recordHold, recordOutcome as recordHoldOutcome, recordCause, findCause, querySmartHistory, calculateSmartConfidence, shouldSkipHold, analyzeThresholds, analyzePatterns, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 export type { HoldRecord, HoldScores, HoldLevel, HoldOutcome, HoldContext, SmartHistory, ConfidenceResult, SkipResult, ThresholdAdjustment, PatternInsight, ContextRecommendation, SteerEffectivenessReport } from "./learning.js";
 export { buildAuditPrompt, snapshotReport, reportOutcome } from "./audit.js";
 export type { ReportSnapshot } from "./audit.js";

@@ -89,6 +89,14 @@ test("a pre-0.14 config module without the subagent section defers the section a
   assert.equal(stale.config.widget.subagent, defaultConfig().widget.subagent);
 });
 
+test("older nested subagent config without the key turns the observer off through both shape guards", async () => {
+  const { guardCurrentSections } = await import("../src/extension.js");
+  const old = defaultConfig();
+  delete (old.subagent as unknown as Record<string, unknown>).observer;
+  assert.equal(completeConfig(old).config.subagent.observer, false);
+  assert.equal(guardCurrentSections({ config: old, missing: [] }).config.subagent.observer, false);
+});
+
 test("regression: the 0.9.0 live crash. A stale shape module returns a config without rules; the extension guards the sections it reads itself", async () => {
   const { guardCurrentSections } = await import("../src/extension.js");
   const stale = defaultConfig() as unknown as Record<string, unknown>;

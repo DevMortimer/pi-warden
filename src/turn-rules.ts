@@ -120,51 +120,123 @@ function batchCheck(lines: readonly string[], cwd: string): Promise<string[]> {
   });
 }
 
-/** The files git brought in, and a note for the trace when the filter failed or was cut short. */
-interface BroughtResult { brought: Set<string>; note?: string }
+/** The files git brought in, and the notes for the trace when the filter failed, fell back, or was cut short. */
+interface BroughtResult { brought: Set<string>; notes: string[] }
+
+/** One HEAD reflog entry: the commit HEAD named after the move, when it was written (seconds), and the reason git logged. */
+interface ReflogEntry { commit: string; at: number; subject: string }
+
+/**
+ * Reflog reasons for a commit this checkout created: `commit` (also `(amend)`, `(merge)`, `(initial)`), `cherry-pick`,
+ * `revert`, `am`, a rebase step that picks or rewrites a commit, and a `merge` or `pull` that made a merge commit. A fast-forward,
+ * a reset, a checkout, and the start and finish of a rebase only move HEAD to commits made elsewhere or earlier.
+ */
+const CREATING_REFLOG_SUBJECT = /^(?:(?:commit|cherry-pick|revert|am)\b|(?:merge|pull)\b[^:]*: Merge made by |[^:]*\((?:pick|reword|squash|fixup|continue|edit|merge)\):)/;
+const REFLOG_OFF = new Set(["false", "no", "off", "0", "never"]);
+
+/**
+ * The commits this checkout created since the run began, from the HEAD reflog of this worktree. Undefined when the
+ * reflog is turned off or cannot be read, or does not account for the move to `endHead`: the caller then uses the date rule.
+ * An entry counts as written during the run when its second is the start second or later. The reflog has whole seconds,
+ * so in the start second the oldest entry that names the start HEAD is taken as the move that put HEAD there, and it
+ * and everything older are not the run's.
+ */
+async function createdInRun(cwd: string, start: RunStart & { head: string }, endHead: string): Promise<string[] | undefined> {
+  try {
+    let setting = "";
+    try { setting = (await git(["config", "--get", "core.logAllRefUpdates"], cwd, 5000)).trim().toLowerCase(); } catch { /* unset: the default keeps the reflog on */ }
+    if (REFLOG_OFF.has(setting)) return undefined;
+    const startSecond = Math.floor(start.startedAt / 1000);
+    const lines = (await git(["reflog", "show", "--date=unix", `--since=${startSecond}`, "--format=%H%x09%gd%x09%gs", "HEAD"], cwd)).split("\n").filter(Boolean);
+    const entries: ReflogEntry[] = [];
+    for (const line of lines) {
+      const match = /^([0-9a-f]{40,64})\t[^\t]*@\{(\d+)\}\t(.*)$/.exec(line);
+      if (!match) return undefined;
+      const entry = { commit: match[1]!, at: Number(match[2]), subject: match[3]! };
+      if (entry.at < startSecond) break;
+      entries.push(entry);
+    }
+    for (let index = entries.length - 1; index >= 0; index--) {
+      if (entries[index]!.at === startSecond && entries[index]!.commit === start.head) {
+        entries.length = index;
+        break;
+      }
+    }
+    // HEAD moved, so a reflog that is recording has the move as its newest entry.
+    if (entries[0]?.commit !== endHead) return undefined;
+    return [...new Set(entries.filter(entry => CREATING_REFLOG_SUBJECT.test(entry.subject)).map(entry => entry.commit))];
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The changed files that git itself brought in: HEAD moved during the run (a pull, a merge), and the file has no
- * uncommitted change at the end and holds, byte for byte, its content in a commit the end HEAD reaches, the start
- * HEAD does not reach, and that was committed before the run began. A file the agent edited, changed with an
- * uncommitted command (`git checkout <old> -- file` included), or committed in the run is never in this set.
+ * uncommitted change at the end, holds, byte for byte, its content in a commit the end HEAD reaches and the start HEAD
+ * does not, that this checkout did not create during the run (the commit date does not matter: a squash commit the
+ * hosting service makes mid-run counts), and no commit this checkout created during the run introduced that content.
+ * A commit introduces a path's content when that content differs from the path's content in each of its parents.
+ * A file the agent edited, changed with an uncommitted command (`git checkout <old> -- file` included), or committed in
+ * the run is never in this set. When the HEAD reflog is off or unreadable, a commit counts only when it was committed
+ * before the run began (the 0.87.0 rule) and the trace says so.
  * At most `BROUGHT_PROBE_LIMIT` file × commit pairs are probed: with more, only the newest commits that fit are probed,
  * since the newest commit holding a path has the content of every path no later commit changed. A git failure is
- * returned in the note, and the caller judges every file.
+ * returned in the notes, and the caller judges every file.
  */
 async function broughtByGit(cwd: string, start: RunStart, endTree: string, paths: readonly string[]): Promise<BroughtResult> {
   const brought = new Set<string>();
-  if (!start.head || !paths.length) return { brought };
-  let note: string | undefined;
+  const notes: string[] = [];
+  if (!start.head || !paths.length) return { brought, notes };
+  const startHead = start.head;
   try {
     const endHead = await commitOf("HEAD", cwd);
-    if (!endHead || endHead === start.head) return { brought };
-    // `--before` keeps a commit whose committer date is at or before the stamp; one second earlier makes it strict.
-    const before = Math.floor(start.startedAt / 1000) - 1;
-    let older = (await git(["rev-list", endHead, `^${start.head}`, `--before=${before} +0000`], cwd)).split("\n").filter(Boolean);
-    if (!older.length) return { brought };
+    if (!endHead || endHead === startHead) return { brought, notes };
+    const created = await createdInRun(cwd, { ...start, head: startHead }, endHead);
+    let older: string[];
+    if (created) {
+      const made = new Set(created);
+      older = (await git(["rev-list", endHead, `^${startHead}`], cwd)).split("\n").filter(commit => commit && !made.has(commit));
+    } else {
+      notes.push("git-brought filter used the commit-date rule because the HEAD reflog is off or cannot be read: a commit made after the run began counts as the agent's");
+      // `--before` keeps a commit whose committer date is at or before the stamp; one second earlier makes it strict.
+      const before = Math.floor(start.startedAt / 1000) - 1;
+      older = (await git(["rev-list", endHead, `^${startHead}`, `--before=${before} +0000`], cwd)).split("\n").filter(Boolean);
+    }
+    if (!older.length) return { brought, notes };
     const uncommitted = new Set((await git(["diff", "--name-only", "--no-renames", "-z", endHead, endTree, "--"], cwd)).split("\0").filter(Boolean));
     const clean = paths.filter(path => !uncommitted.has(path));
-    if (!clean.length) return { brought };
-    const fit = Math.floor(BROUGHT_PROBE_LIMIT / clean.length);
+    if (!clean.length) return { brought, notes };
+    // Each created commit is probed in itself and in its parents; one line of `--parents` output is the commit then its parents.
+    const makers = created?.length ? (await git(["rev-list", "--no-walk", "--parents", ...created], cwd)).split("\n").filter(Boolean).map(line => line.split(" ")) : [];
+    const makerProbes = makers.reduce((sum, ids) => sum + ids.length, 0);
+    const fit = Math.max(0, Math.floor(BROUGHT_PROBE_LIMIT / clean.length) - makerProbes);
     if (fit < older.length) {
-      note = `git-brought filter cut: ${clean.length} files × ${older.length} older commits is over the ${BROUGHT_PROBE_LIMIT}-probe limit, so only the newest ${fit} commits were probed`;
+      notes.push(`git-brought filter cut: ${clean.length} files × ${older.length} older commits is over the ${BROUGHT_PROBE_LIMIT}-probe limit, so only the newest ${fit} commits were probed`);
       older = older.slice(0, fit);
-      if (!older.length) return { brought, note };
+      if (!older.length) return { brought, notes };
     }
-    const probes = clean.flatMap(path => [`${endHead}:${path}`, ...older.map(commit => `${commit}:${path}`)]);
+    const probes = clean.flatMap(path => [`${endHead}:${path}`, ...older.map(commit => `${commit}:${path}`), ...makers.flatMap(ids => ids.map(commit => `${commit}:${path}`))]);
     const answers = await batchCheck(probes, cwd);
-    const stride = older.length + 1;
+    const stride = 1 + older.length + makerProbes;
     clean.forEach((path, row) => {
-      const atEnd = answers[row * stride];
+      const base = row * stride;
+      const atEnd = answers[base];
       if (!atEnd) return;
-      if (older.some((_, column) => answers[row * stride + 1 + column] === atEnd)) brought.add(path);
+      if (!older.some((_, column) => answers[base + 1 + column] === atEnd)) return;
+      let at = base + 1 + older.length;
+      for (const ids of makers) {
+        const inCommit = answers[at] === atEnd;
+        const inParents = ids.slice(1).some((_, parent) => answers[at + 1 + parent] === atEnd);
+        at += ids.length;
+        if (inCommit && !inParents) return;
+      }
+      brought.add(path);
     });
   } catch (error) {
     // Nothing is skipped on a git failure: the caller judges every file, and the trace says the filter failed.
-    return { brought: new Set(), note: `git-brought filter failed: ${(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim()}; every changed file was judged` };
+    return { brought: new Set(), notes: [...notes, `git-brought filter failed: ${(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim()}; every changed file was judged`] };
   }
-  return note ? { brought, note } : { brought };
+  return { brought, notes };
 }
 
 export interface TurnFileDiff {
@@ -182,7 +254,7 @@ export interface TurnDiff {
   text: string;
   /** What the caps cut, named per file, so the request and the trace say what the judge does not see. */
   cuts: string[];
-  /** What the git-brought filter did beyond its plain work: it failed, or it was cut at the probe limit. */
+  /** What the git-brought filter did beyond its plain work: it failed, fell back to the date rule, or was cut at the probe limit. */
   notes: string[];
 }
 
@@ -200,7 +272,7 @@ export async function diffSince(cwd: string, startTree: string, maxChars: number
   const cuts: string[] = [];
   const candidates: string[] = [];
   for (let index = 0; index + 1 < names.length; index += 2) if (names[index + 1]) candidates.push(names[index + 1]!);
-  const { brought, note } = start ? await broughtByGit(cwd, start, endTree, candidates) : { brought: new Set<string>(), note: undefined };
+  const { brought, notes } = start ? await broughtByGit(cwd, start, endTree, candidates) : { brought: new Set<string>(), notes: [] as string[] };
   for (let index = 0; index + 1 < names.length; index += 2) {
     const status = names[index]!.slice(0, 1);
     const path = names[index + 1]!;
@@ -232,7 +304,7 @@ export async function diffSince(cwd: string, startTree: string, maxChars: number
     cuts.push(`${file.path}: file diff cut to ${room} chars to fit the ${maxChars}-char total; later files not sent`);
     spent = true;
   }
-  return { files, text: chunks.join("\n"), cuts, notes: note ? [note] : [] };
+  return { files, text: chunks.join("\n"), cuts, notes };
 }
 
 // ---------------------------------------------------------------------------
