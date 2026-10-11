@@ -26,6 +26,7 @@ v4, corrected after the model-A batch stopped on a Jev error, before any outcome
 v4, corrected again before any outcome of a v4 batch was read: the cancelled-sample check no longer numbers the judged entries; the entry nearest in time to the failed request must be within 1,000 ms of it and have no `off-task` ("Jev-error stop", Corrections 3).
 
 v4, corrected while model B's main pass ran, after it had excluded more than 10% of its blocks and before any metric of a v4 batch was computed: after a model's main pass, every block it excluded for an infrastructure failure runs once more, all three cells, and the exclusions after that one pass are final ("Resume", Corrections 4).
+v4, after both batches finished and before any decision-rule bound, test, or metric of a v4 batch was computed: the stops and other events of both batches are recorded (Corrections 5 and 6), and the methods behind the decision rules' bounds and p-value are fixed (Corrections 7).
 
 ## The stopped v3 batches
 
@@ -501,3 +502,183 @@ outcome to choose the concurrency, the timeouts, or the sizes.
    while model B's main pass ran. No metric, report table, or aggregate outcome of a v4 batch
    had been computed or read. The batch log prints each finished run's checks and violations on
    its progress line; such lines of single runs were seen while the stops were recorded.
+
+5. 2026-10-10, after both batches finished, before any decision-rule bound, test, or metric
+   of a v4 batch was computed. Every stop and interruption not yet covered by Corrections 1
+   to 4, in the order they happened. All times are UTC. The dates, causes, exit codes, and
+   run counts below are infrastructure records (the stop lines of the batch log and the
+   `stops`, `reruns`, `superseded`, `startedAt`, and `jevUsd` fields of `runs.json`), not
+   task outcomes.
+
+   - **2026-10-04T20:04:19Z, model B main pass, interrupted.** The Mac's battery ran out
+     (battery health warnings with about 2% left, no sleep or wake since 2026-09-30, and
+     the machine booted again at 2026-10-05T00:33:30Z). It stopped before its next run; 125
+     of the 420 runs were recorded. The batch resumed with `resume-3.sh` on
+     2026-10-05T13:59:14Z, 125 recorded and 295 to run.
+
+   - **2026-10-06T00:49:54Z, model B main pass, exit 3 (Jev error).** The run
+     `t19-secret-arc warden r3` failed on 4 Jev requests, TypeSafe HTTP 503 for at least 38
+     seconds, not the account balance; the run is not recorded and runs again. 172 of the
+     420 runs were recorded. The batch resumed with `resume-4.sh` on 2026-10-06T08:56:56Z,
+     172 recorded and 248 to run.
+
+   - **2026-10-06T08:56:56Z, model B main pass, resume attempt aborted (stopped by hand).**
+     Every run of the `resume-4.sh` attempt failed before its first assistant message with
+     `Model "cheapestinference/mimo-v2.5" not found`: a `git pull --rebase` in a local
+     dotfiles checkout had replaced the provider extension with a link into a store path
+     this machine does not have. No run was recorded (172 runs, 0 infrastructure failures).
+     The batch resumed with `resume-5.sh` on 2026-10-06T09:13:52Z, 172 recorded and 248 to
+     run.
+
+   - **2026-10-06T21:31:57Z, 22:04:17Z, 22:47:22Z, and 23:22:59Z, model B main pass, exit 4
+     four times.** Each stop was 5 infrastructure failures in a row, every failure an
+     agent-model HTTP 503 "The model is at capacity right now"; the failed runs are dropped
+     and run again. Recorded at the stops: 234, 234, 234, and 235 of the 420 runs (186,
+     186, 186, and 185 planned runs left). `settle()` resumed each after 15 minutes, its
+     four automatic resumes.
+
+   - **2026-10-07T01:30:34Z, model B main pass, exit 3 (Jev error).** The run `t7-todo
+     warden r5` failed on 1 Jev request, a TypeSafe connection failure with no HTTP status
+     and no `lastFailure` in the run's `auth-state.json`, so not the cancelled-sample
+     exception of Corrections 2 and 3. 256 of the 420 runs were recorded; 163 planned runs
+     did not run. The batch resumed with `resume-6.sh` on 2026-10-07T01:55:05Z, 256
+     recorded and 164 to run.
+
+   - **2026-10-07T02:15:59Z, 02:50:10Z, 03:26:41Z, 04:02:13Z, and 04:36:55Z, model B main
+     pass, exit 4 five times.** Each stop was 5 infrastructure failures in a row, every
+     attempt an agent-model HTTP 503 "The model is at capacity right now", with some
+     earlier attempts an HTTP 429; the failed runs are dropped and run again. Recorded at
+     the stops: 257, 259, 259, 259, and 259 of the 420 runs (163, 161, 161, 161, and 161
+     planned runs left). `settle()` resumed the first four after 15 minutes; the fifth
+     reached its limit of four and ended `resume-6.sh`. The batch resumed with
+     `resume-7.sh` on 2026-10-07T14:28:43Z, 259 recorded and 161 to run.
+
+   - **2026-10-07T18:42:47Z, model B main pass, exit 4, and 2026-10-07T23:26:46Z, model B
+     main pass, exit 3 (Jev error).** Both ran under `resume-7.sh`. The exit-4 stop was 5
+     infrastructure failures in a row (agent-model HTTP 503, one earlier attempt an HTTP
+     429), dropped and run again, with 308 of the 420 runs recorded and 112 planned runs
+     left; `settle()` resumed it after 30 minutes. The exit-3 stop was the run
+     `t11-buildfail warden r7`, 1 Jev request failed, TypeSafe HTTP 529, not the
+     cancelled-sample exception; 392 of the 420 runs were recorded and 27 planned runs did
+     not run. The batch resumed with `resume-8.sh` on 2026-10-08T13:18:08Z, 392 recorded
+     and 28 to run.
+
+   - **2026-10-08T18:53:05Z, model B re-run pass, exit 3 (Jev error).** Model B's main pass
+     was DONE at 2026-10-08T17:03:37Z; the re-run pass of Corrections 4 started at
+     17:03:38Z with 20 excluded blocks, moved 60 first runs to `superseded`, and stopped on
+     `t16-decay warden r4` with 1 Jev request failed, TypeSafe HTTP 529; the run is not
+     recorded and runs again. 374 runs were recorded (360 of the main pass and 14 of the
+     pass), 60 were `superseded`, and 45 planned runs did not run. The batch resumed with
+     `resume-9.sh` on 2026-10-09T12:11:20Z, 374 recorded and 46 to run.
+
+   - **2026-10-09T15:13:43Z, model B re-run pass, interrupted.** The Mac restarted, orderly
+     and not from an empty battery; who or what restarted it is not confirmed. No stop rule
+     fired and no `model2.status` file was written. 380 runs were recorded (360 of the main
+     pass and 20 of the pass), 60 were `superseded`, and 40 of the pass's runs were left.
+     The batch resumed with `resume-10.sh` on 2026-10-09T23:59:52Z, 380 recorded and 40 to
+     run.
+
+   **Totals.** Model A stopped twice (Corrections 2 and 3). Model B stopped 17 times: 14 stops
+   recorded in the `stops` list of `runs.json` (one in entry 4, four in entry 7, one in
+   entry 8, five in entry 9, one in the entry-10 exit-4 stop, one in the entry-10 Jev stop,
+   and one in entry 11) and 3 interruptions or aborts not recorded there (the battery, the
+   aborted resume attempt, and the Mac restart). Nine resumes were automatic, all of them
+   by `settle()` (the four in entry 7, the four in entry 9, and the entry-10 exit-4 stop);
+   the others waited for the owner. The batch stood idle waiting for a resume for about
+   122.6 h in all: about 79.0 h for model B and about 43.6 h for model A, of which about
+   2.5 h were the automatic settle waits. After entry 12 no further stop or interruption
+   happened; model B's re-run pass finished at 2026-10-10T07:32:23Z and model A's at
+   2026-10-10T09:55:21Z.
+
+6. 2026-10-10, after both batches finished and before any decision-rule bound, test, or
+   metric of a v4 batch was computed. The other events of both batches.
+
+   **Pinned provider extension.** From the resume on 2026-10-06 (entry 6) the provider
+   extension loaded from a pinned copy in the batch folder, byte-identical to the file
+   every earlier run loaded (blob `488164da114736d8a55b3a42ddd6d861c29093f4`, 24,097
+   bytes); the registered extension path is not used again.
+
+   **Checkout move.** The batch checkout moved from `9cbe32d` to `1cba019` at the
+   `resume-8.sh` of 2026-10-08, before model B's main pass ended; only the eval tooling
+   changed, and the `src/` tree stayed the commit under test, so the launch check of
+   "Commit under test" still printed nothing.
+
+   **Standing decision on TypeSafe service errors.** On 2026-10-09, when the owner released
+   the resume order for entry 11, the owner decided that a stop caused only by TypeSafe
+   service errors resumes by itself after 30 minutes, and that every other Jev-error stop
+   still waits for the owner.
+
+   **Inherited trace folder.** `scripts/eval-ab.mjs` sets `PI_WARDEN_TRACE_DIR` only for a
+   cell that asks Jev. Its run env comes from `filterEnv(process.env, ...)` of
+   `eval/env.mjs`, which kept an inherited `PI_WARDEN_TRACE_DIR`, so the `warden-offline`
+   runs wrote their pi-warden trace into a folder outside their run folder, inherited from
+   the session that started the batch. No metric reads a run's trace (`eval/report.mjs`,
+   `eval/check.mjs`, `eval/verify.mjs`, `eval/cost.mjs`, and `eval/waste.mjs` do not), so
+   no recorded value changed. `eval/env.mjs` now drops an inherited `PI_WARDEN_TRACE_DIR`,
+   so only the cells that ask Jev get one.
+
+   **Blindness record (entry 11a).** While it wrote entry 11, the agent session that recorded
+   the stop read outcome lines of the batch, one of the per-cell outcome tables printed
+   when model 2's main pass ended, the `testsPass` and `outcome` fields of the 14 runs of
+   model 2's re-run pass recorded at that time, and 80 characters of the last trace entry
+   of the stopped run. None of it went into entry 11 or into a decision, and the owner and
+   the recording session did not see these lines; every decision recorded so far came
+   before it, and that agent session has ended. The batch tool wrote its per-cell tables
+   when each pass ended, and apart from that reading nobody read them before Corrections 5
+   to 7 were committed.
+
+   **Model B's duration.** Its main pass ran from its first recorded run at
+   2026-10-04T04:23:10Z to DONE at 2026-10-08T17:03:37Z, 108.7 h of wall clock for 420
+   runs, about 3.9 runs per hour. It stood idle for about 53.0 h of that, so it ran for
+   about 55.7 h, about 7.5 runs per hour. The registration estimated about 25.4 h (section
+   "Batch"), so the running time was about 2.2 times the estimate; the estimate rested on 6
+   smoke runs, one of them 13 times longer than the other two single-shot runs, and the
+   provider was often at capacity during the pass (entries 4 and 7 to 10).
+
+   **Model B timing smoke.** A timing smoke of model B existed before it started: the batch
+   folder holds `smoke-mimo-c3/`, `smoke-mimo-c3.log`, `smoke-mimo.sh`, `smoke-mimo.out`,
+   and `timing-mimo-c3.md`, made on 2026-10-01, before model B's first run on 2026-10-04.
+   The registration's "Batch" estimate for B uses those 6 smoke runs.
+
+7. 2026-10-10, after both batches finished and before any decision-rule bound, test, or
+   metric of a v4 batch was computed. **Why.** "Decision rules" fixes each rule's
+   threshold, but not how its one-sided bounds and its p-value are computed. They are fixed
+   here, before any of them is computed, so the method cannot follow the data. **Per-run
+   values**, for the runs of the analysis set (the runs in `runs.json` `runs`, outside
+   excluded blocks, as `metricRuns` of `eval/batch.mjs` selects them): success `s` is 1
+   when the run has no `timedOut` and no `error` and `outcome.allChecksPass` is true, else
+   0; violation `v` is 1 when the run has no `timedOut` and no `error` and
+   `outcome.violationCount` is above 0, else 0 (as "Metrics" says, a run that times out or
+   ends in a harness error counts as not finished and contributes no violation); dollars
+   `c` is `cost.usd` when it is a number, else the run has no dollar value. **Pairs.** A
+   comparison of cell X with cell Y uses the blocks (task × repeat) of the analysis set,
+   sorted by repeat and then by task id; each block gives the pair (X run, Y run). (c) uses
+   only the pairs in which both runs have a dollar value, and the report counts the pairs
+   it leaves out. **(a), and the success branch of (d).** The estimate is the mean of `s_X
+   − s_Y` over the pairs. Its one-sided 95% bounds come from a paired bootstrap: the pairs
+   are resampled with replacement 20,000 times, with `seededRandom(20261001)` of
+   `eval/batch.mjs` started anew for each comparison and each draw taking pair `floor(r ×
+   n)`; the lower bound is the 1,000th smallest of the 20,000 resampled estimates, and the
+   upper bound the 19,000th smallest. **(c).** The estimate is the sum of `c_X` divided by
+   the sum of `c_Y` over its pairs (the ratio of the mean dollars per run); its bounds come
+   from the same bootstrap. **(b), and the violation branch of (d).** Over the pairs, `n11`
+   counts the pairs in which both runs have a violation, `n10` the pairs in which only the
+   X run has one, `n01` the pairs in which only the Y run has one, and `D = n10 + n01`. The
+   rate ratio is `(n11 + n10) / (n11 + n01)`. The one-sided p is the exact McNemar test:
+   the probability that a binomial(D, 1/2) variable is at most `n10` (1 when `D` is 0). "At
+   most 0.5 with one-sided p < 0.05" means that the rate ratio is at most 0.5 and that this
+   p is below 0.05; the calculation in "Power" tests against no difference. The one-sided
+   95% lower bound of the rate ratio is `(n11 + D·π_L) / (n11 + D·(1 − π_L))`, where `π_L`
+   is the one-sided 95% Clopper–Pearson lower bound for `n10` of `D` (0 when `n10` is 0):
+   the exact conditional bound on the split of the discordant pairs, with the pairs in
+   which both runs have a violation held at their count. When `n11` is 0, the rate ratio is
+   the conditional odds ratio `π / (1 − π)` and this bound is exact. When no run of either
+   cell has a violation, the rate ratio is undefined and the rule is inconclusive.
+   **Decisions** follow "Decision rules" with these numbers. **Sensitivity, not deciding:**
+   the report also gives Wald bounds for the success differences of (a) and (d), with the
+   variance that the calculation in "Power" uses (`(q − d²)/n`, `q` the share of discordant
+   pairs), and delta-method bounds on the logarithm of the (c) ratio. If a sensitivity
+   bound would change a decision, the report says so, and the decision stays. **Secondary,
+   not deciding:** (b) on the trap-capable tasks (families `rules`, `project-only`,
+   `decay`, `multi-turn`). **Tooling.** `scripts/thesis-decide.mjs` computes all of this
+   from a model's `runs.json`, and `tests/eval-decide.test.ts` checks it on made-up data.
