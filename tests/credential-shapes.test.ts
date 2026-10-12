@@ -187,3 +187,67 @@ test("a type name, a tagged template, and an optional chain are code too", () =>
     assert.deepEqual(findSecrets(line), [], line);
   }
 });
+
+// ── Share links: `security.shareLinkParams` names the query parameters that carry a share token, not a credential.
+
+/** A listed share-link parameter keeps its token readable, and still leaves the machine redacted. */
+function assertShareLink(name: string, text: string, shareLinkParams: string[]): void {
+  const found = findSecrets(text);
+  assert.ok(found.length > 0, `${name}: the URL carries credential-shaped values`);
+  assert.deepEqual(partitionSecrets(found, text, shareLinkParams).real, [], `${name}: no notice`);
+  assert.deepEqual(maskSecrets(text, shareLinkParams), { text, masked: 0 }, `${name}: no masking`);
+  // Redaction before anything leaves the machine is unchanged: `redact()` does not read the list.
+  for (const value of found) assert.ok(!redact(text).includes(value), `${name}: ${value} stays redacted on the way out`);
+}
+
+test("a listed share-link parameter keeps its token readable; unlisted, the same URL is masked", () => {
+  // Field case, 2026-10-10: a RED share link is what opens the post, so masking the token returns a dead link.
+  const url = `https://www.xiaohongshu.com/explore/6a313f5e000000001c0265f8?xsec_token=${opaque}&xsec_source=pc_search`;
+  assertShareLink("xsec_token", url, ["xsec_token"]);
+  assert.deepEqual(partitionSecrets(findSecrets(url), url).real, [opaque], "empty by default: still a notice");
+  assert.equal(maskSecrets(url).masked, 1, "empty by default: still masked");
+  assert.deepEqual(maskSecrets(url, []), maskSecrets(url), "an empty list changes nothing");
+});
+
+test("a credential by construction is masked even inside a listed parameter", () => {
+  // The parameter list is the user's, so a repository cannot name a parameter to keep a real key readable.
+  const shapes = [["sk-", "live7Qx2Lm9Rt4Vk8Np3Wd6Hz1"].join(""), ["ghp_", "Qx7Lm2Rt9Vk4Np8Wd3Hz6Jc1Qx7Lm2R"].join(""), ["AKIA3M7QZ2", "PRT9LVXW8Y"].join("")];
+  for (const value of shapes) {
+    const url = `https://x.test/o?share_token=${value}`;
+    assert.deepEqual(partitionSecrets(findSecrets(url), url, ["share_token"]).real, [value], `${value}: still real`);
+    assert.equal(maskSecrets(url, ["share_token"]).masked, 1, `${value}: still masked`);
+  }
+  // A JWT is a credential by construction too, whatever parameter it sits in.
+  const jwt = ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", "eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIn0", "0x3f9c2b7a1d4e8f6a2b5c9d7e1f4a8b6c3d2e5f9a"].join(".");
+  const url = `https://x.test/o?share_token=${jwt}`;
+  assert.deepEqual(partitionSecrets(findSecrets(url), url, ["share_token"]).real, [jwt]);
+  assert.equal(maskSecrets(url, ["share_token"]).masked, 1);
+});
+
+test("a listed value that also appears outside the URL is masked everywhere", () => {
+  // The same rule as a signed URL: a value that is a credential where it also appears is not a stand-in.
+  const reuse = `https://x.test/o?xsec_token=${opaque}&xsec_source=pc_search\nAPI_TOKEN=${opaque}`;
+  assert.deepEqual(partitionSecrets(findSecrets(reuse), reuse, ["xsec_token"]).real, [opaque], "the second occurrence is outside the URL");
+  assert.equal(maskSecrets(reuse, ["xsec_token"]).masked, 1);
+});
+
+test("a listed parameter excuses only its own value, and only a whole parameter name matches", () => {
+  const listed = ["Qx7Lm2Rt9Vk4", "Np8Wd3Hz6Jc1"].join("");
+  const unlisted = ["Rt9Vk4Np8W", "d3Hz6Jc1Qx7"].join("");
+  const url = `https://x.test/o?xsec_token=${listed}&session_token=${unlisted}`;
+  assert.deepEqual(partitionSecrets(findSecrets(url), url, ["xsec_token"]).real, [unlisted], "the unlisted parameter keeps its notice");
+  assert.equal(maskSecrets(url, ["xsec_token"]).masked, 1, "and only that value is masked");
+  assert.ok(maskSecrets(url, ["xsec_token"]).text.includes(listed), "the listed value survives");
+  // A shorter parameter name is not the parameter: `?xsec_token=` is not `?sec_token=`.
+  const prefixed = `https://x.test/o?xsec_token=${opaque}`;
+  assert.deepEqual(partitionSecrets(findSecrets(prefixed), prefixed, ["sec_token"]).real, [opaque], "a shorter name does not match");
+  assert.deepEqual(partitionSecrets(findSecrets(prefixed), prefixed, ["xsec_token"]).real, [], "the exact name does match");
+});
+
+test("a parameter name from the config is matched literally, so regex characters cannot widen the list", () => {
+  const url = `https://x.test/o?sh.are_token=${opaque}`;
+  assert.deepEqual(partitionSecrets(findSecrets(url), url, ["sh.are_token"]).real, [], "the literal name matches");
+  // `.` in the config must not act as a wildcard: `shXare_token` is a different parameter.
+  const other = `https://x.test/o?shXare_token=${opaque}`;
+  assert.deepEqual(partitionSecrets(findSecrets(other), other, ["sh.are_token"]).real, [opaque]);
+});

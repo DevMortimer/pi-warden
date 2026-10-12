@@ -53,7 +53,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     cause: section("cause", { ...off, claimsCause: 1, nudge: false, windowDays: 7 }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
-    security: section("security", { ...off, threshold: 1, maskOutput: false }),
+    security: section("security", { ...off, threshold: 1, maskOutput: false, shareLinkParams: [] }),
     rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
     // A missing section turns the turn-start reminder off: it is new, so nothing it says was expected.
     rulesAtTurnStart: section("rulesAtTurnStart", { ...off, threshold: 1 }),
