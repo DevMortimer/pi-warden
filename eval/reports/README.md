@@ -63,6 +63,13 @@ axis, multi-turn arcs, and both registered models — and never enter the analys
   call with its UTC time, price window, tokens, and dollars (A: all off-peak, because
   2026-10-01 is a Chinese public holiday); the Jev-error stop did not fire.
 
+## A/B thesis
+
+The registered v4 A/B thesis run, decided per model by the rules of
+[preregistration.md](../preregistration.md) ("Decision rules", Corrections 7):
+
+- [2026-10-10-thesis-v4](2026-10-10-thesis-v4/README.md): both batches finished, 0 excluded blocks on either model. Model A (`cheapestinference/deepseek-v4.1-flash`): success supported (+1.67 points); rule violations, cost, and the Jev increment inconclusive. Model B (`cheapestinference/mimo-v2.5`): success supported (+0.71 points), a halved violation rate supported (ratio 0.5000, p 0.0436), the Jev increment supported; cost inconclusive. Neither model proven or refuted.
+
 ## Checker changes and re-scoring
 
 A batch is scored once, by the runner, with the checkers of that day. When a checker is
