@@ -5,6 +5,7 @@ import {
   bootstrap,
   clopperPearsonLower,
   costPairs,
+  countDiscordant,
   decisionA,
   decisionB,
   decisionC,
@@ -13,12 +14,15 @@ import {
   mcnemarP,
   metricsRows,
   pairRuns,
+  poolComparisons,
   rateRatio,
   rateRatioLower,
   runValues,
   runsFromMetrics,
+  successBounds,
   successDiffEstimate,
   thesisDecide,
+  tokenSummary,
   waldBounds,
 } from "../eval/decide.mjs";
 import { metricRuns } from "../eval/batch.mjs";
@@ -251,4 +255,82 @@ test("a metrics file rebuilds the same decisions as the runs", () => {
   assert.deepEqual(rebuilt.sensitivity, direct.sensitivity);
   assert.deepEqual(rebuilt.secondary, direct.secondary);
   assert.deepEqual(rebuilt.pairs, direct.pairs);
+});
+
+// ---- the pooled thesis claims (post hoc, deciding nothing) -----------------------------------
+
+function tokenRun(task: string, cell: Cell, tokens: number): DecideRun {
+  return { task, repeat: 1, cell, outcome: { allChecksPass: true, violationCount: 0 }, waste: { totalTokens: tokens } };
+}
+
+test("metricsRows writes the hallucination flag h and the token count t", () => {
+  const runs: DecideRun[] = [
+    { task: "t1", repeat: 1, cell: "warden", outcome: { allChecksPass: true, violationCount: 0, unverifiedDoneClaim: true }, waste: { totalTokens: 123 } },
+    { task: "t1", repeat: 1, cell: "control", outcome: { allChecksPass: true, violationCount: 0 }, contradicted: [{ id: "x", sentence: "y" }], waste: { totalTokens: 456 } },
+    { task: "t2", repeat: 1, cell: "warden", outcome: { allChecksPass: true, violationCount: 0 }, waste: { totalTokens: 789 } },
+    { task: "t2", repeat: 1, cell: "control", outcome: { allChecksPass: true, violationCount: 0 } },
+  ];
+  const key = (r: { task: string; cell: string }) => `${r.task}|${r.cell}`;
+  const expected = new Map<string, [number, number | null]>([
+    ["t1|warden", [1, 123]], ["t1|control", [1, 456]], ["t2|warden", [0, 789]], ["t2|control", [0, null]],
+  ]);
+  const rows = metricsRows(metricRuns(runs));
+  for (const row of rows) assert.deepEqual([row.h, row.t], expected.get(key(row)));
+  const rebuilt = runsFromMetrics(rows);
+  for (const row of metricsRows(rebuilt)) assert.deepEqual([row.h, row.t], expected.get(key(row)));
+  const values = new Map(rebuilt.map((r) => [key(r), runValues(r)]));
+  for (const run of runs) assert.deepEqual(values.get(key(run)), runValues(run));
+});
+
+test("poolComparisons matches the hand-concatenated pairs and keeps two models' equal blocks apart", () => {
+  // Both models hold a t1 r1 block: combining the runs before pairing would merge them into one pair.
+  const a: DecideRun[] = [
+    run("t1", 1, "warden", { v: true, s: true }),
+    run("t1", 1, "control", { v: false, s: false }),
+    run("t2", 1, "warden", { v: false, s: true }),
+    run("t2", 1, "control", { v: false, s: true }),
+  ];
+  const b: DecideRun[] = [
+    run("t1", 1, "warden", { v: false, s: true }),
+    run("t1", 1, "control", { v: true, s: true }),
+    run("t3", 1, "warden", { v: true, s: false }),
+    run("t3", 1, "control", { v: false, s: true }),
+  ];
+  const models = [{ label: "A", runs: a }, { label: "B", runs: b }];
+  const pooled = poolComparisons(models, "warden", "control");
+  const concatenated = [...pairRuns(a, "warden", "control"), ...pairRuns(b, "warden", "control")];
+  const counts = countDiscordant(concatenated);
+  assert.equal(pooled.pairs, 4, "two pairs per model, not the three blocks of the combined runs");
+  assert.deepEqual([pooled.n11, pooled.n10, pooled.n01, pooled.n00, pooled.D], [counts.n11, counts.n10, counts.n01, counts.n00, counts.D]);
+  assert.deepEqual(pooled.success, successBounds(concatenated));
+  assert.equal(pooled.rateRatio, rateRatio(counts.n11, counts.n10, counts.n01));
+  assert.equal(pooled.lower, rateRatioLower(counts.n11, counts.n10, counts.n01));
+  assert.equal(pooled.p, mcnemarP(counts.n10, counts.D));
+  assert.deepEqual(pooled.byModel.map((m) => [m.label, m.pairs]), [["A", 2], ["B", 2]]);
+});
+
+test("tokenSummary gives the median, the 90th percentile, the over-threshold count, and the paired ratio", () => {
+  const controlTokens = [20, 20, 20, 20];
+  const wardenTokens = [10, 20, 40, 80];
+  const offlineTokens = [100, 200, 300, 400];
+  const runs: DecideRun[] = [];
+  for (let i = 0; i < 4; i++) {
+    runs.push(tokenRun(`t${i + 1}`, "control", controlTokens[i]!));
+    runs.push(tokenRun(`t${i + 1}`, "warden", wardenTokens[i]!));
+    runs.push(tokenRun(`t${i + 1}`, "warden-offline", offlineTokens[i]!));
+  }
+  const summary = tokenSummary([{ label: "M", runs }], { threshold: 30 });
+  assert.equal(summary.cells.control!.median, 20);
+  assert.equal(summary.cells.control!.p90, 20);
+  assert.equal(summary.cells.control!.over, 0);
+  assert.equal(summary.cells.warden!.median, 40);
+  assert.equal(summary.cells.warden!.p90, 80);
+  assert.equal(summary.cells.warden!.over, 2);
+  assert.equal(summary.cells["warden-offline"]!.median, 300);
+  assert.equal(summary.cells["warden-offline"]!.p90, 400);
+  assert.equal(summary.cells["warden-offline"]!.over, 4);
+  // Paired warden/control: 0.5, 1, 2, 4; one pair used fewer, geometric mean sqrt(2).
+  assert.equal(summary.pairs.pooled.n, 4);
+  assert.equal(summary.pairs.pooled.fewer, 1);
+  assert.ok(Math.abs(summary.pairs.pooled.ratio! - Math.SQRT2) < 1e-12);
 });

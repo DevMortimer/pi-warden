@@ -11,11 +11,17 @@ export const TRAP_FAMILIES: string[];
 export interface DecideOutcome {
   allChecksPass?: boolean;
   violationCount?: number;
+  unverifiedDoneClaim?: boolean;
 }
 
 export interface DecideCost {
   usd?: number;
   jevUnknown?: boolean;
+  [key: string]: unknown;
+}
+
+export interface DecideWaste {
+  totalTokens?: number;
   [key: string]: unknown;
 }
 
@@ -27,7 +33,9 @@ export interface DecideRun {
   timedOut?: boolean;
   error?: string;
   outcome?: DecideOutcome;
+  contradicted?: unknown[];
   cost?: DecideCost;
+  waste?: DecideWaste;
   infraError?: string;
   excludedBlock?: boolean;
   [key: string]: unknown;
@@ -47,6 +55,8 @@ export interface MetricsRow {
   s: number;
   v: number;
   c: number | null;
+  h: number;
+  t: number | null;
 }
 
 export interface Pair {
@@ -174,3 +184,65 @@ export function decisionD(pairs: Pair[], options?: BootstrapOptions): RuleD;
 export function waldBounds(pairs: Pair[]): WaldBounds;
 export function deltaLogRatioBounds(pairs: Pair[]): DeltaLogRatioBounds;
 export function thesisDecide(options?: { runs: DecideRun[]; plannedBlocks?: number; bootstrap?: BootstrapOptions }): Thesis;
+
+export interface PooledViolations {
+  x: number;
+  y: number;
+}
+
+export interface PooledComparison {
+  x: string;
+  y: string;
+  pairs: number;
+  violations: PooledViolations;
+  n11: number;
+  n10: number;
+  n01: number;
+  n00: number;
+  D: number;
+  rateRatio: number | undefined;
+  lower: number | undefined;
+  p: number;
+  success: SuccessBounds;
+  byModel: Array<{
+    label: string;
+    pairs: number;
+    violations: PooledViolations;
+    n11: number;
+    n10: number;
+    n01: number;
+    n00: number;
+    D: number;
+    rateRatio: number | undefined;
+    lower: number | undefined;
+    p: number;
+    success: SuccessBounds;
+  }>;
+}
+
+export interface TokenCell {
+  runs: number;
+  median: number | null;
+  p90: number | null;
+  over: number;
+}
+
+export interface TokenPairRatio {
+  n: number;
+  fewer: number;
+  ratio: number | null;
+}
+
+export interface TokenSummary {
+  threshold: number;
+  cells: Record<string, TokenCell>;
+  pairs: {
+    x: string;
+    y: string;
+    pooled: TokenPairRatio;
+    byModel: Array<{ label: string } & TokenPairRatio>;
+  };
+}
+
+export function poolComparisons(models: Array<{ label: string; runs: DecideRun[] }>, xCell: string, yCell: string): PooledComparison;
+export function tokenSummary(models: Array<{ label: string; runs: DecideRun[] }>, options?: { threshold?: number }): TokenSummary;

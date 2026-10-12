@@ -39,17 +39,27 @@ export function runValues(run) {
   return { s, v, c };
 }
 
-/** The per-run rows `--metrics` writes: the analysis set's `task`, `family`, `repeat`, `cell`, `s`, `v`, `c`. */
+/** The per-run rows `--metrics` writes: the analysis set's `task`, `family`, `repeat`, `cell`, `s`, `v`, `c`, plus the pooled thesis proxies `h` (hallucination) and `t` (tokens). */
 export function metricsRows(runs) {
   return metricRuns(runs).map((run) => {
     const { s, v, c } = runValues(run);
-    return { task: run.task, family: run.family ?? null, repeat: run.repeat, cell: run.cell, s, v, c: c ?? null };
+    return { task: run.task, family: run.family ?? null, repeat: run.repeat, cell: run.cell, s, v, c: c ?? null, h: hallucination(run), t: typeof run.waste?.totalTokens === "number" ? run.waste.totalTokens : null };
   });
 }
 
 /**
+ * The hallucination proxy of the pooled thesis claims: 1 when a done claim has no passing check
+ * behind it (`outcome.unverifiedDoneClaim`) or a claim is contradicted (`contradicted` non-empty),
+ * else 0. This is post hoc: the registration decides nothing with it.
+ */
+function hallucination(run) {
+  return run.outcome?.unverifiedDoneClaim === true || (Array.isArray(run.contradicted) && run.contradicted.length > 0) ? 1 : 0;
+}
+
+/**
  * The runs a metrics file rebuilds: each row becomes a run whose `runValues` are the row's `s`, `v`,
- * and `c`. A metrics file holds only the analysis set, so it has no excluded block.
+ * and `c`, and whose pooled proxies are the row's `h` and `t`. A metrics file holds only the
+ * analysis set, so it has no excluded block.
  */
 export function runsFromMetrics(rows) {
   return rows.map((row) => ({
@@ -57,8 +67,10 @@ export function runsFromMetrics(rows) {
     family: row.family,
     repeat: row.repeat,
     cell: row.cell,
-    outcome: { allChecksPass: row.s === 1, violationCount: row.v },
+    outcome: { allChecksPass: row.s === 1, violationCount: row.v, unverifiedDoneClaim: row.h === 1 },
+    contradicted: row.h === 1 ? [{}] : [],
     cost: row.c === null ? {} : { usd: row.c },
+    waste: row.t === null || row.t === undefined ? {} : { totalTokens: row.t },
   }));
 }
 
@@ -319,8 +331,7 @@ export function deltaLogRatioBounds(pairs) {
  * The whole model decision: the analysis set, the four rules, the sensitivity bounds, and the
  * secondary (b) on the trap-capable tasks. More than 10% of the planned blocks excluded makes every
  * rule inconclusive; otherwise the model is proven, refuted, or reported part by part.
- */
-export function thesisDecide({ runs, plannedBlocks, bootstrap: bootstrapOptions } = {}) {
+ */export function thesisDecide({ runs, plannedBlocks, bootstrap: bootstrapOptions } = {}) {
   const analysis = metricRuns(runs);
   const excludedBlocks = new Set(runs.filter((r) => r.infraError).map((r) => `${r.task}\u0000${r.repeat}`)).size;
   const share = plannedBlocks ? excludedBlocks / plannedBlocks : 0;
@@ -349,5 +360,74 @@ export function thesisDecide({ runs, plannedBlocks, bootstrap: bootstrapOptions 
     rules,
     sensitivity: { waldA: waldBounds(pairsAC), waldD: waldBounds(pairsAD), deltaC: deltaLogRatioBounds(pairsAC) },
     secondary: { bTrap: decisionB(trapPairs), pairs: trapPairs.length },
+  };
+}
+
+/**
+ * Pooled across models, post hoc: the registration applies each rule per model and never pools, so
+ * these two summaries describe and decide nothing. A comparison concatenates each model's own
+ * paired blocks (`pairRuns`), so two models with the same task and repeat stay two separate pairs.
+ */
+export function poolComparisons(models, xCell, yCell) {
+  const pairs = models.flatMap((m) => pairRuns(m.runs, xCell, yCell));
+  const counts = countDiscordant(pairs);
+  const summarize = (modelPairs) => {
+    const c = countDiscordant(modelPairs);
+    return {
+      pairs: modelPairs.length,
+      violations: { x: c.n11 + c.n10, y: c.n11 + c.n01 },
+      ...c,
+      rateRatio: rateRatio(c.n11, c.n10, c.n01),
+      lower: rateRatioLower(c.n11, c.n10, c.n01),
+      p: mcnemarP(c.n10, c.D),
+      success: successBounds(modelPairs),
+    };
+  };
+  return {
+    x: xCell,
+    y: yCell,
+    ...summarize(pairs),
+    byModel: models.map((m) => ({ label: m.label, ...summarize(pairRuns(m.runs, xCell, yCell)) })),
+  };
+}
+
+/** The index-based quantile of an ascending list: `sorted[floor(q * n)]`; null for an empty list. */
+function quantile(sorted, q) {
+  return sorted.length ? sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(q * sorted.length)))] : null;
+}
+
+/** The paired token ratio (warden over control) over the pairs that carry a token count on both sides. */
+function tokenPairRatio(pairs) {
+  const withTokens = pairs.filter((p) => typeof p.x.waste?.totalTokens === "number" && typeof p.y.waste?.totalTokens === "number");
+  let sum = 0;
+  let fewer = 0;
+  for (const p of withTokens) {
+    sum += Math.log(p.x.waste.totalTokens / p.y.waste.totalTokens);
+    if (p.x.waste.totalTokens < p.y.waste.totalTokens) fewer++;
+  }
+  return { n: withTokens.length, fewer, ratio: withTokens.length ? Math.exp(sum / withTokens.length) : null };
+}
+
+/**
+ * The token summary of the pooled runs: median, 90th percentile, and the count over `threshold`
+ * per cell, and the paired warden-versus-control ratio per model and pooled. Post hoc, like
+ * `poolComparisons`.
+ */
+export function tokenSummary(models, { threshold = 1_000_000 } = {}) {
+  const all = models.flatMap((m) => m.runs);
+  const cells = {};
+  for (const cell of [...new Set(all.map((r) => r.cell))].sort()) {
+    const values = all.filter((r) => r.cell === cell && typeof r.waste?.totalTokens === "number").map((r) => r.waste.totalTokens).sort((a, b) => a - b);
+    cells[cell] = { runs: values.length, median: quantile(values, 0.5), p90: quantile(values, 0.9), over: values.filter((v) => v > threshold).length };
+  }
+  return {
+    threshold,
+    cells,
+    pairs: {
+      x: "warden",
+      y: "control",
+      pooled: tokenPairRatio(models.flatMap((m) => pairRuns(m.runs, "warden", "control"))),
+      byModel: models.map((m) => ({ label: m.label, ...tokenPairRatio(pairRuns(m.runs, "warden", "control")) })),
+    },
   };
 }
