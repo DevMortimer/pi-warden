@@ -20,6 +20,13 @@ const PI_IDENTITY = [
   "PI_SUBAGENT_PARENT_SESSION",
 ];
 
+/**
+ * The runner sets the pi-warden trace folder per cell, for the cells that ask Jev only. An
+ * inherited one would make a `warden-offline` run write a trace outside its run folder, so it
+ * is dropped like an identity variable.
+ */
+const PI_CELL_VARS = ["PI_WARDEN_TRACE_DIR"];
+
 /** Names that carry credentials often enough to check the value. Bare provider names are excluded on purpose. */
 const SECRET_NAME = /(?:^|_)(?:API|ACCESS|APP|AUTH|BEARER|CLIENT|CONN(?:ECTION)?|CREDENTIALS?|DATABASE|DB|DSN|ENCRYPTION|GH|GITHUB|KEY|LINEAR|NPM|OPENAI|ANTHROPIC|PASSWORD|PASSWD|PRIVATE|PUBLISH|REGISTRY|SECRET|SIGNING|SLACK|SSH|STRIPE|SUPABASE|TOKEN|TYPESAFE|VAULT)(?:$|_)/i;
 
@@ -42,7 +49,7 @@ try {
 export function filterEnv(env, { agentDir, isSecretValue: predicate = isSecretValue }) {
   const out = {};
   for (const [name, value] of Object.entries(env)) {
-    if (PI_IDENTITY.includes(name)) continue;
+    if (PI_IDENTITY.includes(name) || PI_CELL_VARS.includes(name)) continue;
     if (SECRET_NAME.test(name) && value && predicate(String(value))) continue;
     out[name] = value;
   }

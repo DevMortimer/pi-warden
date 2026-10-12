@@ -41,3 +41,10 @@ test("filteredNames reports names without values", () => {
   assert.deepEqual(names.sort(), ["GH_TOKEN", "PI_MODEL"]);
   assert.equal(names.some((name) => name.includes("ghp_")), false);
 });
+
+test("an inherited PI_WARDEN_TRACE_DIR is dropped, so only the cells that ask Jev get one", () => {
+  const env = { PATH: "/usr/bin", PI_WARDEN_TRACE_DIR: "/somewhere/trace" };
+  const kept = filterEnv(env, options);
+  assert.equal("PI_WARDEN_TRACE_DIR" in kept, false);
+  assert.deepEqual(filteredNames(env, options), ["PI_WARDEN_TRACE_DIR"]);
+});

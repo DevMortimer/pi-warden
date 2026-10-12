@@ -14,6 +14,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 - A stall rule for batch runs (`eval/stall.mjs`, `--stall-min`, default 15): a pi process whose session log shows no new assistant message or tool result for that long is killed, and the run is an infrastructure failure, re-run and excluded like an API error. `--arc-timeout-min` sets the timeout of one turn of a multi-turn run.
 - Equivalent dollars for the subscription models (`eval/config.mjs`): `cheapestinference/deepseek-v4.1-flash` at DeepSeek's `deepseek-flash` rates by call timestamp, `cheapestinference/mimo-v2.5` at Xiaomi's official MiMo-V2.5 price.
 - `scripts/eval-timing.mjs`: per-run wall time, per-call queue wait and generation time, and runs per hour of a batch folder, from timings only; `node eval/power.mjs --registered R1,R2` prints the power at the registered sizes.
+- A/B thesis decision tool (`eval/decide.mjs`, `scripts/thesis-decide.mjs`): the decision rules of `eval/preregistration.md` ("Decision rules", Corrections 7) computed from one model's `runs.json` (the per-run values, the paired blocks, the exact McNemar p, the one-sided Clopper-Pearson lower bound, the violation rate ratio and its lower bound, the paired bootstrap, the Wald and delta-method sensitivity bounds, and the decision of each rule and of the model); `node scripts/thesis-decide.mjs <runs.json> --label A --blocks 120` prints the table (`--json` for JSON), and `--metrics FILE` writes the analysis set's per-run values. Tests on made-up data in `tests/eval-decide.test.ts`. Repo tooling; rides along with the next release.
+- A/B thesis registration, Corrections 5 to 7 (`eval/preregistration.md`): the stops and other events of both batches are recorded, and the analysis methods behind the decision rules' bounds and p-value are fixed before any of them is computed.
+
+### Fixed
+
+- Eval environment filtering (`eval/env.mjs`): `filterEnv` now drops an inherited `PI_WARDEN_TRACE_DIR`, so a `warden-offline` run cannot write its pi-warden trace into a folder inherited from the session that started the batch; only the cells that ask Jev get one, set by `scripts/eval-ab.mjs`.
 
 ## 1.6.0
 

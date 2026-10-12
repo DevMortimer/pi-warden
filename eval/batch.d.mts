@@ -28,6 +28,8 @@ export interface BatchState {
   runs: BatchRun[];
   jevUsd: number;
   stops?: unknown[];
+  superseded?: BatchRun[];
+  reruns?: { at?: string; blocks?: { task: string; repeat: number }[] }[];
 }
 
 export interface BatchStop {
@@ -64,9 +66,10 @@ export function runKey(run: { task: string; cell: string; repeat: number }): str
 export function infraReason(events: unknown[], run?: { timedOut?: boolean; code?: number | null; err?: string; stalled?: boolean }): string | null;
 export function recoveredErrors(events: unknown[]): number;
 export function markExclusions(runs: BatchRun[]): BatchRun[];
+export function rerunExcluded(state: BatchState, blocks: Block[], at?: string): { blocks: { task: string; repeat: number }[]; runs: BatchRun[] };
 export function metricRuns(runs: BatchRun[]): BatchRun[];
 export function infraCounts(runs: BatchRun[], plannedBlocks: number): InfraCounts;
-export function infraSection(runs: BatchRun[], plannedBlocks: number): string[];
+export function infraSection(runs: BatchRun[], plannedBlocks: number, reruns?: { at?: string; blocks?: { task: string; repeat: number }[] }[]): string[];
 export function runBatch(input: {
   blocks: Block[];
   state: BatchState;

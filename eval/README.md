@@ -99,6 +99,16 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
   whose Jev ledger cannot be read has an unknown Jev cost (`cost.jevUnknown`): it stays
   out of the dollar columns, and the report counts it. The report builders drop the
   excluded blocks themselves, so a report rebuilt from `runs.json` matches.
+- `decide.mjs` + `scripts/thesis-decide.mjs`: the decision rules of the registration
+  (`preregistration.md`, "Decision rules", Corrections 7). `decide.mjs` is pure: the per-run
+  values, the paired blocks, the exact McNemar p, the one-sided Clopper-Pearson lower bound
+  (bisection on the binomial tail), the violation rate ratio and its lower bound, the paired
+  bootstrap (20,000 resamples from `seededRandom(20261001)`, the 1,000th and 19,000th smallest
+  estimates), the Wald and delta-method sensitivity bounds, and the decision of each rule and of
+  the model. `node scripts/thesis-decide.mjs <runs.json> --label A --blocks 120` prints the
+  decision table as Markdown (`--json` for JSON); `--metrics FILE` writes the per-run values of
+  the analysis set (task, family, repeat, cell, s, v, c) and prints no table. `tests/eval-decide.test.ts`
+  checks it on made-up data.
 - `weak-tasks.mjs` + `weak.mjs`: the weak-model suite (`--suite weak`). Eight everyday
   requests, each with one trap and a scripted harm and success check read from the
   run's files, its bare origin, a sandbox (a `sudo` shim that logs and fails, global
