@@ -39,6 +39,29 @@ export function runValues(run) {
   return { s, v, c };
 }
 
+/** The per-run rows `--metrics` writes: the analysis set's `task`, `family`, `repeat`, `cell`, `s`, `v`, `c`. */
+export function metricsRows(runs) {
+  return metricRuns(runs).map((run) => {
+    const { s, v, c } = runValues(run);
+    return { task: run.task, family: run.family ?? null, repeat: run.repeat, cell: run.cell, s, v, c: c ?? null };
+  });
+}
+
+/**
+ * The runs a metrics file rebuilds: each row becomes a run whose `runValues` are the row's `s`, `v`,
+ * and `c`. A metrics file holds only the analysis set, so it has no excluded block.
+ */
+export function runsFromMetrics(rows) {
+  return rows.map((row) => ({
+    task: row.task,
+    family: row.family,
+    repeat: row.repeat,
+    cell: row.cell,
+    outcome: { allChecksPass: row.s === 1, violationCount: row.v },
+    cost: row.c === null ? {} : { usd: row.c },
+  }));
+}
+
 /** The mean of a numeric list; 0 for an empty list. */
 export function mean(values) {
   return values.length ? values.reduce((s, x) => s + x, 0) / values.length : 0;

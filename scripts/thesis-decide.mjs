@@ -1,20 +1,23 @@
 #!/usr/bin/env node
 /**
  * The decision table of one model's A/B thesis run (`eval/preregistration.md`, "Decision rules",
- * Corrections 7). Reads one model's `runs.json` and prints the four rules and the model decision.
+ * Corrections 7). Reads one model's `runs.json`, or a `--metrics` file it wrote earlier, and
+ * prints the four rules and the model decision.
  *
  *   node scripts/thesis-decide.mjs <runs.json> --label A --blocks 120
  *     prints the decision table as Markdown.
  *   node scripts/thesis-decide.mjs <runs.json> --label A --blocks 120 --json
  *     prints the same as JSON.
+ *   node scripts/thesis-decide.mjs <metrics.json> --label A --blocks 120
+ *     reads a metrics file (the rows `--metrics` writes: task, family, repeat, cell, s, v, c)
+ *     and prints the same table; the first line says the input was a metrics file.
  *   node scripts/thesis-decide.mjs <runs.json> --label A --blocks 120 --metrics FILE
  *     writes the per-run values of the analysis set (task, family, repeat, cell, s, v, c)
  *     to FILE and prints no table.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { metricRuns } from "../eval/batch.mjs";
-import { runValues, thesisDecide } from "../eval/decide.mjs";
+import { metricsRows, runsFromMetrics, thesisDecide } from "../eval/decide.mjs";
 
 function usage(message) {
   console.error(message);
@@ -44,18 +47,14 @@ if (label !== "A" && label !== "B") usage("--label must be A or B");
 if (!Number.isInteger(blocks) || blocks <= 0) usage("--blocks must be a positive integer");
 
 const data = JSON.parse(readFileSync(runsPath, "utf8"));
-const runs = Array.isArray(data) ? data : data.runs;
+const isMetrics = Array.isArray(data) && data.every((row) => row && typeof row.s === "number" && typeof row.v === "number" && "c" in row && !("outcome" in row));
+const runs = isMetrics ? runsFromMetrics(data) : Array.isArray(data) ? data : data.runs;
 if (!Array.isArray(runs)) usage(`${runsPath} has no runs array`);
 
-const analysis = metricRuns(runs);
 const thesis = thesisDecide({ runs, plannedBlocks: blocks });
 
 if (cli.metrics) {
-  const rows = analysis.map((run) => {
-    const { s, v, c } = runValues(run);
-    return { task: run.task, family: run.family ?? null, repeat: run.repeat, cell: run.cell, s, v, c: c ?? null };
-  });
-  writeFileSync(cli.metrics, `${JSON.stringify(rows, null, 2)}\n`);
+  writeFileSync(cli.metrics, `${JSON.stringify(metricsRows(runs), null, 2)}\n`);
   process.exit(0);
 }
 
@@ -69,7 +68,7 @@ if (cli.json) {
 
 const { a, b, c, d } = thesis.rules;
 const md = [];
-md.push(`# Thesis decision, model ${label}`);
+md.push(`# Thesis decision, model ${label}${isMetrics ? " (from a metrics file: the analysis set only; excluded blocks are not in it)" : ""}`);
 md.push("");
 md.push(`Planned blocks: ${thesis.plannedBlocks}; excluded blocks after the re-run pass: ${thesis.excludedBlocks} (${(thesis.share * 100).toFixed(1)}%). Pairs: warden vs control ${thesis.pairs.control}; warden vs warden-offline ${thesis.pairs.offline}.`);
 md.push("");

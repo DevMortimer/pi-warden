@@ -39,6 +39,16 @@ export interface RunValues {
   c: number | undefined;
 }
 
+export interface MetricsRow {
+  task: string;
+  family: string | null;
+  repeat: number;
+  cell: string;
+  s: number;
+  v: number;
+  c: number | null;
+}
+
 export interface Pair {
   task: string;
   repeat: number;
@@ -141,6 +151,8 @@ export interface Thesis {
 }
 
 export function runValues(run: DecideRun): RunValues;
+export function metricsRows(runs: DecideRun[]): MetricsRow[];
+export function runsFromMetrics(rows: MetricsRow[]): DecideRun[];
 export function mean(values: number[]): number;
 export function pairRuns(runs: DecideRun[], xCell: string, yCell: string): Pair[];
 export function costPairs(pairs: Pair[]): Pair[];

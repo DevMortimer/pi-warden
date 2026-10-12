@@ -11,14 +11,17 @@ import {
   decisionD,
   deltaLogRatioBounds,
   mcnemarP,
+  metricsRows,
   pairRuns,
   rateRatio,
   rateRatioLower,
   runValues,
+  runsFromMetrics,
   successDiffEstimate,
   thesisDecide,
   waldBounds,
 } from "../eval/decide.mjs";
+import { metricRuns } from "../eval/batch.mjs";
 import type { DecideRun, Pair } from "../eval/decide.mjs";
 
 type Cell = "control" | "warden-offline" | "warden";
@@ -222,4 +225,30 @@ test("the model is proven, refuted, or reported part by part", () => {
     return { s: true, v: false, c: 1 };
   });
   assert.equal(thesisDecide({ runs: part, plannedBlocks: 20 }).model, "part");
+});
+
+test("a metrics file rebuilds the same decisions as the runs", () => {
+  const runs: DecideRun[] = [
+    run("t1", 1, "warden", { s: true, v: false, c: 1, family: "rules" }),
+    run("t1", 1, "control", { s: false, v: true, c: 2, family: "rules" }),
+    run("t1", 1, "warden-offline", { s: true, v: false, c: 1.5, family: "rules" }),
+    run("t2", 1, "warden", { s: true, v: true, c: 3, family: "decay" }),
+    run("t2", 1, "control", { s: true, v: true, c: 4, family: "decay" }),
+    run("t2", 1, "warden-offline", { s: false, v: false, c: 2, family: "decay" }),
+    run("t3", 1, "warden", { s: true, v: false, c: 1 }),
+    run("t3", 1, "control", { s: true, v: false, c: null }),
+    run("t3", 1, "warden-offline", { s: true, v: false, c: 1 }),
+    run("t4", 1, "warden", { s: true, v: true, c: 1, timedOut: true, family: "rules" }),
+    run("t4", 1, "control", { s: true, v: true, c: 2, family: "rules" }),
+    run("t4", 1, "warden-offline", { s: true, v: true, c: 1, family: "rules" }),
+    run("t5", 1, "warden", { s: true, v: true, c: 1, error: true, family: "decay" }),
+    run("t5", 1, "control", { s: true, v: true, c: 2, family: "decay" }),
+    run("t5", 1, "warden-offline", { s: true, v: true, c: 1, family: "decay" }),
+  ];
+  const direct = thesisDecide({ runs, plannedBlocks: 5 });
+  const rebuilt = thesisDecide({ runs: runsFromMetrics(metricsRows(metricRuns(runs))), plannedBlocks: 5 });
+  assert.deepEqual(rebuilt.rules, direct.rules);
+  assert.deepEqual(rebuilt.sensitivity, direct.sensitivity);
+  assert.deepEqual(rebuilt.secondary, direct.secondary);
+  assert.deepEqual(rebuilt.pairs, direct.pairs);
 });
