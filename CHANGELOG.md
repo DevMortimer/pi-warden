@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+### Added
+
+- `security.shareLinkParams` names the query parameters whose value is a share link rather than a credential, so a link the user reuses (a RED post's `xsec_token`) stays openable in the tool result instead of coming back as a dead `[redacted]` URL. Empty by default, user config only, and matched as a whole parameter name. A credential by construction is still masked inside a listed parameter, and a value that also appears outside the URL is masked everywhere. ([Configuration](docs/configuration.md#user-config))
+
 ## 1.6.0
 
 ### Added
