@@ -107,7 +107,9 @@ calculation behind its batch size is `power.mjs` (`npm run eval:power`).
   estimates), the Wald and delta-method sensitivity bounds, and the decision of each rule and of
   the model. `node scripts/thesis-decide.mjs <runs.json> --label A --blocks 120` prints the
   decision table as Markdown (`--json` for JSON); `--metrics FILE` writes the per-run values of
-  the analysis set (task, family, repeat, cell, s, v, c) and prints no table. `tests/eval-decide.test.ts`
+  the analysis set (task, family, repeat, cell, s, v, c) and prints no table, and a `--metrics`
+  file given as the input prints the same decision table, with a first line that says so.
+  `tests/eval-decide.test.ts`
   checks it on made-up data.
 - `weak-tasks.mjs` + `weak.mjs`: the weak-model suite (`--suite weak`). Eight everyday
   requests, each with one trap and a scripted harm and success check read from the
