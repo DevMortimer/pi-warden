@@ -2,8 +2,11 @@
 // pattern layer, so no key and no requests are needed. Build first.
 //
 //   node scripts/credential-replay.mjs --report eval/reports/<batch> [--show-values]
-//   node scripts/credential-replay.mjs --files <list> [--lib <dist/index.js>] [--since <date>] [--skip <list>] --out <jsonl>
+//   node scripts/credential-replay.mjs --files <list> [--lib <dist/index.js>] [--since <date>] [--skip <list>] [--share-link-params <list>] --out <jsonl>
 //   node scripts/credential-replay.mjs --compare --before <jsonl> --after <jsonl> --removed <file>
+//
+// `--share-link-params a,b` replays with `security.shareLinkParams` set, so a named share-link parameter can be
+// measured against the same corpus as any other build flag.
 //
 // The session modes write one JSON line per session file, so a file that hangs under one build still leaves every
 // other file measured: rerun with the file added to `--skip`. `--lib` picks the build under test, which is how the
@@ -22,8 +25,8 @@ const REPLACEMENT = '[redacted]';
 const library = values(process.argv, '--lib', new URL('../dist/index.js', import.meta.url).pathname);
 
 /** The replacement step of maskSecrets, so one replay measures the same code path for every build. */
-function maskText({ findSecrets, partitionSecrets }, text) {
-  const { real } = partitionSecrets(findSecrets(text), text);
+function maskText({ findSecrets, partitionSecrets }, text, shareLinkParams = []) {
+  const { real } = partitionSecrets(findSecrets(text), text, shareLinkParams);
   let out = text;
   let masked = 0;
   for (const value of [...real].sort((a, b) => b.length - a.length)) {
@@ -144,7 +147,7 @@ function sessionFiles(root, since, listFile) {
  * One JSON line per session file: every recorded tool result, the values it masks, and the masking cost. Files are
  * appended as they finish, so a build that hangs on one file still leaves the rest measured.
  */
-async function sessionsMode(lib, root, since, out) {
+async function sessionsMode(lib, root, since, out, shareLinkParams = []) {
   const sinceMs = Date.parse(since);
   if (Number.isNaN(sinceMs)) {
     console.error(`--since is not a date: ${since}`);
@@ -173,14 +176,14 @@ async function sessionsMode(lib, root, since, out) {
         textsScanned++;
         charsScanned += text.length;
         const started = performance.now();
-        const masked = maskText(lib, text);
+        const masked = maskText(lib, text, shareLinkParams);
         const ms = performance.now() - started;
         maskMs += ms;
         // The replay must measure the shipped masking, not a copy of it. A build without maskSecrets is the point of
         // `--lib` (the earlier build), and the check runs where the export exists.
         if (!checked && typeof lib.maskSecrets === 'function') {
           checked = true;
-          const shipped = lib.maskSecrets(text);
+          const shipped = lib.maskSecrets(text, shareLinkParams);
           if (shipped.text !== masked.text || shipped.masked !== masked.masked) {
             console.error('the replay masking step and maskSecrets disagree; the numbers below are not the shipped path');
             process.exit(3);
@@ -288,7 +291,8 @@ if (process.argv.includes('--compare')) {
   }
   const module = await import(library);
   const root = values(process.argv, '--sessions', join(homedir(), '.pi', 'agent', 'sessions'));
-  await sessionsMode(module, root, values(process.argv, '--since', '1970-01-01'), out);
+  const shareLinkParams = `${values(process.argv, '--share-link-params', '')}`.split(',').map((name) => name.trim()).filter(Boolean);
+  await sessionsMode(module, root, values(process.argv, '--since', '1970-01-01'), out, shareLinkParams);
 } else {
   const report = values(process.argv, '--report');
   if (!report) {
