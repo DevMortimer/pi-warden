@@ -8,7 +8,48 @@ so every decision rule applies to both.
   `--label B --blocks 140`, on the two `runs.json` files of the batch folder.
 - Raw numbers: [`model-a-metrics.json`](model-a-metrics.json) (360 rows) and
   [`model-b-metrics.json`](model-b-metrics.json) (420 rows), the analysis set's per-run values
-  `task`, `family`, `repeat`, `cell`, `s`, `v`, `c`.
+  `task`, `family`, `repeat`, `cell`, `s`, `v`, `c`, and the pooled thesis proxies `h`
+  (hallucination) and `t` (tokens).
+
+## Does pi-warden help?
+
+The registered rules decide each model on its own, in "Result" below. This section pools both
+models after the run to answer the question the run was built for: does pi-warden help? The
+pooling is post hoc, and it describes and decides nothing.
+
+| Comparison | Runs with a violation (X / Y) | Rate ratio | Lower bound | p | Success estimate | Success lower | Success upper |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| warden vs control | 16 / 24 | 0.6667 | 0.3839 | 0.1215 | +1.15 pts | -0.77 pts | +3.08 pts |
+| warden-offline vs control | 25 / 24 | 1.0417 | 0.7019 | 0.6445 | -4.62 pts | -7.69 pts | -1.92 pts |
+| warden vs warden-offline | 16 / 25 | 0.6400 | 0.4048 | 0.0680 | +5.77 pts | +2.69 pts | +8.85 pts |
+
+Success estimate and bounds are in points. From `node scripts/thesis-pooled.mjs
+eval/reports/2026-10-10-thesis-v4/model-a-metrics.json:A
+eval/reports/2026-10-10-thesis-v4/model-b-metrics.json:B`.
+
+### What this run can say about the thesis
+
+- **Fewer hallucinations.** This run counts a hallucination when a done claim has no passing
+  check behind it, or when a claim is contradicted by the checks. Across the 780 runs of both
+  models, 0 runs made an unverified done claim and 4 runs made a contradicted claim (2
+  `control`, 1 `warden-offline`, 1 `warden`). The tasks almost never produced this failure, so
+  the run cannot test the claim in either direction.
+- **A smarter model.** The `control` cells already pass 88% to 92% of the tasks, so there is
+  little room to show a gain. Pooled across both models, the `warden` success difference against
+  `control` is +1.15 points, with bootstrap bounds -0.77 to +3.08 points. The bounds include 0:
+  the run shows no gain and no loss.
+- **Saving context.** Tokens processed per run, pooled across both models:
+
+  | Cell | Runs | Median | 90th percentile | Over 1,000,000 |
+  | --- | --- | --- | --- | --- |
+  | control | 260 | 42,444 | 239,060 | 18 |
+  | warden-offline | 260 | 111,701 | 10,836,674 | 47 |
+  | warden | 260 | 53,980 | 410,946 | 23 |
+
+  In this run pi-warden did not save context: a typical `warden` run used more tokens than its
+  `control` run, and `warden-offline` used the most. In the paired `warden` versus `control`
+  comparison, `warden` used fewer tokens in 102 of 260 pairs, and the geometric-mean ratio was
+  1.22 (model A 1.08, model B 1.36).
 
 ## Result
 
@@ -236,8 +277,11 @@ pairs), so every discordance rate here is uncertain.
 - Both decision tables from a `runs.json`: `node scripts/thesis-decide.mjs <runs.json> --label A
   --blocks 120` and `--label B --blocks 140`.
 - The metrics files here give the analysis set directly: 360 rows for A and 420 for B, each
-  `task`, `family`, `repeat`, `cell`, `s`, `v`, `c`. The per-cell table and the rule estimates,
-  pair counts, bounds, and p-values follow from those rows by the methods of Corrections 7.
+  `task`, `family`, `repeat`, `cell`, `s`, `v`, `c`, `h`, `t`. The per-cell table and the rule
+  estimates, pair counts, bounds, and p-values follow from those rows by the methods of
+  Corrections 7.
+- The pooled thesis view (post hoc, decides nothing) from the metrics files here:
+  `node scripts/thesis-pooled.mjs eval/reports/2026-10-10-thesis-v4/model-a-metrics.json:A eval/reports/2026-10-10-thesis-v4/model-b-metrics.json:B`.
 - The Jev dollars per run and the batch totals come from the `cost.jevUsd` field of `runs.json`
   and the batch's `jevUsd` field; the metrics files hold `c` (total dollars per run) only.
 
