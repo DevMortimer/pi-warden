@@ -50,6 +50,17 @@ test("offline secret hints need no consent; disabled guards neither judge nor wa
   assert.equal(securityNotice(disabled), undefined);
 });
 
+test("a value in a listed share-link parameter is traced, not announced", async () => {
+  const value = ["Qx7Lm2Rt9Vk4", "Np8Wd3Hz6Jc1"].join("");
+  const url = `https://x.test/o?xsec_token=${value}&xsec_source=pc_search`;
+  const traced = await evaluateOutput("read", url, undefined, { ...options(), security: { ...defaultConfig().security, shareLinkParams: ["xsec_token"] } });
+  assert.equal(traced.secret, false);
+  assert.equal(traced.syntheticIds?.length, 1);
+  assert.equal(securityNotice(traced), undefined);
+  const plain = await evaluateOutput("read", url, undefined, options());
+  assert.equal(plain.secret, true);
+});
+
 test("placeholders, token counts, and source identifiers earn no credential verdict", async () => {
   const samples: Array<[string, string]> = [
     ["sed output of a redacted env file", "DATABASE_URL=<redacted>\nTYPESAFE_API_KEY=<redacted>\nGITHUB_TOKEN=<redacted>"],

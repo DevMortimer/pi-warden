@@ -191,7 +191,8 @@ function escapeRegExp(text: string): string {
 function shareLinkSpans(text: string, shareLinkParams: readonly string[]): Array<[number, number]> {
   const names = [...new Set(shareLinkParams.map((name) => name.trim()).filter(Boolean))];
   if (!names.length) return [];
-  const pattern = new RegExp(`[?&](?:${names.map(escapeRegExp).join("|")})=([^&#]*)`, "gi");
+  // The value stops at a backslash because a JSON body writes `&` as `\u0026`, and the name is matched with its case.
+  const pattern = new RegExp(`[?&](?:${names.map(escapeRegExp).join("|")})=([^&#\\\\]*)`, "g");
   const spans: Array<[number, number]> = [];
   for (const url of text.matchAll(HTTPS_URL)) {
     for (const param of url[0].matchAll(pattern)) {
@@ -225,8 +226,8 @@ function onlyInsideSpans(value: string, spans: ReadonlyArray<[number, number]>, 
 /**
  * Split credentials into the ones worth announcing and the stand-ins that are only traced. With `text`, a value found
  * only in the query signature of a signed URL is a stand-in too, as is a value found only in a share-link parameter
- * named by `shareLinkParams`. A credential by construction stays real even inside a listed parameter, so a repository
- * cannot talk its own agent into keeping a key readable by naming a query parameter after it.
+ * named by `shareLinkParams`. A credential by construction stays real even inside a listed parameter, so a real key
+ * that a tool result puts in a listed parameter is still masked.
  */
 export function partitionSecrets(secrets: readonly string[], text?: string, shareLinkParams: readonly string[] = []): { real: string[]; synthetic: string[] } {
   const real: string[] = [];

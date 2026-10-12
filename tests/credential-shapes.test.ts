@@ -210,7 +210,7 @@ test("a listed share-link parameter keeps its token readable; unlisted, the same
 });
 
 test("a credential by construction is masked even inside a listed parameter", () => {
-  // The parameter list is the user's, so a repository cannot name a parameter to keep a real key readable.
+  // A real key that a tool result puts in a listed parameter is still masked.
   const shapes = [["sk-", "live7Qx2Lm9Rt4Vk8Np3Wd6Hz1"].join(""), ["ghp_", "Qx7Lm2Rt9Vk4Np8Wd3Hz6Jc1Qx7Lm2R"].join(""), ["AKIA3M7QZ2", "PRT9LVXW8Y"].join("")];
   for (const value of shapes) {
     const url = `https://x.test/o?share_token=${value}`;
@@ -242,6 +242,18 @@ test("a listed parameter excuses only its own value, and only a whole parameter 
   const prefixed = `https://x.test/o?xsec_token=${opaque}`;
   assert.deepEqual(partitionSecrets(findSecrets(prefixed), prefixed, ["sec_token"]).real, [opaque], "a shorter name does not match");
   assert.deepEqual(partitionSecrets(findSecrets(prefixed), prefixed, ["xsec_token"]).real, [], "the exact name does match");
+  // A parameter name is matched with its case: `XSEC_TOKEN` is a different parameter.
+  const upper = `https://x.test/o?XSEC_TOKEN=${opaque}`;
+  assert.deepEqual(partitionSecrets(findSecrets(upper), upper, ["xsec_token"]).real, [opaque], "the name is matched with its case");
+});
+
+test("a JSON-escaped share link keeps the span inside its own parameter", () => {
+  // A JSON body writes `&` as `\u0026` (Go's encoder does by default): six literal characters the span must end at,
+  // or it runs over the next parameter's value and leaves it readable.
+  const other = ["Rt9Vk4Np8W", "d3Hz6Jc1Qx7"].join("");
+  const text = `{"url":"https://x.test/o?xsec_token=${opaque}\\u0026api_key=${other}"}`;
+  assert.ok(!maskSecrets(text, ["xsec_token"]).text.includes(other), "the next parameter's value is masked");
+  assert.ok(maskSecrets(text, ["xsec_token"]).masked >= 1, "something was masked");
 });
 
 test("a parameter name from the config is matched literally, so regex characters cannot widen the list", () => {

@@ -234,6 +234,13 @@ test("a project file with security.maskOutput false leaves output masking on", (
   assert.equal(applyProjectOverrides(userOff, { security: { maskOutput: true } }).security.maskOutput, false, "nor can a project file turn it back on over the user's choice");
 });
 
+test("a project file cannot name a security.shareLinkParams entry", () => {
+  assert.deepEqual(applyProjectOverrides(defaultConfig(), { security: { shareLinkParams: ["xsec_token"] } }).security.shareLinkParams, [], "the project file cannot name a parameter");
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { security: { shareLinkParams: [" xsec_token ", 7, "", null] } }).security.shareLinkParams, ["xsec_token"], "the user file trims and drops non-strings and blanks");
+  const user = applyUserOverrides(defaultConfig(), { security: { shareLinkParams: ["xsec_token"] } });
+  assert.deepEqual(applyProjectOverrides(user, { security: { shareLinkParams: ["other"] } }).security.shareLinkParams, ["xsec_token"], "a project file cannot replace the user's list");
+});
+
 // Legacy and malformed config sections must preserve the objects dereferenced by event handlers.
 test("regression: hostile config files cannot leave a guard's `.enabled` dereference undefined", () => {
   const hostile = [undefined, null, false, 0, "yes", [], { enabled: null }, { prose: null }, { prose: false }, { prose: 3 }, { prose: [] }];
