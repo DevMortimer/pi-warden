@@ -59,7 +59,8 @@ these, and the decisions above stay as the rules give them.
   - No pi-warden code path skipped the consent check: the judge is created in one place, behind
     it. The other 254 `warden-offline` runs recorded no Jev request (260 in all).
   - The batch harness copied the TypeSafe key into every run's agent folder, the offline cell
-    included, which is what let these requests authenticate.
+    included, which is what let these requests authenticate. The harness now copies the
+    TypeSafe key only into the cells that ask Jev.
 - **Control violation rates against the planning inputs.** Model A's `control` cell carries 4
   violations in 120 runs (3.33%), against the 1.30% planned in "Power"; model B's carries 20 in
   140 (14.29%), against 4.67% planned.
@@ -247,6 +248,6 @@ pairs), so every discordance rate here is uncertain.
   method was fixed before any metric was computed.
 - Success and violation are scored only for runs that finished (not timed out, no harness
   error); a timed-out or errored run counts as not finished and contributes no violation.
-- The Jev totals include the Jev dollars of the superseded runs, per Corrections 4, so they are
-  not the sums of the per-cell Jev column.
+- The Jev totals include the Jev dollars of the superseded runs and of the attempts that failed
+  and ran again (see Infrastructure), so they are not the sums of the per-cell Jev column.
 - One maintainer, one machine, one subscription slot. The two models are never pooled.

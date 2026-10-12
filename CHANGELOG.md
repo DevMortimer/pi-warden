@@ -21,6 +21,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Fixed
 
+- A/B run key isolation (`scripts/eval-ab.mjs`): the harness copies the TypeSafe key into a run's agent folder only for a cell that asks Jev, so an agent in any other cell cannot turn Jev on by itself, as 6 `warden-offline` runs of the v4 batch did. Repo tooling; rides along with the next release.
 - Eval environment filtering (`eval/env.mjs`): `filterEnv` now drops an inherited `PI_WARDEN_TRACE_DIR`, so a `warden-offline` run cannot write its pi-warden trace into a folder inherited from the session that started the batch; only the cells that ask Jev get one, set by `scripts/eval-ab.mjs`.
 
 ## 1.6.0

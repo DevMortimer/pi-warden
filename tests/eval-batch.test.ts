@@ -342,8 +342,10 @@ test("a cap already met by earlier spend starts nothing", async () => {
  * A fake `pi` on PATH. It writes the session log a run leaves (an assistant message) and,
  * by mode: fails like an API error or like a crash before any message (`PI_FAKE_INFRA`, the
  * number of failing attempts in `PI_FAKE_INFRA_FAILS`, for the cell `PI_FAKE_INFRA_CELL`),
- * leaves a Jev ledger in a warden run, and interrupts its parent at its Nth start. The failing
- * attempts are counted per cell over the whole batch, across resumes.
+ * leaves a Jev ledger in a warden run, and interrupts its parent at its Nth start. It also
+ * appends `<cell> key|no-key` to `keyed.log` in its state dir, saying whether the run's agent
+ * dir held a TypeSafe key. The failing attempts are counted per cell over the whole batch,
+ * across resumes.
  */
 const FAKE_PI = `#!/usr/bin/env node
 const fs = require("fs"), path = require("path");
@@ -354,6 +356,7 @@ const agentDir = process.env.PI_CODING_AGENT_DIR;
 let cell = "control";
 if (warden) cell = JSON.parse(fs.readFileSync(path.join(agentDir, "pi-warden", "config.json"), "utf8")).typesafe ? "warden" : "warden-offline";
 const state = process.env.PI_FAKE_STATE;
+fs.appendFileSync(path.join(state, "keyed.log"), cell + (fs.existsSync(path.join(agentDir, "pi-typesafe", "auth.json")) ? " key" : " no-key") + "\\n");
 const bump = (name) => {
   const file = path.join(state, name);
   const n = (fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0) + 1;
@@ -592,6 +595,21 @@ test("a Jev request in flight when the run's process exits, with no fallback in 
     assert.equal(warden.abandonedJevRequests, 1);
     assert.equal(doc.runs.find((r: { cell: string }) => r.cell === "warden-offline").abandonedJevRequests, undefined, "the offline cell asks Jev nothing");
     assert.equal(doc.runs.find((r: { cell: string }) => r.cell === "control").abandonedJevRequests, undefined);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("only a cell that asks Jev gets the TypeSafe key in its run agent folder", () => {
+  const f = fixture();
+  const home = join(f.root, "home");
+  try {
+    mkdirSync(join(home, ".pi", "agent", "pi-typesafe"), { recursive: true });
+    writeFileSync(join(home, ".pi", "agent", "pi-typesafe", "auth.json"), '{"key":"fake"}\n');
+    const run = f.go(["--repeats", "1", "--concurrency", "1", "--out", f.out], { HOME: home });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    const keyed = new Map(readFileSync(join(f.root, "fake-state", "keyed.log"), "utf8").trim().split("\n").map((line) => line.split(" ") as [string, string]));
+    assert.equal(keyed.get("warden"), "key", "the warden cell asks Jev and gets the key");
+    assert.equal(keyed.get("warden-offline"), "no-key", "the offline cell asks Jev nothing and must not get the key");
+    assert.equal(keyed.get("control"), "no-key", "the control cell asks Jev nothing and must not get the key");
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 

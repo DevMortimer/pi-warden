@@ -342,6 +342,9 @@ function providerPackages() {
  * is never in settings — the warden cells load it explicitly with `-e`, so the
  * cells differ by exactly one extension, and the two warden cells differ by one
  * config switch (`typesafe`, the consent that turns Jev judgments on).
+ * Only a cell that asks Jev gets the TypeSafe key: an agent in another cell
+ * could otherwise turn Jev on by itself, as 6 `warden-offline` runs of the v4
+ * batch did.
  */
 const GLOBAL_AGENT = join(homedir(), ".pi", "agent");
 
@@ -353,8 +356,8 @@ async function prepareAgentDir(base, allowance = null, waste = null, consent = t
   for (const f of ["auth.json", "commandcode-models.json", "models.json", "models-store.json"]) {
     if (existsSync(join(GLOBAL_AGENT, f))) await cp(join(GLOBAL_AGENT, f), join(agentDir, f));
   }
-  // pi-typesafe stores its key in <agentDir>/pi-typesafe/auth.json — copy without logging.
-  if (existsSync(join(GLOBAL_AGENT, "pi-typesafe", "auth.json"))) {
+  // pi-typesafe stores its key in <agentDir>/pi-typesafe/auth.json; copy it without logging, and only for a cell that asks Jev.
+  if (consent && existsSync(join(GLOBAL_AGENT, "pi-typesafe", "auth.json"))) {
     await cp(join(GLOBAL_AGENT, "pi-typesafe", "auth.json"), join(agentDir, "pi-typesafe", "auth.json"));
   }
   const settings = {
