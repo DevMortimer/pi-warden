@@ -26,6 +26,7 @@ v4, corrected after the model-A batch stopped on a Jev error, before any outcome
 v4, corrected again before any outcome of a v4 batch was read: the cancelled-sample check no longer numbers the judged entries; the entry nearest in time to the failed request must be within 1,000 ms of it and have no `off-task` ("Jev-error stop", Corrections 3).
 
 v4, corrected while model B's main pass ran, after it had excluded more than 10% of its blocks and before any metric of a v4 batch was computed: after a model's main pass, every block it excluded for an infrastructure failure runs once more, all three cells, and the exclusions after that one pass are final ("Resume", Corrections 4).
+
 v4, after both batches finished and before any decision-rule bound, test, or metric of a v4 batch was computed: the stops and other events of both batches are recorded (Corrections 5 and 6), and the methods behind the decision rules' bounds and p-value are fixed (Corrections 7).
 
 ## The stopped v3 batches
@@ -508,21 +509,23 @@ outcome to choose the concurrency, the timeouts, or the sizes.
    to 4, in the order they happened. All times are UTC. The dates, causes, exit codes, and
    run counts below are infrastructure records (the stop lines of the batch log and the
    `stops`, `reruns`, `superseded`, `startedAt`, and `jevUsd` fields of `runs.json`), not
-   task outcomes.
+   task outcomes. Each event carries its entry number in the batch's stop log; entries 1
+   and 2 are the model-A stops of Corrections 2 and 3, entry 6 is the pinned extension, and
+   entry 11a is the blindness record, both in Corrections 6.
 
-   - **2026-10-04T20:04:19Z, model B main pass, interrupted.** The Mac's battery ran out
+   - **Entry 3, 2026-10-04T20:04:19Z, model B main pass, interrupted.** The Mac's battery ran out
      (battery health warnings with about 2% left, no sleep or wake since 2026-09-30, and
      the machine booted again at 2026-10-05T00:33:30Z). It stopped before its next run; 125
      of the 420 runs were recorded. The batch resumed with `resume-3.sh` on
      2026-10-05T13:59:14Z, 125 recorded and 295 to run.
 
-   - **2026-10-06T00:49:54Z, model B main pass, exit 3 (Jev error).** The run
+   - **Entry 4, 2026-10-06T00:49:54Z, model B main pass, exit 3 (Jev error).** The run
      `t19-secret-arc warden r3` failed on 4 Jev requests, TypeSafe HTTP 503 for at least 38
      seconds, not the account balance; the run is not recorded and runs again. 172 of the
      420 runs were recorded. The batch resumed with `resume-4.sh` on 2026-10-06T08:56:56Z,
      172 recorded and 248 to run.
 
-   - **2026-10-06T08:56:56Z, model B main pass, resume attempt aborted (stopped by hand).**
+   - **Entry 5, 2026-10-06T08:56:56Z, model B main pass, resume attempt aborted (stopped by hand).**
      Every run of the `resume-4.sh` attempt failed before its first assistant message with
      `Model "cheapestinference/mimo-v2.5" not found`: a `git pull --rebase` in a local
      dotfiles checkout had replaced the provider extension with a link into a store path
@@ -530,21 +533,21 @@ outcome to choose the concurrency, the timeouts, or the sizes.
      The batch resumed with `resume-5.sh` on 2026-10-06T09:13:52Z, 172 recorded and 248 to
      run.
 
-   - **2026-10-06T21:31:57Z, 22:04:17Z, 22:47:22Z, and 23:22:59Z, model B main pass, exit 4
+   - **Entries 7, 2026-10-06T21:31:57Z, 22:04:17Z, 22:47:22Z, and 23:22:59Z, model B main pass, exit 4
      four times.** Each stop was 5 infrastructure failures in a row, every failure an
      agent-model HTTP 503 "The model is at capacity right now"; the failed runs are dropped
      and run again. Recorded at the stops: 234, 234, 234, and 235 of the 420 runs (186,
      186, 186, and 185 planned runs left). `settle()` resumed each after 15 minutes, its
      four automatic resumes.
 
-   - **2026-10-07T01:30:34Z, model B main pass, exit 3 (Jev error).** The run `t7-todo
+   - **Entry 8, 2026-10-07T01:30:34Z, model B main pass, exit 3 (Jev error).** The run `t7-todo
      warden r5` failed on 1 Jev request, a TypeSafe connection failure with no HTTP status
      and no `lastFailure` in the run's `auth-state.json`, so not the cancelled-sample
      exception of Corrections 2 and 3. 256 of the 420 runs were recorded; 163 planned runs
      did not run. The batch resumed with `resume-6.sh` on 2026-10-07T01:55:05Z, 256
      recorded and 164 to run.
 
-   - **2026-10-07T02:15:59Z, 02:50:10Z, 03:26:41Z, 04:02:13Z, and 04:36:55Z, model B main
+   - **Entries 9, 2026-10-07T02:15:59Z, 02:50:10Z, 03:26:41Z, 04:02:13Z, and 04:36:55Z, model B main
      pass, exit 4 five times.** Each stop was 5 infrastructure failures in a row, every
      attempt an agent-model HTTP 503 "The model is at capacity right now", with some
      earlier attempts an HTTP 429; the failed runs are dropped and run again. Recorded at
@@ -553,7 +556,7 @@ outcome to choose the concurrency, the timeouts, or the sizes.
      reached its limit of four and ended `resume-6.sh`. The batch resumed with
      `resume-7.sh` on 2026-10-07T14:28:43Z, 259 recorded and 161 to run.
 
-   - **2026-10-07T18:42:47Z, model B main pass, exit 4, and 2026-10-07T23:26:46Z, model B
+   - **Entry 10, 2026-10-07T18:42:47Z, model B main pass, exit 4, and 2026-10-07T23:26:46Z, model B
      main pass, exit 3 (Jev error).** Both ran under `resume-7.sh`. The exit-4 stop was 5
      infrastructure failures in a row (agent-model HTTP 503, one earlier attempt an HTTP
      429), dropped and run again, with 308 of the 420 runs recorded and 112 planned runs
@@ -563,7 +566,7 @@ outcome to choose the concurrency, the timeouts, or the sizes.
      not run. The batch resumed with `resume-8.sh` on 2026-10-08T13:18:08Z, 392 recorded
      and 28 to run.
 
-   - **2026-10-08T18:53:05Z, model B re-run pass, exit 3 (Jev error).** Model B's main pass
+   - **Entry 11, 2026-10-08T18:53:05Z, model B re-run pass, exit 3 (Jev error).** Model B's main pass
      was DONE at 2026-10-08T17:03:37Z; the re-run pass of Corrections 4 started at
      17:03:38Z with 20 excluded blocks, moved 60 first runs to `superseded`, and stopped on
      `t16-decay warden r4` with 1 Jev request failed, TypeSafe HTTP 529; the run is not
@@ -571,7 +574,7 @@ outcome to choose the concurrency, the timeouts, or the sizes.
      pass), 60 were `superseded`, and 45 planned runs did not run. The batch resumed with
      `resume-9.sh` on 2026-10-09T12:11:20Z, 374 recorded and 46 to run.
 
-   - **2026-10-09T15:13:43Z, model B re-run pass, interrupted.** The Mac restarted, orderly
+   - **Entry 12, 2026-10-09T15:13:43Z, model B re-run pass, interrupted.** The Mac restarted, orderly
      and not from an empty battery; who or what restarted it is not confirmed. No stop rule
      fired and no `model2.status` file was written. 380 runs were recorded (360 of the main
      pass and 20 of the pass), 60 were `superseded`, and 40 of the pass's runs were left.
@@ -603,8 +606,8 @@ outcome to choose the concurrency, the timeouts, or the sizes.
    changed, and the `src/` tree stayed the commit under test, so the launch check of
    "Commit under test" still printed nothing.
 
-   **Standing decision on TypeSafe service errors.** On 2026-10-09, when the owner released
-   the resume order for entry 11, the owner decided that a stop caused only by TypeSafe
+   **Standing decision on TypeSafe service errors.** On 2026-10-09, when the owner allowed
+   the resume after entry 11, the owner decided that a stop caused only by TypeSafe
    service errors resumes by itself after 30 minutes, and that every other Jev-error stop
    still waits for the owner.
 
@@ -617,15 +620,19 @@ outcome to choose the concurrency, the timeouts, or the sizes.
    no recorded value changed. `eval/env.mjs` now drops an inherited `PI_WARDEN_TRACE_DIR`,
    so only the cells that ask Jev get one.
 
-   **Blindness record (entry 11a).** While it wrote entry 11, the agent session that recorded
-   the stop read outcome lines of the batch, one of the per-cell outcome tables printed
-   when model 2's main pass ended, the `testsPass` and `outcome` fields of the 14 runs of
-   model 2's re-run pass recorded at that time, and 80 characters of the last trace entry
-   of the stopped run. None of it went into entry 11 or into a decision, and the owner and
-   the recording session did not see these lines; every decision recorded so far came
-   before it, and that agent session has ended. The batch tool wrote its per-cell tables
-   when each pass ended, and apart from that reading nobody read them before Corrections 5
-   to 7 were committed.
+   **Blindness record (entry 11a).** While it wrote entry 11, the agent session that
+   recorded the stop read outcome lines of the batch, one of the per-cell outcome tables
+   printed when model 2's main pass ended, the `testsPass` and `outcome` fields of the 14
+   runs of model 2's re-run pass recorded at that time, and 80 characters of the last trace
+   entry of the stopped run. None of it went into entry 11 or into a decision. The owner
+   did not see these lines, and neither did the session that wrote the analysis methods of
+   Corrections 7; to learn what the line ranges held, that session printed only the header
+   rows of the tables, not their values. Corrections 4 and the standing decision on
+   TypeSafe service errors came before this reading, and Corrections 5 to 7 were written
+   after it without these lines. The agent session that read them has ended and did no
+   further work on this batch. The batch tool wrote its per-cell tables when each pass
+   ended, and apart from that reading nobody read them before Corrections 5 to 7 were
+   committed.
 
    **Model B's duration.** Its main pass ran from its first recorded run at
    2026-10-04T04:23:10Z to DONE at 2026-10-08T17:03:37Z, 108.7 h of wall clock for 420
