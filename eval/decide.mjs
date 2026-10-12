@@ -151,10 +151,14 @@ export function rateRatio(n11, n10, n01) {
   return (n11 + n10) / (n11 + n01);
 }
 
-/** The one-sided 95% lower bound of the rate ratio, with both-cell violations held at n11. */
+/**
+ * The one-sided 95% lower bound of the rate ratio, with both-cell violations held at n11. It is
+ * undefined only when no run of either cell has a violation (n11 + D = 0); with no discordant
+ * pair and n11 > 0 the bound is 1 (Corrections 7, where pi_L is 0 when n10 is 0).
+ */
 export function rateRatioLower(n11, n10, n01) {
   const D = n10 + n01;
-  if (D === 0) return undefined;
+  if (n11 + D === 0) return undefined;
   const pi = clopperPearsonLower(n10, D);
   return (n11 + D * pi) / (n11 + D * (1 - pi));
 }

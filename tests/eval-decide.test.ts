@@ -109,6 +109,16 @@ test("no violation in either cell is an undefined ratio and an inconclusive rule
   assert.equal(decisionB(violPairs(0, 0, 0)).decision, "inconclusive");
 });
 
+test("the rate-ratio bound is 1 when no pair is discordant but both cells have a violation", () => {
+  assert.equal(rateRatio(2, 0, 0), 1);
+  assert.equal(rateRatioLower(2, 0, 0), 1);
+  const decision = decisionB(violPairs(2, 0, 0));
+  assert.equal(decision.rateRatio, 1);
+  assert.equal(decision.p, 1);
+  assert.equal(decision.lower, 1);
+  assert.equal(decision.decision, "refuted");
+});
+
 test("a timed-out or errored run counts as not finished", () => {
   assert.deepEqual(runValues(run("t", 1, "warden", { s: true, v: true, timedOut: true })), { s: 0, v: 0, c: 1 });
   assert.deepEqual(runValues(run("t", 1, "warden", { s: true, v: true, error: true })), { s: 0, v: 0, c: 1 });
