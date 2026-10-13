@@ -233,6 +233,8 @@ export interface SecurityConfig {
   threshold: number;
   /** Replace high-confidence credential values in tool results with `[redacted]` before the model sees them. */
   maskOutput: boolean;
+  /** Query parameters whose value is a share link rather than a credential. Empty by default; user config only. */
+  shareLinkParams: string[];
 }
 
 export interface RulesConfig {
@@ -576,7 +578,7 @@ export function defaultConfig(): WardenConfig {
     done: { enabled: true, claimsDone: 0.7, nudge: true, uiProof: true, uiFiles: [...DEFAULT_UI_FILES], visualTools: defaultVisualTools() },
     cause: { enabled: true, claimsCause: 0.7, nudge: true, windowDays: 7 },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
-    security: { enabled: true, threshold: 0.7, maskOutput: true },
+    security: { enabled: true, threshold: 0.7, maskOutput: true, shareLinkParams: [] },
     rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
     // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
     rulesAtTurnStart: { enabled: true, threshold: 0.3 },
@@ -1077,6 +1079,8 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
       threshold: source === "project" ? projectProbability("security.threshold", raw.security.threshold, base.security.threshold, warnings) : probability(raw.security.threshold, base.security.threshold),
       // Only the user file can turn masking off: a repository must not unmask credentials in its own agent's output.
       maskOutput: source === "user" ? boolean(raw.security.maskOutput, base.security.maskOutput) : base.security.maskOutput,
+      // A listed parameter excuses a share-link token, so it is user config only for the same reason as `maskOutput`.
+      shareLinkParams: source === "user" ? globList(raw.security.shareLinkParams, base.security.shareLinkParams) : base.security.shareLinkParams,
     } : base.security,
     context: isObject(raw.context) ? {
       enabled: boolean(raw.context.enabled, base.context.enabled),

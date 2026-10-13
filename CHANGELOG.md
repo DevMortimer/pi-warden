@@ -24,6 +24,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - A/B run key isolation (`scripts/eval-ab.mjs`): the harness copies the TypeSafe key into a run's agent folder only for a cell that asks Jev, so an agent in any other cell cannot turn Jev on by itself, as 6 `warden-offline` runs of the v4 batch did. Repo tooling; rides along with the next release.
 - Eval environment filtering (`eval/env.mjs`): `filterEnv` now drops an inherited `PI_WARDEN_TRACE_DIR`, so a `warden-offline` run cannot write its pi-warden trace into a folder inherited from the session that started the batch; only the cells that ask Jev get one, set by `scripts/eval-ab.mjs`.
+## 1.7.0
+
+### Added
+
+- `security.shareLinkParams` names the query parameters whose value is a share link rather than a credential, so a link the user reuses (a RED post's `xsec_token`) stays openable in the tool result instead of coming back as a dead `[redacted]` URL. Empty by default, user config only, and matched as a whole parameter name, with its case. A credential by construction is still masked inside a listed parameter, and a value that also appears outside the URL is masked everywhere. ([Configuration](docs/configuration.md#user-config))
 
 ## 1.6.0
 

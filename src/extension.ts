@@ -2192,7 +2192,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // and sends nothing, so it runs with the security guard off; only the user's `security.maskOutput` stops it.
     const rawTexts = event.content.filter(part => part.type === "text").map(part => part.text ?? "");
     const maskOutput = config.security.maskOutput;
-    const masking = maskOutput ? rawTexts.map(maskSecrets) : [];
+    const masking = maskOutput ? rawTexts.map((blockText) => maskSecrets(blockText, config.security.shareLinkParams)) : [];
     const maskedCount = masking.reduce((sum, block) => sum + block.masked, 0);
     let maskIndex = 0;
     const maskedContent = maskedCount ? event.content.map(part => part.type === "text" ? { ...part, text: masking[maskIndex++]!.text } : part) : event.content;

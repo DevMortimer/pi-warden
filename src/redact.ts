@@ -178,11 +178,42 @@ function signedUrlSpans(text: string): Array<[number, number]> {
   return spans;
 }
 
+/** A literal for a `RegExp`, for the parameter names that come from the user's config. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * True when every occurrence of `value` in `text` sits inside the query signature of a signed URL. Such a URL expires
- * within minutes and grants one object; issue-tracker and storage API responses are full of them.
+ * Start and end offsets of the value of every listed share-link parameter in an `https://` URL in `text`. A share link
+ * carries a token that is what makes the link openable at all, and the same link is reused rather than expiring, so
+ * its token is a stand-in like a signed URL's signature: `security.shareLinkParams` names the parameters to read.
  */
-function signedUrlOnly(value: string, spans: ReadonlyArray<[number, number]>, text: string): boolean {
+function shareLinkSpans(text: string, shareLinkParams: readonly string[]): Array<[number, number]> {
+  const names = [...new Set(shareLinkParams.map((name) => name.trim()).filter(Boolean))];
+  if (!names.length) return [];
+  // The value stops at a backslash because a JSON body writes `&` as `\u0026`, and the name is matched with its case.
+  const pattern = new RegExp(`[?&](?:${names.map(escapeRegExp).join("|")})=([^&#\\\\]*)`, "g");
+  const spans: Array<[number, number]> = [];
+  for (const url of text.matchAll(HTTPS_URL)) {
+    for (const param of url[0].matchAll(pattern)) {
+      const end = url.index + param.index + param[0].length;
+      spans.push([end - param[1]!.length, end]);
+    }
+  }
+  return spans;
+}
+
+/** True when the value is a credential by construction, so a listed share-link parameter must not excuse it. */
+function isTokenShape(value: string): boolean {
+  return TOKEN_SHAPES.some((shape) => new RegExp(shape.source).test(value));
+}
+
+/**
+ * True when every occurrence of `value` in `text` sits inside one of `spans`. A signed URL expires within minutes and
+ * grants one object; issue-tracker and storage API responses are full of them. A listed share-link token is excused
+ * on the same terms: a value that also appears outside the URL is a credential wherever it is, and is masked there.
+ */
+function onlyInsideSpans(value: string, spans: ReadonlyArray<[number, number]>, text: string): boolean {
   if (!spans.length) return false;
   let found = false;
   for (let index = text.indexOf(value); index !== -1; index = text.indexOf(value, index + 1)) {
@@ -194,13 +225,20 @@ function signedUrlOnly(value: string, spans: ReadonlyArray<[number, number]>, te
 
 /**
  * Split credentials into the ones worth announcing and the stand-ins that are only traced. With `text`, a value found
- * only in the query signature of a signed URL is a stand-in too.
+ * only in the query signature of a signed URL is a stand-in too, as is a value found only in a share-link parameter
+ * named by `shareLinkParams`. A credential by construction stays real even inside a listed parameter, so a real key
+ * that a tool result puts in a listed parameter is still masked.
  */
-export function partitionSecrets(secrets: readonly string[], text?: string): { real: string[]; synthetic: string[] } {
+export function partitionSecrets(secrets: readonly string[], text?: string, shareLinkParams: readonly string[] = []): { real: string[]; synthetic: string[] } {
   const real: string[] = [];
   const synthetic: string[] = [];
-  const spans = text === undefined ? [] : signedUrlSpans(text);
-  for (const value of secrets) (syntheticish(value) || signedUrlOnly(value, spans, text ?? "") ? synthetic : real).push(value);
+  const signed = text === undefined ? [] : signedUrlSpans(text);
+  const shared = text === undefined ? [] : shareLinkSpans(text, shareLinkParams);
+  for (const value of secrets) {
+    // The span test first, so the default (no listed parameter) costs nothing.
+    const standIn = syntheticish(value) || onlyInsideSpans(value, signed, text ?? "") || (onlyInsideSpans(value, shared, text ?? "") && !isTokenShape(value));
+    (standIn ? synthetic : real).push(value);
+  }
   return { real, synthetic };
 }
 
@@ -217,8 +255,8 @@ export function findSecrets(text: string): string[] {
  * assignments, `Authorization` and `Bearer` values, and URL passwords. Stand-ins (`syntheticish`, signed URL
  * signatures) stay readable. Masking the whole detected set means a value is never announced without being masked.
  */
-export function maskSecrets(text: string): { text: string; masked: number } {
-  const { real } = partitionSecrets(findSecrets(text), text);
+export function maskSecrets(text: string, shareLinkParams: readonly string[] = []): { text: string; masked: number } {
+  const { real } = partitionSecrets(findSecrets(text), text, shareLinkParams);
   let out = text;
   let masked = 0;
   // Longest first, so a value that contains another is replaced whole.
