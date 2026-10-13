@@ -6,7 +6,11 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- `trial.silentHalf` (default `false`, user config only): a randomized comparison of the guards in real work. Each session is put in arm `live` or `silent`, 50/50 from its session id, so a resumed session keeps its arm. A `silent` session judges as usual — every guard runs and every request is made — but records each delivery it would have made instead of sending it: rules, slop, prose, stuck and repeat, done-check, cause-check, open loops, intent-mismatch, off-task, should-proceed, large-output, and action-warning steers, conscience tips, preference notes, turn-start rules reminders, compact evidence, subagent triage wakes, call-waste notes, and tool-output compression. Everything that protects data stays live in both arms: irreversible calls are held or blocked, credential values are masked, security, credential, and prompt-injection notices are delivered, and runaway stops and the warnings about pi-warden itself are unaffected. One `pi-warden-trial` custom session entry names the arm at session start, and one per withheld delivery carries its kind, guard, time, and the redacted text clipped to 300 characters; custom entries stay out of the model's context, so both arms can be read back from the session logs. With the setting off, no entry is written and no delivery changes. ([Configuration](docs/configuration.md#user-config))
+
+<!-- Next release starts here. -->
 
 ## 1.7.1
 

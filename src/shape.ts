@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 13;
+export const EXPECTED_SCHEMA = 14;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -70,6 +70,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     waste: section("waste", { ...off, tip: false, every: 20, sleep: false, paging: false, search: false, recheck: false }),
     learning: section("learning", { patternAnalysis: true, retentionDays: 365, allowedRetentionDays: 90 }),
     prefs: section("prefs", { enabled: false, inject: false }),
+    // The trial is new and off by default: a stale config module has no trial, nothing is suppressed, and no delivery changes.
+    trial: section("trial", { silentHalf: false }),
     // A missing section keeps Pi's own compaction summary, as before the section existed.
     compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
     // An older config module collects no warnings.

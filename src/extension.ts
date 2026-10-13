@@ -85,6 +85,8 @@ import { formatCompaction, relevanceCompaction } from "./relevance.js";
 import type { CompactionStats, FallbackReason } from "./relevance.js";
 import { applyLoopAction, formatLoopsForUser, formatOpenLoops, LOOP_ACTIONS, LOOP_CHARS, loopsFingerprint, loopsPath, openLoops, readLoops, updateLoops } from "./loops.js";
 import { changePrefsStore, emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, LESSON_CHARS, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences } from "./prefs.js";
+import { armFor, isSuppressed, steerDeliveryKind, TRIAL_ENTRY_TYPE, trialText } from "./trial.js";
+import type { SuppressedKind, TrialArm, TrialDeliveryKind, TrialRecord } from "./trial.js";
 import type { PrefItem, PrefsScan } from "./prefs.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
@@ -352,6 +354,8 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
   }
   if (typeof config.subagent.observer !== "boolean") config.subagent = { ...config.subagent, observer: false };
   if (typeof config.widget.subagent !== "string") config.widget = { ...config.widget, subagent: DEFAULT_TEMPLATES.subagent };
+  // The trial section is new and off by default: a stale shape module hands the config over without it, and no delivery changes.
+  if (typeof config.trial !== "object" || config.trial === null || typeof config.trial.silentHalf !== "boolean") config.trial = { silentHalf: false };
   return { config, missing };
 }
 
@@ -463,6 +467,32 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let holdLog: HoldLog | undefined;
   /** The session id of the open session; every hold row of it carries it. */
   let activeSessionId: string | undefined;
+  /** The silent-half trial arm of the open session: "live" unless the user turned the trial on and the id hashed silent. */
+  let trialArm: TrialArm = "live";
+  /**
+   * One line of the trial record, appended as a custom session entry: Pi keeps it in the session log and never adds it
+   * to the model's context. A host without the entry API keeps the session running; the failure is local and loud once.
+   */
+  let trialRecordFailed = false;
+  const appendTrial = (record: TrialRecord): void => {
+    try {
+      if (typeof pi.appendEntry === "function") pi.appendEntry(TRIAL_ENTRY_TYPE, record);
+      else if (!trialRecordFailed) { trialRecordFailed = true; console.warn("pi-warden: the host has no appendEntry; the trial record cannot be written"); }
+    } catch (error) {
+      if (trialRecordFailed) return;
+      trialRecordFailed = true;
+      console.warn("pi-warden: trial record failed:", error instanceof Error ? error.message : String(error));
+    }
+  };
+  /** Whether the silent arm withholds this delivery; a withheld delivery is recorded, redacted and clipped to 300 chars. */
+  const trialHolds = (kind: SuppressedKind, guard: string, text: string): boolean => {
+    if (trialArm !== "silent" || !isSuppressed(kind)) return false;
+    appendTrial({ v: 1, record: "suppressed", kind, guard, at: Date.now(), text: trialText(redact(text)) });
+    return true;
+  };
+  /** The same test for a delivery whose kind is not yet narrowed; false keeps it live. */
+  const trialHoldsKind = (kind: TrialDeliveryKind | string, guard: string, text: string): boolean =>
+    trialArm === "silent" && isSuppressed(kind) ? trialHolds(kind, guard, text) : false;
   // Local rules verdict log for this session; a write failure is silent to the agent and shown once in the trace.
   let rulesLog: RulesLog | undefined;
   // Allowed calls of the turn the user just replied to; the regret question about them rides the next action request.
@@ -619,6 +649,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const content = `Open loops from earlier in this session (warden_loops):\n${formatOpenLoops(open)}\nClose each with warden_loops done or drop once it is finished or no longer needed.`;
       const last = [...branch].reverse().find(entry => entry.type === "custom_message" && entry.customType === LOOPS_TYPE);
       if (last?.content === content) return;
+      if (trialHolds("loops", "loops", content)) return;
       pi.sendMessage({ customType: LOOPS_TYPE, content, display: config.steerVisible });
     } catch (error) {
       console.warn("pi-warden: reading the loops file failed:", error instanceof Error ? error.message : String(error));
@@ -973,7 +1004,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
   const budgetAvailable = (config: WardenConfig): boolean => config.steerBudget > 0 && steersThisRun < config.steerBudget;
   /** Reserve one budget unit. Call only when budgetAvailable returned true. */
   const spendBudgetUnit = (): void => { steersThisRun++; };
-  const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean }): boolean => {
+  const steer = (config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean; display?: boolean; kind?: TrialDeliveryKind }): boolean => {
     const names = typeof guard === "string" ? [guard] : [...guard];
     for (const name of names) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
     const critical = names.every(name => CRITICAL_STEER_GUARDS.has(name));
@@ -991,7 +1022,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
     stats.steers++;
     steersThisRun++;
-    const { display, ...delivery } = options ?? { deliverAs: "steer" as const };
+    const { display, kind, ...delivery } = options ?? {};
+    // A call site that names only a kind, or nothing, keeps the old default; one that passes its own delivery options keeps them exactly.
+    if (delivery.deliverAs === undefined && delivery.triggerTurn === undefined) delivery.deliverAs = "steer";
+    // The silent arm records what it would have said and sends nothing, after the same budget and repeat checks as
+    // the live arm, so both arms spend a run's steers alike.
+    if (trialHoldsKind(kind ?? steerDeliveryKind(names[0] ?? "action"), names.join(", "), content)) return false;
     pi.sendMessage({ customType: `${PACKAGE_NAME}-steer`, content, display: display ?? config.steerVisible }, delivery);
     if (delivery.triggerTurn) wardenContinuation = true;
     return true;
@@ -1017,6 +1053,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const notices = pendingNotices;
     pendingNotices = [];
     for (const notice of notices) {
+      if (trialHolds(notice.customType === CURATOR_TYPE ? "turn-rules" : "conscience", notice.guard, notice.content)) continue;
       pi.sendMessage({ customType: notice.customType, content: notice.content, display: config.steerVisible }, { deliverAs: "steer" });
       record(ctx, config, notice.guard, notice.delivered, notice.details);
     }
@@ -1214,6 +1251,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     regretCandidates = [];
     const sessionId = typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid);
     activeSessionId = sessionId;
+    trialArm = "live";
     holdLog = new HoldLog(holdLogPath(sessionId, new Date(), dirs));
     rulesLog = new RulesLog(ctx.cwd, sessionId, { path: rulesLogPath(ctx.cwd, dirs), onFailure: message => record(ctx, loadConfig({ dirs }), "rules", "rules log write failed", [message]) });
     unsubscribeTraceFile?.();
@@ -1293,6 +1331,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
       if (ctx.hasUI) ctx.ui.notify(msg, "warning"); else pi.sendMessage({ customType: `${PACKAGE_NAME}-status`, content: msg, display: true });
     }
     const opening = configFor(ctx);
+    // ── Silent-half trial ──
+    // The arm is fixed for the whole session from its id, so a resume or reload keeps it. With the setting off, no
+    // record is written and no delivery changes; only the user's config file can turn it on.
+    if (opening.trial.silentHalf === true) {
+      trialArm = armFor(sessionId);
+      appendTrial({ v: 1, record: "arm", arm: trialArm, sessionId, at: Date.now() });
+    }
     // A resumed or reloaded session already carries the message; sending it again would repeat it in the context.
     const openingBranch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
     const prefsSent = openingBranch.some(entry => entry.type === "custom_message" && entry.customType === PREFS_TYPE);
@@ -1300,7 +1345,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       try {
         const message = prefsMessage((await evaluatedPrefs(ctx)).items);
         // Not a steer; one message per session; do not spend a steer unit.
-        if (message) pi.sendMessage({ customType: PREFS_TYPE, content: message, display: opening.steerVisible });
+        if (message && !trialHolds("prefs", "prefs", message)) pi.sendMessage({ customType: PREFS_TYPE, content: message, display: opening.steerVisible });
       } catch (error) {
         console.warn("pi-warden: standing preferences scan failed:", error instanceof Error ? error.message : String(error));
       }
@@ -1428,10 +1473,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // re-append the same text, which is what keeps it in the prompt instead of being diffed away.
     const wasteOptions = (event as { systemPromptOptions?: { appendSystemPrompt?: string } }).systemPromptOptions;
     if (config.enabled && config.waste.enabled && config.waste.tip && wasteOptions) {
-      wasteOptions.appendSystemPrompt = withWasteTip(wasteOptions.appendSystemPrompt);
+      // The silent arm withholds the tip and records it once, the way the live arm traces it once.
+      const held = trialArm === "silent";
+      if (held && !wasteTipOffered) trialHolds("waste", "waste", WASTE_TIP);
+      if (!held) wasteOptions.appendSystemPrompt = withWasteTip(wasteOptions.appendSystemPrompt);
       if (!wasteTipOffered) {
         wasteTipOffered = true;
-        record(ctx, config, "waste", "warden · waste · session tip · instructions_supplied", [
+        if (!held) record(ctx, config, "waste", "warden · waste · session tip · instructions_supplied", [
           "trigger: before_agent_start",
           "delivery: appended to the system prompt (appendSystemPrompt)",
           `tip: ${WASTE_TIP}`,
@@ -2103,7 +2151,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       }
       notes.push(...pathNotes);
       if (notes.length) {
-        const delivered = steer(config, [...noteGuards], notes.join("\n\n"));
+        const delivered = steer(config, [...noteGuards], notes.join("\n\n"), { kind: "action-notes" });
         const notePath = verdict.summary.path ?? shell?.writes[0]?.path;
         if (delivered) watchSteer(ctx, config, noteKinds, notePath ? { path: notePath } : {});
         for (const traceNote of pathNoteTraces) traceNote(delivered);
@@ -2112,7 +2160,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     };
     const warnSteer = (reasons: readonly string[]) => {
       if (!reasons.length || !adaptiveSend(ctx, config, "warn-headless")) return false;
-      const sent = steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${reasons.join("; ")}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`);
+      const sent = steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${reasons.join("; ")}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`, { kind: "warn-headless" });
       if (sent) watchSteer(ctx, config, ["warn-headless"]);
       return sent;
     };
@@ -2313,7 +2361,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
         storedPath = earlier.path ?? await saveOutput(text);
         const replacement = `${duplicateNote(text, earlier.tool)}\n\n${recallInstruction(recallTool, storedPath)}`;
         const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement);
-        if (bytesSaved > 0) {
+        // The silent arm records the duplicate note and leaves the tool result whole.
+        if (bytesSaved > 0 && !trialHolds("context-compression", "context", replacement)) {
           content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
           ledger.duplicate(bytesSaved);
           ledger.remember(key, earlier.tool, storedPath);
@@ -2365,6 +2414,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           }
         }
         if (!compressed && verdict.confidence !== undefined) recordKeptWhole(config, event.toolName, verdict, `text block ${textIndex} of ${blockVerdicts.length}: `);
+        // The silent arm records the compressed block and leaves the original, with its security banner, in place.
+        if (compressed && replacement && trialHolds("context-compression", "context", replacement)) replacement = undefined;
         if (!replacement && blockNotice) replacement = `${blockNotice}\n\n${blockText}\n\n${blockNotice}`;
         if (replacement) content[index] = { ...part, text: replacement };
       }
@@ -2380,7 +2431,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const replacement = `${filtered?.ok ? filtered.text : excerpt}\n\n${recallInstruction(recallTool, path)}`;
           const bytesSaved = Buffer.byteLength(text) - Buffer.byteLength(replacement) - (notice ? Buffer.byteLength(notice) * 2 + 4 : 0);
           if (bytesSaved > 0) {
-            content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
+            // The silent arm records the excerpt and leaves the tool result whole; the security banner is placed below.
+            if (!trialHolds("context-compression", "context", replacement)) content = content.map(part => part.type === "text" ? { ...part, text: replacement } : part);
             compressed = true;
             ledger.record(path, bytesSaved, { tool: event.toolName, bytes: Buffer.byteLength(text), kind: filtered?.ok ? "filtered" : generic ? "excerpt" : "parser", ...(filtered?.ok ? { keptChars: filtered.keptChars } : {}) });
             storedPath = path;
@@ -2404,7 +2456,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (config.context.enabled && config.context.dedupeRuns && !earlier && !recallRead && !ctx.signal?.aborted) {
       syncSeen(ctx);
       const deduped = await dedupeContent(ctx, config, content, event.toolName);
-      if (deduped) content = deduped;
+      if (deduped && !trialHolds("context-compression", "context", `repeated runs collapsed in a ${event.toolName} result`)) content = deduped;
     }
     if (key && !earlier) ledger.remember(key, event.toolName, storedPath);
     // The banner in the result already tells the agent, so the notice rides the result content alone and is not also
@@ -2441,7 +2493,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const saved = await saveOutput(text);
           const diffNote = stuckDiff(prevEntry.text, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: saved });
           const currentLen = Buffer.byteLength(content.map(part => part.type === "text" ? part.text : "").join("\n"));
-          if (Buffer.byteLength(diffNote) < currentLen) {
+          if (Buffer.byteLength(diffNote) < currentLen && !trialHolds("context-compression", "context", diffNote)) {
             content = [{ type: "text", text: diffNote }, ...content.filter(part => part.type !== "text")];
           }
           fullOutputs.set(currentKey, { text, path: saved });
@@ -2453,7 +2505,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
         // Byte-identical outputs: one-line note reusing the existing saved path.
         const diffNote = stuckDiff(text, text, { diffLimit: config.stuck.diffLimit, tailLimit: config.stuck.tailLimit, fullPath: prevEntry.path });
         const currentLen = Buffer.byteLength(content.map(part => part.type === "text" ? part.text : "").join("\n"));
-        if (Buffer.byteLength(diffNote) < currentLen) {
+        if (Buffer.byteLength(diffNote) < currentLen && !trialHolds("context-compression", "context", diffNote)) {
           content = [{ type: "text", text: diffNote }, ...content.filter(part => part.type !== "text")];
         }
       } else if (currentKey) {
@@ -2469,6 +2521,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     /** The note rides the result the model is about to read; the call already ran, so this only adds text to it. */
     const withWaste = (current: { content: typeof content } | undefined): { content: typeof content } | undefined => {
       if (!wasteNudge) return current;
+      if (trialHolds("waste", "waste", wasteNudge.text)) return current;
       const base = current?.content ?? event.content;
       const lastText = base.reduce((last, part, index) => part.type === "text" ? index : last, -1);
       if (lastText < 0) return current;
@@ -2542,10 +2595,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const source = message.role === "custom" ? `${message.customType} message` : "user message";
     if (typeof message.content === "string") {
       const text = await dedupeText(ctx, config, message.content, source);
-      return text === undefined ? undefined : { message: { ...message, content: text } };
+      if (text === undefined || trialHolds("context-compression", "context", text)) return undefined;
+      return { message: { ...message, content: text } };
     }
     const content = await dedupeContent(ctx, config, message.content, source);
-    return content ? { message: { ...message, content } } : undefined;
+    return content && !trialHolds("context-compression", "context", `repeated runs collapsed in a ${source}`) ? { message: { ...message, content } } : undefined;
   });
 
   // The agent has caught up and Pi will not continue on its own: the one moment a wake costs the user nothing.
@@ -2588,7 +2642,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const appendix = compactAppendix(snapshot);
       if (!appendix) return;
       // Not a steer; one message per compaction; do not spend a steer unit.
-      pi.sendMessage({ customType: `${PACKAGE_NAME}-compact-evidence`, content: appendix, display: config.steerVisible });
+      if (!trialHolds("compact-evidence", "context", appendix)) pi.sendMessage({ customType: `${PACKAGE_NAME}-compact-evidence`, content: appendix, display: config.steerVisible });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       record(ctx, config, "action", "compact-appendix error", [`compactAppendix failed: ${message}`]);
@@ -2638,6 +2692,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
       }
       // Pi checks the signal only after the hook returns; an aborted compaction is not replaced.
       if (event.signal.aborted) return fallback("aborted", [counts], stats);
+      // The silent arm records what the compaction would have kept and lets Pi's own summary run.
+      if (trialHolds("context-compression", "context", `relevance compaction kept ${stats.kept} of ${stats.candidates}`)) return undefined;
       compactions.replaced++;
       compactions.last = stats;
       record(ctx, config, "context", `warden · context · relevance compaction · kept ${stats.kept} of ${stats.candidates}`, [

@@ -8,6 +8,7 @@ import { after, before, test } from "node:test";
 import { Type } from "typebox";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, InlineExtension, SessionManager as AgentSessionManager } from "@earendil-works/pi-coding-agent";
+import { armFor } from "../src/trial.js";
 
 // This file loads pi-warden exactly as Pi does: `package.json` → `pi.extensions` → `extensions/index.js` →
 // `dist/extension.js`. `tests/extension.test.ts` mounts `src/extension.ts` by hand, which cannot catch a broken
@@ -106,8 +107,8 @@ function recordingTools(record: Recorded): InlineExtension {
 
 type ScriptedReply = ReturnType<typeof faux.fauxAssistantMessage> | ((context: { messages: unknown[] }) => ReturnType<typeof faux.fauxAssistantMessage>);
 
-/** One project, one session, pi-warden loaded through Pi's loader from the package's own entry. */
-async function runSession(script: ScriptedReply[], record: Recorded): Promise<{ session: { prompt: (text: string) => Promise<unknown>; sessionManager: AgentSessionManager }; dir: string }> {
+/** One project, one session, pi-warden loaded through Pi's loader from the package's own entry. `sessionId` picks the trial arm. */
+async function runSession(script: ScriptedReply[], record: Recorded, options: { sessionId?: string } = {}): Promise<{ session: { prompt: (text: string) => Promise<unknown>; sessionManager: AgentSessionManager }; dir: string }> {
   const dir = await mkdtemp(join(tmpdir(), "pi-warden-session-project-"));
   dirs.push(dir);
   const provider = faux.fauxProvider();
@@ -124,7 +125,7 @@ async function runSession(script: ScriptedReply[], record: Recorded): Promise<{ 
   await loader.reload();
   const loaded = loader.getExtensions();
   assert.deepEqual(loaded.errors, [], "Pi's native loader must accept the shipped pi-warden entry");
-  const { session } = await createAgentSession({ cwd: dir, agentDir, modelRuntime, model: provider.getModel(), resourceLoader: loader, sessionManager: SessionManager.inMemory(dir), settingsManager: SettingsManager.inMemory(), noTools: "builtin" });
+  const { session } = await createAgentSession({ cwd: dir, agentDir, modelRuntime, model: provider.getModel(), resourceLoader: loader, sessionManager: SessionManager.inMemory(dir, options.sessionId ? { id: options.sessionId } : undefined), settingsManager: SettingsManager.inMemory(), noTools: "builtin" });
   // `createAgentSession` builds the session but does not fire `session_start`; the host modes call `bindExtensions`.
   // Firing it here is what makes this a real session: pi-warden initialises its database and reads the running build.
   await session.bindExtensions({ mode: "print" });
@@ -239,4 +240,52 @@ test("/warden init in a real session injects its prompt, waits for the agent, an
   assert.deepEqual(record.written, [join(dir, "pi-warden.md")], "the agent ran the init task and called write");
   assert.ok(existsSync(join(dir, "pi-warden.md")), "the rules file exists after the run");
   assert.match(customMessages(session), /pi-warden\.md created/, "the command reported the file created only after the run ended");
+});
+
+/** The trial records of a session, in order. */
+function trialEntries(session: { sessionManager: AgentSessionManager }): Array<Record<string, unknown>> {
+  return session.sessionManager.getBranch()
+    .filter(entry => entry.type === "custom" && (entry as { customType?: string }).customType === "pi-warden-trial")
+    .map(entry => (entry as { data?: unknown }).data as Record<string, unknown>);
+}
+
+/** The first session id that lands in the wanted trial arm. */
+function idFor(arm: "live" | "silent"): string {
+  for (let index = 0; index < 5000; index++) {
+    const id = `session-arm-${arm}-${index}`;
+    if (armFor(id) === arm) return id;
+  }
+  throw new Error(`no id landed in the ${arm} arm`);
+}
+
+test("with the silent-half setting on, one arm records the arm and withholds the done-check steer", async () => {
+  const path = join(agentDir, "pi-warden", "config.json");
+  const previous = readFileSync(path, "utf8");
+  const reply = [
+    faux.fauxAssistantMessage(faux.fauxToolCall("write", { path: "note.txt", content: "hello" })),
+    faux.fauxAssistantMessage("Done."),
+    faux.fauxAssistantMessage("Understood."),
+  ];
+  try {
+    await writeFile(path, JSON.stringify({ ...JSON.parse(previous) as Record<string, unknown>, trial: { silentHalf: true } }));
+    nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0, claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.95, outcome: "complete" };
+    for (const arm of ["silent", "live"] as const) {
+      const record: Recorded = { bashRan: false, bashCommand: undefined, readCalls: 0, written: [] };
+      const { session } = await runSession([...reply], record, { sessionId: idFor(arm) });
+      await session.prompt("add a note");
+      const entries = trialEntries(session);
+      assert.equal(entries[0]?.record, "arm", `${arm}: the session log carries the arm entry`);
+      assert.equal(entries[0]?.arm, arm, `${arm}: the entry names the arm the id hashes to`);
+      const suppressed = entries.slice(1).filter(entry => entry.record === "suppressed");
+      if (arm === "silent") {
+        assert.ok(suppressed.some(entry => entry.kind === "done"), "the suppressed done-check steer is recorded with its kind");
+        assert.equal(customMessages(session).includes("no test, build, or lint run"), false, "the done-check steer never reaches the model");
+      } else {
+        assert.deepEqual(suppressed, [], "the live arm suppresses nothing");
+        assert.match(customMessages(session), /no test, build, or lint run/, "the live arm delivers the done-check steer");
+      }
+    }
+  } finally {
+    await writeFile(path, previous);
+  }
 });

@@ -405,6 +405,16 @@ export interface PrefsConfig {
   inject: boolean;
 }
 
+/** The silent-half field trial (trial.ts): a random half of sessions records what it would have told the agent. */
+export interface TrialConfig {
+  /**
+   * Put each session in arm live or silent, 50/50 from its id. A silent session judges as usual but records every
+   * suppressed delivery instead of sending it; holds, secret masking, security notices, and runaway stops stay live.
+   * Off by default, user file only: turning it on weakens guarding in half the sessions, so a project file must not.
+   */
+  silentHalf: boolean;
+}
+
 /** Per-model steer adaptation: a steer kind a model rarely follows or often disputes becomes trace-only for it. */
 export interface SteersConfig {
   /** Make a steer kind trace-only for a model that rarely follows or often disputes it. */
@@ -529,6 +539,8 @@ export interface WardenConfig {
   conscience: ConscienceConfig;
   /** Standing preferences: corrections the user repeated in earlier sessions of this project. */
   prefs: PrefsConfig;
+  /** Silent-half field trial: off by default, user file only. */
+  trial: TrialConfig;
   /** Call-waste notes: advisory sentences attached to the tool result that triggers them. */
   waste: WasteConfig;
   /** Relevance compaction in place of Pi's compaction summary. Off by default. */
@@ -539,7 +551,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 13;
+export const CONFIG_SCHEMA = 14;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -610,6 +622,7 @@ export function defaultConfig(): WardenConfig {
       localFloor: 0.5,
     },
     prefs: { enabled: true, inject: true },
+    trial: { silentHalf: false },
     waste: { enabled: true, tip: false, every: 20, sleep: true, paging: true, search: true, recheck: true },
     // pi-claude-bridge compacts its own models and cancels on failure; its summary must not be replaced.
     compaction: { enabled: false, keepThreshold: 0.5, maxSummaryTokens: 20000, timeoutMs: 20000, maxRequests: 12, skipProviders: ["claude-bridge"] },
@@ -1146,8 +1159,15 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     learning: applyLearning(base.learning, raw.learning),
     conscience: applyConscience(base.conscience, raw.conscience),
     prefs: applyPrefs(base.prefs, raw.prefs),
+    trial: applyTrial(base.trial, raw.trial),
     warnings: [...(base.warnings ?? []), ...warnings],
   };
+}
+
+/** A project cannot turn the trial on: applyProjectOverrides never copies this section, so the user file is the only source. */
+function applyTrial(base: TrialConfig, raw: unknown): TrialConfig {
+  if (!isObject(raw)) return base;
+  return { silentHalf: boolean(raw.silentHalf, base.silentHalf) };
 }
 
 function applyWaste(base: WasteConfig, raw: unknown): WasteConfig {
