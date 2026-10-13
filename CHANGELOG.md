@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 1.7.1
+
 ### Added
 
 - A/B benchmark tooling, registration v4 (`eval/preregistration.md`): the run moves to the CheapestInference flat-rate subscription with no paid agent model (`cheapestinference/deepseek-v4.1-flash`, then `cheapestinference/mimo-v2.5`), the models run one after the other at concurrency 3, the repeats (6 and 7) are sized from the smoke timings to about 24 hours each, and the Jev cap is $3 per model. The stopped v3 batches are named as a stopped pilot and never analysed.
