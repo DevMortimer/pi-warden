@@ -15,7 +15,7 @@ so every decision rule applies to both.
 
 The registered rules decide each model on its own, in "Result" below. This section pools both
 models after the run to answer the question the run was built for: does pi-warden help? The
-pooling is post hoc, and it describes and decides nothing.
+pooling is post hoc: it describes and decides nothing.
 
 | Comparison | Runs with a violation (X / Y) | Rate ratio | Lower bound | p | Success estimate | Success lower | Success upper |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -26,6 +26,10 @@ pooling is post hoc, and it describes and decides nothing.
 Success estimate and bounds are in points. From `node scripts/thesis-pooled.mjs
 eval/reports/2026-10-10-thesis-v4/model-a-metrics.json:A
 eval/reports/2026-10-10-thesis-v4/model-b-metrics.json:B`.
+
+Pooled across both models, `control` succeeded where `warden-offline` did not in 17 pairs, and 15
+of those losses are model B `warden-offline` runs that timed out (model A has 1 such loss, model
+B 16); see "Not decided by the rules".
 
 ### What this run can say about the thesis
 
@@ -294,4 +298,4 @@ pairs), so every discordance rate here is uncertain.
   error); a timed-out or errored run counts as not finished and contributes no violation.
 - The Jev totals include the Jev dollars of the superseded runs and of the attempts that failed
   and ran again (see Infrastructure), so they are not the sums of the per-cell Jev column.
-- One maintainer, one machine, one subscription slot. The two models are never pooled.
+- One maintainer, one machine, one subscription slot. The registered analysis never pools the two models; only the post hoc section "Does pi-warden help?" does.
