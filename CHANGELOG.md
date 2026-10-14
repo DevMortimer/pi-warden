@@ -6,10 +6,6 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
-
-## 1.9.0
-
 ### Changed
 
 - The action guard no longer lets text the agent writes into a shell comment sway Jev. The command in the request state and the `script_lines` are sent without shell comments (a `#` at the start of a word, outside quotes and heredoc bodies, and not `$#` or `${#…}`), while the confirm dialog and the trace keep the full command. Agent-bound reasons no longer carry Jev scores: the held-call message, the headless warn steer, the declined-call reason, and the intent, off-task, should-proceed, and large-output steers keep the words (`irreversible`, `possibly irreversible`) without the numbers, and the dialog, notices, trace, holds, and learning records keep them. ([Guards](docs/guards.md))
