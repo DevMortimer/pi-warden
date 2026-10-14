@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SeenText, TAIL_KEEP_CHARS, collapseRuns, seenItem } from "../src/dedupe.js";
+import { SWAP_LIMIT_CHARS, SeenText, TAIL_KEEP_CHARS, collapseRuns, savedResultIn, seenItem, seenItems } from "../src/dedupe.js";
 
 const report = (lines: number, tag = "report") => Array.from({ length: lines }, (_, index) => `${tag} line ${index}: the build of module ${index} passed with no warnings at all`).join("\n");
 const fresh = (chars: number) => Array.from({ length: Math.ceil(chars / 50) }, (_, index) => `new status line ${index} ${"n".repeat(28)}`).join("\n");
@@ -78,4 +78,26 @@ test("seenItem reads user, assistant, tool, and custom texts, never images", () 
   assert.deepEqual(seenItem({ id: "u", type: "message", message: { role: "user", content: "hi" } }), { key: "u", where: "an earlier user message", texts: ["hi"] });
   assert.deepEqual(seenItem({ id: "c", type: "custom_message", customType: "relay", content: [{ type: "text", text: "x" }, { type: "image", data: "AAAA", mimeType: "image/png" }] }), { key: "c", where: "an earlier relay message", texts: ["x"] });
   assert.equal(seenItem({ id: "s", type: "compaction", summary: "…" }), undefined);
+});
+
+test("seenItems leaves out a claude-bridge tool result over the output limit, by the provider that called it", () => {
+  const call = (id: string, provider?: string) => ({ id, type: "message", message: { role: "assistant", ...(provider ? { provider } : {}), content: [] } });
+  const result = (id: string, chars: number) => ({ id, type: "message", message: { role: "toolResult", toolName: "tiny_fetch", content: [{ type: "text", text: "x".repeat(chars) }] } });
+  const keys = (entries: unknown[], provider?: string) => seenItems(entries, provider).map(item => item.key);
+  const large = SWAP_LIMIT_CHARS + 1;
+  assert.deepEqual(keys([call("a1", "claude-bridge"), result("r1", large), result("r2", SWAP_LIMIT_CHARS)]), ["a1", "r2"]);
+  // A result an earlier provider gave to the model stays seen after a switch to claude-bridge.
+  assert.deepEqual(keys([call("a1", "anthropic"), result("r1", large)], "claude-bridge"), ["a1", "r1"]);
+  // With no provider on the assistant message, the current provider stands in.
+  assert.deepEqual(keys([call("a1"), result("r1", large)], "claude-bridge"), ["a1"]);
+  assert.deepEqual(keys([result("r1", large)], "openai"), ["r1"]);
+});
+
+test("savedResultIn names a Claude Code tool-results file only on claude-bridge", () => {
+  const read = JSON.stringify({ path: "/home/u/.claude/projects/-home-u-app/5e1f0c2a/tool-results/mcp-custom-tools-tiny_fetch-3.txt", offset: 10 });
+  assert.equal(savedResultIn(read, "claude-bridge"), true);
+  assert.equal(savedResultIn(JSON.stringify({ command: "sed -n '1,400p' /home/u/.claude/projects/-home-u-app/5e1f/tool-results/bash-1.txt" }), "claude-bridge"), true);
+  assert.equal(savedResultIn(read, "anthropic"), false);
+  assert.equal(savedResultIn(read, undefined), false);
+  assert.equal(savedResultIn(JSON.stringify({ path: "src/tool-results/index.ts" }), "claude-bridge"), false);
 });

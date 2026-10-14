@@ -1101,6 +1101,58 @@ test("context.dedupeRuns false keeps repeated runs in messages and tool results,
   assert.equal(await toolResult("bash", { command: "cat relay.txt" }, incoming, false, ctx), undefined);
 });
 
+// A fetch of about 107,700 characters in 1,893 lines; Claude Code saves a result this size to a file instead of passing it to the model.
+const fetchedLines = Array.from({ length: 1893 }, (_, index) => `fetched line ${index}: ${"page text ".repeat(3)}${"z".repeat(index % 16)}`);
+const fetchedPage = fetchedLines.join("\n");
+const savedResult = "/home/user/.claude/projects/-home-user-project/5e1f0c2a-1b7d-4c55-9e0a-2f4b8d6c1a3e/tool-results/mcp-custom-tools-tiny_fetch-1.txt";
+const fetchContext = (provider: string, page: string) => context({ model: { provider, id: "m" }, sessionManager: { getBranch: () => [
+  { id: "a1", type: "message", message: { role: "assistant", provider, model: "m", content: [{ type: "toolCall", id: "call-0", name: "tiny_fetch", arguments: { urls: ["https://example.com/page"] } }] } },
+  { id: "r1", type: "message", message: { role: "toolResult", toolCallId: "call-0", toolName: "tiny_fetch", content: [{ type: "text", text: page }], isError: false } },
+] } });
+const cutPointers = (result: unknown) => [...((result as { content?: Array<{ text?: string }> } | undefined)?.content?.[0]?.text ?? "").matchAll(/\[pi-warden: the next \d+ lines repeat .+ full text: (.+)\]/g)];
+
+test("on claude-bridge, a result over Claude Code's output limit is not seen: a read of its saved file comes back whole", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  assert.equal(Math.round(fetchedPage.length / 100), 1077);
+  const ctx = fetchContext("claude-bridge", fetchedPage);
+  // Each read takes other lines, so none is an identical duplicate of the one before.
+  const reads: Array<[string, Record<string, unknown>, number]> = [
+    ["read", { path: savedResult, offset: 701, limit: 400 }, 700],
+    ["bash", { command: `sed -n '1101,1500p' ${savedResult}` }, 1100],
+    // A copy outside the tool-results directory: only the seen index can keep this one whole.
+    ["bash", { command: "sed -n '301,700p' /tmp/page-copy.txt" }, 300],
+  ];
+  for (const [tool, input, from] of reads) {
+    await toolCall(tool, input, ctx);
+    const pointers = cutPointers(await toolResult(tool, input, `${fetchedLines.slice(from, from + 400).join("\n")}\n\n[more lines in file]`, false, ctx));
+    for (const pointer of pointers) await rm(join(pointer[1]!, ".."), { recursive: true, force: true });
+    assert.equal(pointers.length, 0, `${tool} ${JSON.stringify(input)} is not cut`);
+  }
+});
+
+test("the repeated-run cut still works on another provider, and on claude-bridge under the output limit", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false }, ...STACK_BAR }));
+  nextAnswers = { retention: "all" };
+  const other = fetchContext("anthropic", fetchedPage);
+  for (const [tool, input, from] of [["read", { path: savedResult, offset: 701, limit: 400 }, 700], ["bash", { command: `sed -n '1101,1500p' ${savedResult}` }, 1100]] as const) {
+    await toolCall(tool, input, other);
+    const pointers = cutPointers(await toolResult(tool, input, `${fetchedLines.slice(from, from + 400).join("\n")}\n\n[more lines in file]`, false, other));
+    for (const pointer of pointers) await rm(join(pointer[1]!, ".."), { recursive: true, force: true });
+    assert.equal(pointers.length, 1, `${tool} on another provider is cut`);
+  }
+  // 250 lines, about 14,000 characters: under Claude Code's limit, so the model has it.
+  const small = fetchedLines.slice(0, 250);
+  const bridge = fetchContext("claude-bridge", small.join("\n"));
+  const input = { path: "notes/page.txt", offset: 51, limit: 150 };
+  await toolCall("read", input, bridge);
+  const result = await toolResult("read", input, `${small.slice(50, 200).join("\n")}\n\n[${"tail ".repeat(500)}]`, false, bridge);
+  const pointers = cutPointers(result);
+  for (const pointer of pointers) await rm(join(pointer[1]!, ".."), { recursive: true, force: true });
+  assert.equal(pointers.length, 1, "a result under the limit on claude-bridge is cut");
+  assert.match((result as { content: Array<{ text: string }> }).content[0]!.text, /the next 150 lines repeat an earlier tiny_fetch result/);
+});
+
 test("recall kinds: a scoped search keeps the saving, a whole-file read is counted as such", async () => {
   await writeConfig(JSON.stringify({  typesafe: true, stuck: { enabled: false }, context: { recallTool: "grep" } , ...STACK_BAR }));
   nextAnswers = { retention: "summary_only" };

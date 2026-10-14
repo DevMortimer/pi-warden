@@ -9,6 +9,15 @@ export const RUN_MIN_LINES = 20;
 export const RUN_MIN_CHARS = 1500;
 /** Errors and verdicts usually sit at the end of a result, so the last characters are never replaced. */
 export const TAIL_KEEP_CHARS = 2000;
+/**
+ * Providers whose host swaps a tool result over its output limit for a "saved to file" message: the model never gets
+ * that text, so it is not seen. claude-bridge runs Pi tools as Claude Code MCP tools, and nothing in the session marks the swap.
+ */
+const SWAPPING_PROVIDERS = new Set(["claude-bridge"]);
+// Claude Code saves an MCP result over 50,000 characters or MAX_MCP_OUTPUT_TOKENS (25,000 by default) to a file; 20,000 stays under both even at 1.25 characters per token.
+export const SWAP_LIMIT_CHARS = 20_000;
+/** A file in a Claude Code session's tool-results directory, where it saves a swapped result. */
+const SAVED_RESULT = /\/projects\/[^/\s"'\\]+\/[^/\s"'\\]+\/tool-results\/[^/\s"'\\]+/;
 
 export interface RepeatedRun {
   /** First line of the run in the new text, 0-based. */
@@ -146,6 +155,30 @@ function textsOf(content: unknown): string[] {
   if (typeof content === "string") return [content];
   if (!Array.isArray(content)) return [];
   return (content as Part[]).filter(part => part?.type === "text" && typeof part.text === "string").map(part => part.text!);
+}
+
+/** Whether `text` (a tool input) names a result file that `provider` saved instead of giving it to the model. */
+export function savedResultIn(text: string, provider: string | undefined): boolean {
+  return provider !== undefined && SWAPPING_PROVIDERS.has(provider) && SAVED_RESULT.test(text);
+}
+
+/**
+ * The seen items of a branch, without a tool result the model did not get: one over the output limit of the provider
+ * of the assistant message that called it. `provider` stands in when no assistant message names one.
+ */
+export function seenItems(entries: unknown[], provider: string | undefined): SeenItem[] {
+  const items: SeenItem[] = [];
+  let caller = provider;
+  for (const entry of entries) {
+    const message = (entry as { message?: { role?: unknown; provider?: unknown } } | undefined)?.message;
+    if (message?.role === "assistant") caller = typeof message.provider === "string" ? message.provider : provider;
+    const item = seenItem(entry);
+    if (!item) continue;
+    if (message?.role === "toolResult" && caller !== undefined && SWAPPING_PROVIDERS.has(caller)
+      && item.texts.reduce((sum, text) => sum + text.length, 0) > SWAP_LIMIT_CHARS) continue;
+    items.push(item);
+  }
+  return items;
 }
 
 /** The texts a session entry puts in context and where the agent saw them. Thinking, images, and summaries are not indexed. */

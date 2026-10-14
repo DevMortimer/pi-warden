@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- Repeated runs (`context.dedupeRuns`) no longer cut text the model never saw. On the `claude-bridge` provider, Claude Code saves a tool result over its MCP output limit to a file and gives the model only a "saved to file" message; pi-warden counted that result as seen and then cut later reads of the saved file as repeats. A tool result over 20,000 characters on `claude-bridge` (judged by the provider of the call that made it) is no longer counted as seen, and a `read` or `bash` call that names a file in a Claude Code `tool-results` directory is never cut. Other providers, and `claude-bridge` results under the limit, are cut as before. ([Guards](docs/guards.md))
 
 ## 1.8.0
 

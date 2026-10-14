@@ -79,7 +79,7 @@ import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatFilterLedger, formatLedger } from "./saver.js";
 import { buildCuratorRequest, curatedRuleList, curatedRules, CURATOR_TIMEOUT_MS, CURATOR_TYPE, CuratorLedger, formatCuratedRules, formatCurator, ruleScores } from "./curator.js";
-import { SeenText, collapseRuns, seenItem } from "./dedupe.js";
+import { SeenText, collapseRuns, savedResultIn, seenItems } from "./dedupe.js";
 import { buildCompactSnapshot, compactAppendix, recallText } from "./compact.js";
 import { formatCompaction, relevanceCompaction } from "./relevance.js";
 import type { CompactionStats, FallbackReason } from "./relevance.js";
@@ -883,7 +883,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const manager = ctx.sessionManager as Partial<ExtensionContext["sessionManager"]>;
     // Compaction-aware when the host has it: text a compaction summarized is no longer in context, so nothing may point to it.
     const entries = typeof manager.buildContextEntries === "function" ? manager.buildContextEntries() : typeof manager.getBranch === "function" ? manager.getBranch() : [];
-    seenText.sync(entries.map(seenItem).filter(item => item !== undefined));
+    seenText.sync(seenItems(entries, ctx.model?.provider));
   };
   /** `text` with each run that repeats context replaced by a pointer line, or undefined when nothing repeats or the copy cannot be stored. */
   const dedupeText = async (ctx: ExtensionContext, config: WardenConfig, text: string, source: string): Promise<string | undefined> => {
@@ -2452,8 +2452,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
       }
       if (!compressed && !ctx.signal?.aborted && output.confidence !== undefined) recordKeptWhole(config, event.toolName, output);
     }
-    // A recall brings the stored text back on purpose, and a duplicate note has nothing left to cut.
-    if (config.context.enabled && config.context.dedupeRuns && !earlier && !recallRead && !ctx.signal?.aborted) {
+    // A recall brings the stored text back on purpose, and a duplicate note has nothing left to cut. A result the
+    // provider saved to a file never reached the model, so a read of that file is never a repeat.
+    if (config.context.enabled && config.context.dedupeRuns && !earlier && !recallRead && !savedResultIn(JSON.stringify(event.input), ctx.model?.provider) && !ctx.signal?.aborted) {
       syncSeen(ctx);
       const deduped = await dedupeContent(ctx, config, content, event.toolName);
       if (deduped && !trialHolds("context-compression", "context", `repeated runs collapsed in a ${event.toolName} result`)) content = deduped;
