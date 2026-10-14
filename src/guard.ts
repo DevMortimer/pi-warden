@@ -576,45 +576,131 @@ export function stripDataText(command: string): ScannedCommand {
 }
 
 // A shell comment can carry text the agent wrote to sway Jev; the request state must read only what the shell runs.
-/** One line with its trailing shell comment removed. Quotes, escapes, `$#`, `${#…}`, and a `#` mid-word stay. */
-function stripCommentLine(line: string): string {
+/**
+ * The command text Jev reads: shell comments removed; quotes, escapes, heredoc bodies, `$#`, `${#…}`, and a `#`
+ * mid-word kept. Quote state carries across lines. A construct the scan does not model (backticks, arithmetic, `case`
+ * inside `$(…)`, quotes inside `${…}`), or an unclosed quote, returns the command unchanged.
+ */
+export function stripShellComments(command: string): string {
+  type Context = "single" | "double" | "ansi" | "brace" | "subshell";
+  const stack: Context[] = [];
+  const depths: number[] = [];
+  const heredocs: Array<{ delimiter: string; tabs: boolean }> = [];
   let out = "";
-  let single = false;
-  let double = false;
-  for (let index = 0; index < line.length; index++) {
-    const char = line[index]!;
-    if (single) { out += char; if (char === "'") single = false; continue; }
-    if (double) {
-      out += char;
-      if (char === "\\" && index + 1 < line.length) { out += line[index + 1]!; index++; }
-      else if (char === "\"") double = false;
+  // Text before this length is not trailing blank space, so a removed comment takes only the blanks before it.
+  let kept = 0;
+  let wordStart = true;
+  let index = 0;
+  const emit = (text: string, blank = false) => { out += text; if (!blank) kept = out.length; };
+  // A heredoc delimiter word, quotes and backslashes removed; undefined when it is not a plain word.
+  const delimiterWord = (): string | undefined => {
+    let word = "";
+    let raw = "";
+    while (index < command.length && /[ \t]/.test(command[index]!)) raw += command[index++];
+    while (index < command.length && !/[\s;|&<>()]/.test(command[index]!)) {
+      const char = command[index]!;
+      if (char === "'" || char === "\"") {
+        const close = command.indexOf(char, index + 1);
+        if (close < 0 || command.slice(index + 1, close).includes("\n")) return undefined;
+        word += command.slice(index + 1, close);
+        raw += command.slice(index, close + 1);
+        index = close + 1;
+        continue;
+      }
+      if (char === "\\") { if (index + 1 >= command.length || command[index + 1] === "\n") return undefined; word += command[index + 1]; raw += command.slice(index, index + 2); index += 2; continue; }
+      if (char === "$" || char === "`") return undefined;
+      word += char; raw += char; index++;
+    }
+    if (!word) return undefined;
+    emit(raw);
+    return word;
+  };
+  while (index < command.length) {
+    const char = command[index]!;
+    const context = stack.at(-1);
+    if (context === "single") { emit(char); index++; if (char === "'") stack.pop(); continue; }
+    if (context === "ansi" || context === "double" || context === "brace") {
+      if (char === "\\") { emit(command.slice(index, index + 2)); index += 2; continue; }
+      if (context === "ansi") { emit(char); index++; if (char === "'") stack.pop(); continue; }
+      if (char === "`") return command;
+      if (context === "brace") {
+        if (char === "'" || char === "\"" || char === "$") return command;
+        emit(char); index++;
+        if (char === "}") stack.pop();
+        continue;
+      }
+      if (char === "\"") { emit(char); index++; stack.pop(); continue; }
+      if (char === "$" && command[index + 1] === "(") {
+        if (command[index + 2] === "(") return command;
+        emit("$("); index += 2; stack.push("subshell"); depths.push(0); wordStart = true; continue;
+      }
+      if (char === "$" && command[index + 1] === "{") { emit("${"); index += 2; stack.push("brace"); continue; }
+      if (char === "$" && command[index + 1] === "[") return command;
+      emit(char); index++;
       continue;
     }
-    if (char === "\\") { out += char; if (index + 1 < line.length) { out += line[index + 1]!; index++; } continue; }
-    if (char === "'") { single = true; out += char; continue; }
-    if (char === "\"") { double = true; out += char; continue; }
-    if (char === "#" && (index === 0 || /[\s;|&()<>]/.test(line[index - 1]!))) break;
-    out += char;
+    // Unquoted: the top level or inside `$(…)`.
+    if (char === "\\") {
+      emit(command.slice(index, index + 2));
+      if (command[index + 1] !== "\n") wordStart = false;
+      index += 2;
+      continue;
+    }
+    if (char === "#" && wordStart) {
+      while (index < command.length && command[index] !== "\n") index++;
+      out = out.slice(0, kept);
+      continue;
+    }
+    if (char === "\n") {
+      emit(char); index++; wordStart = true;
+      for (const { delimiter, tabs } of heredocs.splice(0)) {
+        while (index < command.length) {
+          const lineEnd = command.indexOf("\n", index);
+          const line = command.slice(index, lineEnd < 0 ? command.length : lineEnd);
+          emit(lineEnd < 0 ? line : `${line}\n`);
+          index = lineEnd < 0 ? command.length : lineEnd + 1;
+          if ((tabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+        }
+      }
+      continue;
+    }
+    if (char === " " || char === "\t") { emit(char, true); index++; wordStart = true; continue; }
+    if (char === "`") return command;
+    if (char === "'") { emit(char); index++; stack.push("single"); wordStart = false; continue; }
+    if (char === "\"") { emit(char); index++; stack.push("double"); wordStart = false; continue; }
+    if (char === "$") {
+      const next = command[index + 1];
+      if (next === "'") { emit("$'"); index += 2; stack.push("ansi"); wordStart = false; continue; }
+      if (next === "\"") { emit("$\""); index += 2; stack.push("double"); wordStart = false; continue; }
+      if (next === "(" && command[index + 2] === "(") return command;
+      if (next === "(") { emit("$("); index += 2; stack.push("subshell"); depths.push(0); wordStart = true; continue; }
+      if (next === "{") { emit("${"); index += 2; stack.push("brace"); wordStart = false; continue; }
+      if (next === "[") return command;
+      emit(char); index++; wordStart = false;
+      continue;
+    }
+    if (char === "(" && command[index + 1] === "(") return command;
+    if (char === "<" && command.startsWith("<<<", index)) { emit("<<<"); index += 3; wordStart = true; continue; }
+    if (char === "<" && command[index + 1] === "<") {
+      const tabs = command[index + 2] === "-";
+      emit(tabs ? "<<-" : "<<"); index += tabs ? 3 : 2;
+      const delimiter = delimiterWord();
+      if (delimiter === undefined) return command;
+      heredocs.push({ delimiter, tabs });
+      wordStart = false;
+      continue;
+    }
+    if (context === "subshell") {
+      if (wordStart && /^case\b/.test(command.slice(index))) return command;
+      if (char === "(") depths[depths.length - 1]!++;
+      if (char === ")" && depths.at(-1) === 0) { emit(char); index++; stack.pop(); depths.pop(); wordStart = false; continue; }
+      if (char === ")") depths[depths.length - 1]!--;
+    }
+    emit(char); index++;
+    wordStart = /[;|&()<>]/.test(char);
   }
-  return out.trimEnd();
-}
-
-/** The command text Jev reads: shell comments removed, heredoc bodies and quoted `#` kept. */
-export function stripShellComments(command: string): string {
-  const lines = command.split("\n");
-  const out: string[] = [];
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index]!;
-    const heredoc = HEREDOC.exec(line);
-    out.push(stripCommentLine(line));
-    if (!heredoc) continue;
-    const delimiter = heredoc[1] ?? heredoc[2] ?? heredoc[4]!;
-    let close = index + 1;
-    while (close < lines.length && lines[close]!.replace(/^\t+/, "") !== delimiter) { out.push(lines[close]!); close++; }
-    if (close < lines.length) out.push(lines[close]!);
-    index = close;
-  }
-  return out.join("\n");
+  if (stack.length || heredocs.length) return command;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -2837,8 +2923,13 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scripts: scriptBodies, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
   // A script body the command runs that hit the floor: its lines ride the request, and the call is worth a judge even
   // when the gate would have left the outer command offline.
-  // Comment lines ride the body hits; Jev must read the script without them.
-  const scriptLines = capScriptLines(patterns.flatMap(hit => hit.lines ?? []).filter(line => !line.startsWith("#")));
+  // The floor's hit lines keep the body's comments; Jev reads lines of the whole body with its comments stripped, so a
+  // multi-line string keeps its quote state and a code line that starts with `#` inside it stays.
+  const hitSources = new Set(patterns.flatMap(hit => hit.via ?? []));
+  const lineOptions = { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules };
+  const scriptLines = capScriptLines(scriptBodies
+    .filter(source => source.kind === "shell" && hitSources.has(source.source))
+    .flatMap(source => matchingLines(stripShellComments(source.body), lineOptions, new Set(config.exemptRules ?? []))));
   const bodyHit = patterns.some(hit => hit.via !== undefined);
   // Violation pipeline: authorize per-violation, remove authorized from level computation and Jev questions.
   const violationsByHit = hitViolations(patterns, action.tool, action.input);
@@ -3227,7 +3318,8 @@ export function scoreFreeReason(reason: string): string {
     .replace(/^possible security weakness \d+\.\d{2} in written content$/, "possible security weakness in written content")
     .replace(/^intent mismatch \d+\.\d{2} on a visible action \(\d+\.\d{2}; /, "intent mismatch on a visible action (")
     .replace(/^intent mismatch \d+\.\d{2} /, "intent mismatch ")
-    .replace(/^should-proceed \d+\.\d{2} /, "should-proceed ");
+    .replace(/^should-proceed \d+\.\d{2} /, "should-proceed ")
+    .replace(/^off-task \d+\.\d{2} /, "off-task ");
 }
 
 /**
