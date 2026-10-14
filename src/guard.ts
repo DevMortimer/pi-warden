@@ -575,6 +575,48 @@ export function stripDataText(command: string): ScannedCommand {
   return { text, stripped };
 }
 
+// A shell comment can carry text the agent wrote to sway Jev; the request state must read only what the shell runs.
+/** One line with its trailing shell comment removed. Quotes, escapes, `$#`, `${#…}`, and a `#` mid-word stay. */
+function stripCommentLine(line: string): string {
+  let out = "";
+  let single = false;
+  let double = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index]!;
+    if (single) { out += char; if (char === "'") single = false; continue; }
+    if (double) {
+      out += char;
+      if (char === "\\" && index + 1 < line.length) { out += line[index + 1]!; index++; }
+      else if (char === "\"") double = false;
+      continue;
+    }
+    if (char === "\\") { out += char; if (index + 1 < line.length) { out += line[index + 1]!; index++; } continue; }
+    if (char === "'") { single = true; out += char; continue; }
+    if (char === "\"") { double = true; out += char; continue; }
+    if (char === "#" && (index === 0 || /[\s;|&()<>]/.test(line[index - 1]!))) break;
+    out += char;
+  }
+  return out.trimEnd();
+}
+
+/** The command text Jev reads: shell comments removed, heredoc bodies and quoted `#` kept. */
+export function stripShellComments(command: string): string {
+  const lines = command.split("\n");
+  const out: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const heredoc = HEREDOC.exec(line);
+    out.push(stripCommentLine(line));
+    if (!heredoc) continue;
+    const delimiter = heredoc[1] ?? heredoc[2] ?? heredoc[4]!;
+    let close = index + 1;
+    while (close < lines.length && lines[close]!.replace(/^\t+/, "") !== delimiter) { out.push(lines[close]!); close++; }
+    if (close < lines.length) out.push(lines[close]!);
+    index = close;
+  }
+  return out.join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Shell words: what a word names on the filesystem, as far as a guard can tell without running the shell. A word that
 // cannot be placed is never released, and a placeable one is classified by the path it names.
@@ -2724,10 +2766,12 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
   // off-task/scope questions, which are trace-only and ride the sampled `traceOnly` request instead. The should-proceed
   // question rides it too, unless `shouldProceed` opts the acting request in to the steer that reads it.
   const baseQuestions = { irreversible: questions.irreversible, mutates: questions.mutates };
+  // Jev must not read shell comments: the agent can write persuasive text into one to sway the judgment.
+  const jevAction = summary.command === undefined ? summary : { ...summary, command: stripShellComments(summary.command) };
   return {
     state: {
       task: task?.trim() ? truncate(redact(task.trim()), TASK_LIMIT) : "(no user request recorded in this session)",
-      action: summary as unknown as Record<string, string | number | boolean>,
+      action: jevAction as unknown as Record<string, string | number | boolean>,
       // Clipped per message already; `recentTaskContext` bounds the count.
       context: traceOnly ? (extras.context ?? []).slice(-8).map(message => ({ role: message.role, text: truncate(redact(message.text), 750) })) : [],
       // The spine's `task` is deliberately not repeated here: state.task above already carries it, unchanged for approval.
@@ -2793,7 +2837,8 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scripts: scriptBodies, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
   // A script body the command runs that hit the floor: its lines ride the request, and the call is worth a judge even
   // when the gate would have left the outer command offline.
-  const scriptLines = capScriptLines(patterns.flatMap(hit => hit.lines ?? []));
+  // Comment lines ride the body hits; Jev must read the script without them.
+  const scriptLines = capScriptLines(patterns.flatMap(hit => hit.lines ?? []).filter(line => !line.startsWith("#")));
   const bodyHit = patterns.some(hit => hit.via !== undefined);
   // Violation pipeline: authorize per-violation, remove authorized from level computation and Jev questions.
   const violationsByHit = hitViolations(patterns, action.tool, action.input);
@@ -3136,31 +3181,27 @@ export function releaseHeld(verdict: Verdict, reason: string): void {
  * Without the bound the model writes a full accounting of the notice at the end of every task, which is noise for the
  * user reading the transcript; the wording below caps the demanded reply at one short sentence. */
 export function intentSteer(verdict: Verdict): string {
-  const score = verdict.judgment?.intentMismatch;
   const visible = (verdict.judgment?.visible ?? 0) >= VISIBLE_THRESHOLD ? " and its effect is visible outside the working tree (a commit, push, merge, publish, or launched program)" : "";
-  return `pi-warden: this ${verdict.summary.tool} call does something different from what you said you were about to do${score === undefined ? "" : ` (intent mismatch ${percent(score)})`}${visible}. It ran. Do not write a report about this notice: in your next message, name what changed and why in at most one short sentence, then continue the task (or make the described call if it is still needed). If you already accounted for a similar notice, say nothing more about it.`;
+  return `pi-warden: this ${verdict.summary.tool} call does something different from what you said you were about to do${visible}. It ran. Do not write a report about this notice: in your next message, name what changed and why in at most one short sentence, then continue the task (or make the described call if it is still needed). If you already accounted for a similar notice, say nothing more about it.`;
 }
 
 /** What the agent reads when should_proceed is low: pause and ask the user.
  * One line; the agent must not have forwarded the call without consulting the user. */
 export function shouldProceedMessage(verdict: Verdict): string {
-  const score = verdict.judgment?.shouldProceed;
-  return `pi-warden: this ${verdict.summary.tool} call may need user input before it runs${score === undefined ? "" : ` (should-proceed ${percent(score)})`}. Pause, explain what you are about to do and why, and wait for the user's approval before continuing.`;
+  return `pi-warden: this ${verdict.summary.tool} call may need user input before it runs. Pause, explain what you are about to do and why, and wait for the user's approval before continuing.`;
 }
 
 /** What the agent reads after an unrelated change ran: the request it drifted from, the two acceptable moves, one line. */
 export function offTaskSteer(verdict: Verdict): string {
-  const score = verdict.judgment?.offTask;
-  return `pi-warden: this ${verdict.summary.tool} call looks unrelated to the user's request${score === undefined ? "" : ` (off-task ${percent(score)})`}. It ran. If it serves the request, say how in at most one short sentence; otherwise return to what the user asked for, or ask before widening the work. Do not restate session state or re-answer notices you have already addressed.`;
+  return `pi-warden: this ${verdict.summary.tool} call looks unrelated to the user's request. It ran. If it serves the request, say how in at most one short sentence; otherwise return to what the user asked for, or ask before widening the work. Do not restate session state or re-answer notices you have already addressed.`;
 }
 
 /** What the agent reads the first time a command family is judged noisy: the family and one concrete way to print less. */
 export function largeOutputSteer(verdict: Verdict): string {
   const family = verdict.largeOutputFamily ?? verdict.summary.tool;
-  const score = verdict.judgment?.largeOutput;
   const log = `/tmp/warden-${family.replace(/[^A-Za-z0-9]+/g, "-")}.log`;
   return [
-    `pi-warden: \`${family}\` commands may print far more than you need${score === undefined ? "" : ` (large-output ${percent(score)})`}. This one runs unchanged.`,
+    `pi-warden: \`${family}\` commands may print far more than you need. This one runs unchanged.`,
     `Next time, redirect and show the tail: \`${family} … > ${log} 2>&1; tail -40 ${log}\`.`,
   ].join("\n");
 }
@@ -3178,12 +3219,23 @@ export function textApproves(task: string | undefined): boolean {
   return /\b(?:yes|yep|yeah|go ahead|do it|proceed|approved?|confirm(?:ed)?|ok(?:ay)?|sure|please do|run it)\b/i.test(task ?? "") && !/\b(?:no|don't|do not|stop|wait|instead|not)\b/i.test(task ?? "");
 }
 
+/** A reason with its Jev score removed, for text the agent reads: the words stay, the number goes. */
+export function scoreFreeReason(reason: string): string {
+  return reason
+    .replace(/^irreversible \d+\.\d{2}$/, "irreversible")
+    .replace(/^possibly irreversible \d+\.\d{2}$/, "possibly irreversible")
+    .replace(/^possible security weakness \d+\.\d{2} in written content$/, "possible security weakness in written content")
+    .replace(/^intent mismatch \d+\.\d{2} on a visible action \(\d+\.\d{2}; /, "intent mismatch on a visible action (")
+    .replace(/^intent mismatch \d+\.\d{2} /, "intent mismatch ")
+    .replace(/^should-proceed \d+\.\d{2} /, "should-proceed ");
+}
+
 /**
  * The text the agent receives when a call is held. It explains the judgment and the two acceptable next moves,
- * so the model re-plans instead of retrying. Contains no command text (the model already has it) and no secrets.
+ * so the model re-plans instead of retrying. Contains no command text (the model already has it), no scores, and no secrets.
  */
 export function steerReason(verdict: Verdict, options: { canApprove: boolean }): string {
-  const what = verdict.reasons.join("; ");
+  const what = verdict.reasons.map(scoreFreeReason).join("; ");
   const lines = [
     `pi-warden held this ${verdict.summary.tool} call before it ran: ${what}.`,
     "Do not retry it unchanged. Either (1) reach the goal with a recoverable alternative that stays inside the project (a targeted path, a dry run, a move instead of a delete, a normal push), or (2) if this exact action is genuinely required, stop and tell the user in one or two sentences what it does, what cannot be undone, and why it is needed, then wait for their reply.",

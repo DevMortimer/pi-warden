@@ -28,7 +28,7 @@ import { checkSkipReason, classifyToolResult, doneNudge, emptyEvidence, evaluate
 import type { RunEvidence } from "./done.js";
 import { causeNudge, causePreFilter, emptyCauseActivity, evaluateCause, formatCause, recordCauseActivity } from "./cause.js";
 import type { CauseActivity, CauseStore } from "./cause.js";
-import { createdScratch, describeAsked, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, movedInTargets, offTaskSteer, pruneScratch, scratchCandidates, SCRATCH_PATHS_ENV, scratchPaths, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
+import { createdScratch, describeAsked, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, movedInTargets, offTaskSteer, pruneScratch, scratchCandidates, SCRATCH_PATHS_ENV, scratchPaths, scoreFreeReason, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
@@ -1981,6 +1981,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
     const deliveryVerdict = agentDeliveryVerdict(verdict);
     const deliveryReasons = deliveryVerdict.reasons;
+    // The agent reads reasons without their scores; the trace, holds, and learning records keep them.
+    const agentReasons = deliveryReasons.map(scoreFreeReason);
     if (regretCandidates.length && verdict.judgment?.regretted !== undefined) {
       settleRegret(config, { regretted: regretsAt(verdict.judgment.regretted), target: verdict.judgment.regretTarget, probability: verdict.judgment.regretted, via: "jev" });
     }
@@ -2160,7 +2162,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     };
     const warnSteer = (reasons: readonly string[]) => {
       if (!reasons.length || !adaptiveSend(ctx, config, "warn-headless")) return false;
-      const sent = steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${reasons.join("; ")}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`, { kind: "warn-headless" });
+      const sent = steer(config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${reasons.map(scoreFreeReason).join("; ")}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`, { kind: "warn-headless" });
       if (sent) watchSteer(ctx, config, ["warn-headless"]);
       return sent;
     };
@@ -2181,12 +2183,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
       track(true, "declined", "deny");
       if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · blocked ${event.toolName}: ${verdict.reasons.join("; ")}`, "error");
       notifyDesktop(ctx, config, `Blocked ${event.toolName}: ${verdict.reasons.join("; ")}. A deny rule matched; the call never ran.`);
-      return { block: true, reason: `pi-warden blocked this ${event.toolName} call (${deliveryReasons.join("; ")}). A deny rule matched; this command is not allowed to run. Ask the user if this is genuinely required.` };
+      return { block: true, reason: `pi-warden blocked this ${event.toolName} call (${agentReasons.join("; ")}). A deny rule matched; this command is not allowed to run. Ask the user if this is genuinely required.` };
     }
     if (verdict.level !== "confirm") { deliverNotes(true); track(false); return undefined; }
 
     const reasons = verdict.reasons.join("; ");
-    const deliveredReasons = deliveryReasons.join("; ");
+    const deliveredReasons = agentReasons.join("; ");
     // A user-defined confirm rule prompts the user in every mode, advise included: the operator wrote the rule to be
     // asked. Advise mode keeps Jev holds advisory; it does not soften a prompt the operator asked for by name.
     // The action defaults to dialog at parse time (the reason one writes such a rule); hold restores steer semantics.

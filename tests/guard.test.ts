@@ -73,7 +73,7 @@ test("off-task never holds: an unrelated change warns but is trace-only; a read-
   assert.equal(changes.offTaskTraceOnly, true, "steer is trace-only until AUC clears 0.51");
   assert.match(changes.reasons.join("; "), /off-task 0\.91 \(unrelated to the request; trace-only until AUC clears 0\.51\)/);
   assert.equal(changes.offTaskTraceOnlyReasonIndex, changes.reasons.findIndex(reason => reason.startsWith("off-task 0.91")), "delivery metadata identifies only the generated diagnostic");
-  assert.match(offTaskSteer(changes), /^pi-warden: this bash call looks unrelated to the user's request \(off-task 0\.91\)\. It ran\./);
+  assert.match(offTaskSteer(changes), /^pi-warden: this bash call looks unrelated to the user's request\. It ran\./);
   assert.match(formatVerdict(changes), /off task · warn$/);
   const unknown = await evaluateAction(inspect, { config, traceSample: 1, judge: judge(0.05, 0.91, "unrelated") });
   assert.equal(unknown.offTaskSteer, true, "without a mutates answer the call is taken to change something");
@@ -1358,7 +1358,7 @@ test("the agent's plan travels with the request and is judged for intent mismatc
   assert.equal(drift.intentTraceOnly, true, "the default keeps every mismatch in the trace only");
   assert.equal(drift.plan, "Let me first list what is in build/ before removing anything.");
   assert.match(formatVerdict(drift), /off plan · warn$/);
-  assert.match(intentSteer(drift), /^pi-warden: this bash call does something different from what you said you were about to do \(intent mismatch 0\.90\)\. It ran\./);
+  assert.match(intentSteer(drift), /^pi-warden: this bash call does something different from what you said you were about to do\. It ran\./);
   assert.match(intentSteer(drift), /at most one short sentence/, "the steer bounds the demanded reply instead of inviting an accounting");
 
   const told = await evaluateAction({ tool: "bash", input: { command: "rm -rf build" }, cwd, task: "clean the build", plan: "Let me first list what is in build/ before removing anything." }, { config: { ...config.action, intentTraceOnly: "none" }, judge: withIntent(0.9) });
@@ -1436,7 +1436,8 @@ test("steerReason explains the hold and the two acceptable moves without echoing
   const text = steerReason(verdict, { canApprove: true });
   assert.match(text, /held this bash call/);
   assert.match(text, /git force push/);
-  assert.match(text, /irreversible 0\.90/);
+  assert.match(text, /irreversible/);
+  assert.doesNotMatch(text, /irreversible \d+\.\d{2}/, "the score does not reach the agent");
   assert.match(text, /Do not retry it unchanged/);
   assert.match(text, /tell the user/);
   assert.match(text, /retry the same call and pi-warden will let it through/);
@@ -1796,7 +1797,7 @@ test("large output: above the threshold steers once per command family per sessi
   assert.equal(first.level, "allow", "the command is not held or warned");
   assert.deepEqual(first.reasons, []);
   const told = largeOutputNotice(first, steered);
-  assert.equal(told, "pi-warden: `npm test` commands may print far more than you need (large-output 0.92). This one runs unchanged.\nNext time, redirect and show the tail: `npm test … > /tmp/warden-npm-test.log 2>&1; tail -40 /tmp/warden-npm-test.log`.");
+  assert.equal(told, "pi-warden: `npm test` commands may print far more than you need. This one runs unchanged.\nNext time, redirect and show the tail: `npm test … > /tmp/warden-npm-test.log 2>&1; tail -40 /tmp/warden-npm-test.log`.");
   assert.ok(told!.split("\n").length <= 3);
   const again = await evaluateAction({ tool: "bash", input: { command: "CI=1 npm test --verbose" }, cwd, task: "Run the tests and fix the failures" }, { config, judge: largeOutputJudge(0.97), largeOutput: largeOutputOn });
   assert.equal(again.largeOutputFamily, "npm test");

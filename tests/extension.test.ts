@@ -1362,7 +1362,7 @@ test("a headless run tells the agent about warn-level calls; an interactive one 
   nextAnswers = { irreversible: 0.55, off_task: 0.1, scope: "expected_step" };
   await toolCall("bash", { command: "npm run db:reset" }, context({ hasUI: false }));
   const headlessSteer = sentMessages.find(sent => sent.message.customType === "pi-warden-steer");
-  assert.match(headlessSteer?.message.content ?? "", /ran with a warning \(possibly irreversible 0\.55\)/, "a warn nobody can see is delivered to the agent");
+  assert.match(headlessSteer?.message.content ?? "", /ran with a warning \(possibly irreversible\)/, "a warn nobody can see is delivered to the agent");
   assert.match(headlessSteer?.message.content ?? "", /it is on you/);
 
   sentMessages.length = 0;
@@ -1431,7 +1431,7 @@ test("trace-only off-task is silent headless and leaves the steer budget for a r
   nextAnswers = { irreversible: 0.55, off_task: 0.05, scope: "expected_step", mutates: 0.95 };
   assert.equal(await toolCall("bash", { command: "npm run db:reset" }, headless), undefined);
   assert.equal(sentMessages.length, 1, "trace-only calls did not spend the one-message budget");
-  assert.match(sentMessages[0]!.message.content, /ran with a warning \(possibly irreversible 0\.55\)/);
+  assert.match(sentMessages[0]!.message.content, /ran with a warning \(possibly irreversible\)/);
 
   await runCommand("status", headless);
   assert.match(sentMessages.at(-1)!.message.content, /Steers sent: 1 \(action 1\)\./, "trace-only findings are diagnostics, not skipped delivery attempts");
@@ -1451,7 +1451,7 @@ test("trace-only off-task removes only its structured reason from mixed headless
   assert.equal(await toolCall("bash", { command: "npm run audit" }, headless), undefined);
   const beforeDelivery = sentMessages.map(({ message }) => message.content).join("\n");
   assert.match(beforeDelivery, /review the off-task audit before release/, "a user rule that mentions off-task is preserved");
-  assert.match(beforeDelivery, /possibly irreversible 0\.55/, "an independent reason before off-task is preserved");
+  assert.match(beforeDelivery, /possibly irreversible/, "an independent reason before off-task is preserved");
   assert.doesNotMatch(beforeDelivery, /off-task 0\.95 \(unrelated to the request/, "only the generated trace-only reason is removed");
 
   await runCommand("trace", headless);
@@ -1465,7 +1465,7 @@ test("trace-only off-task removes only its structured reason from mixed headless
   assert.equal(await toolCall("write", { path: join(temporary, "mixed-security.ts"), content: "export const safe = true;" }, headless), undefined);
   const delivered = sentMessages.map(({ message }) => message.content).join("\n");
   assert.match(delivered, /proposed write may introduce a security weakness/, "the dedicated security warning remains");
-  assert.match(delivered, /possible security weakness 0\.92 in written content/, "an independent reason after off-task is preserved");
+  assert.match(delivered, /possible security weakness in written content/, "an independent reason after off-task is preserved");
   assert.doesNotMatch(delivered, /off-task 0\.95 \(unrelated to the request/, "no mixed delivery carries the trace-only reason");
 });
 
@@ -1491,7 +1491,7 @@ test("trace-only off-task does not soften an independent confirm decision", asyn
   assert.equal(confirms.length, 1, "the normal confirmation dialog ran");
   assert.match(confirms[0]!.message, /irreversible 0\.95/);
   assert.match(confirms[0]!.message, /off-task 0\.95/, "the user-facing diagnostic view remains complete");
-  assert.match(blocked?.reason ?? "", /irreversible 0\.95/, "the agent receives the independent hold reason");
+  assert.match(blocked?.reason ?? "", /irreversible/, "the agent receives the independent hold reason");
   assert.doesNotMatch(blocked?.reason ?? "", /off-task 0\.95/, "the agent does not receive the trace-only reason");
 });
 
@@ -1930,7 +1930,7 @@ test("with consent, Jev judgments drive warn and hold, and a quiet verdict folds
   nextAnswers = { irreversible: 0.92, off_task: 0.3, scope: "plausible_side_step" };
   const held = await toolCall("bash", { command: "npm run db:reset" });
   assert.equal(held?.block, true);
-  assert.match(held?.reason ?? "", /irreversible 0\.92/);
+  assert.match(held?.reason ?? "", /irreversible/);
   assert.match(held?.reason ?? "", /retry the same call and pi-warden will let it through/);
   assert.equal(networkCalls, 2);
 });
