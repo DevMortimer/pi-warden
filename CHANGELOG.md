@@ -6,9 +6,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 1.10.0
+
 ### Changed
 
-- pi-warden now declares support for Pi 1.x: the `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` peer ranges go from `>=0.85.1 <1` to `>=0.85.1 <2`, so installing pi-warden next to Pi 1.x no longer gives a peer dependency conflict.
+- pi-warden now declares support for Pi 1.x: the `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` peer ranges go from `>=0.85.1 <1` to `>=0.85.1 <2`, so installing pi-warden next to Pi 1.x no longer fails with a peer dependency conflict. npm still prints an `ERESOLVE overriding peer dependency` warning, because pi-typesafe declares Pi `<1`.
+
+### Fixed
+
+- A run that a custom message starts no longer crashes the turn-start handler. Pi versions that fire `before_agent_start` for such a run (for example, a background subagent's report) give it no prompt text; the turn-start rules reminder and the conscience assessment now skip that run and write a `custom_trigger` line to the trace.
 
 ## 1.9.0
 
