@@ -1360,7 +1360,18 @@ export default function wardenExtension(host: ExtensionAPI): void {
    * Never throws and never edits an earlier message; a judgment that is off, fails, or times out appends nothing and
    * says why in the trace, and an answer that arrives after the run ended is dropped, also with a trace line.
    */
-  const curateTurnStart = (ctx: ExtensionContext, config: WardenConfig, prompt: string): void => {
+  const curateTurnStart = (ctx: ExtensionContext, config: WardenConfig, prompt: string | undefined): void => {
+    // A newer Pi also fires this event for a run a custom message starts (pi.sendMessage with triggerTurn), and that
+    // run has no operator prompt. There is no request to judge for rule relevance, so the reminder skips with a trace
+    // line instead of crashing on `undefined`, like the skips below.
+    if (typeof prompt !== "string") {
+      record(ctx, config, "rules", "warden · rules · turn start · skipped", [
+        "trigger: before_agent_start",
+        "skipReason: custom_trigger",
+        "the run started from a custom message, not an operator prompt; no rule question was sent",
+      ]);
+      return;
+    }
     // A prompt the conscience already skips needs no rules reminder either: a short continuation or a relayed child
     // report carries no work of its own, so no question is sent. The reason is traced either way.
     const gated = redact(prompt).slice(0, 2000);
@@ -1525,6 +1536,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
       loadedSkillNames = new Set();
       queuedRevision++;
       clearFileIdentityCache();
+      // The same custom-message case as the rules reminder: no operator prompt, nothing to assess. The state above
+      // still resets, so nothing from an older prompt leaks into a later one.
+      const prompt = (event as { prompt?: unknown }).prompt;
+      if (typeof prompt !== "string") {
+        record(ctx, config, "conscience", "warden · conscience · turn start · skipped", [
+          "trigger: before_agent_start",
+          "skipReason: custom_trigger",
+          "the run started from a custom message, not an operator prompt; no assessment was sent",
+        ]);
+        return;
+      }
       const judge = judgeFor(config);
       // Get the resolved skill catalog from the event's system prompt options (spec §3 rule 1)
       const skills = event.systemPromptOptions?.skills ?? [];
@@ -1532,16 +1554,16 @@ export default function wardenExtension(host: ExtensionAPI): void {
       let toolInfos: Array<{ name: string; description: string }> = [];
       try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
       // Detect explicit /skill:name invocation (spec §3 rule 5)
-      const explicitSkillMatch = event.prompt.match(/\/skill:([\w-]+)/);
+      const explicitSkillMatch = prompt.match(/\/skill:([\w-]+)/);
       if (explicitSkillMatch) {
         record(ctx, config, "conscience", `explicit skill invocation: ${explicitSkillMatch[1]}`, ["trigger: input", `explicit_skill: ${explicitSkillMatch[1]}`]);
       } else {
         // Redact and truncate prompt to 2000 chars (spec §6 payload limit)
-        const redactedPrompt = redact(event.prompt).slice(0, 2000);
-        const truncationRecorded = event.prompt.length > 2000 ? [`prompt truncated from ${event.prompt.length} to 2000 chars`] : [];
+        const redactedPrompt = redact(prompt).slice(0, 2000);
+        const truncationRecorded = prompt.length > 2000 ? [`prompt truncated from ${prompt.length} to 2000 chars`] : [];
         // Build recent context from session branch (up to 4 messages, 500 chars each)
         const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
-        const spine = taskSpine(branch, event.prompt);
+        const spine = taskSpine(branch, prompt);
         const recentMessages: Array<{ role: string; text: string }> = [];
         for (const entry of branch.slice(-6)) {
           if (recentMessages.length >= 4) break;

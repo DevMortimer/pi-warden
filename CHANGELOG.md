@@ -6,12 +6,6 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-### Changed
-
-- The action guard and `/warden rules calibrate` also fit the backend's question limit. On SubQ, an action guard call with more than 16 questions (one per `rm` target the request does not authorize, plus any `questions` a library caller adds) and a calibration sample with more than 16 rules split into requests of at most 16, sent together, with the answers merged by question id; the verdict and the scores are the same as from one request. No action guard question repeats in each request, because none of them reads another's answer. On the other backends, and for a judge without `limits`, both send the same requests as before.
-
-## 1.10.0
-
 ### Added
 
 - SubQ backend: `"typesafeBackend": "subq"` in the user config sends judgments to `https://api.subq.ai` with the model `subq-snap-preview`, using the key in `SUBQ_API_KEY`. ([Configuration](docs/configuration.md#user-config))
@@ -20,6 +14,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - pi-typesafe 0.10.0.
 - Every judgment fits the backend's question limit: 16 questions per request on SubQ, 32 on the other backends. The rules guard, the end-of-run turn rules, the turn-start rules reminder, `/warden rules check`, the context filter, relevance compaction, and the conscience split a judgment with more questions into several requests and merge the answers by question id; the conscience repeats its disposition question in each request. On the other backends every guard sends the same requests as before, and a judge an extension author builds without `limits` keeps the 32-question limit. On SubQ a judgment with more than 16 questions uses more of `maxRequests`.
+- The action guard and `/warden rules calibrate` also fit the backend's question limit. On SubQ, an action guard call with more than 16 questions (one per `rm` target the request does not authorize, plus any `questions` a library caller adds) and a calibration sample with more than 16 rules split into requests of at most 16, sent together, with the answers merged by question id; the verdict and the scores are the same as from one request. No action guard question repeats in each request, because none of them reads another's answer. On the other backends, and for a judge without `limits`, both send the same requests as before.
+
+## 1.10.0
+
+### Changed
+
+- pi-warden now declares support for Pi 1.x: the `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` peer ranges go from `>=0.85.1 <1` to `>=0.85.1 <2`, so installing pi-warden next to Pi 1.x no longer fails with a peer dependency conflict. npm still prints an `ERESOLVE overriding peer dependency` warning, because pi-typesafe declares Pi `<1`.
+
+### Fixed
+
+- A run that a custom message starts no longer crashes the turn-start handler. Pi versions that fire `before_agent_start` for such a run (for example, a background subagent's report) give it no prompt text; the turn-start rules reminder and the conscience assessment now skip that run and write a `custom_trigger` line to the trace.
 
 ## 1.9.0
 
