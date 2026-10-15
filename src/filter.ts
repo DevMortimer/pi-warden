@@ -1,9 +1,10 @@
-import { ask, score } from "pi-typesafe";
-import type { JsonValue, Judge } from "pi-typesafe";
+import { ask, DEFAULT_BACKEND_LIMITS, score } from "pi-typesafe";
+import type { JsonValue } from "pi-typesafe";
 import type { JudgmentsOffReason } from "./backend.js";
 import type { FilterConfig } from "./config.js";
 import type { TaskSpine } from "./shape.js";
 import { redact } from "./redact.js";
+import type { LimitedJudge } from "./rules.js";
 
 /**
  * Context filter (beta, off by default). Where the saver would keep only the blind head/diagnostic/tail excerpt, Jev
@@ -25,7 +26,7 @@ export type FilterFallback = JudgmentsOffReason | "cooldown" | "timeout" | "erro
 export const FILTER_TAIL_CHARS = 1000;
 /** pi-typesafe refuses a request body over 64 KiB of JSON; the margin covers the model field and normalisation. */
 export const FILTER_REQUEST_BYTES = 60_000;
-/** pi-typesafe's question limit per request. */
+/** pi-typesafe's question limit per request; a backend with a lower one gets its own. */
 export const FILTER_MAX_QUESTIONS = 32;
 
 export const FILTER_NOTE = "Passages selected for the current task; omitted text is in the full-output file.";
@@ -43,7 +44,7 @@ export interface FilterInput {
 
 export interface FilterOptions {
   config: FilterConfig;
-  judge: Judge;
+  judge: LimitedJudge;
   signal?: AbortSignal | undefined;
 }
 
@@ -86,7 +87,7 @@ export function filterState(input: FilterInput): { [key: string]: JsonValue } {
 }
 
 /** As few requests as the size and question limits allow; every chunk lands in exactly one, named `c<index+1>`. */
-export function buildFilterBatches(chunks: readonly string[], input: FilterInput, maxBytes = FILTER_REQUEST_BYTES): Batch[] {
+export function buildFilterBatches(chunks: readonly string[], input: FilterInput, maxBytes = FILTER_REQUEST_BYTES, maxQuestions = FILTER_MAX_QUESTIONS): Batch[] {
   const base = filterState(input);
   const batches: Batch[] = [];
   let batch: Batch | undefined;
@@ -94,7 +95,7 @@ export function buildFilterBatches(chunks: readonly string[], input: FilterInput
   for (const [index, chunk] of chunks.entries()) {
     const id = `c${index + 1}`;
     const field = redact(chunk);
-    if (batch && batch.ids.length < FILTER_MAX_QUESTIONS) {
+    if (batch && batch.ids.length < Math.min(FILTER_MAX_QUESTIONS, maxQuestions)) {
       const next: Batch = { state: { ...batch.state, [id]: field }, questions: { ...batch.questions, [id]: question(id) }, ids: [...batch.ids, index] };
       if (size(next) <= maxBytes) { batch = next; batches[batches.length - 1] = next; continue; }
     }
@@ -165,7 +166,7 @@ export function filteredHeader(text: string): string {
 export async function filterOutput(text: string, input: FilterInput, options: FilterOptions): Promise<FilterResult> {
   const started = Date.now();
   const chunks = chunkLines(text, options.config.chunkChars);
-  const batches = buildFilterBatches(chunks, input);
+  const batches = buildFilterBatches(chunks, input, FILTER_REQUEST_BYTES, options.judge.limits?.maxQuestions ?? DEFAULT_BACKEND_LIMITS.maxQuestions);
   const results = await Promise.all(batches.map(batch => ask(options.judge, { state: batch.state, questions: batch.questions }, { timeoutMs: options.config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) })));
   const elapsedMs = Date.now() - started;
   const base = { chunks: chunks.length, requests: batches.length, elapsedMs };

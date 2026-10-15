@@ -10,7 +10,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import * as tuiModule from "@earendil-works/pi-tui";
 type MouseRegionConstructor = new (child: ReturnType<typeof statusWidget>, onMouse: (event: { type: string; button: string }) => { handled: boolean } | undefined) => import("@earendil-works/pi-tui").Component;
 const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ MouseRegion: MouseRegionConstructor }>).MouseRegion;
-import { authState, backendHost, createTypeSafe, describeAuth, resolveBackend, ask } from "pi-typesafe";
+import { authState, backendHost, createTypeSafe, describeAuth, resolveBackend, chunkEvaluationRequest } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
 import { backendName, describeBackend, disclosureFor, judgeOptions, loginStoresKey } from "./backend.js";
@@ -44,7 +44,7 @@ import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
 import { maskSecrets, redact } from "./redact.js";
-import { formatRules, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES, turnRulesFor } from "./rules.js";
+import { askChunks, formatRules, pathNoteSteer, projectPath, questionLimit, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES, turnRulesFor } from "./rules.js";
 import type { RulesVerdict } from "./rules.js";
 import { evaluateTurnRun, SHELL_RULES_CHECKS, snapshotTree, turnSteer } from "./turn-rules.js";
 import type { SnapshotResult } from "./turn-rules.js";
@@ -1399,7 +1399,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
     const request = buildCuratorRequest(prompt, taskSpine(branch, prompt), rules);
     const started = Date.now();
-    void ask(judge, request, { timeoutMs: Math.min(config.timeoutMs, CURATOR_TIMEOUT_MS), ...(ctx.signal ? { signal: ctx.signal } : {}) })
+    void askChunks(judge, chunkEvaluationRequest(request, { maxQuestions: questionLimit(judge) }), { timeoutMs: Math.min(config.timeoutMs, CURATOR_TIMEOUT_MS), ...(ctx.signal ? { signal: ctx.signal } : {}) })
       .then(answer => {
         const elapsedMs = Date.now() - started;
         // The run this request belonged to has ended: nothing may be appended after it (a delivery must never start a turn).
@@ -1593,7 +1593,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           // The evaluate result carries the model that answered; the activation gate compares the policy's model against
           // it. Empty until the first evaluate call, and an empty model never matches a policy, so the gate fails closed.
           let judgeModel = "";
-          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); judgeModel = r.model; return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+          const judgeAdapter = judge ? { limits: judge.limits, evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); judgeModel = r.model; return { answers: r.answers as Record<string, unknown> }; } } : undefined;
           const result = await assess(
             redactedPrompt, recentContext, skills, toolInfos, activeSkills, suppliedSkills,
             { judge: judgeAdapter, judgmentsOff: judgmentsOffReason(config), config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile },
@@ -1743,7 +1743,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           let toolInfos: Array<{ name: string; description: string }> = [];
           try { toolInfos = pi.getAllTools().map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })); } catch { toolInfos = []; }
           const activeSkills = cachedSkills.map(s => s.name);
-          const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+          const judgeAdapter = judge ? { limits: judge.limits, evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
           try {
             const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile }, spine);
             if (conscienceGeneration !== myGeneration) return;
@@ -1824,7 +1824,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
         const redactedPrompt = redact(prompt ?? "").slice(0, 2000);
         const spine = taskSpine(typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [], prompt ?? undefined);
         const activeSkills = cachedSkills.map(s => s.name);
-        const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+        const judgeAdapter = judge ? { limits: judge.limits, evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); return { answers: r.answers as Record<string, unknown> }; } } : undefined;
         try {
           const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile }, spine);
           if (conscienceGeneration !== myGeneration) return;
@@ -2807,7 +2807,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const spine = taskSpine(typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [], prompt ?? undefined);
       const activeSkills = cachedSkills.map(s => s.name);
       let judgeModel = "";
-      const judgeAdapter = judge ? { evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); judgeModel = r.model; return { answers: r.answers as Record<string, unknown> }; } } : undefined;
+      const judgeAdapter = judge ? { limits: judge.limits, evaluate: async (req: { state: unknown; questions: import("pi-typesafe").Questions }) => { const r = await judge.evaluate(req as Parameters<typeof judge.evaluate>[0]); judgeModel = r.model; return { answers: r.answers as Record<string, unknown> }; } } : undefined;
       try {
         const result = await assess(redactedPrompt, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile }, spine);
         if (conscienceGeneration !== myGeneration) return;

@@ -1,8 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { ask, choice } from "pi-typesafe";
-import type { IntegrationErrorCode, Judge } from "pi-typesafe";
+import { ask, choice, chunkEvaluationRequest, DEFAULT_BACKEND_LIMITS } from "pi-typesafe";
+import type { AskOptions, BackendLimits, IntegrationErrorCode, Judge, Questions, SystemOneRequest, TypeSafe } from "pi-typesafe";
 import type { RulesConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES, renderTemplate, rulesTokens } from "./widget.js";
@@ -76,6 +76,32 @@ export type RulesSourceConfig = Pick<RulesConfig, "files" | "fallback">;
 export const FALLBACK_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"];
 /** TypeSafe answers at most 32 questions per request; one is kept for the edit locator. */
 export const MAX_RULES = 31;
+
+/** A judge that may know its backend's limits; a hand-built `{ evaluate }` does not. */
+export type LimitedJudge = Judge & Pick<TypeSafe, "limits">;
+
+/** Questions one request may carry on the judge's backend; a judge without `limits` gets the schema's bound. */
+export function questionLimit(judge: { readonly limits?: BackendLimits | undefined } | undefined): number {
+  return judge?.limits?.maxQuestions ?? DEFAULT_BACKEND_LIMITS.maxQuestions;
+}
+
+export type ChunkedAnswer =
+  | { ok: true; answers: Record<string, unknown>; model: string; elapsedMs: number }
+  | { ok: false; error: string; errorCode?: IntegrationErrorCode };
+
+/** The requests of one judgment, sent together and merged by question id; one failed request fails the judgment. */
+export async function askChunks(judge: Judge, requests: readonly SystemOneRequest<Questions>[], options: AskOptions): Promise<ChunkedAnswer> {
+  const results = await Promise.all(requests.map(request => ask(judge, request, options)));
+  const answers: Record<string, unknown> = {};
+  let elapsedMs = 0;
+  for (const result of results) {
+    if (!result.ok) return result;
+    Object.assign(answers, result.answers);
+    elapsedMs = Math.max(elapsedMs, result.elapsedMs);
+  }
+  const first = results[0];
+  return { ok: true, answers, model: first?.ok ? first.model : "", elapsedMs };
+}
 const CONTENT_LIMIT = 6000;
 export const EDIT_TEXT_LIMIT = 1500;
 export const EDIT_CONTEXT_LINES = 20;
@@ -521,8 +547,11 @@ export function ruleQuestion(rule: Rule) {
   return choice(`${FRAME}\nRule: ${rule.name}\n${rule.body ? clip(rule.body, RULE_BODY_LIMIT) : "(no further detail beyond the heading)"}`, OUTCOMES);
 }
 
-/** The rules asked about for a write: scoped to its path first, `when: turn` rules excluded, then cut to the request cap in file order. */
-export function buildRulesRequest(target: RulesTarget, set: RuleSet) {
+/**
+ * The rules asked about for a write: scoped to its path first, `when: turn` rules excluded, then cut to the request cap
+ * in file order. `requests` splits the questions to `maxQuestions` per request, each carrying the whole state.
+ */
+export function buildRulesRequest(target: RulesTarget, set: RuleSet, maxQuestions: number = DEFAULT_BACKEND_LIMITS.maxQuestions) {
   const scoped = editRulesFor(set, target.path);
   const applicable = scoped.slice(0, MAX_RULES);
   const dropped = scoped.length - applicable.length;
@@ -545,15 +574,19 @@ export function buildRulesRequest(target: RulesTarget, set: RuleSet) {
       Object.fromEntries(target.edits!.map(edit => [edit.id, `the entry with id ${edit.id}`])),
     );
   }
+  const state = {
+    path: target.path,
+    ...(target.content === undefined ? {} : { content: target.content }),
+    ...(target.edits === undefined ? {} : { edits: target.edits.map(edit => ({ id: edit.id, ...(edit.before === undefined ? {} : { before: edit.before }), ...(edit.after === undefined ? {} : { after: edit.after }), newText: edit.newText })) }),
+    ...(target.moreEdits ? { moreEdits: target.moreEdits } : {}),
+    ...(set.aggregate !== undefined && !set.rules.length ? { rules: set.aggregate } : {}),
+  };
   return {
-    state: {
-      path: target.path,
-      ...(target.content === undefined ? {} : { content: target.content }),
-      ...(target.edits === undefined ? {} : { edits: target.edits.map(edit => ({ id: edit.id, ...(edit.before === undefined ? {} : { before: edit.before }), ...(edit.after === undefined ? {} : { after: edit.after }), newText: edit.newText })) }),
-      ...(target.moreEdits ? { moreEdits: target.moreEdits } : {}),
-      ...(set.aggregate !== undefined && !set.rules.length ? { rules: set.aggregate } : {}),
-    },
+    state,
     questions,
+    // The locator rides in one chunk only: its answer does not depend on the rules beside it, and a copy per chunk would
+    // make a 32-question judgment take three requests on a 16-question backend instead of two.
+    requests: chunkEvaluationRequest({ state, questions }, { maxQuestions }),
     applicable,
     dropped,
     ...(dropped ? { firstDropped: scoped[MAX_RULES]!.id } : {}),
@@ -638,7 +671,7 @@ export interface RulesOptions {
   cwd: string;
   config: RulesConfig;
   set: RuleSet | undefined;
-  judge?: Judge | undefined;
+  judge?: LimitedJudge | undefined;
   timeoutMs: number;
   signal?: AbortSignal | undefined;
 }
@@ -725,10 +758,10 @@ export async function evaluateRulesTarget(target: RulesTarget | undefined, tool:
   const reason = skipReason(target, set, options.config);
   if (reason || !target || !set) return skipped(target, tool, shownPath, set, reason ?? "nothing to judge");
   if (!options.judge) return skipped(target, tool, shownPath, set, "TypeSafe judgments are off");
-  const request = buildRulesRequest(target, set);
+  const request = buildRulesRequest(target, set, questionLimit(options.judge));
   const aggregate = set.aggregate !== undefined && !set.rules.length;
   const base = { tool: target.tool, path: target.path, sources: set.sources, asked: aggregate ? 1 : request.applicable.length, aggregate, ...(request.firstDropped ? { dropped: request.dropped, firstDropped: request.firstDropped } : {}) };
-  const result = await ask(options.judge, { state: request.state, questions: request.questions }, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
+  const result = await askChunks(options.judge, request.requests, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { source: "error", ...base, findings: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   const answers = result.answers as Record<string, RuleAnswer>;
   const { scores, findings, softFindings } = scoreRuleAnswers(

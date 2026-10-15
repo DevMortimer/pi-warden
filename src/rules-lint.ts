@@ -1,7 +1,8 @@
 import { ask, choice, chunkEvaluationRequest, noul } from "pi-typesafe";
-import type { IntegrationErrorCode, Judge, JsonValue, Questions, SystemOneRequest } from "pi-typesafe";
+import type { IntegrationErrorCode, JsonValue, Questions, SystemOneRequest } from "pi-typesafe";
 import { redact } from "./redact.js";
-import type { Rule, RuleSet } from "./rules.js";
+import { questionLimit } from "./rules.js";
+import type { LimitedJudge, Rule, RuleSet } from "./rules.js";
 
 /**
  * The rules check behind `/warden rules check`: two questions about the rule set itself, not about a change.
@@ -151,7 +152,7 @@ export interface RulesCheckResult {
 
 export interface RulesCheckOptions {
   set: RuleSet | undefined;
-  judge?: Judge | undefined;
+  judge?: LimitedJudge | undefined;
   timeoutMs: number;
   signal?: AbortSignal | undefined;
 }
@@ -175,7 +176,7 @@ export async function checkRules(options: RulesCheckOptions): Promise<RulesCheck
   if (set.aggregate !== undefined && !set.rules.length) return empty("aggregate", set.sources);
   if (!options.judge) return empty("skipped", set.sources, { skippedReason: "Jev judgments are off" });
   const { request, rules, notChecked } = buildRulesCheckRequest(set.rules);
-  const chunks = chunkEvaluationRequest(request);
+  const chunks = chunkEvaluationRequest(request, { maxQuestions: questionLimit(options.judge) });
   const outcomes = await Promise.all(chunks.map(chunk => ask(options.judge!, chunk, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) })));
   const answers: Answers = {};
   let failedRequests = 0;

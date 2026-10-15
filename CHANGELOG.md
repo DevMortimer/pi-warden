@@ -6,7 +6,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- SubQ backend: `"typesafeBackend": "subq"` in the user config sends judgments to `https://api.subq.ai` with the model `subq-snap-preview`, using the key in `SUBQ_API_KEY`. ([Configuration](docs/configuration.md#user-config))
+
+### Changed
+
+- pi-typesafe 0.10.0.
+- Every judgment fits the backend's question limit: 16 questions per request on SubQ, 32 on the other backends. The rules guard, the end-of-run turn rules, the turn-start rules reminder, `/warden rules check`, the context filter, relevance compaction, and the conscience split a judgment with more questions into several requests and merge the answers by question id; the conscience repeats its disposition question in each request. On the other backends every guard sends the same requests as before, and a judge an extension author builds without `limits` keeps the 32-question limit. On SubQ a judgment with more than 16 questions uses more of `maxRequests`.
 
 ## 1.9.0
 

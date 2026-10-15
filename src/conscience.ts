@@ -5,8 +5,8 @@
  * Pre-measurement: all selections are trace-only. No steers, no auto-loading.
  */
 import type { Skill } from "@earendil-works/pi-coding-agent";
-import { choice, noul, score } from "pi-typesafe";
-import type { Questions } from "pi-typesafe";
+import { choice, DEFAULT_BACKEND_LIMITS, noul, score } from "pi-typesafe";
+import type { BackendLimits, Questions } from "pi-typesafe";
 import { createHash } from "node:crypto";
 import type { JudgmentsOffReason } from "./backend.js";
 import type { ConscienceConfig } from "./config.js";
@@ -118,7 +118,7 @@ export const SCORE_LEVELS = [
 const MAX_ELIGIBLE = 256;
 /** Max UTF-8 bytes per candidate description. */
 const MAX_DESC_BYTES = 8192;
-/** Max questions per single judge request (including the shared disposition question). */
+/** Max questions per single judge request (including the shared disposition question); a backend with a lower limit gets its own. */
 const MAX_QUESTIONS_PER_REQUEST = 32;
 
 /* ─── Path/URL sanitizer (spec §6) ─────────────────────────────────── */
@@ -612,6 +612,7 @@ function classifyError(err: unknown): string {
 
 export interface Judge {
   evaluate(request: { state: unknown; questions: Questions }, options?: { timeoutMs?: number }): Promise<{ answers: Record<string, unknown> }>;
+  readonly limits?: BackendLimits | undefined;
 }
 
 export interface ConscienceDeps {
@@ -712,15 +713,15 @@ export async function assess(
 
   const MAX_IN_FLIGHT = 4;
 
-  // One chunk per batch of the ranked list, in rank order: the top-k fits in a single request
-  // (MAX_QUESTIONS_PER_REQUEST minus the shared disposition question), so an assessment asks
-  // about every surviving candidate once.
+  // One chunk per batch of the ranked list, in rank order: on a 32-question backend the default top-k fits in a single
+  // request (MAX_QUESTIONS_PER_REQUEST minus the shared disposition question, which every chunk carries), so an
+  // assessment asks about every surviving candidate once.
   type Category = "skill" | "tool";
   interface ChunkWork {
     kinds: Category[];
     items: Array<{ candidate: Candidate; capped: { candidate: Candidate; overLimit: boolean } }>;
   }
-  const maxCandidatesPerRequest = MAX_QUESTIONS_PER_REQUEST - 1; // -1 for disposition
+  const maxCandidatesPerRequest = Math.min(MAX_QUESTIONS_PER_REQUEST, judge.limits?.maxQuestions ?? DEFAULT_BACKEND_LIMITS.maxQuestions) - 1; // -1 for disposition
   const cappedRanked = gate.ranked.map(r => ({ candidate: r.candidate, capped: capDescription(r.candidate) }));
   const workQueue: ChunkWork[] = [];
   for (let i = 0; i < cappedRanked.length; i += maxCandidatesPerRequest) {

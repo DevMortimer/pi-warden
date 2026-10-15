@@ -7,9 +7,10 @@
  * each section in its own fence (tool output inside a fence marked untrusted); the rest become one line. Nothing here
  * writes prose about the session, so nothing in the summary is a paraphrase. Any failure returns a reason instead, and the caller lets Pi's summary run.
  */
-import { ask, fanOut, noul } from "pi-typesafe";
-import type { JsonValue, Judge, NoulQuestion } from "pi-typesafe";
+import { ask, DEFAULT_BACKEND_LIMITS, fanOut, noul } from "pi-typesafe";
+import type { JsonValue, NoulQuestion } from "pi-typesafe";
 import { redact } from "./redact.js";
+import type { LimitedJudge } from "./rules.js";
 import type { CompactionConfig } from "./config.js";
 import type { TaskSpine } from "./shape.js";
 
@@ -106,14 +107,14 @@ export interface RelevanceInput {
 }
 
 export interface RelevanceOptions {
-  judge: Judge;
+  judge: LimitedJudge;
   config: Pick<CompactionConfig, "keepThreshold" | "maxSummaryTokens" | "timeoutMs" | "maxRequests">;
   signal?: AbortSignal | undefined;
   /** Each request's own deadline (the judge client's `timeoutMs`); `config.timeoutMs` bounds the whole compaction. */
   requestTimeoutMs?: number | undefined;
   /** Requests left in the session budget the guards share; read before the compaction and before each request. */
   requestsLeft?: (() => number) | undefined;
-  /** Keep questions per request; 1 asks each unit alone. Default MAX_QUESTIONS. */
+  /** Keep questions per request; 1 asks each unit alone. Default MAX_QUESTIONS, or the backend's question limit when lower. */
   questionsPerRequest?: number;
   concurrency?: number;
   /** The full-output file pi-warden saved for a text, when it has one. Never a path read from the text alone. */
@@ -561,7 +562,7 @@ export async function relevanceCompaction(input: RelevanceInput, options: Releva
   const floor = renderSummary(units, files, new Set(), options.savedPathFor);
   if (summaryTokens(floor) > budget) return fail("too large", `${summaryTokens(floor)} tokens before any tool output`);
   if (scored.length) {
-    const requests = buildRequests(units, input, options.questionsPerRequest ?? MAX_QUESTIONS);
+    const requests = buildRequests(units, input, Math.min(options.questionsPerRequest ?? MAX_QUESTIONS, options.judge.limits?.maxQuestions ?? DEFAULT_BACKEND_LIMITS.maxQuestions));
     // Both limits are checked before anything is sent, so a compaction that cannot finish spends nothing.
     const cap = options.config.maxRequests;
     if (requests.length > cap) return fail("budget", `${requests.length} requests needed, compaction.maxRequests is ${cap}`);

@@ -4784,6 +4784,21 @@ test("the commandcode backend sends judgments to its own host, path, and model",
   }
 });
 
+test("the subq backend sends judgments to api.subq.ai with its default model and SUBQ_API_KEY", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: "subq", rules: { enabled: false }, ...STACK_BAR }));
+  const saved = process.env.SUBQ_API_KEY;
+  process.env.SUBQ_API_KEY = "subq-fake-test-key-000";
+  try {
+    await toolCall("bash", { command: "npm test" });
+    assert.equal(networkCalls, 1);
+    assert.equal(requestUrls[0], "https://api.subq.ai/v1/systemone");
+    assert.equal(requests[0]!.model, "subq-snap-preview");
+    assert.equal(requestAuth[0], "Bearer subq-fake-test-key-000", "the key comes from SUBQ_API_KEY");
+  } finally {
+    if (saved === undefined) delete process.env.SUBQ_API_KEY; else process.env.SUBQ_API_KEY = saved;
+  }
+});
+
 test("a caller-supplied endpoint object reaches createTypeSafe unchanged and answers from its own host, model, and key", async () => {
   await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: gateway, rules: { enabled: false }, ...STACK_BAR }));
   process.env.ACME_JUDGE_KEY = "acme-fake-test-key-000";
@@ -4803,7 +4818,7 @@ test("judgments off: an unknown typesafeBackend name is refused with the message
   await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: "azure", rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("bash", { command: "npm test" });
   await toolCall("bash", { command: "npm run lint" });
-  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend \"azure\". Valid backends: typesafe, openrouter, commandcode, liquid.)"], "said once, carrying pi-typesafe's refusal message");
+  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend \"azure\". Valid backends: typesafe, openrouter, commandcode, liquid, subq.)"], "said once, carrying pi-typesafe's refusal message");
   assert.equal(networkCalls, 0, "no client is created and nothing is sent");
   assert.equal(requests.length, 0);
   await runCommand("status");
@@ -5392,6 +5407,42 @@ test("rules at turn start: the prompt does not wait for the judgment, and the re
     await runCommand("trace", context({ hasUI: false }));
     assert.match(sentMessages.at(-1)!.message.content, /rules · turn start · 1 rule delivered at the end of a turn whose loop continued/);
   } finally {
+    await rm(rules, { force: true });
+  }
+});
+
+test("rules at turn start on subq: 20 rules take two requests of at most 16 questions and name the same rule as one request elsewhere", async () => {
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, Array.from({ length: 20 }, (_, index) => `# Rule ${index + 1}\nCode must follow convention number ${index + 1}.`).join("\n\n") + "\n");
+  const saved = process.env.SUBQ_API_KEY;
+  process.env.SUBQ_API_KEY = "subq-fake-test-key-000";
+  const run = async (backend: string) => {
+    await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: backend, notices: true, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, cause: { enabled: false }, ...STACK_BAR }));
+    // A new session builds the judge again from the config just written.
+    await sessionStart();
+    requests.length = 0;
+    requestUrls.length = 0;
+    const sentBefore = sentMessages.length;
+    const before = answeredRequests;
+    await fire("before_agent_start", { prompt: "Read the config module and tighten the retry default" });
+    await waitFor(() => answeredRequests >= before + (backend === "subq" ? 2 : 1), "the background rules judgment");
+    await tick();
+    await toolCall("read", { path: "src/config.ts" });
+    await toolTurn();
+    const counts = requests.filter(request => "applies_0" in request.questions || "applies_19" in request.questions).map(request => Object.keys(request.questions).length);
+    return { counts, urls: [...new Set(requestUrls)], delivered: sentMessages.slice(sentBefore).filter(entry => entry.message.customType === "pi-warden-rules").map(entry => entry.message.content) };
+  };
+  try {
+    nextAnswers = { ...nextAnswers, applies_0: 0.1, applies_17: 0.9 };
+    const wide = await run("typesafe");
+    const narrow = await run("subq");
+    assert.deepEqual(wide.counts, [20], "one request on typesafe, as before");
+    assert.deepEqual(narrow.counts, [16, 4], "no request over subq's 16 questions");
+    assert.ok(narrow.urls.every(url => url === "https://api.subq.ai/v1/systemone"), narrow.urls.join(", "));
+    assert.deepEqual(narrow.delivered, ["Rules that apply to this request:\n- Rule 18: Code must follow convention number 18."], "the rule in the second request is named");
+    assert.deepEqual(narrow.delivered, wide.delivered);
+  } finally {
+    if (saved === undefined) delete process.env.SUBQ_API_KEY; else process.env.SUBQ_API_KEY = saved;
     await rm(rules, { force: true });
   }
 });

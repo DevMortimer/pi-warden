@@ -3,14 +3,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { ask, choice } from "pi-typesafe";
-import type { Judge } from "pi-typesafe";
+import { choice, chunkEvaluationRequest } from "pi-typesafe";
 import type { RulesConfig } from "./config.js";
 import {
   MAX_RULES, OUTCOMES, RULE_BODY_LIMIT, STEER_BODY_LIMIT,
-  evaluateRulesTarget, scoreAnswers, turnRulesFor,
+  askChunks, evaluateRulesTarget, questionLimit, scoreAnswers, turnRulesFor,
 } from "./rules.js";
-import type { Rule, RuleScoreEntry, RulesVerdict, RuleSet } from "./rules.js";
+import type { LimitedJudge, Rule, RuleScoreEntry, RulesVerdict, RuleSet } from "./rules.js";
 import { redact } from "./redact.js";
 import type { ShellSkip } from "./shell-writes.js";
 
@@ -330,18 +329,18 @@ export function buildTurnRequest(task: string, diff: string, rules: readonly Rul
 }
 
 export interface TurnRulesOptions {
-  judge: Judge;
+  judge: LimitedJudge;
   config: RulesConfig;
   timeoutMs: number;
   signal?: AbortSignal | undefined;
   sources: readonly string[];
 }
 
-/** One request that judges the turn rules against the whole diff and the task. */
+/** One request that judges the turn rules against the whole diff and the task, or more when the backend's question limit is lower. */
 export async function evaluateTurnRules(task: string, diff: string, rules: readonly Rule[], options: TurnRulesOptions): Promise<RulesVerdict> {
   const base = { tool: "turn" as const, path: TURN_PATH, sources: [...options.sources], asked: rules.length, aggregate: false };
   const request = buildTurnRequest(redact(task), redact(diff), rules);
-  const result = await ask(options.judge, { state: request.state, questions: request.questions }, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
+  const result = await askChunks(options.judge, chunkEvaluationRequest(request, { maxQuestions: questionLimit(options.judge) }), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { source: "error", ...base, findings: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   const entries: RuleScoreEntry[] = rules.map(rule => ({ key: `${TURN_QUESTION_PREFIX}${rule.id}`, id: rule.id, name: rule.name, body: rule.body, rule }));
   const { scores, findings, softFindings } = scoreAnswers(result.answers as Record<string, { type: string; choice?: string; probabilities?: Record<string, number> } | undefined>, entries, options.config);
@@ -356,7 +355,7 @@ export interface TurnRunOptions {
   cwd: string;
   config: RulesConfig;
   set: RuleSet | undefined;
-  judge?: Judge | undefined;
+  judge?: LimitedJudge | undefined;
   timeoutMs: number;
   signal?: AbortSignal | undefined;
   /** The user's request for this run. */

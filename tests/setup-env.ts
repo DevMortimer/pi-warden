@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 /** Debug switches for the tests themselves, not settings pi-warden reads. */
 const KEPT = new Set(["PI_WARDEN_PRINT_SAMPLE"]);
-const JUDGE_KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "COMMANDCODE_API_KEY"];
+const JUDGE_KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "COMMANDCODE_API_KEY", "SUBQ_API_KEY"];
 
 for (const name of Object.keys(process.env)) {
   if ((name.startsWith("PI_") && !KEPT.has(name)) || JUDGE_KEYS.includes(name)) delete process.env[name];
