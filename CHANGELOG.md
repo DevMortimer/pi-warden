@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 1.11.0
+
 ### Added
 
 - SubQ backend: `"typesafeBackend": "subq"` in the user config sends judgments to `https://api.subq.ai` with the model `subq-snap-preview`, using the key in `SUBQ_API_KEY`. ([Configuration](docs/configuration.md#user-config))
