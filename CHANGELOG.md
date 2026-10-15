@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- pi-warden now declares support for Pi 1.x: the `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` peer ranges go from `>=0.85.1 <1` to `>=0.85.1 <2`, so installing pi-warden next to Pi 1.x no longer gives a peer dependency conflict.
 
 ## 1.9.0
 
