@@ -5492,6 +5492,28 @@ test("rules at turn start: a short continuation and a relayed child report send 
   }
 });
 
+test("rules at turn start: a run a custom message starts has no prompt, and the reminder skips instead of crashing", async () => {
+  await curatorConfig();
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, conscience: { enabled: true }, ...STACK_BAR }));
+  const rules = join(temporary, "pi-warden.md");
+  await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
+  try {
+    const requestsBefore = requests.length;
+    // A newer Pi fires before_agent_start without a prompt field when a custom message triggers the run.
+    await fire("before_agent_start", {});
+    await fire("agent_start", {});
+    await tick();
+    assert.equal(requests.length, requestsBefore, "no operator prompt, so no judgment is sent");
+    await runCommand("trace", context({ hasUI: false }));
+    const traceText = sentMessages.at(-1)!.message.content;
+    assert.match(traceText, /rules · turn start · skipped/);
+    assert.match(traceText, /skipReason: custom_trigger/);
+    assert.match(traceText, /conscience · turn start · skipped/);
+  } finally {
+    await rm(rules, { force: true });
+  }
+});
+
 test("rules at turn start: the request is redacted and the table carries the rule with its path scope", async () => {
   await curatorConfig();
   const key = projectKey();
