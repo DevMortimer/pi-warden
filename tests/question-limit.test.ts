@@ -9,11 +9,16 @@ import type { BackendLimits } from "pi-typesafe";
 import { defaultConfig } from "../src/config.js";
 import { assess } from "../src/conscience.js";
 import { filterOutput } from "../src/filter.js";
+import { evaluateAction } from "../src/guard.js";
+import type { Verdict } from "../src/guard.js";
 import { relevanceCompaction } from "../src/relevance.js";
 import type { SpanMessage } from "../src/relevance.js";
 import { evaluateRulesTarget, parseRules, questionLimit } from "../src/rules.js";
 import type { RuleSet, RulesTarget } from "../src/rules.js";
+import { calibrate } from "../src/rules-calibrate.js";
+import type { HistoryCommit } from "../src/rules-calibrate.js";
 import { checkRules } from "../src/rules-lint.js";
+import { judgedAction } from "./judged-action.js";
 import { evaluateTurnRules } from "../src/turn-rules.js";
 
 type Request = { state: Record<string, unknown>; questions: Record<string, { type: string; criteria?: unknown }> };
@@ -209,4 +214,65 @@ test("a judge with no limits (an extension author's own evaluate) still gets 32 
   const verdict = await evaluateRulesTarget(target, "edit", "src/a.ts", { cwd: process.cwd(), config: defaultConfig().rules, set: ruleSet(31), judge, timeoutMs: 1000 });
   assert.equal(verdict.source, "typesafe");
   assert.deepEqual(counts, [32]);
+});
+
+/** Every optional acting question on (plan, regret, large output, should-proceed), one rm violation per target, two extension questions. */
+async function actionGuard(maxQuestions: number | undefined, targets: number) {
+  const { judge, counts } = fakeJudge(maxQuestions);
+  const command = `rm -rf ${Array.from({ length: targets }, (_, index) => `build/out-${index + 1}`).join(" ")}`;
+  const base = judgedAction();
+  const verdict = await evaluateAction(
+    { tool: "bash", input: { command }, cwd: process.cwd(), task: "Tidy the workspace", plan: "Clear the old build output." },
+    {
+      config: { ...base, shouldProceed: { ...base.shouldProceed, steer: true } },
+      judge,
+      largeOutput: defaultConfig().context.largeOutput,
+      previousActions: [{ id: "call_1", tool: "bash", command: "npm run build" }, { id: "call_2", tool: "bash", command: "ls build" }],
+      questions: { ext_one: { type: "noul", instructions: "Is the build directory involved?" }, ext_two: { type: "noul", instructions: "Is this cleanup?" } } as never,
+    },
+  );
+  return { verdict, counts };
+}
+const verdictOf = (verdict: Verdict) => ({ ...verdict, judgment: { ...verdict.judgment, elapsedMs: undefined } });
+
+test("action guard: 6 and 12 open violations plus 2 extension questions fit a 16-question backend, same verdict as one request", async () => {
+  for (const [targets, narrowCounts] of [[6, [16]], [12, [16, 6]]] as const) {
+    const wide = await actionGuard(32, targets);
+    const narrow = await actionGuard(16, targets);
+    assert.equal(wide.verdict.source, "typesafe");
+    assert.equal(Object.keys(wide.verdict.extra ?? {}).filter(key => key.startsWith("violation_")).length, targets);
+    assert.deepEqual(wide.counts, [targets + 10]);
+    assert.deepEqual(narrow.counts, narrowCounts);
+    assert.deepEqual(verdictOf(narrow.verdict), verdictOf(wide.verdict));
+  }
+});
+
+test("action guard: a judge with no limits sends the one request it sent before", async () => {
+  const { verdict, counts } = await actionGuard(undefined, 12);
+  assert.equal(verdict.source, "typesafe");
+  assert.deepEqual(counts, [22]);
+});
+
+test("calibration: a sample with 20 questions takes two requests on a 16-question backend and one without limits, same scores", async () => {
+  const history: HistoryCommit[] = [{
+    hash: "c1", at: "2026-01-01T00:00:00.000Z",
+    files: [{ path: "src/a.ts", binary: false, hunks: [{ oldText: "old", newText: "new", before: "ctx\nold\nctx", after: "ctx\nnew\nctx", start: 2, count: 1 }] }],
+  }];
+  const dir = mkdtempSync(join(tmpdir(), "pi-warden-calibrate-limit-"));
+  try {
+    const run = async (maxQuestions: number | undefined) => {
+      const { judge, counts } = fakeJudge(maxQuestions);
+      const result = await calibrate(history, { set: ruleSet(20), config: defaultConfig().rules, cwd: dir, maxRequests: 5, judge, timeoutMs: 1000 });
+      return { result, counts };
+    };
+    const wide = await run(undefined);
+    const narrow = await run(16);
+    assert.deepEqual(wide.counts, [20]);
+    assert.deepEqual(narrow.counts, [16, 4]);
+    assert.equal(narrow.result.failed, 0);
+    assert.equal(narrow.result.records.length, 20);
+    assert.deepEqual(narrow.result.records, wide.result.records);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

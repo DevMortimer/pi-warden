@@ -3,14 +3,14 @@ import type { Stats } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { ask, choice, noul, score } from "pi-typesafe";
+import { ask, choice, chunkEvaluationRequest, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge, Questions } from "pi-typesafe";
 import type { ActionGuardConfig, ArmingRule, CommandRule, LargeOutputConfig, PathRule, RulesConfig, SecurityConfig, SlopGuardConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./shape.js";
 import type { TaskSpine } from "./shape.js";
-import { globToRegExp } from "./rules.js";
-import type { RulesSourceConfig } from "./rules.js";
+import { askChunks, globToRegExp, questionLimit } from "./rules.js";
+import type { LimitedJudge, RulesSourceConfig } from "./rules.js";
 import { indexDir } from "./index-cmd.js";
 import type { HostDirs } from "./host-dirs.js";
 import { resolveRulesFile } from "./rules-file.js";
@@ -225,7 +225,7 @@ export type { Judge } from "pi-typesafe";
 export interface EvaluateOptions {
   config: ActionGuardConfig;
   /** Omit to run offline pattern checks only (no consent, no network). */
-  judge?: Judge | undefined;
+  judge?: LimitedJudge | undefined;
   signal?: AbortSignal | undefined;
   /** Adds quality questions for write/edit content to the same request. */
   slop?: SlopGuardConfig | undefined;
@@ -3041,7 +3041,8 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   const traceAnswer = traceSampled(options.traceSample)
     ? ask(judge, buildRequest(summary, action.task, { traceOnly: true, context: action.context, plan, rules: resolved?.content, rulesSource: resolved?.source, floorHits, scriptLines, spine: action.spine }), { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) })
     : undefined;
-  const result = await ask(judge, request, { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
+  // No acting question reads another's answer, so none rides in every chunk: the verdict combines them after the merge.
+  const result = await askChunks(judge, chunkEvaluationRequest(request, { maxQuestions: questionLimit(judge) }), { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {
     if (!config.failOpen) {
       level = higher(level, "confirm");

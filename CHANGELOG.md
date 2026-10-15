@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- The action guard and `/warden rules calibrate` also fit the backend's question limit. On SubQ, an action guard call with more than 16 questions (one per `rm` target the request does not authorize, plus any `questions` a library caller adds) and a calibration sample with more than 16 rules split into requests of at most 16, sent together, with the answers merged by question id; the verdict and the scores are the same as from one request. No action guard question repeats in each request, because none of them reads another's answer. On the other backends, and for a judge without `limits`, both send the same requests as before.
 
 ## 1.10.0
 

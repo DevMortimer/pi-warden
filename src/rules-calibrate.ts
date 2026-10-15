@@ -1,6 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { ask } from "pi-typesafe";
-import type { Judge } from "pi-typesafe";
 import type { RulesConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { checkReasons } from "./rules-lint.js";
@@ -9,9 +7,9 @@ import type { RuleRecord } from "./rules-log.js";
 import { buildRulesReport } from "./rules-report.js";
 import type { RuleFlag } from "./rules-report.js";
 import {
-  buildRulesRequest, EDIT_CONTEXT_LINES, EDIT_TEXT_LIMIT, gitIgnored, matchGlob, MAX_EDITS, scoreRuleAnswers,
+  askChunks, buildRulesRequest, EDIT_CONTEXT_LINES, EDIT_TEXT_LIMIT, gitIgnored, matchGlob, MAX_EDITS, questionLimit, scoreRuleAnswers,
 } from "./rules.js";
-import type { EditView, Rule, RuleAnswer, RuleSet, RulesTarget } from "./rules.js";
+import type { EditView, LimitedJudge, Rule, RuleAnswer, RuleSet, RulesTarget } from "./rules.js";
 
 /**
  * `/warden rules calibrate`: replay recent git history through the project rules and find the rules that fire on
@@ -361,7 +359,7 @@ export interface Calibration {
 }
 
 export interface CalibrateOptions extends PlanOptions {
-  judge?: Judge | undefined;
+  judge?: LimitedJudge | undefined;
   timeoutMs: number;
   /** Session id for the log records; replays default to `calibrate`. */
   session?: string;
@@ -383,8 +381,8 @@ export async function calibrate(history: readonly HistoryCommit[], options: Cali
     : undefined;
   if (options.judge) {
     for (const sample of plan.samples) {
-      const request = buildRulesRequest(sample.target, options.set);
-      const result = await ask(options.judge, { state: request.state, questions: request.questions }, {
+      const request = buildRulesRequest(sample.target, options.set, questionLimit(options.judge));
+      const result = await askChunks(options.judge, request.requests, {
         timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}),
       });
       if (!result.ok) { failed++; continue; }
