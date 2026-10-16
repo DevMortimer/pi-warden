@@ -15,7 +15,7 @@ import { defaultConfig, loadConfig } from "../src/config.js";
 import { policyMatches, CONSCIENCE_BETA_POLICY } from "../src/load.js";
 import { _testSetIndexRunning, askedBeforeReply, assistantPlan } from "../src/extension.js";
 import { SHELL_RULES_CHECKS } from "../src/turn-rules.js";
-import { indexPath } from "../src/index-cmd.js";
+import { indexPath, readIndex } from "../src/index-cmd.js";
 
 let temporary: string;
 let extension: Extension;
@@ -4509,6 +4509,51 @@ test("index write bypass: flag clears after error in index command", async () =>
   // After clearing, the same path should be judged
   const result = await toolCall("write", { path: resolve(globalPath), content: "{}" });
   assert.ok(result !== undefined || notices.length === 0, "should be judged after flag clears");
+});
+
+test("/warden index finalizes an entries-only file: the fallback runs when the strict read finds no metadata", async () => {
+  // The index prompt asks the model for `{ entries: [...] }` and leaves the metadata to warden. The strict read rejects
+  // that shape, so the entries-only fallback must not depend on it, or the file stays without metadata and every
+  // session loads the index as missing.
+  const globalPath = indexPath("global");
+  await mkdir(join(globalPath, ".."), { recursive: true });
+  await rm(globalPath, { force: true });
+  const skills = [conscienceSkill("impeccable", "Frontend interface design, polish, and UX")];
+  const ctx = context({ getSystemPromptOptions: () => ({ cwd: temporary, skills }) });
+  sentUserMessages.length = 0;
+  const indexCommand = runCommand("index", ctx);
+  while (sentUserMessages.length === 0) await new Promise(resolve => setImmediate(resolve));
+  await writeFile(globalPath, JSON.stringify({
+    entries: [{ kind: "skill", name: "impeccable", scope: "global", sourceHash: "model", role: "conversation", lead: "Frontend polish for interfaces", useWhen: ["the UI looks off and needs polish", "a layout needs a design pass"], notWhen: [], inputs: "", examples: ["make this page look better", "polish the settings screen"], thin: false }],
+  }));
+  await fire("before_agent_start", { prompt: sentUserMessages.at(-1) }, ctx);
+  await fire("agent_end", { messages: [] }, ctx);
+  await indexCommand;
+  const written = readIndex(globalPath);
+  assert.ok(written, "the entries-only file is rewritten with metadata");
+  assert.equal(written!.formatVersion, 1);
+  assert.notEqual(written!.builtAt, "", "warden stamps the build time");
+  assert.deepEqual(written!.entries.map(entry => entry.name), ["impeccable"]);
+  assert.ok(!notices.some(notice => /Index rejected/.test(notice.text)), "nothing is rejected");
+  await rm(globalPath, { force: true });
+});
+
+test("/warden index reports rejected entries of an entries-only file instead of keeping it silently", async () => {
+  const globalPath = indexPath("global");
+  await mkdir(join(globalPath, ".."), { recursive: true });
+  await rm(globalPath, { force: true });
+  const skills = [conscienceSkill("impeccable", "Frontend interface design, polish, and UX")];
+  const ctx = context({ getSystemPromptOptions: () => ({ cwd: temporary, skills }) });
+  sentUserMessages.length = 0;
+  const indexCommand = runCommand("index", ctx);
+  while (sentUserMessages.length === 0) await new Promise(resolve => setImmediate(resolve));
+  await writeFile(globalPath, JSON.stringify({ entries: [{ kind: "skill" }] }));
+  await fire("before_agent_start", { prompt: sentUserMessages.at(-1) }, ctx);
+  await fire("agent_end", { messages: [] }, ctx);
+  await indexCommand;
+  assert.ok(notices.some(notice => /Index rejected:[\s\S]*global index: entry/.test(notice.text)), "the rejection is reported");
+  assert.equal(readIndex(globalPath), undefined, "the rejected file is not finalized");
+  await rm(globalPath, { force: true });
 });
 
 test("/warden trace sends the trace as text when the host never builds the sidebar, and names the trace file", async () => {

@@ -3559,8 +3559,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
           // Accept both the full format and entries-only; warden always writes the final metadata.
           let globalResult = rawGlobal ? validateIndex(rawGlobal) : { file: undefined, rejections: [] };
           let projectResult = rawProject ? validateIndex(rawProject) : { file: undefined, rejections: [] };
-          // Entries-only fallback: read raw JSON and extract entries array
-          if (!globalResult.file && rawGlobal) {
+          // Entries-only fallback: read raw JSON and extract entries array. It must not depend on rawGlobal/rawProject:
+          // the strict read returns nothing for the entries-only shape the index prompt asks for.
+          if (!globalResult.file) {
             try {
               const parsed = JSON.parse(readFileSync(globalPath, "utf8")) as unknown;
               if (parsed && typeof parsed === "object" && Array.isArray((parsed as { entries?: unknown }).entries)) {
@@ -3571,7 +3572,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
               if (!msg.includes("ENOENT")) record(ctx, config, "conscience", `global entries-only parse: ${msg}`, ["trigger: warden_index"]);
             }
           }
-          if (!projectResult.file && rawProject) {
+          if (!projectResult.file) {
             try {
               const parsed = JSON.parse(readFileSync(projectPath, "utf8")) as unknown;
               if (parsed && typeof parsed === "object" && Array.isArray((parsed as { entries?: unknown }).entries)) {
@@ -3585,8 +3586,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           }
           // Collect rejections from both files
           const allRejections: string[] = [];
-          if (rawGlobal && !globalResult.file) allRejections.push(...globalResult.rejections.map(r => `global index: entry ${r}`));
-          if (rawProject && !projectResult.file) allRejections.push(...projectResult.rejections.map(r => `project index: entry ${r}`));
+          if (!globalResult.file) allRejections.push(...globalResult.rejections.map(r => `global index: entry ${r}`));
+          if (!projectResult.file) allRejections.push(...projectResult.rejections.map(r => `project index: entry ${r}`));
           if (allRejections.length > 0) {
             report(`Index rejected:\n${allRejections.map(r => `  ${r}`).join("\n")}\nOld files kept.`, "warning");
             return;
