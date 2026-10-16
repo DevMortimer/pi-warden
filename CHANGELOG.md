@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 1.11.1
+
 ### Fixed
 
 - `/warden index` now finalizes the entries-only files its own prompt asks the model to write. The entries-only fallback ran only when the strict read had already found a complete file, so an `{ "entries": [...] }` file never got its metadata, its rejections were never reported, and every later session loaded the index as missing and repeated the "run /warden index" nudge. The fallback now runs whenever the strict read finds no file, and rejected entries are reported. ([#185](https://github.com/DevMortimer/pi-warden/issues/185))
