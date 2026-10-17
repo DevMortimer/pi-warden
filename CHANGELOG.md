@@ -6,6 +6,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+## 1.11.2
+
 ### Fixed
 
 - The action guard's floor no longer holds a bash call for text the shell never runs. Every pattern check (the built-in rules, the SQL and git state checks, user `commandRules`, and path rules on the command surface) reads a command and a script body without shell comments, the same comment scan the judge request uses. A `#!/bin/sh` first line no longer keeps every quoted `echo`/`printf` message in scope (the data scan read it as a call to `sh`), and a message that holds `;`, `|`, or `&&` inside its quotes is no longer cut into commands. The hit lines of a script body leave out its comment lines.
