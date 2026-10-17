@@ -136,8 +136,10 @@ grant themselves severity — see [Threat model](#threat-model)):
 ```
 
 - `pattern`: regex, case-insensitive by default (`caseSensitive: true` to opt out),
-  matched against the `stripDataText`-processed command — so heredoc bodies, quoted data
-  arguments, and commit messages behave exactly as the built-in rules do. This is the
+  matched against the `stripDataText`-processed command, read without shell comments
+  (`stripShellComments`; a command the scan cannot read with certainty keeps them) — so
+  comments, heredoc bodies, quoted data arguments, and commit messages behave exactly as
+  the built-in rules do: every pattern rule reads the command without shell comments. This is the
   single most important implementation detail: user rules must ride the same data-text
   pipeline as built-ins, or they reintroduce the commit-message false-positive class that
   the pipeline exists to prevent.
@@ -249,7 +251,8 @@ Semantics:
 - **Bash coverage is negative-space by construction.** A path rule with `tools: "*"` does
   *not* extract path tokens from arbitrary commands (that is the Scenario A treadmill).
   It matches the same way the existing `SENSITIVE_PATH` regex does: the rule's compiled
-  patterns are tested against the `stripDataText`-processed command string, and against
+  patterns are tested against the `stripDataText`-processed command string without shell
+  comments, and against
   redirect targets only (`>`, `>>`, `tee` targets — extraction limited to the three
   write-sinks a shell grammar actually defines). A `grep` mentioning a path in its
   arguments therefore does not match a `write`-access rule on the command surface; a

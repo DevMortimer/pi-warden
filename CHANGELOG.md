@@ -6,7 +6,14 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- The action guard's floor no longer holds a bash call for text the shell never runs. Every pattern check (the built-in rules, the SQL and git state checks, user `commandRules`, and path rules on the command surface) reads a command and a script body without shell comments, the same comment scan the judge request uses. A `#!/bin/sh` first line no longer keeps every quoted `echo`/`printf` message in scope (the data scan read it as a call to `sh`), and a message that holds `;`, `|`, or `&&` inside its quotes is no longer cut into commands. The hit lines of a script body leave out its comment lines.
+- A `grep`, `sed`, or `rtk grep` of a file, with `\|` in its quoted pattern, no longer reads that file as a script that runs. Script detection cut the command at every `|`, also inside quotes, so `down=" scripts/x.py` read as an assignment and the file as the command; it now cuts only where the shell does. A command with a substitution, an unclosed quote, `eval`, or `sh -c` keeps the old cut, so every script read before is still read. ([#190](https://github.com/DevMortimer/pi-warden/issues/190))
+
+### Tests
+
+- A differential test runs each input through `bash -c` with a `touch "$MARK"` twin in place of the delete: the floor holds an input exactly when bash creates the marker (13 inputs it stops holding, 16 it keeps holding, among them a delete inside `$(...)` on a heredoc line that starts with `#`, and a delete on the line after a comment that holds an apostrophe). Unit tests pin the issue 190 command with its user rule, and every way of running a script (`sh`, `bash`, `./`, `.`, `source`, `npm run`), also next to a read of the same file.
 
 ## 1.11.1
 
