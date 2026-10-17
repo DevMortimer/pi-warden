@@ -212,7 +212,8 @@ const live: Record<string, FloorCase> = {
     ["#!/bin/sh", "cat <<<b >/dev/null"],
     ["#!/bin/sh", "cat <<-X >/dev/null\n\tnote\n\tX"],
   ] as const).map(([first, line]): [string, FloorCase] => [`a script body with ${first || "no first line"} and ${line.split("\n")[0]}`, {
-    command: () => "sh a.sh x",
+    // bash, not sh: dash, the /bin/sh of the Linux CI runners, has no `<<<` and stops before the marker.
+    command: () => "bash a.sh x",
     files: mode => ({ "a.sh": `${first ? `${first}\n` : ""}${line}\n${act(mode, "~")}\n` }),
   }])),
 };
