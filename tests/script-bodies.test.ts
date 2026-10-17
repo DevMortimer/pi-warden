@@ -5,7 +5,7 @@
  * level only), the exemption, and the redacted, capped `script_lines` the request carries.
  */
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { after, before, test } from "node:test";
@@ -154,4 +154,174 @@ test("the request carries script_lines, redacted and capped", async () => {
   const secretLines = secret.calls[0]!.state.script_lines as string;
   assert.ok(secretLines.includes("[redacted]"), secretLines);
   assert.ok(!secretLines.includes("supersecretpw"), "the credential value is not sent");
+});
+
+// --- Text the shell never runs: comments, messages, and files a command only reads -------------
+
+/** A project folder of its own, so its `package.json` and `scripts/` do not touch the fixtures above. */
+const inertProject = async (): Promise<string> => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-inert-"));
+  await mkdir(join(dir, "scripts"));
+  await writeFile(join(dir, "scripts", "clean.sh"), '#!/bin/sh\nrm -rf "$1"\n');
+  await chmod(join(dir, "scripts", "clean.sh"), 0o755);
+  await writeFile(join(dir, "comment.sh"), '#!/bin/sh\n# never rm -rf "$dir" here\necho ok\n');
+  await writeFile(join(dir, "say.sh"), '#!/bin/sh\necho "never rm -rf \\"$dir\\" here"\n');
+  await writeFile(join(dir, "say-printf.sh"), "#!/bin/sh\nprintf '%s\\n' \"never rm -rf $dir here\"\n");
+  await writeFile(join(dir, "noted.sh"), '#!/bin/sh\n# old: rm -rf "$HOME/projects"\nrm -rf "$1"\n');
+  await writeFile(join(dir, "package.json"), JSON.stringify({ scripts: { clean: 'rm -rf "$1"' } }));
+  return dir;
+};
+const bodyIds = (command: string, dir: string, options?: Parameters<typeof matchPatterns>[3]) =>
+  matchPatterns("bash", { command }, dir, options).filter(hit => hit.via !== undefined).map(hit => `${hit.id} (via ${hit.via})`);
+
+test("delete text in a script's comments or in its echo and printf messages is not held", async () => {
+  const dir = await inertProject();
+  try {
+    for (const command of ["sh comment.sh", "sh say.sh", "sh say-printf.sh", "bash ./say.sh"]) assert.deepEqual(bodyIds(command, dir), [], command);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a grep or sed of a script, with \\| in its pattern, does not read the script as one that runs", async () => {
+  const dir = await inertProject();
+  try {
+    for (const command of [
+      'sed -n "/alpha\\|down=/p" scripts/clean.sh',
+      "sed -n '/alpha\\|down=/p' scripts/clean.sh",
+      'rtk grep -n "alpha\\|down=" scripts/clean.sh | head -20',
+      "grep -n alpha\\|down= scripts/clean.sh",
+      'awk "/x;y/" scripts/clean.sh',
+    ]) {
+      assert.deepEqual(bodyIds(command, dir), [], command);
+      assert.deepEqual(scriptSources(stripDataText(command).text, dir), [], command);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("issue 190: a read-only grep of a file whose docstring names a confirmed command is not held", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "pi-warden-190-"));
+  try {
+    await mkdir(join(repo, "scripts"));
+    await mkdir(join(repo, "tests"));
+    await writeFile(join(repo, "scripts", "nest_sentry.py"), '#!/usr/bin/env python3\n"""Nest sentry.\n\nkill switch＝launchctl bootout gui/$UID/com.youtube-bgmv.nest-sentry。\n"""\nscan_alive = True\n');
+    await chmod(join(repo, "scripts", "nest_sentry.py"), 0o644);
+    await writeFile(join(repo, "scripts", "overseer_wake.py"), "down = 0\n");
+    await writeFile(join(repo, "tests", "test_sentry.py"), "def test_scan_alive():\n    pass\n");
+    const commandRules = [{ id: "launchctl-stop", pattern: "\\blaunchctl\\s+(bootout|unload|remove)\\b", severity: "confirm" as const }];
+    const command = `cd ${repo}/ && rtk grep -n "scan_alive\\|COPILOT-DOWN\\|down=" scripts/nest_sentry.py scripts/overseer_wake.py | head -20; echo ===TESTS===; rtk grep -rln "scan_alive\\|COPILOT-DOWN" tests/ | head`;
+    assert.deepEqual(scriptSources(stripDataText(command).text, repo), []);
+    assert.deepEqual(matchPatterns("bash", { command }, repo, { commandRules }), []);
+    // The same file, run by a shell in the same line, is read and confirmed.
+    assert.deepEqual(bodyIds("grep -n down= scripts/nest_sentry.py; sh scripts/nest_sentry.py", repo, { commandRules }), ["launchctl-stop (via scripts/nest_sentry.py)"]);
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});
+
+test("every way of running a script is still read, also next to a read of the same file", async () => {
+  const dir = await inertProject();
+  try {
+    for (const [command, via] of [
+      ["sh scripts/clean.sh /tmp/x", "scripts/clean.sh"],
+      ["bash scripts/clean.sh", "scripts/clean.sh"],
+      ["./scripts/clean.sh", "./scripts/clean.sh"],
+      [". scripts/clean.sh", "scripts/clean.sh"],
+      ["source scripts/clean.sh", "scripts/clean.sh"],
+      ["npm run clean", "npm run clean"],
+      ["grep x scripts/clean.sh; sh scripts/clean.sh", "scripts/clean.sh"],
+      ['grep "a\\|b" scripts/clean.sh && sh scripts/clean.sh', "scripts/clean.sh"],
+      ["echo it\\'s; sh scripts/clean.sh", "scripts/clean.sh"],
+      ["echo hi # it's\nsh scripts/clean.sh # it's", "scripts/clean.sh"],
+      ["true `echo x` # it's\nsh scripts/clean.sh", "scripts/clean.sh"],
+      ['echo "$(true && sh scripts/clean.sh x)"', "scripts/clean.sh"],
+      ["cat <<'EOF' | bash\nsh scripts/clean.sh\nEOF", "scripts/clean.sh"],
+      ['echo "unclosed; sh scripts/clean.sh', "scripts/clean.sh"],
+    ] as const) assert.ok(bodyIds(command, dir).includes(`rm-recursive-dangerous-target (via ${via})`), `${command}: ${bodyIds(command, dir).join(", ")}`);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the hit lines of a script body leave out its comment lines", async () => {
+  const dir = await inertProject();
+  try {
+    const hit = matchPatterns("bash", { command: "sh noted.sh" }, dir).find(entry => entry.via === "noted.sh");
+    assert.ok(hit, "the code line still hits");
+    assert.deepEqual(hit!.lines, ['rm -rf "$1"']);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// --- Backslash-newlines and here-strings, read as bash reads them -------------------------------
+
+/** A project of its own with one file per entry. */
+const projectWith = async (files: Record<string, string>): Promise<string> => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-continued-"));
+  for (const [path, body] of Object.entries(files)) await writeFile(join(dir, path), body);
+  return dir;
+};
+
+test("a backslash-newline before or inside a command that runs a script does not hide the script", async () => {
+  const dir = await projectWith({
+    "a.sh": "#!/bin/sh\nrm -rf ~\n",
+    "package.json": JSON.stringify({ scripts: { clean: "rm -rf ~" } }),
+    Makefile: "clean:\n\trm -rf ~\n",
+  });
+  try {
+    for (const [command, via] of [
+      ["true &&\\\nsh a.sh", "a.sh"],
+      ["cd . && \\\n  sh a.sh", "a.sh"],
+      ["\\\nsh a.sh", "a.sh"],
+      ["cd . && \\\n  bash ./a.sh", "./a.sh"],
+      ["cd . && \\\n  npm run clean", "npm run clean"],
+      ["cd . && \\\n  make clean", "make clean"],
+      ["sh \\\na.sh", "a.sh"],
+      ["sh a\\\n.sh", "a.sh"],
+      // A construct the comment scan does not model keeps the old reading: still held.
+      ["echo $[1]; true &&\\\nsh a.sh", "a.sh"],
+    ] as const) assert.ok(bodyIds(command, dir).includes(`rm-recursive-dangerous-target (via ${via})`), `${JSON.stringify(command)}: ${bodyIds(command, dir).join(", ")}`);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a here-string or a quoted << in a script body does not hide the delete after it", async () => {
+  const bodies: Record<string, string> = {
+    "sh-herestring.sh": "#!/bin/sh\ncat <<< b\nrm -rf ~\n",
+    "bash-herestring.sh": "#!/bin/bash\ncat <<< b\nrm -rf ~\n",
+    "sh-quoted-delimiter.sh": "#!/bin/sh\ncat <<E\"O\"F >/dev/null\nEOF\nrm -rf ~\n",
+    "env-herestring.sh": "#!/usr/bin/env bash\ncat <<< b\nrm -rf ~\n",
+    "bare-herestring.sh": "cat <<< b\nrm -rf ~\n",
+    "single-quoted.sh": "#!/bin/sh\necho '<<F'\nrm -rf ~\n",
+    "double-quoted.sh": "#!/bin/sh\necho \"<<F\"\nrm -rf ~\n",
+    "tight-herestring.sh": "#!/bin/sh\ncat <<<b\nrm -rf ~\n",
+  };
+  const dir = await projectWith(bodies);
+  try {
+    for (const file of Object.keys(bodies)) assert.ok(bodyIds(`sh ${file}`, dir).includes(`rm-recursive-dangerous-target (via ${file})`), `${file}: ${bodyIds(`sh ${file}`, dir).join(", ")}`);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the ask gate reads a script named after a backslash-newline", async () => {
+  const dir = await projectWith({ "push.sh": "git push origin main\n", "quiet.sh": "echo ok\n" });
+  try {
+    for (const command of ["\\\nsh push.sh", "cd . && \\\n  sh push.sh"]) {
+      const decision = actionAskGate("bash", { command }, stripDataText(command).text, dir);
+      assert.equal(decision.ask, true, JSON.stringify(command));
+      assert.match(decision.why, /^runs a script with /, JSON.stringify(command));
+      const judge = judgeOf();
+      await evaluateAction({ tool: "bash", input: { command }, cwd: dir, task: "run it" }, { config: { ...defaultConfig().action, traceSample: 0 }, judge });
+      assert.equal(judge.calls.length, 1, `${JSON.stringify(command)}: evaluateAction asks the judge`);
+    }
+    assert.equal(actionAskGate("bash", { command: "cd . && \\\n  sh quiet.sh" }, stripDataText("cd . && \\\n  sh quiet.sh").text, dir).ask, false, "a harmless script stays offline");
+    // A typed push split by a backslash-newline: the gate reads the joined text, not only a message that names a push.
+    for (const command of ["g\\\nit push origin main", 'g\\\nit push origin main | echo "a; git push origin main"']) {
+      const judge = judgeOf();
+      await evaluateAction({ tool: "bash", input: { command }, cwd: dir, task: "run it" }, { config: { ...defaultConfig().action, traceSample: 0 }, judge });
+      assert.equal(judge.calls.length, 1, `${JSON.stringify(command)}: evaluateAction asks the judge`);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the drive's comment, echo message, and sed shapes still run", async () => {
+  const dir = await inertProject();
+  try {
+    for (const command of [
+      'touch "$HOME/pwv-a" # then rm -rf "$HOME/pwv-keep/../pwv-keep"',
+      "sh ./say.sh",
+      'sed -n "/alpha\\|down=/p" scripts/clean.sh; touch "$HOME/pwv-c"',
+    ]) assert.deepEqual(matchPatterns("bash", { command }, dir), [], command);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -1866,3 +1866,87 @@ test("commandFamily names the head and, for tools with subcommands, the subcomma
   assert.equal(commandFamily("git"), "git");
   assert.equal(commandFamily("   "), undefined);
 });
+
+// --- Text the shell never runs: comments and quoted messages ----------------------------------
+
+const floorIds = (command: string, options?: Parameters<typeof matchPatterns>[3]) => matchPatterns("bash", { command }, cwd, options).map(hit => hit.id);
+
+test("delete text in a shell comment of a typed command is not held", () => {
+  for (const command of [
+    'true # never rm -rf "$dir" here',
+    '# never rm -rf "$dir"\ntrue',
+    'echo "x" # a | rm -rf ~',
+    // bash reads `$'\''` as one quote character, so the rest of the line is a comment.
+    "echo $'\\'' # '; rm -rf ~",
+  ]) assert.deepEqual(floorIds(command), [], command);
+});
+
+test("a #!/bin/sh first line does not keep a quoted echo message in scope", () => {
+  assert.deepEqual(floorIds('#!/bin/sh\necho "never rm -rf \\"$dir\\" here"'), []);
+  assert.deepEqual(floorIds("#!/bin/sh\nprintf '%s\\n' \"never rm -rf $dir here\""), []);
+});
+
+test("a quoted echo or printf message that holds a separator is one argument, not a command", () => {
+  for (const command of ['echo "a | rm -rf ~"', 'echo "a; rm -rf ~"', "printf '%s\\n' \"x && rm -rf ~\""]) assert.deepEqual(floorIds(command), [], command);
+});
+
+test("a real delete next to a comment, or next to a # that starts no comment, is still held", () => {
+  for (const command of [
+    'rm -rf "$dir" # note',
+    'echo "a # b"; rm -rf ~',
+    "echo a#b; rm -rf ~",
+    "echo a \\\n# note\nrm -rf ~",
+    "echo $'\\' # '; rm -rf ~",
+    "cat <<EOF >/dev/null\n# $(rm -rf ~)\nEOF",
+    "echo hi # it's\nrm -rf ~ # it's",
+    "true # it's\nrm -rf ~ # it's",
+    "echo \"x\" # don't\nrm -rf ~ # won't",
+    "echo `echo x # y` ; rm -rf ~",
+    'echo "a | b" ; rm -rf ~',
+  ]) assert.ok(floorIds(command).includes("rm-recursive-dangerous-target"), command);
+});
+
+test("user command rules and command-surface path rules do not read a shell comment", () => {
+  const commandRules = [{ id: "launchctl-stop", pattern: "\\blaunchctl\\s+(bootout|unload|remove)\\b", severity: "confirm" as const }];
+  assert.deepEqual(floorIds("true # launchctl bootout gui/501/com.example.job", { commandRules }), []);
+  assert.deepEqual(floorIds("launchctl bootout gui/501/com.example.job # stop it", { commandRules }), ["launchctl-stop"]);
+  const pathRules = [{ id: "vault", paths: ["**/vault.key"], access: "none" as const, tools: ["*"], action: "confirm" as const }];
+  assert.deepEqual(floorIds("ls # vault.key stays put", { pathRules }), []);
+  assert.deepEqual(floorIds("cat vault.key # read it", { pathRules }), ["vault"]);
+});
+
+// --- Backslash-newlines and here-strings, read as bash reads them -------------------------------
+
+test("a typed delete split by a backslash-newline is held", () => {
+  for (const command of ["r\\\nm -rf ~", "rm \\\n-rf ~", "rm -rf \\\n~", "\\\nrm -rf ~", "true &&\\\nrm -rf ~"]) {
+    assert.ok(floorIds(command).includes("rm-recursive-dangerous-target"), JSON.stringify(command));
+  }
+});
+
+test("a here-string or a partly quoted heredoc delimiter starts no body that hides the lines after it", () => {
+  for (const command of [
+    "cat <<< b\nrm -rf ~",
+    "cat <<<b\nrm -rf ~",
+    "cat <<E\"O\"F >/dev/null\nEOF\nrm -rf ~",
+    "echo '<<F'\nrm -rf ~",
+    "echo \"<<F\"\nrm -rf ~",
+    "echo x # <<F\nrm -rf ~",
+    // bash joins a backslash-newline in an unquoted body before it matches the delimiter, so `EO\<nl>F` ends the body.
+    "cat <<EOF >/dev/null\nEO\\\nF\nrm -rf ~",
+    "cat <<-X >/dev/null\n\tnote\n\tX\nrm -rf ~",
+    "cat <\\\n<< b >/dev/null\nrm -rf ~",
+    "cat <\\\n<EOF | sh\nrm -rf ~\nEOF",
+  ]) assert.ok(floorIds(command).includes("rm-recursive-dangerous-target"), JSON.stringify(command));
+});
+
+test("a backslash-newline in quotes or in a data heredoc does not turn the text into a command", () => {
+  for (const command of [
+    'echo "a\\\nrm -rf ~"',
+    "echo 'a\\\nrm -rf ~'",
+    "cat > notes.txt <<'EOF'\nstep one \\\nrm -rf ~\nEOF",
+    // The joined line `x EOF` is no delimiter, so the body runs on to the last EOF.
+    "cat <<EOF >/dev/null\nx \\\nEOF\nrm -rf ~\nEOF",
+    "cat <<E\"O\"\\\nF >/dev/null\nrm -rf ~\nEOF",
+    "cat <<\\\n-X >/dev/null\n\trm -rf ~\n\tX",
+  ]) assert.deepEqual(floorIds(command), [], JSON.stringify(command));
+});
