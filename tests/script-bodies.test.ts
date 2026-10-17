@@ -315,6 +315,16 @@ test("the ask gate reads a script named after a backslash-newline", async () => 
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("the ask gate reads the command without its comments: a push only in a comment sends no request", async () => {
+  const push = ["git", "push", "origin", "main"].join(" ");
+  // mkdir is not read-only, so it reaches the gate; the read-only check already skipped the comment after ls.
+  for (const [command, requests] of [[`ls # ${push}`, 0], [`ls; ${push}`, 1], [`mkdir -p build # ${push}`, 0], [`mkdir -p build; ${push}`, 1]] as const) {
+    const judge = judgeOf();
+    await evaluateAction({ tool: "bash", input: { command }, cwd, task: "list files" }, { config: { ...defaultConfig().action, traceSample: 0 }, judge });
+    assert.equal(judge.calls.length, requests, JSON.stringify(command));
+  }
+});
+
 test("the drive's comment, echo message, and sed shapes still run", async () => {
   const dir = await inertProject();
   try {
