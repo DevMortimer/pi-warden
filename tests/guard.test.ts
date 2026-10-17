@@ -1914,3 +1914,39 @@ test("user command rules and command-surface path rules do not read a shell comm
   assert.deepEqual(floorIds("ls # vault.key stays put", { pathRules }), []);
   assert.deepEqual(floorIds("cat vault.key # read it", { pathRules }), ["vault"]);
 });
+
+// --- Backslash-newlines and here-strings, read as bash reads them -------------------------------
+
+test("a typed delete split by a backslash-newline is held", () => {
+  for (const command of ["r\\\nm -rf ~", "rm \\\n-rf ~", "rm -rf \\\n~", "\\\nrm -rf ~", "true &&\\\nrm -rf ~"]) {
+    assert.ok(floorIds(command).includes("rm-recursive-dangerous-target"), JSON.stringify(command));
+  }
+});
+
+test("a here-string or a partly quoted heredoc delimiter starts no body that hides the lines after it", () => {
+  for (const command of [
+    "cat <<< b\nrm -rf ~",
+    "cat <<<b\nrm -rf ~",
+    "cat <<E\"O\"F >/dev/null\nEOF\nrm -rf ~",
+    "echo '<<F'\nrm -rf ~",
+    "echo \"<<F\"\nrm -rf ~",
+    "echo x # <<F\nrm -rf ~",
+    // bash joins a backslash-newline in an unquoted body before it matches the delimiter, so `EO\<nl>F` ends the body.
+    "cat <<EOF >/dev/null\nEO\\\nF\nrm -rf ~",
+    "cat <<-X >/dev/null\n\tnote\n\tX\nrm -rf ~",
+    "cat <\\\n<< b >/dev/null\nrm -rf ~",
+    "cat <\\\n<EOF | sh\nrm -rf ~\nEOF",
+  ]) assert.ok(floorIds(command).includes("rm-recursive-dangerous-target"), JSON.stringify(command));
+});
+
+test("a backslash-newline in quotes or in a data heredoc does not turn the text into a command", () => {
+  for (const command of [
+    'echo "a\\\nrm -rf ~"',
+    "echo 'a\\\nrm -rf ~'",
+    "cat > notes.txt <<'EOF'\nstep one \\\nrm -rf ~\nEOF",
+    // The joined line `x EOF` is no delimiter, so the body runs on to the last EOF.
+    "cat <<EOF >/dev/null\nx \\\nEOF\nrm -rf ~\nEOF",
+    "cat <<E\"O\"\\\nF >/dev/null\nrm -rf ~\nEOF",
+    "cat <<\\\n-X >/dev/null\n\trm -rf ~\n\tX",
+  ]) assert.deepEqual(floorIds(command), [], JSON.stringify(command));
+});

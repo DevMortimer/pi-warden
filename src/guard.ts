@@ -355,7 +355,6 @@ const GIT_MESSAGE_SUBCOMMANDS = new Set(["commit", "tag", "notes", "merge", "sta
 /** Interpreters whose stdin script can still run shell commands; their heredoc bodies stay in scope when they do. */
 const INTERPRETERS = /^(?:python[\d.]*|node|ruby|perl|php|deno|bun|tsx|Rscript|lua[\d.]*)$/;
 const EXEC_CALLS = /\b(?:os\.system|os\.popen|os\.exec\w*|subprocess|child_process|execSync|spawnSync|execFileSync|spawn\(|exec\(|system\(|popen\(|shell_exec|passthru|proc_open|Open3|IO\.popen|Deno\.run|Deno\.Command|Bun\.spawn|Bun\.\$|%x[\[{(]|`[^`\n]*\b(?:rm|git|dd|mkfs|kubectl|terraform)\b)/;
-const HEREDOC = /<<-?\s*(?:"(\w+)"|'(\w+)'|(\\)?(\w+))/;
 const SUBSTITUTION = /\$\(|`/;
 
 function headOf(segment: string): string | undefined {
@@ -533,31 +532,28 @@ export interface ScannedCommand {
  * (`python3 - <<EOF`) are kept when the script calls out to a shell or process API.
  */
 export function stripDataText(command: string): ScannedCommand {
-  const lines = command.split("\n");
-  const out: string[] = [];
   let stripped = false;
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index]!;
-    const heredoc = HEREDOC.exec(line);
-    if (!heredoc) { out.push(line); continue; }
-    const delimiter = heredoc[1] ?? heredoc[2] ?? heredoc[4]!;
-    // 'EOF', "EOF", and \EOF make the body literal; a bare EOF body is expanded, so a substitution inside it runs.
-    const literal = heredoc[4] === undefined || heredoc[3] !== undefined;
-    const body: string[] = [];
-    let close = index + 1;
-    while (close < lines.length && lines[close]!.replace(/^\t+/, "") !== delimiter) body.push(lines[close]!), close++;
-    const bodyText = body.join("\n");
+  // Only a `<<` the shell scan reads as one starts a body: not a here-string `<<<`, nor `<<` in quotes or a comment. A
+  // command the scan cannot read keeps every line in scope.
+  const heredocs = scanShell(command)?.heredocs ?? [];
+  let scanned = "";
+  let cursor = 0;
+  for (const heredoc of heredocs) {
+    const line = command.slice(heredoc.line, heredoc.start - 1);
+    const body = command.slice(heredoc.start, heredoc.end);
+    const bodyText = body.replace(/\n$/, "");
     // The whole pipeline on the heredoc line counts: `cat <<EOF | bash` executes the body as much as `bash <<EOF` does.
     const heads = splitShell(line).map(segment => headOf(segment) ?? "");
-    const consumer = headOf(line.slice(0, heredoc.index)) ?? "";
-    const executed = heads.some(head => SHELL_SINKS.has(head)) || (INTERPRETERS.test(consumer) && EXEC_CALLS.test(bodyText)) || (!literal && SUBSTITUTION.test(bodyText));
-    out.push(line);
-    if (executed) out.push(...body);
-    else if (body.length) { out.push(`[heredoc body: ${body.length} lines of data]`); stripped = true; }
-    if (close < lines.length) out.push(lines[close]!);
-    index = close;
+    const consumer = headOf(line.slice(0, heredoc.operator - heredoc.line)) ?? "";
+    // 'EOF', "EOF", E"O"F, and \EOF make the body literal; a bare EOF body is expanded, so a substitution inside it runs.
+    const executed = heads.some(head => SHELL_SINKS.has(head)) || (INTERPRETERS.test(consumer) && EXEC_CALLS.test(bodyText)) || (!heredoc.literal && SUBSTITUTION.test(bodyText));
+    scanned += command.slice(cursor, heredoc.start);
+    cursor = heredoc.end;
+    if (executed || !body) { scanned += body; continue; }
+    scanned += `[heredoc body: ${bodyText.split("\n").length} lines of data]${body.endsWith("\n") ? "\n" : ""}`;
+    stripped = true;
   }
-  const scanned = out.join("\n");
+  scanned += command.slice(cursor);
   const joined = blankMessageFlags(scanned);
   const segments = splitShell(joined);
   // A shell sink anywhere may run text written earlier in the same command (`cat <<EOF > run.sh` then `bash run.sh`), so nothing is treated as data.
@@ -583,26 +579,49 @@ export function stripDataText(command: string): ScannedCommand {
 // A shell comment can carry text the agent wrote to sway Jev, or delete text that never runs; Jev and the floor read only
 // what the shell runs.
 /**
- * The command text Jev and the pattern floor read: shell comments removed; quotes, escapes, heredoc bodies, `$#`,
- * `${#…}`, and a `#` mid-word kept. Quote state carries across lines. A construct the scan does not model (backticks,
- * arithmetic, `case` inside `$(…)`, quotes inside `${…}`), or an unclosed quote, returns the command unchanged.
+ * The command text Jev and the pattern floor read: shell comments removed, and each backslash-newline the shell removes
+ * joined (outside quotes, in double quotes and `${…}`, and in a heredoc body with an unquoted delimiter); quotes,
+ * escapes, heredoc bodies, `$#`, `${#…}`, and a `#` mid-word kept. Quote state carries across lines. A construct the
+ * scan does not model (backticks, arithmetic, `case` inside `$(…)`, quotes inside `${…}`), or an unclosed quote,
+ * returns the command unchanged.
  */
 export function stripShellComments(command: string): string {
+  return scanShell(command)?.text ?? command;
+}
+
+/** A heredoc the shell scan found, by offsets into the scanned command: the line that holds the `<<`, the `<<`, and the
+ * body before its delimiter line. */
+interface Heredoc { line: number; operator: number; start: number; end: number; literal: boolean }
+
+/** Whether a line ends in a backslash that escapes the new line after it, not one that a backslash before it escapes. */
+function continues(line: string): boolean {
+  let count = 0;
+  while (count < line.length && line[line.length - 1 - count] === "\\") count++;
+  return count % 2 === 1;
+}
+
+/** `stripShellComments` with the heredocs it read; undefined where it returns the command unchanged. */
+function scanShell(command: string): { text: string; heredocs: Heredoc[] } | undefined {
   type Context = "single" | "double" | "ansi" | "brace" | "subshell";
   const stack: Context[] = [];
   const depths: number[] = [];
-  const heredocs: Array<{ delimiter: string; tabs: boolean }> = [];
+  const heredocs: Array<{ delimiter: string; tabs: boolean; literal: boolean; line: number; operator: number }> = [];
+  const found: Heredoc[] = [];
   let out = "";
   // Text before this length is not trailing blank space, so a removed comment takes only the blanks before it.
   let kept = 0;
   let wordStart = true;
   let index = 0;
+  // Where the current logical line starts: a backslash-newline continues it.
+  let lineStart = 0;
   const emit = (text: string, blank = false) => { out += text; if (!blank) kept = out.length; };
+  // The offset of the next character bash reads at `at`: a backslash-newline before it is gone, so `<\<nl><` is `<<`.
+  const after = (at: number): number => { while (command.startsWith("\\\n", at)) at += 2; return at; };
   // A heredoc delimiter word, quotes and backslashes removed; undefined when it is not a plain word.
-  const delimiterWord = (): string | undefined => {
+  const delimiterWord = (): { word: string; literal: boolean } | undefined => {
     let word = "";
     let raw = "";
-    while (index < command.length && /[ \t]/.test(command[index]!)) raw += command[index++];
+    for (index = after(index); index < command.length && /[ \t]/.test(command[index]!); index = after(index + 1)) raw += command[index];
     while (index < command.length && !/[\s;|&<>()]/.test(command[index]!)) {
       const char = command[index]!;
       if (char === "'" || char === "\"") {
@@ -613,42 +632,49 @@ export function stripShellComments(command: string): string {
         index = close + 1;
         continue;
       }
-      if (char === "\\") { if (index + 1 >= command.length || command[index + 1] === "\n") return undefined; word += command[index + 1]; raw += command.slice(index, index + 2); index += 2; continue; }
+      if (char === "\\" && command[index + 1] === "\n") { index += 2; continue; }
+      if (char === "\\") { if (index + 1 >= command.length) return undefined; word += command[index + 1]; raw += command.slice(index, index + 2); index += 2; continue; }
       if (char === "$" || char === "`") return undefined;
       word += char; raw += char; index++;
     }
     if (!word) return undefined;
     emit(raw);
-    return word;
+    return { word, literal: /['"\\]/.test(raw) };
   };
   while (index < command.length) {
     const char = command[index]!;
     const context = stack.at(-1);
     if (context === "single") { emit(char); index++; if (char === "'") stack.pop(); continue; }
     if (context === "ansi" || context === "double" || context === "brace") {
-      if (char === "\\") { emit(command.slice(index, index + 2)); index += 2; continue; }
+      if (char === "\\") {
+        // bash keeps a backslash-newline inside `$'…'` (measured, bash 3.2) and removes it in `"…"` and `${…}`.
+        if (command[index + 1] !== "\n" || context === "ansi") emit(command.slice(index, index + 2));
+        index += 2;
+        continue;
+      }
       if (context === "ansi") { emit(char); index++; if (char === "'") stack.pop(); continue; }
-      if (char === "`") return command;
+      if (char === "`") return undefined;
       if (context === "brace") {
-        if (char === "'" || char === "\"" || char === "$") return command;
+        if (char === "'" || char === "\"" || char === "$") return undefined;
         emit(char); index++;
         if (char === "}") stack.pop();
         continue;
       }
       if (char === "\"") { emit(char); index++; stack.pop(); continue; }
-      if (char === "$" && command[index + 1] === "(") {
-        if (command[index + 2] === "(") return command;
-        emit("$("); index += 2; stack.push("subshell"); depths.push(0); wordStart = true; continue;
+      const next = char === "$" ? after(index + 1) : index;
+      if (char === "$" && command[next] === "(") {
+        if (command[after(next + 1)] === "(") return undefined;
+        emit("$("); index = next + 1; stack.push("subshell"); depths.push(0); wordStart = true; continue;
       }
-      if (char === "$" && command[index + 1] === "{") { emit("${"); index += 2; stack.push("brace"); continue; }
-      if (char === "$" && command[index + 1] === "[") return command;
+      if (char === "$" && command[next] === "{") { emit("${"); index = next + 1; stack.push("brace"); continue; }
+      if (char === "$" && command[next] === "[") return undefined;
       emit(char); index++;
       continue;
     }
     // Unquoted: the top level or inside `$(…)`.
     if (char === "\\") {
-      emit(command.slice(index, index + 2));
-      if (command[index + 1] !== "\n") wordStart = false;
+      // A backslash-newline is gone before bash reads words: `r\<nl>m` runs `rm`, and `true &&\<nl>sh a.sh` runs `sh`.
+      if (command[index + 1] !== "\n") { emit(command.slice(index, index + 2)); wordStart = false; }
       index += 2;
       continue;
     }
@@ -659,45 +685,60 @@ export function stripShellComments(command: string): string {
     }
     if (char === "\n") {
       emit(char); index++; wordStart = true;
-      for (const { delimiter, tabs } of heredocs.splice(0)) {
+      for (const { delimiter, tabs, literal, line: operatorLine, operator } of heredocs.splice(0)) {
+        const start = index;
+        let end = command.length;
         while (index < command.length) {
-          const lineEnd = command.indexOf("\n", index);
-          const line = command.slice(index, lineEnd < 0 ? command.length : lineEnd);
+          const bodyLine = index;
+          let line = "";
+          let lineEnd: number;
+          // An unquoted body joins a backslash-newline before bash matches the delimiter (measured, bash 3.2): `EO\<nl>F` ends it.
+          for (;;) {
+            lineEnd = command.indexOf("\n", index);
+            const piece = command.slice(index, lineEnd < 0 ? command.length : lineEnd);
+            index = lineEnd < 0 ? command.length : lineEnd + 1;
+            if (literal || lineEnd < 0 || !continues(piece)) { line += piece; break; }
+            line += piece.slice(0, -1);
+          }
           emit(lineEnd < 0 ? line : `${line}\n`);
-          index = lineEnd < 0 ? command.length : lineEnd + 1;
-          if ((tabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+          if ((tabs ? line.replace(/^\t+/, "") : line) === delimiter) { end = bodyLine; break; }
         }
+        found.push({ line: operatorLine, operator, start, end, literal });
       }
+      lineStart = index;
       continue;
     }
     if (char === " " || char === "\t") { emit(char, true); index++; wordStart = true; continue; }
-    if (char === "`") return command;
+    if (char === "`") return undefined;
     if (char === "'") { emit(char); index++; stack.push("single"); wordStart = false; continue; }
     if (char === "\"") { emit(char); index++; stack.push("double"); wordStart = false; continue; }
     if (char === "$") {
-      const next = command[index + 1];
-      if (next === "'") { emit("$'"); index += 2; stack.push("ansi"); wordStart = false; continue; }
-      if (next === "\"") { emit("$\""); index += 2; stack.push("double"); wordStart = false; continue; }
-      if (next === "(" && command[index + 2] === "(") return command;
-      if (next === "(") { emit("$("); index += 2; stack.push("subshell"); depths.push(0); wordStart = true; continue; }
-      if (next === "{") { emit("${"); index += 2; stack.push("brace"); wordStart = false; continue; }
-      if (next === "[") return command;
+      const at = after(index + 1);
+      const next = command[at];
+      if (next === "'") { emit("$'"); index = at + 1; stack.push("ansi"); wordStart = false; continue; }
+      if (next === "\"") { emit("$\""); index = at + 1; stack.push("double"); wordStart = false; continue; }
+      if (next === "(" && command[after(at + 1)] === "(") return undefined;
+      if (next === "(") { emit("$("); index = at + 1; stack.push("subshell"); depths.push(0); wordStart = true; continue; }
+      if (next === "{") { emit("${"); index = at + 1; stack.push("brace"); wordStart = false; continue; }
+      if (next === "[") return undefined;
       emit(char); index++; wordStart = false;
       continue;
     }
-    if (char === "(" && command[index + 1] === "(") return command;
-    if (char === "<" && command.startsWith("<<<", index)) { emit("<<<"); index += 3; wordStart = true; continue; }
-    if (char === "<" && command[index + 1] === "<") {
-      const tabs = command[index + 2] === "-";
-      emit(tabs ? "<<-" : "<<"); index += tabs ? 3 : 2;
+    if (char === "(" && command[after(index + 1)] === "(") return undefined;
+    if (char === "<" && command[after(index + 1)] === "<") {
+      const third = after(after(index + 1) + 1);
+      if (command[third] === "<") { emit("<<<"); index = third + 1; wordStart = true; continue; }
+      const tabs = command[third] === "-";
+      const operator = index;
+      emit(tabs ? "<<-" : "<<"); index = tabs ? third + 1 : third;
       const delimiter = delimiterWord();
-      if (delimiter === undefined) return command;
-      heredocs.push({ delimiter, tabs });
+      if (delimiter === undefined) return undefined;
+      heredocs.push({ delimiter: delimiter.word, tabs, literal: delimiter.literal, line: lineStart, operator });
       wordStart = false;
       continue;
     }
     if (context === "subshell") {
-      if (wordStart && /^case\b/.test(command.slice(index))) return command;
+      if (wordStart && /^case\b/.test(command.slice(index))) return undefined;
       if (char === "(") depths[depths.length - 1]!++;
       if (char === ")" && depths.at(-1) === 0) { emit(char); index++; stack.pop(); depths.pop(); wordStart = false; continue; }
       if (char === ")") depths[depths.length - 1]!--;
@@ -705,8 +746,8 @@ export function stripShellComments(command: string): string {
     emit(char); index++;
     wordStart = /[;|&()<>]/.test(char);
   }
-  if (stack.length || heredocs.length) return command;
-  return out;
+  if (stack.length || heredocs.length) return undefined;
+  return { text: out, heredocs: found };
 }
 
 // ---------------------------------------------------------------------------
@@ -2927,7 +2968,9 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
   const view = commandOf(action.tool, action.input);
   // Read the script bodies once: the floor labels their hits and the ask gate reads their shapes from the same list.
-  const scriptBodies = view?.shell ? scriptSources(stripDataText(stripShellComments(view.command)).text, action.cwd) : [];
+  // The text the shell runs, as the floor reads it: comments removed and backslash-newlines joined, then data blanked.
+  const shellText = view?.shell ? stripDataText(stripShellComments(view.command)).text : undefined;
+  const scriptBodies = shellText === undefined ? [] : scriptSources(shellText, action.cwd);
   const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scripts: scriptBodies, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
   // A script body the command runs that hit the floor: its lines ride the request, and the call is worth a judge even
   // when the gate would have left the outer command offline.
@@ -3026,7 +3069,7 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
 
   // Ask gate: a call that cannot change anything the agent sees is decided by the pattern pass and the floor alone.
   if (config.ask?.enabled !== false) {
-    const decision = actionAskGate(action.tool, action.input, view?.shell ? stripDataText(view.command).text : undefined, action.cwd, scriptBodies);
+    const decision = actionAskGate(action.tool, action.input, shellText, action.cwd, scriptBodies);
     if (!decision.ask && !bodyHit) {
       applyFloor();
       return withPlan({ level, source: "pattern", summary, patterns, reasons, notAsked: decision.why });

@@ -65,20 +65,36 @@ function separatorParts(command: string): string[] {
 /**
  * The parts of a command, cut where the shell cuts them: at a new line, `;`, `&`, and `|` outside quotes, comments, and
  * heredoc bodies, and never at a backslash-escaped character. A heredoc body is cut at every separator, as a body fed to
- * a shell runs. Undefined when the scan cannot be sure: an unclosed quote or heredoc, a substitution, or arithmetic.
+ * a shell runs. `joined` drops each backslash-newline the shell removes (outside quotes and in double quotes), so a part
+ * reads as bash runs it; without it each part is a slice of the command. Undefined when the scan cannot be sure: an
+ * unclosed quote or heredoc, a substitution, or arithmetic.
  */
-export function shellParts(command: string): string[] | undefined {
+export function shellParts(command: string, joined = false): string[] | undefined {
   const parts: string[] = [];
   const heredocs: Array<{ delimiter: string; tabs: boolean }> = [];
+  /** Offsets of the backslash of each backslash-newline the shell removes, in order. */
+  const joins: number[] = [];
+  let nextJoin = 0;
   let start = 0;
   let wordStart = true;
   let index = 0;
-  const cut = (end: number, next: number) => { parts.push(command.slice(start, end)); start = next; };
+  const slice = (from: number, to: number): string => {
+    if (!joined) return command.slice(from, to);
+    let text = "";
+    let at = from;
+    for (; nextJoin < joins.length && joins[nextJoin]! < to; nextJoin++) {
+      if (joins[nextJoin]! < from) continue;
+      text += command.slice(at, joins[nextJoin]);
+      at = joins[nextJoin]! + 2;
+    }
+    return text + command.slice(at, to);
+  };
+  const cut = (end: number, next: number) => { parts.push(slice(start, end)); start = next; };
   // The end of a quoted run that starts at `open`, or -1 when it does not close; `escapes` honours a backslash inside.
   const closing = (open: number, quote: string, escapes: boolean): number => {
     for (let at = open; at < command.length; at++) {
       const char = command[at]!;
-      if (escapes && char === "\\") { at++; continue; }
+      if (escapes && char === "\\") { if (quote === "\"" && command[at + 1] === "\n") joins.push(at); at++; continue; }
       if (char === quote) return at;
       if (quote === "\"" && (char === "`" || (char === "$" && command[at + 1] === "("))) return -1;
     }
@@ -87,7 +103,8 @@ export function shellParts(command: string): string[] | undefined {
   while (index < command.length) {
     const char = command[index]!;
     if (char === "\\") {
-      if (command[index + 1] !== "\n") wordStart = false;
+      if (command[index + 1] === "\n") joins.push(index);
+      else wordStart = false;
       index += 2;
       continue;
     }
@@ -159,7 +176,7 @@ export function shellParts(command: string): string[] | undefined {
 const RUNS_QUOTED_CODE = /\beval\b|\b(?:ba|z|da|k)?sh\s+-[a-zA-Z]*c\b/;
 
 function partsOf(command: string): string[] {
-  return (RUNS_QUOTED_CODE.test(command) ? undefined : shellParts(command)) ?? separatorParts(command);
+  return (RUNS_QUOTED_CODE.test(command) ? undefined : shellParts(command, true)) ?? separatorParts(command);
 }
 
 /** The literal texts that name a temp root, before any resolution: no file system call is made for a path outside these. */

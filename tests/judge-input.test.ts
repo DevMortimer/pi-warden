@@ -116,6 +116,14 @@ test("bash prints the same output for each command and for the text Jev reads", 
     "echo a\\  # escaped space",
     "echo hi # it's\necho RAN # it's",
     "echo $'\\'' # '; echo RAN",
+    "ec\\\nho a\\\nb",
+    "echo a\\\\\necho RAN",
+    "echo \"a\\\nb\" 'c\\\nd' $'e\\\nf'",
+    "x=1; echo ${x\\\n}",
+    "echo x # a \\\necho RAN",
+    "cat <<EOF\na \\\nb \\\\\nEO\\\nF\necho RAN",
+    "cat <<'EOF'\na \\\nb\nEOF\necho RAN",
+    "cat <\\\n<< b\ncat <<E\"O\"\\\nF\nx # y\nEOF\necho RAN",
   ];
   const run = (command: string) => {
     try { return execFileSync("bash", ["-c", command], { encoding: "utf8", stdio: "pipe" }); }
@@ -146,6 +154,12 @@ const inert: Record<string, FloorCase> = {
   "a script echo message": { command: () => "sh ./say.sh", files: mode => ({ "say.sh": `#!/bin/sh\necho "never ${act(mode, '\\"$dir\\"')} here"\n` }) },
   "a script printf message": { command: () => "sh say.sh", files: mode => ({ "say.sh": `#!/bin/sh\nprintf '%s\\n' "never ${act(mode, "$dir")} here"\n` }) },
   "a sed of a script": { command: () => 'sed -n "/alpha\\|down=/p" scripts/clean.sh', files: cleanScript, executable: ["scripts/clean.sh"] },
+  "a backslash-newline in an echo message": { command: mode => `echo "a\\\n${mode === "floor" ? "rm -rf ~" : 'touch \\"$MARK\\"'}"` },
+  "a backslash-newline in single quotes": { command: mode => `echo 'a\\\n${act(mode, "~")}'` },
+  "a quoted heredoc written to a file": { command: mode => `cat > notes.txt <<'EOF'\nstep one \\\n${act(mode, "~")}\nEOF` },
+  "a heredoc delimiter split by a backslash-newline": { command: mode => `cat <<E"O"\\\nF >/dev/null\n${act(mode, "~")}\nEOF` },
+  "a <<- operator split by a backslash-newline": { command: mode => `cat <<\\\n-X >/dev/null\n\t${act(mode, "~")}\n\tX` },
+  "a backslash-newline that runs a heredoc body past its delimiter": { command: mode => `cat <<EOF >/dev/null\nx \\\nEOF\n${act(mode, "~")}\nEOF` },
   "issue 190": {
     command: () => 'rtk grep -n "scan_alive\\|COPILOT-DOWN\\|down=" scripts/nest_sentry.py scripts/overseer_wake.py | head -20; echo ===TESTS===; rtk grep -rln "scan_alive\\|COPILOT-DOWN" tests/ | head',
     files: mode => ({
@@ -174,6 +188,33 @@ const live: Record<string, FloorCase> = {
   ". FILE": { command: () => ". scripts/clean.sh /tmp/x", files: cleanScript },
   "npm run NAME": { command: () => "npm run --silent clean", files: mode => ({ "package.json": JSON.stringify({ scripts: { clean: act(mode, '"$1"') } }) }) },
   "a grep of a script the line also runs": { command: () => "grep x scripts/clean.sh; sh scripts/clean.sh /tmp/x", files: cleanScript },
+  "a backslash-newline after &&, then sh FILE": { command: () => "true &&\\\nsh scripts/clean.sh /tmp/x", files: cleanScript },
+  "a leading backslash-newline, then sh FILE": { command: () => "\\\nsh scripts/clean.sh /tmp/x", files: cleanScript },
+  "cd, then an indented bash FILE": { command: () => "cd . && \\\n  bash ./scripts/clean.sh /tmp/x", files: cleanScript },
+  "sh, a backslash-newline, then FILE": { command: () => "sh \\\nscripts/clean.sh /tmp/x", files: cleanScript },
+  "cd, then an indented npm run NAME": { command: () => "cd . && \\\n  npm run --silent clean", files: mode => ({ "package.json": JSON.stringify({ scripts: { clean: act(mode, '"$1"') } }) }) },
+  "cd, then an indented make TARGET": { command: () => "cd . && \\\n  make -s clean", files: mode => ({ Makefile: `clean:\n\t${mode === "floor" ? "rm -rf ~" : 'touch "$$MARK"'}\n` }) },
+  "a delete split inside its first word": { command: mode => mode === "floor" ? "r\\\nm -rf ~" : 'tou\\\nch "$MARK"' },
+  "a delete split before its flags": { command: mode => mode === "floor" ? "rm \\\n-rf ~" : 'touch \\\n"$MARK"' },
+  "a comment that ends in a backslash": { command: mode => `echo x # a \\\n${act(mode, "~")}` },
+  "a typed here-string": { command: mode => `cat <<< b >/dev/null\n${act(mode, "~")}` },
+  "a here-string operator split by a backslash-newline": { command: mode => `cat <\\\n<< b >/dev/null\n${act(mode, "~")}` },
+  "a heredoc fed to sh after a split operator": { command: mode => `cat <\\\n<EOF | sh\n${act(mode, "~")}\nEOF` },
+  "a delimiter split by a backslash-newline": { command: mode => `cat <<EOF >/dev/null\nEO\\\nF\n${act(mode, "~")}` },
+  ...Object.fromEntries(([
+    ["#!/bin/sh", "cat <<< b >/dev/null"],
+    ["#!/bin/bash", "cat <<< b >/dev/null"],
+    ["#!/usr/bin/env bash", "cat <<< b >/dev/null"],
+    ["", "cat <<< b >/dev/null"],
+    ["#!/bin/sh", "cat <<E\"O\"F >/dev/null\nEOF"],
+    ["#!/bin/sh", "echo '<<F' >/dev/null"],
+    ["#!/bin/sh", "echo \"<<F\" >/dev/null"],
+    ["#!/bin/sh", "cat <<<b >/dev/null"],
+    ["#!/bin/sh", "cat <<-X >/dev/null\n\tnote\n\tX"],
+  ] as const).map(([first, line]): [string, FloorCase] => [`a script body with ${first || "no first line"} and ${line.split("\n")[0]}`, {
+    command: () => "sh a.sh x",
+    files: mode => ({ "a.sh": `${first ? `${first}\n` : ""}${line}\n${act(mode, "~")}\n` }),
+  }])),
 };
 
 test("the floor holds an input exactly when bash runs the text where its delete is", async () => {
