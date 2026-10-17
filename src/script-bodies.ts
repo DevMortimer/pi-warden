@@ -58,8 +58,108 @@ function segmentOf(part: string): Segment | undefined {
   return { head: basename(rawHead), rawHead, args: tokens.slice(index + 1) };
 }
 
-function partsOf(command: string): string[] {
+function separatorParts(command: string): string[] {
   return command.split(/\n|;|&&|\|\||\||&/).map(part => part.trim()).filter(Boolean);
+}
+
+/**
+ * The parts of a command, cut where the shell cuts them: at a new line, `;`, `&`, and `|` outside quotes, comments, and
+ * heredoc bodies, and never at a backslash-escaped character. A heredoc body is cut at every separator, as a body fed to
+ * a shell runs. Undefined when the scan cannot be sure: an unclosed quote or heredoc, a substitution, or arithmetic.
+ */
+export function shellParts(command: string): string[] | undefined {
+  const parts: string[] = [];
+  const heredocs: Array<{ delimiter: string; tabs: boolean }> = [];
+  let start = 0;
+  let wordStart = true;
+  let index = 0;
+  const cut = (end: number, next: number) => { parts.push(command.slice(start, end)); start = next; };
+  // The end of a quoted run that starts at `open`, or -1 when it does not close; `escapes` honours a backslash inside.
+  const closing = (open: number, quote: string, escapes: boolean): number => {
+    for (let at = open; at < command.length; at++) {
+      const char = command[at]!;
+      if (escapes && char === "\\") { at++; continue; }
+      if (char === quote) return at;
+      if (quote === "\"" && (char === "`" || (char === "$" && command[at + 1] === "("))) return -1;
+    }
+    return -1;
+  };
+  while (index < command.length) {
+    const char = command[index]!;
+    if (char === "\\") {
+      if (command[index + 1] !== "\n") wordStart = false;
+      index += 2;
+      continue;
+    }
+    if (char === "`" || (char === "$" && command[index + 1] === "(") || (char === "(" && command[index + 1] === "(")) return undefined;
+    if (char === "'" || char === "\"" || (char === "$" && (command[index + 1] === "'" || command[index + 1] === "\""))) {
+      const open = char === "$" ? index + 1 : index;
+      const quote = command[open]!;
+      const end = closing(open + 1, quote, quote === "\"" || char === "$");
+      if (end < 0) return undefined;
+      index = end + 1;
+      wordStart = false;
+      continue;
+    }
+    if (char === "$" && command[index + 1] === "{") {
+      const end = command.indexOf("}", index + 2);
+      if (end < 0 || /['"`\n]|\$[({]/.test(command.slice(index + 2, end))) return undefined;
+      index = end + 1;
+      wordStart = false;
+      continue;
+    }
+    if (char === "#" && wordStart) {
+      const end = command.indexOf("\n", index);
+      cut(index, end < 0 ? command.length : end);
+      index = end < 0 ? command.length : end;
+      continue;
+    }
+    if (char === "\n") {
+      cut(index, index + 1);
+      index++;
+      wordStart = true;
+      for (const { delimiter, tabs } of heredocs.splice(0)) {
+        let closed = false;
+        while (index < command.length && !closed) {
+          const lineEnd = command.indexOf("\n", index);
+          const line = command.slice(index, lineEnd < 0 ? command.length : lineEnd);
+          index = lineEnd < 0 ? command.length : lineEnd + 1;
+          closed = (tabs ? line.replace(/^\t+/, "") : line) === delimiter;
+          if (!closed) parts.push(...separatorParts(line));
+        }
+        if (!closed) return undefined;
+      }
+      start = index;
+      continue;
+    }
+    if (char === ";" || char === "&" || char === "|") { cut(index, index + 1); index++; wordStart = true; continue; }
+    if (char === "<" && command.startsWith("<<<", index)) { index += 3; wordStart = true; continue; }
+    if (char === "<" && command[index + 1] === "<") {
+      const tabs = command[index + 2] === "-";
+      index += tabs ? 3 : 2;
+      while (command[index] === " " || command[index] === "\t") index++;
+      const word = /^[^\s;|&<>()]+/.exec(command.slice(index))?.[0];
+      if (word === undefined || /[$`]/.test(word)) return undefined;
+      const delimiter = word.replace(/'([^']*)'|"([^"]*)"|\\(.)/g, "$1$2$3");
+      if (/['"\\]/.test(delimiter)) return undefined;
+      heredocs.push({ delimiter, tabs });
+      index += word.length;
+      wordStart = false;
+      continue;
+    }
+    wordStart = char === " " || char === "\t" || /[()<>]/.test(char);
+    index++;
+  }
+  if (heredocs.length) return undefined;
+  cut(command.length, command.length);
+  return parts.map(part => part.trim()).filter(Boolean);
+}
+
+/** Code a shell runs again from a quoted word: a script named inside it is found by cutting at every separator, as before. */
+const RUNS_QUOTED_CODE = /\beval\b|\b(?:ba|z|da|k)?sh\s+-[a-zA-Z]*c\b/;
+
+function partsOf(command: string): string[] {
+  return (RUNS_QUOTED_CODE.test(command) ? undefined : shellParts(command)) ?? separatorParts(command);
 }
 
 /** The literal texts that name a temp root, before any resolution: no file system call is made for a path outside these. */

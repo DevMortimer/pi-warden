@@ -17,7 +17,7 @@ import { resolveRulesFile } from "./rules-file.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
 import { actionAskGate } from "./ask-gate.js";
-import { scriptSources, type ScriptSource } from "./script-bodies.js";
+import { scriptSources, shellParts, type ScriptSource } from "./script-bodies.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
 export type Level = "allow" | "warn" | "confirm" | "deny";
@@ -565,7 +565,12 @@ export function stripDataText(command: string): ScannedCommand {
   if (/\b(?:ba|z|da|k)?sh\s+-[a-zA-Z]*c\b/.test(joined)) return { text: command, stripped: false };
   let text = joined;
   if (joined !== scanned) stripped = true;
-  for (const segment of segments) {
+  // A printed or searched message is cut where the shell cuts, so `echo "a; b"` stays one argument. git and gh keep the
+  // wider cut: `blankMessageFlags` already blanked the flags that take a message, and `gh pr view --body` takes none.
+  const parts = shellParts(joined);
+  const printsData = (segment: string) => DATA_HEADS.has(headOf(segment) ?? "");
+  const dataSegments = parts === undefined ? segments : [...parts.filter(printsData), ...segments.filter(segment => !printsData(segment))];
+  for (const segment of dataSegments) {
     if (!isDataSegment(segment) || !/["']/.test(segment)) continue;
     const blanked = blankQuotes(segment);
     if (blanked === segment) continue;
@@ -575,11 +580,12 @@ export function stripDataText(command: string): ScannedCommand {
   return { text, stripped };
 }
 
-// A shell comment can carry text the agent wrote to sway Jev; the request state must read only what the shell runs.
+// A shell comment can carry text the agent wrote to sway Jev, or delete text that never runs; Jev and the floor read only
+// what the shell runs.
 /**
- * The command text Jev reads: shell comments removed; quotes, escapes, heredoc bodies, `$#`, `${#…}`, and a `#`
- * mid-word kept. Quote state carries across lines. A construct the scan does not model (backticks, arithmetic, `case`
- * inside `$(…)`, quotes inside `${…}`), or an unclosed quote, returns the command unchanged.
+ * The command text Jev and the pattern floor read: shell comments removed; quotes, escapes, heredoc bodies, `$#`,
+ * `${#…}`, and a `#` mid-word kept. Quote state carries across lines. A construct the scan does not model (backticks,
+ * arithmetic, `case` inside `$(…)`, quotes inside `${…}`), or an unclosed quote, returns the command unchanged.
  */
 export function stripShellComments(command: string): string {
   type Context = "single" | "double" | "ansi" | "brace" | "subshell";
@@ -2039,8 +2045,8 @@ function compileUserRule(raw: CommandRule, defaultSeverity: Severity): CompiledU
   }
 }
 
-/** The built-in shell rules and user command rules for one command body. `raw` is the text as written; `stripDataText`
- * blanks the data that is not a command. Deduplicated by id. */
+/** The built-in shell rules and user command rules for one command body. `raw` is the text without shell comments
+ * (`stripShellComments`); `stripDataText` blanks the data that is not a command. Deduplicated by id. */
 function commandPatternHits(raw: string, cwd: string | undefined, options: PatternOptions | undefined, exempt: ReadonlySet<string>): PatternHit[] {
   const hits = new Map<string, PatternHit>();
   const add = (hit: PatternHit | undefined) => { if (hit && !hits.has(hit.id)) hits.set(hit.id, hit); };
@@ -2126,15 +2132,17 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
   const view = commandOf(tool, input);
   const raw = view?.command;
   if (raw) {
-    merge(commandPatternHits(raw, cwd, options, exempt));
+    const code = stripShellComments(raw);
+    merge(commandPatternHits(code, cwd, options, exempt));
     // The bodies of scripts the command runs are read one level deep: a script the body calls is not read again.
     if (view?.shell) {
-      const sources = options?.scripts ?? scriptSources(stripDataText(raw).text, cwd);
+      const sources = options?.scripts ?? scriptSources(stripDataText(code).text, cwd);
       for (const source of sources) {
         if (source.kind !== "shell") continue;
-        const bodyHits = commandPatternHits(source.body, cwd, options, exempt);
+        const body = stripShellComments(source.body);
+        const bodyHits = commandPatternHits(body, cwd, options, exempt);
         if (!bodyHits.length) continue;
-        const lines = matchingLines(source.body, options, exempt);
+        const lines = matchingLines(body, options, exempt);
         merge(bodyHits.map(hit => ({ ...hit, lines })), source.source);
       }
     }
@@ -2284,7 +2292,7 @@ export function matchPathRules(tool: string, input: Record<string, unknown>, cwd
   };
   const raw = commandOf(tool, input)?.command;
   if (raw) {
-    const text = stripDataText(raw).text;
+    const text = stripDataText(stripShellComments(raw)).text;
     const sinks = writeSinkTargets(text);
     const mentioned = (rule: PathRule) => mentionRegex(rule).some(re => re.test(text));
     const sinkWrite = (rule: PathRule) => sinks.some(target => pathRuleMatches(rule, target));
@@ -2919,12 +2927,12 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   const withPlan = (verdict: Verdict): Verdict => (plan ? { ...verdict, plan } : verdict);
   const view = commandOf(action.tool, action.input);
   // Read the script bodies once: the floor labels their hits and the ask gate reads their shapes from the same list.
-  const scriptBodies = view?.shell ? scriptSources(stripDataText(view.command).text, action.cwd) : [];
+  const scriptBodies = view?.shell ? scriptSources(stripDataText(stripShellComments(view.command)).text, action.cwd) : [];
   const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scripts: scriptBodies, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
   // A script body the command runs that hit the floor: its lines ride the request, and the call is worth a judge even
   // when the gate would have left the outer command offline.
-  // The floor's hit lines keep the body's comments; Jev reads lines of the whole body with its comments stripped, so a
-  // multi-line string keeps its quote state and a code line that starts with `#` inside it stays.
+  // Lines of the whole body with its comments stripped, as the floor reads them, so a multi-line string keeps its quote
+  // state and a code line that starts with `#` inside it stays.
   const hitSources = new Set(patterns.flatMap(hit => hit.via ?? []));
   const lineOptions = { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules };
   const scriptLines = capScriptLines(scriptBodies
