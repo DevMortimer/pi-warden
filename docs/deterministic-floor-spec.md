@@ -139,7 +139,9 @@ grant themselves severity — see [Threat model](#threat-model)):
   matched against the `stripDataText`-processed command, read without shell comments
   (`stripShellComments`; a command the scan cannot read with certainty keeps them) — so
   comments, heredoc bodies, quoted data arguments, and commit messages behave exactly as
-  the built-in rules do: every pattern rule reads the command without shell comments. This is the
+  the built-in rules do: every pattern rule reads the command without shell comments. The
+  scan reads line continuations and here-strings as bash does: a backslash-newline is joined
+  where bash joins it, and `<<<` or a `<<` in quotes starts no heredoc. This is the
   single most important implementation detail: user rules must ride the same data-text
   pipeline as built-ins, or they reintroduce the commit-message false-positive class that
   the pipeline exists to prevent.
