@@ -17,7 +17,7 @@ import { resolveRulesFile } from "./rules-file.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
 import { actionAskGate } from "./ask-gate.js";
-import { commandIndex, scriptSources, shellCommands, shellParts, type ScriptSource } from "./script-bodies.js";
+import { commandIndex, scriptSources, shellCommands, shellParts, type ScriptSource, type ShellWord as CommandWord } from "./script-bodies.js";
 import { actionTokens, DEFAULT_TEMPLATES, renderTemplate } from "./widget.js";
 
 export type Level = "allow" | "warn" | "confirm" | "deny";
@@ -365,24 +365,39 @@ function runsShellSink(command: string): boolean {
   });
 }
 
+/** A word as bash passes it, written so the delete classifier reads that value. */
+function plainWord(word: CommandWord): string {
+  return /^[^\s'"\\;&|<>()`]+$/.test(word.text) ? word.text : `"${word.text.replace(/["\\`]/g, "\\$&")}"`;
+}
+
 /**
  * The command with each command word that runs `rm` written as a plain `rm`, so `\rm`, `"rm"`, `r''m`, `/bin/rm`, and
  * `${x}rm` (an unset `x` is empty) are read as the delete bash runs. A word right after `)` gets a blank before it.
  */
 function plainRmWords(command: string): string {
   if (!/r\S*m/.test(command)) return command;
-  const spans = shellCommands(command).flatMap(({ words }) => {
+  const spans: Array<readonly [number, number]> = [];
+  const lines = new Set<string>();
+  for (const { words } of shellCommands(command)) {
     const at = commandIndex(words);
     const word = at === undefined ? undefined : words[at];
-    if (!word?.span || basename(word.bare) !== "rm") return [];
-    const [start, end] = word.span;
-    return command.slice(start, end) === "rm" && (start === 0 || /[\s"'(`]/.test(command[start - 1]!)) ? [] : [word.span];
-  });
-  let text = command;
-  for (const [start, end] of spans.sort((a, b) => b[0] - a[0])) {
-    text = `${text.slice(0, start)}${start > 0 && !/[\s"'(`]/.test(text[start - 1]!) ? " " : ""}rm${text.slice(end)}`;
+    if (!word || basename(word.bare) !== "rm") continue;
+    if (word.span) {
+      const [start, end] = word.span;
+      if (command.slice(start, end) !== "rm" || (start > 0 && !/[\s"'(`]/.test(command[start - 1]!))) spans.push(word.span);
+    } else if ((word as { raw?: string }).raw !== "rm") lines.add(["rm", ...words.slice(at! + 1).map(plainWord)].join(" "));
   }
-  return text;
+  let text = "";
+  let last = 0;
+  for (const [start, end] of spans.sort((a, b) => a[0] - b[0])) {
+    if (start < last) continue;
+    text += `${command.slice(last, start)}${start > 0 && !/[\s"'(`]/.test(command[start - 1]!) ? " " : ""}rm`;
+    last = end;
+  }
+  text += command.slice(last);
+  // A delete word read inside a string (`sh -c "\"rm\" -rf T"`, `eval '\rm -rf T'`) has no place in the text, so its
+  // plain words follow on lines of their own, after a `cd -` the guard does not follow: a relative target stays unread.
+  return lines.size ? `${text}\ncd -\n${[...lines].join("\n")}` : text;
 }
 
 function headOf(segment: string): string | undefined {
@@ -472,31 +487,26 @@ function blankQuotes(segment: string): string {
   return out;
 }
 
-/** The quote that closes the double-quoted string opening at `open`, or -1; a `$( … )` inside is read whole, quotes and all. */
+/**
+ * The quote that closes the double-quoted string opening at `open`, or -1; a `$( … )` inside is read whole, quotes and
+ * all. Each open string is `"` and each open substitution its paren depth, on a stack: a deep `"$("$(…` cannot overflow.
+ */
 function doubleQuoteEnd(text: string, open: number): number {
+  const stack: Array<"\"" | number> = ["\""];
   for (let at = open + 1; at < text.length; at++) {
     const char = text[at];
-    if (char === "\\") at++;
-    else if (char === "\"") return at;
-    else if (char === "$" && text[at + 1] === "(") {
-      at = substitutionEnd(text, at + 2);
+    const top = stack[stack.length - 1]!;
+    if (char === "\\") { at++; continue; }
+    if (top === "\"") {
+      if (char === "\"") stack.pop();
+      else if (char === "$" && text[at + 1] === "(") { stack.push(1); at++; }
+    } else if (char === "'") {
+      at = text.indexOf("'", at + 1);
       if (at < 0) return -1;
-    }
-  }
-  return -1;
-}
-
-/** The `)` that closes a `$(` whose body starts at `from`, or -1. */
-function substitutionEnd(text: string, from: number): number {
-  let depth = 1;
-  for (let at = from; at < text.length; at++) {
-    const char = text[at];
-    if (char === "\\") at++;
-    else if (char === "'" || char === "\"") {
-      at = char === "'" ? text.indexOf("'", at + 1) : doubleQuoteEnd(text, at);
-      if (at < 0) return -1;
-    } else if (char === "(") depth++;
-    else if (char === ")" && --depth === 0) return at;
+    } else if (char === "\"") stack.push("\"");
+    else if (char === "(") stack[stack.length - 1] = top + 1;
+    else if (char === ")") { if (top === 1) stack.pop(); else stack[stack.length - 1] = top - 1; }
+    if (!stack.length) return at;
   }
   return -1;
 }
@@ -602,8 +612,10 @@ export function stripDataText(command: string): ScannedCommand {
     // The whole pipeline on the heredoc line counts: `cat <<EOF | bash` executes the body as much as `bash <<EOF` does.
     const heads = splitShell(line).map(segment => headOf(segment) ?? "");
     const consumer = headOf(line.slice(0, heredoc.operator - heredoc.line)) ?? "";
+    // The shell that reads the body can sit in a substitution on the line: `cat <(sh <<EOF`.
+    const innermost = headOf(line.slice(0, heredoc.operator - heredoc.line).split(/[(`]/).pop()!) ?? "";
     // 'EOF', "EOF", E"O"F, and \EOF make the body literal; a bare EOF body is expanded, so a substitution inside it runs.
-    const executed = heads.some(head => SHELL_SINKS.has(head)) || (INTERPRETERS.test(consumer) && EXEC_CALLS.test(bodyText)) || (!heredoc.literal && SUBSTITUTION.test(bodyText));
+    const executed = heads.some(head => SHELL_SINKS.has(head)) || SHELL_SINKS.has(innermost) || (INTERPRETERS.test(consumer) && EXEC_CALLS.test(bodyText)) || (!heredoc.literal && SUBSTITUTION.test(bodyText));
     scanned += command.slice(cursor, heredoc.start);
     cursor = heredoc.end;
     if (executed || !body) { scanned += body; continue; }
