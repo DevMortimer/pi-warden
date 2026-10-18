@@ -348,7 +348,7 @@ const shapesProject = async (): Promise<string> => {
   await writeFile(join(dir, "push.sh"), "git push origin main\n");
   return dir;
 };
-const labels = (command: string, dir: string) => scriptSources(stripDataText(command).text, dir).map(source => source.source);
+const labels = (command: string, dir: string) => scriptSources(command, dir).map(source => source.source);
 
 test("scriptSources reads a script run inside a compound command, a substitution, -c, stdin, or a wrapper, and labels it", async () => {
   const dir = await shapesProject();
@@ -369,7 +369,6 @@ test("scriptSources reads a script run inside a compound command, a substitution
       ["out=`sh a.sh x`", "a.sh"],
       ["diff <(sh a.sh x) /dev/null", "a.sh"],
       ["(cd sub && sh a.sh x)", "sub/a.sh"],
-      ["cd sub; ./a.sh x", "sub/a.sh"],
       ["bash -lc 'cd sub && sh a.sh x'", "sub/a.sh"],
       ["sh -c './a.sh x'", "./a.sh"],
       ['eval "sh a.sh x"', "a.sh"],
@@ -388,6 +387,10 @@ test("scriptSources reads a script run inside a compound command, a substitution
       ["env -i PATH=/usr/bin:/bin sh a.sh x", "a.sh"],
       ["echo x | xargs sh a.sh", "a.sh"],
       ["(cd sub && npm run clean)", "npm run clean"],
+      ['cat <("./a.sh" x)', "./a.sh"],
+      ['echo "$("./a.sh" x)"', "./a.sh"],
+      ["((cd sub && sh a.sh x))", "sub/a.sh"],
+      ["cat <<'EOF' | bash\nsh a.sh x\nEOF", "a.sh"],
     ] as const) assert.deepEqual(labels(command, dir), [label], command);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -401,7 +404,15 @@ test("scriptSources reads no script where bash runs none, and follows a cd only 
     assert.deepEqual(labels("sh a.sh < sub/a.sh", dir), ["a.sh"], "a named file runs; the file on stdin is its input");
     assert.deepEqual(labels("(cd sub) && sh a.sh x", dir), ["a.sh"], "a cd in a subshell does not move the command after it");
     assert.deepEqual(labels("cd sub | true; sh a.sh x", dir), ["a.sh"], "a cd in a pipeline does not move the command after it");
-    assert.deepEqual(labels("sh a.sh x; cd sub; sh a.sh x", dir), ["a.sh", "sub/a.sh"], "each directory's script is read");
+    assert.deepEqual(labels("sh a.sh x; cd sub && sh a.sh x", dir), ["a.sh", "sub/a.sh"], "each directory's script is read");
+    // A cd that may be skipped leaves both directories possible; one that always runs fails only on a missing target.
+    for (const command of ["false && cd sub; ./a.sh x", "if true; then cd sub; fi; ./a.sh x", "f() { cd sub; }; ./a.sh x"]) {
+      assert.deepEqual(labels(command, dir), ["sub/a.sh", "./a.sh"], command);
+    }
+    assert.deepEqual(labels("cd sub; ./a.sh x", dir), ["sub/a.sh"], "an unconditional cd to a directory that exists");
+    assert.deepEqual(labels("cd missing; ./a.sh x", dir), ["./a.sh"], "a cd to a missing directory fails and stays");
+    assert.deepEqual(labels("cat > notes.txt <<'EOF'\nsh a.sh x\nEOF", dir), [], "a heredoc written to a file runs nothing");
+    assert.deepEqual(labels("cat > notes.txt <<EOF\n$(sh a.sh x)\nEOF", dir), ["a.sh"], "a substitution in an unquoted heredoc runs");
     // A wrapper execs a program, so a builtin after it changes nothing in this shell.
     assert.deepEqual(labels("timeout 5 cd sub; sh a.sh x", dir), ["a.sh"], "timeout 5 cd runs no builtin cd");
     assert.deepEqual(labels("nice -n 5 . ./a.sh", dir), [], "nice . runs no builtin source");
