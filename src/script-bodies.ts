@@ -182,6 +182,10 @@ export interface SimpleCommand {
   redirects: Array<{ op: string; target: ShellWord }>;
   /** The directory it runs in after each literal `cd` before it: `.` for the start directory, else relative to it or absolute. */
   dir: string;
+  /** The directories it may run in instead, where a `cd` before it may not have run (`false && cd sub; sh a.sh`). */
+  alts: string[];
+  /** The directory it runs in when `dir` does not exist: a `cd` to a missing directory fails and stays where it was. */
+  unless?: string;
   /** The command whose output this one reads through `|`. */
   from?: SimpleCommand;
 }
@@ -202,20 +206,31 @@ const REDIRECT = /^(?:\d+|\{[A-Za-z_]\w*\})?(?:<<<|<<-|<<|<>|<&|<(?!\()|>>|>&|>\
 const MAX_DEPTH = 16;
 const MAX_COMMANDS = 2000;
 
-interface Scope { dir: string }
+/**
+ * Where commands run. `alts` are the directories a `cd` that may be skipped left, and `unless` the one an unconditional
+ * `cd` left; neither applies in `sure`, the `&&` chain after a `cd`. `guarded` counts the branches, loops, and function
+ * bodies around the cursor, and `braces` which open `{` is a function body.
+ */
+interface Scope { dir: string; alts: string[]; unless?: string; sure: boolean; guarded: number; braces: boolean[]; functionBody: boolean }
+interface Place { dir: string; alts: readonly string[]; unless?: string }
+const subScope = (scope: Scope): Scope => ({ ...scope, alts: [...scope.alts], braces: [...scope.braces] });
+const OPENERS = new Set(["if", "while", "until"]);
+const CLOSERS = new Set(["fi", "done"]);
 
 /** A recursive reader of the simple commands in one text; `base` maps its offsets into the outermost text. */
 class ShellReader {
   private pos = 0;
-  private readonly heredocs: string[] = [];
-  private readonly tabbed: boolean[] = [];
+  private readonly heredocs: Array<{ delimiter: string; tabs: boolean; literal: boolean }> = [];
+  /** The first command of the current line in `out`: a heredoc body runs when a shell on its line reads it. */
+  private lineStart: number;
 
   constructor(private readonly text: string, private readonly base: number | undefined, private readonly depth: number, private readonly out: SimpleCommand[]) {
     if (depth > MAX_DEPTH) throw new Unreadable("nested too deep");
+    this.lineStart = out.length;
   }
 
-  read(dir: string): void {
-    this.list({ dir }, "end");
+  read(place: Place): void {
+    this.list({ dir: place.dir, alts: [...place.alts], ...(place.unless !== undefined ? { unless: place.unless } : {}), sure: false, guarded: 0, braces: [], functionBody: false }, "end");
   }
 
   private blanks(): void {
@@ -246,25 +261,32 @@ class ShellReader {
 
   private newline(scope: Scope): void {
     this.pos++;
-    const tabbed = this.tabbed.splice(0);
-    for (const [index, delimiter] of this.heredocs.splice(0).entries()) {
+    const fedToShell = this.out.slice(this.lineStart).some(command => {
+      const at = commandIndex(command.words);
+      const head = at === undefined ? "" : basename(command.words[at]!.text);
+      return SHELLS.has(head) || head === "source" || head === "." || head === "eval";
+    });
+    for (const { delimiter, tabs, literal } of this.heredocs.splice(0)) {
       const start = this.pos;
       let end = -1;
       while (end < 0 && this.pos < this.text.length) {
         const lineEnd = this.text.indexOf("\n", this.pos);
         const line = this.text.slice(this.pos, lineEnd < 0 ? this.text.length : lineEnd);
-        if ((tabbed[index] ? line.replace(/^\t+/, "") : line) === delimiter) end = this.pos;
+        if ((tabs ? line.replace(/^\t+/, "") : line) === delimiter) end = this.pos;
         this.pos = lineEnd < 0 ? this.text.length : lineEnd + 1;
       }
       if (end < 0) throw new Unreadable("unclosed heredoc");
-      // A body fed to a shell runs; `stripDataText` already blanked a body that is only data.
-      readInto(this.text.slice(start, end), this.base === undefined ? undefined : this.base + start, this.depth + 1, this.out, scope.dir);
+      const body = this.text.slice(start, end);
+      // A body fed to a shell runs, and so does a substitution in a body whose delimiter is not quoted; other bodies are data.
+      if (fedToShell || (!literal && /\$\(|`/.test(body))) readInto(body, this.base === undefined ? undefined : this.base + start, this.depth + 1, this.out, placeOf(scope));
     }
+    this.lineStart = this.out.length;
   }
 
   private list(scope: Scope, stop: "end" | ")" | "arm"): void {
     let previous: SimpleCommand | undefined;
     let piped = false;
+    let andOr = false;
     let undo: (() => void) | undefined;
     for (;;) {
       this.blanks();
@@ -275,17 +297,27 @@ class ShellReader {
       }
       const two = this.text.slice(this.pos, this.pos + 2);
       if (char === "#") { this.comment(); continue; }
-      if (char === "\n") { this.newline(scope); piped = false; undo = undefined; continue; }
+      if (char === "\n") { this.newline(scope); piped = false; andOr = false; undo = undefined; scope.sure = false; continue; }
       if (two === ";;" || two === ";&") {
         if (stop !== "arm") throw new Unreadable("case arm outside case");
         this.pos += this.text.startsWith(";;&", this.pos) ? 3 : 2;
         return;
       }
-      if (char === ";" || two === "&&" || two === "||") { this.pos += char === ";" ? 1 : 2; piped = false; undo = undefined; continue; }
+      if (char === ";" || two === "&&" || two === "||") {
+        // Only the commands chained by `&&` to a cd surely run in its directory.
+        scope.sure = two === "&&" && (scope.sure || undo !== undefined);
+        andOr = char !== ";";
+        this.pos += char === ";" ? 1 : 2;
+        piped = false;
+        undo = undefined;
+        continue;
+      }
       if (char === "|" || (char === "&" && this.text[this.pos + 1] !== ">")) {
         // A cd in a pipeline or in the background runs in a subshell of its own.
         undo?.();
         undo = undefined;
+        scope.sure = false;
+        andOr = false;
         piped = char === "|";
         this.pos += two === "|&" ? 2 : 1;
         continue;
@@ -295,7 +327,7 @@ class ShellReader {
         throw new Unreadable("stray )");
       }
       if (stop === "arm" && this.peekPlain() === "esac") return;
-      const read = this.command(scope, piped ? previous : undefined);
+      const read = this.command(scope, piped ? previous : undefined, andOr);
       previous = read?.command;
       undo = read?.undo;
       piped = false;
@@ -307,24 +339,33 @@ class ShellReader {
     this.pos = end < 0 ? this.text.length : end;
   }
 
-  private command(scope: Scope, from: SimpleCommand | undefined): { command: SimpleCommand; undo?: () => void } | undefined {
+  private command(scope: Scope, from: SimpleCommand | undefined, andOr: boolean): { command: SimpleCommand; undo?: () => void } | undefined {
     for (;;) {
       this.blanks();
       if (this.text[this.pos] === "(") {
-        if (this.text[this.pos + 1] === "(") this.arithmetic();
-        else this.subshell(scope, 1);
+        const inner = scope.functionBody ? { ...subScope(scope), guarded: scope.guarded + 1, functionBody: false } : scope;
+        scope.functionBody = false;
+        if (this.text[this.pos + 1] === "(") this.doubleParen(inner, 0);
+        else this.subshell(inner, 1);
         return undefined;
       }
       const plain = this.peekPlain();
       if (plain === undefined) break;
-      if (KEYWORDS.has(plain)) { this.pos += plain.length; continue; }
+      if (KEYWORDS.has(plain)) {
+        if (OPENERS.has(plain)) scope.guarded++;
+        else if (CLOSERS.has(plain)) scope.guarded--;
+        else if (plain === "{") { scope.braces.push(scope.functionBody); if (scope.functionBody) scope.guarded++; scope.functionBody = false; }
+        else if (plain === "}" && scope.braces.pop()) scope.guarded--;
+        this.pos += plain.length;
+        continue;
+      }
       if (plain === "time") {
         this.pos += plain.length;
         this.blanks();
         if (this.peekPlain() === "-p") this.pos += 2;
         continue;
       }
-      if (plain === "for" || plain === "select") { this.pos += plain.length; this.loopHeader(scope); continue; }
+      if (plain === "for" || plain === "select") { this.pos += plain.length; scope.guarded++; this.loopHeader(scope); continue; }
       if (plain === "case") { this.pos += plain.length; this.caseCommand(scope); return undefined; }
       if (plain === "[[") { this.pos += plain.length; this.condition(scope); return undefined; }
       if (plain === "function") {
@@ -334,11 +375,12 @@ class ShellReader {
         this.blanks();
         const parens = /^\(\s*\)/.exec(this.text.slice(this.pos, this.pos + 16));
         if (parens) this.pos += parens[0].length;
+        scope.functionBody = true;
         continue;
       }
       break;
     }
-    const command: SimpleCommand = { words: [], redirects: [], dir: scope.dir, ...(from ? { from } : {}) };
+    const command: SimpleCommand = { words: [], redirects: [], ...placeOf(scope), ...(from ? { from } : {}) };
     for (;;) {
       this.blanks();
       const char = this.text[this.pos];
@@ -349,6 +391,7 @@ class ShellReader {
         const parens = command.words.length === 1 ? /^\(\s*\)/.exec(this.text.slice(this.pos, this.pos + 16)) : null;
         if (!parens) throw new Unreadable("( inside a command");
         this.pos += parens[0].length;
+        scope.functionBody = true;
         return undefined;
       }
       const redirect = REDIRECT.exec(this.text.slice(this.pos, this.pos + 24));
@@ -365,24 +408,43 @@ class ShellReader {
     const head = basename(command.words[at]!.text);
     const args = command.words.slice(at + 1) as ReadWord[];
     if ((head === "cd" || head === "pushd") && !from && runsBuiltin(command.words, at)) {
-      const before = scope.dir;
-      scope.dir = changedDir(before, args);
-      return { command, undo: () => { scope.dir = before; } };
+      const { dir, alts, unless } = scope;
+      scope.dir = changedDir(dir, args);
+      // A cd that may be skipped leaves both directories possible; one that always runs fails only on a missing target.
+      if (andOr || scope.guarded > 0) scope.alts = [...new Set([...alts, dir])].filter(alt => alt !== scope.dir);
+      else scope.unless = dir;
+      return { command, undo: () => { Object.assign(scope, { dir, alts, unless }); } };
     }
     // A `-c` string and an `eval` are code the shell runs: they are read as commands, in a scope of their own.
     const code = SHELLS.has(head) ? shellCall(args.map(arg => arg.text)).code : undefined;
     if (code !== undefined) {
       const word = args[code]!;
-      readInto(word.text, this.base !== undefined && word.codeAt !== undefined ? this.base + word.codeAt : undefined, this.depth + 1, this.out, scope.dir);
-    } else if (head === "eval" && args.length && runsBuiltin(command.words, at)) readInto(args.map(arg => arg.text).join(" "), undefined, this.depth + 1, this.out, scope.dir);
+      readInto(word.text, this.base !== undefined && word.codeAt !== undefined ? this.base + word.codeAt : undefined, this.depth + 1, this.out, command);
+    } else if (head === "eval" && args.length && runsBuiltin(command.words, at)) readInto(args.map(arg => arg.text).join(" "), undefined, this.depth + 1, this.out, command);
     return { command };
   }
 
   /** `( … )` from its opening parenthesis at `open` characters before the body: a scope whose `cd` does not leak. */
   private subshell(scope: Scope, open: number): void {
     this.pos += open;
-    this.list({ dir: scope.dir }, ")");
+    this.list(subScope(scope), ")");
     this.pos++;
+  }
+
+  /** `((` at `this.pos + skip`: bash reads it as nested subshells when it is not arithmetic, `((cd sub && sh a.sh))`. */
+  private doubleParen(scope: Scope, skip: number): void {
+    const { pos } = this;
+    const first = this.out.length;
+    const heredocs = this.heredocs.length;
+    try {
+      this.subshell(scope, skip + 1);
+    } catch (error) {
+      if (!(error instanceof Unreadable)) throw error;
+      this.pos = pos + skip;
+      this.out.length = first;
+      this.heredocs.length = heredocs;
+      this.arithmetic();
+    }
   }
 
   private arithmetic(): void {
@@ -410,6 +472,7 @@ class ShellReader {
   }
 
   private caseCommand(scope: Scope): void {
+    scope.guarded++;
     this.blanks();
     this.word(scope);
     this.gap(scope);
@@ -418,7 +481,7 @@ class ShellReader {
     for (;;) {
       this.gap(scope);
       if (this.pos >= this.text.length) throw new Unreadable("unclosed case");
-      if (this.peekPlain() === "esac") { this.pos += 4; return; }
+      if (this.peekPlain() === "esac") { this.pos += 4; scope.guarded--; return; }
       if (this.text[this.pos] === "(") this.pos++;
       for (;;) {
         this.blanks();
@@ -451,7 +514,7 @@ class ShellReader {
     const op = operator.replace(/^(?:\d+|\{[A-Za-z_]\w*\})/, "");
     this.blanks();
     const target = this.word(scope);
-    if (op === "<<" || op === "<<-") { this.heredocs.push(target.text); this.tabbed.push(op === "<<-"); }
+    if (op === "<<" || op === "<<-") this.heredocs.push({ delimiter: target.text, tabs: op === "<<-", literal: target.raw !== target.text });
     command.redirects.push({ op, target });
   }
 
@@ -550,7 +613,7 @@ class ShellReader {
     if (text[this.pos] === "`") { this.backticks(scope); return true; }
     const next = text[this.pos + 1];
     if (next === "(") {
-      if (text[this.pos + 2] === "(") { this.pos++; this.arithmetic(); }
+      if (text[this.pos + 2] === "(") this.doubleParen(scope, 1);
       else this.subshell(scope, 2);
       return true;
     }
@@ -572,7 +635,7 @@ class ShellReader {
       body += char;
     }
     if (end >= this.text.length) throw new Unreadable("unclosed `");
-    new ShellReader(body, exact && this.base !== undefined ? this.base + this.pos + 1 : undefined, this.depth + 1, this.out).read(scope.dir);
+    new ShellReader(body, exact && this.base !== undefined ? this.base + this.pos + 1 : undefined, this.depth + 1, this.out).read(placeOf(subScope(scope)));
     this.pos = end + 1;
   }
 
@@ -597,6 +660,11 @@ class ShellReader {
   }
 }
 
+function placeOf(scope: Scope): Place & { alts: string[] } {
+  if (scope.sure) return { dir: scope.dir, alts: [] };
+  return { dir: scope.dir, alts: [...scope.alts], ...(scope.unless !== undefined ? { unless: scope.unless } : {}) };
+}
+
 /** The directory after a `cd` or `pushd`; a target that is not literal (`$dir`, `-`) leaves it as it was. */
 function changedDir(dir: string, args: readonly ShellWord[]): string {
   const operand = args.find(arg => arg.text === "-" || !arg.text.startsWith("-"));
@@ -608,12 +676,12 @@ function changedDir(dir: string, args: readonly ShellWord[]): string {
 }
 
 /** The commands of a text cut at every separator: the reading of a text the reader cannot read whole. */
-function looseCommands(text: string, depth: number, dir: string): SimpleCommand[] {
+function looseCommands(text: string, depth: number, place: Place): SimpleCommand[] {
   const commands: SimpleCommand[] = [];
   for (const part of separatorParts(text)) {
     const out: SimpleCommand[] = [];
     try {
-      new ShellReader(part, undefined, depth, out).read(dir);
+      new ShellReader(part, undefined, depth, out).read(place);
       commands.push(...out);
       continue;
     } catch (error) {
@@ -621,7 +689,7 @@ function looseCommands(text: string, depth: number, dir: string): SimpleCommand[
     }
     const tokens = part.split(/\s+/).filter(Boolean);
     while (tokens.length && (KEYWORDS.has(tokens[0]!) || /^[({!]+$|\)$/.test(tokens[0]!))) tokens.shift();
-    const command: SimpleCommand = { words: [], redirects: [], dir };
+    const command: SimpleCommand = { words: [], redirects: [], dir: place.dir, alts: [...place.alts], ...(place.unless !== undefined ? { unless: place.unless } : {}) };
     for (let index = 0; index < tokens.length; index++) {
       const token = tokens[index]!.replace(/^[({]+/, "").replace(/[)}]+$/, "");
       const word = (raw: string): ShellWord => {
@@ -637,13 +705,13 @@ function looseCommands(text: string, depth: number, dir: string): SimpleCommand[
   return commands;
 }
 
-function readInto(text: string, base: number | undefined, depth: number, out: SimpleCommand[], dir: string): void {
+function readInto(text: string, base: number | undefined, depth: number, out: SimpleCommand[], place: Place): void {
   const first = out.length;
-  try { new ShellReader(text, base, depth, out).read(dir); }
+  try { new ShellReader(text, base, depth, out).read(place); }
   catch (error) {
     if (!(error instanceof Unreadable)) throw error;
     out.length = first;
-    out.push(...looseCommands(text, depth, dir));
+    out.push(...looseCommands(text, depth, place));
   }
 }
 
@@ -654,7 +722,7 @@ function readInto(text: string, base: number | undefined, depth: number, out: Si
  */
 export function shellCommands(command: string): SimpleCommand[] {
   const out: SimpleCommand[] = [];
-  readInto(command, 0, 0, out, ".");
+  readInto(command, 0, 0, out, { dir: ".", alts: [] });
   return out;
 }
 
@@ -884,6 +952,14 @@ function makeBodies(args: readonly string[], reader: Reader, dir: string): Scrip
   return [{ source: call.target === undefined ? "make" : `make ${call.target}`, kind: "shell", body: recipe.join("\n") }];
 }
 
+/** Whether `dir` is a directory inside the project or a temp root; a path outside them is never asked about. */
+function directoryInRoots(dir: string, reader: Reader): boolean {
+  if (reader.cwdText === undefined) return false;
+  const absolute = resolve(reader.cwdText, dir);
+  if (!insideAny(absolute, [reader.cwdText, ...tempTextRoots()])) return false;
+  try { return statSync(absolute).isDirectory(); } catch { return false; }
+}
+
 /** How a file is named in a hit label: as written, under the directory a `cd` moved to. */
 function labelOf(file: string, dir: string): string {
   return dir === "." || isAbsolute(file) || file.startsWith("~") ? file : join(dir, file);
@@ -914,17 +990,21 @@ export function scriptSources(command: string, cwd?: string): ScriptSource[] {
     for (const fedBy of commands) {
       const at = commandIndex(fedBy.words);
       if (at === undefined || basename(fedBy.words[at]!.text) !== "cat") continue;
-      for (const word of fedBy.words.slice(at + 1)) if (!word.text.startsWith("-")) file(word, "shell", fedBy.dir);
+      for (const dir of dirsOf(fedBy)) for (const word of fedBy.words.slice(at + 1)) if (!word.text.startsWith("-")) file(word, "shell", dir);
     }
   };
   const script = (word: ShellWord | undefined, dir: string): void => {
     if (word?.feeds.length) fed(word.feeds);
     else file(word, "shell", dir);
   };
-  for (const call of shellCommands(command)) {
+  // The directories a command may run in; `unless` is read when `dir` is missing or outside the roots, where it cannot be checked.
+  const dirsOf = (call: SimpleCommand): string[] => {
+    const missing = call.unless !== undefined && !directoryInRoots(call.dir, reader);
+    return [call.dir, ...call.alts, ...(missing ? [call.unless!] : [])];
+  };
+  for (const call of shellCommands(command)) for (const dir of dirsOf(call)) {
     const at = commandIndex(call.words);
     if (at === undefined) continue;
-    const { dir } = call;
     const headWord = call.words[at]!;
     const head = basename(headWord.text);
     const words = call.words.slice(at + 1);

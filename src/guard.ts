@@ -2236,7 +2236,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
     merge(commandPatternHits(code, cwd, options, exempt));
     // The bodies of scripts the command runs are read one level deep: a script the body calls is not read again.
     if (view?.shell) {
-      const sources = options?.scripts ?? scriptSources(stripDataText(code).text, cwd);
+      const sources = options?.scripts ?? scriptSources(code, cwd);
       for (const source of sources) {
         if (source.kind !== "shell") continue;
         const body = stripShellComments(source.body);
@@ -3028,8 +3028,10 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   const view = commandOf(action.tool, action.input);
   // Read the script bodies once: the floor labels their hits and the ask gate reads their shapes from the same list.
   // The text the shell runs, as the floor reads it: comments removed and backslash-newlines joined, then data blanked.
-  const shellText = view?.shell ? stripDataText(stripShellComments(view.command)).text : undefined;
-  const scriptBodies = shellText === undefined ? [] : scriptSources(shellText, action.cwd);
+  // The script search reads quotes itself, so it gets the text before blanking: `cat <("./a.sh")` runs a.sh.
+  const code = view?.shell ? stripShellComments(view.command) : undefined;
+  const shellText = code === undefined ? undefined : stripDataText(code).text;
+  const scriptBodies = code === undefined ? [] : scriptSources(code, action.cwd);
   const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scripts: scriptBodies, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
   // A script body the command runs that hit the floor: its lines ride the request, and the call is worth a judge even
   // when the gate would have left the outer command offline.

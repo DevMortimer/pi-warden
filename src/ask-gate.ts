@@ -257,7 +257,7 @@ export function actionAskGate(tool: string, input: Record<string, unknown>, text
 export function gateCommand(scanned: string, raw: string = scanned, cwd?: string, scripts?: readonly ScriptSource[]): AskDecision {
   const direct = gateText(scanned, raw);
   if (direct.ask) return direct;
-  const sources = scripts ?? (cwd === undefined ? [] : scriptSources(scanned, cwd));
+  const sources = scripts ?? (cwd === undefined ? [] : scriptSources(raw, cwd));
   for (const source of sources) {
     const decision = gateText(source.body, source.body);
     if (decision.ask) return { ask: true, why: `runs a script with ${decision.why}` };
