@@ -135,7 +135,8 @@ test("bash prints the same output for each command and for the text Jev reads", 
 /** Where an input runs its effect: the floor sees a delete there, bash sees a marker command. */
 type Mode = "floor" | "bash";
 const act = (mode: Mode, target: string) => mode === "floor" ? `rm -rf ${target}` : 'touch "$MARK"';
-interface FloorCase { command: (mode: Mode) => string; files?: (mode: Mode) => Record<string, string>; executable?: string[] }
+/** `home` runs the input with HOME set to its own folder, for the floor and for bash. */
+interface FloorCase { command: (mode: Mode) => string; files?: (mode: Mode) => Record<string, string>; executable?: string[]; home?: true }
 
 const cleanScript = (mode: Mode) => ({ "scripts/clean.sh": `#!/bin/sh\n${act(mode, '"$1"')}\n` });
 const launchctlRule = [{ id: "launchctl-stop", pattern: "\\blaunchctl\\s+(bootout|unload|remove)\\b", severity: "confirm" as const }];
@@ -174,6 +175,9 @@ const inert: Record<string, FloorCase> = {
   "cd, then cat of a script": runs("(cd sub && cat a.sh)", inSub),
   "a test of a script path": runs("if [ -f a.sh ]; then echo found; fi"),
   "cd, then a harmless script with a deleting namesake in the start directory": runs("(cd sub && sh a.sh x)", mode => ({ ...argScript(mode), "sub/a.sh": "#!/bin/sh\necho ok\n" })),
+  // HOME is a temp folder here, where a plain delete of it is let through; the parent step keeps the body held.
+  "source of a quoted ~ path": { command: () => 'source "~/h.sh"', files: mode => ({ "h.sh": `#!/bin/sh\n${act(mode, '"$HOME/a/../a"')}\n` }), home: true },
+  "sh of a quoted ~ path": { command: () => 'sh "~/h.sh"', files: mode => ({ "h.sh": `#!/bin/sh\n${act(mode, '"$HOME/a/../a"')}\n` }), home: true },
   "issue 190": {
     command: () => 'rtk grep -n "scan_alive\\|COPILOT-DOWN\\|down=" scripts/nest_sentry.py scripts/overseer_wake.py | head -20; echo ===TESTS===; rtk grep -rln "scan_alive\\|COPILOT-DOWN" tests/ | head',
     files: mode => ({
@@ -240,6 +244,17 @@ const live: Record<string, FloorCase> = {
   '"rm"': deleteWord('"rm"', '"touch"'),
   "r''m": deleteWord("r''m", "t''ouch"),
   "/bin/rm": deleteWord("/bin/rm", "/usr/bin/touch"),
+  // A file fed to a shell as its code: bash 3.2, bash 5, and dash all run these (measured 2026-10-18).
+  ...Object.fromEntries(["cat < a.sh | sh", "sh /dev/stdin < a.sh", "bash /dev/stdin < a.sh", ". /dev/stdin < a.sh"]
+    .map((command): [string, FloorCase] => [command, runs(command, homeScript)])),
+  ...Object.fromEntries(['sh -c "$(cat a.sh)"', 'eval "$(cat a.sh)"', 'sh -c "`cat a.sh`"', 'eval "`cat a.sh`"', "env -S 'sh a.sh x'", "env -S'sh a.sh x'",
+    "find . -name a.sh -exec ./a.sh x \\;", "find . -name a.sh -exec ./a.sh x ';'", "find . -name a.sh -exec ./a.sh {} +", "find . -name a.sh -execdir ./a.sh x \\;"]
+    .map((command): [string, FloorCase] => [command, runs(command)])),
+  "sh -c '\\rm'": { command: mode => mode === "floor" ? "sh -c '\\rm -rf ~'" : `sh -c '\\touch "$MARK"'` },
+  'sh -c "\\"rm\\""': { command: mode => mode === "floor" ? 'sh -c "\\"rm\\" -rf ~"' : 'sh -c "\\"touch\\" \\"\\$MARK\\""' },
+  'sh -c "\\\\rm"': { command: mode => mode === "floor" ? 'sh -c "\\\\rm -rf ~"' : 'sh -c "\\\\touch \\"\\$MARK\\""' },
+  "eval '\\rm'": { command: mode => mode === "floor" ? "eval '\\rm -rf ~'" : `eval '\\touch "$MARK"'` },
+  "bash -c 'sh -c \\rm'": { command: mode => mode === "floor" ? "bash -c 'sh -c '\\''\\rm -rf ~'\\'''" : `bash -c 'sh -c '\\''\\touch "$MARK"'\\'''` },
   ...Object.fromEntries(([
     ["#!/bin/sh", "cat <<< b >/dev/null"],
     ["#!/bin/bash", "cat <<< b >/dev/null"],
@@ -267,12 +282,16 @@ test("the floor holds an input exactly when bash runs the text where its delete 
       }
       for (const path of entry.executable ?? []) await chmod(join(dir, path), 0o755);
       if (mode === "floor") {
-        const hits = matchPatterns("bash", { command: entry.command(mode) }, dir, { commandRules: launchctlRule });
-        return hits.some(hit => hit.severity === "destructive" || hit.severity === "deny");
+        const saved = process.env.HOME;
+        if (entry.home) process.env.HOME = dir;
+        try {
+          const hits = matchPatterns("bash", { command: entry.command(mode) }, dir, { commandRules: launchctlRule });
+          return hits.some(hit => hit.severity === "destructive" || hit.severity === "deny");
+        } finally { process.env.HOME = saved; }
       }
       const mark = join(dir, "marker");
       // `rtk` stands in for the reporter's grep wrapper of issue 190.
-      try { execFileSync("bash", ["-c", `rtk() { "$@"; }\n${entry.command(mode)}`], { cwd: dir, env: { ...process.env, MARK: mark, TMPDIR: dir }, stdio: "pipe" }); }
+      try { execFileSync("bash", ["-c", `rtk() { "$@"; }\n${entry.command(mode)}`], { cwd: dir, env: { ...process.env, MARK: mark, TMPDIR: dir, ...(entry.home ? { HOME: dir } : {}) }, stdio: "pipe" }); }
       catch (error) { assert.ok((error as { status?: number }).status !== undefined, `${name}: bash ran`); }
       return existsSync(mark);
     } finally { await rm(dir, { recursive: true, force: true }); }
