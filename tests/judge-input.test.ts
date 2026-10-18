@@ -139,6 +139,14 @@ interface FloorCase { command: (mode: Mode) => string; files?: (mode: Mode) => R
 
 const cleanScript = (mode: Mode) => ({ "scripts/clean.sh": `#!/bin/sh\n${act(mode, '"$1"')}\n` });
 const launchctlRule = [{ id: "launchctl-stop", pattern: "\\blaunchctl\\s+(bootout|unload|remove)\\b", severity: "confirm" as const }];
+/** `a.sh` deletes its first argument; `home` deletes `~`, for a script fed on stdin where no argument reaches it. */
+const argScript = (mode: Mode, path = "a.sh") => ({ [path]: `#!/bin/sh\n${act(mode, '"$1"')}\n` });
+const homeScript = (mode: Mode) => ({ "a.sh": `#!/bin/sh\n${act(mode, "~")}\n` });
+const inSub = (mode: Mode) => argScript(mode, "sub/a.sh");
+const runs = (command: string, files: (mode: Mode) => Record<string, string> = argScript): FloorCase => ({ command: () => command, files, executable: Object.keys(files("bash")) });
+/** A delete whose command word bash forms from quotes, an escape, a path, or an empty expansion. */
+const deleteWord = (floor: string, bash: string): FloorCase => ({ command: mode => mode === "floor" ? `${floor} -rf ~` : `${bash} "$MARK"` });
+const cleanPackage = (mode: Mode, path = "package.json") => ({ [path]: JSON.stringify({ scripts: { clean: act(mode, '"$1"') } }) });
 
 /** The floor stops holding these: bash never runs the text where the delete is. */
 const inert: Record<string, FloorCase> = {
@@ -160,6 +168,12 @@ const inert: Record<string, FloorCase> = {
   "a heredoc delimiter split by a backslash-newline": { command: mode => `cat <<E"O"\\\nF >/dev/null\n${act(mode, "~")}\nEOF` },
   "a <<- operator split by a backslash-newline": { command: mode => `cat <<\\\n-X >/dev/null\n\t${act(mode, "~")}\n\tX` },
   "a backslash-newline that runs a heredoc body past its delimiter": { command: mode => `cat <<EOF >/dev/null\nx \\\nEOF\n${act(mode, "~")}\nEOF` },
+  "echo of a subshell that runs a script": runs('echo "(sh a.sh x)"'),
+  "bash -c that echoes a script run": runs("bash -c 'echo sh a.sh x'"),
+  "cat of a script into grep": runs("cat a.sh | grep x"),
+  "cd, then cat of a script": runs("(cd sub && cat a.sh)", inSub),
+  "a test of a script path": runs("if [ -f a.sh ]; then echo found; fi"),
+  "cd, then a harmless script with a deleting namesake in the start directory": runs("(cd sub && sh a.sh x)", mode => ({ ...argScript(mode), "sub/a.sh": "#!/bin/sh\necho ok\n" })),
   "issue 190": {
     command: () => 'rtk grep -n "scan_alive\\|COPILOT-DOWN\\|down=" scripts/nest_sentry.py scripts/overseer_wake.py | head -20; echo ===TESTS===; rtk grep -rln "scan_alive\\|COPILOT-DOWN" tests/ | head',
     files: mode => ({
@@ -201,6 +215,31 @@ const live: Record<string, FloorCase> = {
   "a here-string operator split by a backslash-newline": { command: mode => `cat <\\\n<< b >/dev/null\n${act(mode, "~")}` },
   "a heredoc fed to sh after a split operator": { command: mode => `cat <\\\n<EOF | sh\n${act(mode, "~")}\nEOF` },
   "a delimiter split by a backslash-newline": { command: mode => `cat <<EOF >/dev/null\nEO\\\nF\n${act(mode, "~")}` },
+  ...Object.fromEntries([
+    "(sh a.sh x)", "( sh a.sh x )", "{ sh a.sh x; }", "if true; then sh a.sh x; fi", "if sh a.sh x; then :; fi",
+    "if false; then :; else sh a.sh x; fi", "if false; then :; elif sh a.sh x; then :; fi", "for i in 1; do sh a.sh x; done",
+    "while true; do sh a.sh x; break; done", "until false; do sh a.sh x; break; done", "case x in x) sh a.sh x;; esac",
+    "case x in x)sh a.sh x;esac", "f() { sh a.sh x; }; f", "function f { sh a.sh x; }; f", "! sh a.sh x", "true && (sh a.sh x)",
+    "(./a.sh x)", "{ ./a.sh x; }", "(set -- x; . ./a.sh)",
+    "out=$(sh a.sh x)", 'echo "$(sh a.sh x)"', "out=`sh a.sh x`",
+    "bash -c 'sh a.sh x'", 'bash -c "sh a.sh x"', "sh -c './a.sh x'",
+    'sh "a.sh" x', "sh 'a.sh' x", 'bash "./a.sh" x', '"./a.sh" x', 'set -- x; source "a.sh"', 'set -- x; . "./a.sh"',
+    "diff <(sh a.sh x) /dev/null",
+    "timeout 5 sh a.sh x", "nice -n 5 sh a.sh x", 'env -i PATH=/usr/bin:/bin MARK="$MARK" sh a.sh x', "echo x | xargs sh a.sh",
+  ].map((command): [string, FloorCase] => [command, runs(command)])),
+  ...Object.fromEntries(["(cd sub && sh a.sh x)", "cd sub && sh a.sh x", "cd sub; ./a.sh x", "bash -lc 'cd sub && sh a.sh x'"]
+    .map((command): [string, FloorCase] => [command, runs(command, inSub)])),
+  ...Object.fromEntries(["sh < a.sh", "bash -s x < a.sh", "sh -s x < a.sh", "cat a.sh | sh", "cat a.sh | bash -s x", "< a.sh bash", "bash <(cat a.sh)"]
+    .map((command): [string, FloorCase] => [command, runs(command, homeScript)])),
+  "a delete in a substitution inside a quoted substitution": { command: mode => `echo "$(echo "$(${act(mode, "~")})")"` },
+  "a delete echoed into sh in a process substitution": { command: mode => `cat <(echo '${act(mode, "~")}' | sh)` },
+  "(npm run NAME)": { command: () => "(npm run --silent clean)", files: cleanPackage },
+  "(cd, then npm run NAME)": { command: () => "(cd sub && npm run --silent clean)", files: mode => cleanPackage(mode, "sub/package.json") },
+  "${x}rm": deleteWord("${x}rm", "${x}touch"),
+  "\\rm": deleteWord("\\rm", "\\touch"),
+  '"rm"': deleteWord('"rm"', '"touch"'),
+  "r''m": deleteWord("r''m", "t''ouch"),
+  "/bin/rm": deleteWord("/bin/rm", "/usr/bin/touch"),
   ...Object.fromEntries(([
     ["#!/bin/sh", "cat <<< b >/dev/null"],
     ["#!/bin/bash", "cat <<< b >/dev/null"],

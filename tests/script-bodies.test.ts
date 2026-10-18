@@ -335,3 +335,130 @@ test("the drive's comment, echo message, and sed shapes still run", async () => 
     ]) assert.deepEqual(matchPatterns("bash", { command }, dir), [], command);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+/** A project with `a.sh` and `sub/a.sh`, each of which deletes its first argument, and a `package.json` script in `sub/`. */
+const shapesProject = async (): Promise<string> => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-shapes-"));
+  await mkdir(join(dir, "sub"));
+  for (const path of ["a.sh", "sub/a.sh"]) {
+    await writeFile(join(dir, path), '#!/bin/sh\nrm -rf "$1"\n');
+    await chmod(join(dir, path), 0o755);
+  }
+  await writeFile(join(dir, "sub", "package.json"), JSON.stringify({ scripts: { clean: 'rm -rf "$1"' } }));
+  await writeFile(join(dir, "push.sh"), "git push origin main\n");
+  return dir;
+};
+const labels = (command: string, dir: string) => scriptSources(stripDataText(command).text, dir).map(source => source.source);
+
+test("scriptSources reads a script run inside a compound command, a substitution, -c, stdin, or a wrapper, and labels it", async () => {
+  const dir = await shapesProject();
+  try {
+    for (const [command, label] of [
+      ["(sh a.sh x)", "a.sh"],
+      ["{ sh a.sh x; }", "a.sh"],
+      ["if sh a.sh x; then :; fi", "a.sh"],
+      ["if false; then :; else sh a.sh x; fi", "a.sh"],
+      ["for i in 1; do sh a.sh x; done", "a.sh"],
+      ["case x in x)sh a.sh x;esac", "a.sh"],
+      ["f() { sh a.sh x; }; f", "a.sh"],
+      ["function f { sh a.sh x; }; f", "a.sh"],
+      ["! sh a.sh x", "a.sh"],
+      ["{ ./a.sh x; }", "./a.sh"],
+      ["(set -- x; . ./a.sh)", "./a.sh"],
+      ["out=$(sh a.sh x)", "a.sh"],
+      ["out=`sh a.sh x`", "a.sh"],
+      ["diff <(sh a.sh x) /dev/null", "a.sh"],
+      ["(cd sub && sh a.sh x)", "sub/a.sh"],
+      ["cd sub; ./a.sh x", "sub/a.sh"],
+      ["bash -lc 'cd sub && sh a.sh x'", "sub/a.sh"],
+      ["sh -c './a.sh x'", "./a.sh"],
+      ['eval "sh a.sh x"', "a.sh"],
+      ['sh "a.sh" x', "a.sh"],
+      ['"./a.sh" x', "./a.sh"],
+      ['set -- x; source "a.sh"', "a.sh"],
+      ["sh < a.sh", "a.sh"],
+      ["< a.sh bash", "a.sh"],
+      ["bash -s x < a.sh", "a.sh"],
+      ["cat a.sh | sh", "a.sh"],
+      ["cat a.sh | bash -s x", "a.sh"],
+      ["bash <(cat a.sh)", "a.sh"],
+      ["source <(cat a.sh)", "a.sh"],
+      ["timeout 5 sh a.sh x", "a.sh"],
+      ["nice -n 5 sh a.sh x", "a.sh"],
+      ["env -i PATH=/usr/bin:/bin sh a.sh x", "a.sh"],
+      ["echo x | xargs sh a.sh", "a.sh"],
+      ["(cd sub && npm run clean)", "npm run clean"],
+    ] as const) assert.deepEqual(labels(command, dir), [label], command);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("scriptSources reads no script where bash runs none, and follows a cd only in its own subshell", async () => {
+  const dir = await shapesProject();
+  try {
+    for (const command of ['echo "(sh a.sh x)"', "bash -c 'echo sh a.sh x'", "cat a.sh | grep x", "(cd sub && cat a.sh)", "if [ -f a.sh ]; then echo found; fi"]) {
+      assert.deepEqual(labels(command, dir), [], command);
+    }
+    assert.deepEqual(labels("sh a.sh < sub/a.sh", dir), ["a.sh"], "a named file runs; the file on stdin is its input");
+    assert.deepEqual(labels("(cd sub) && sh a.sh x", dir), ["a.sh"], "a cd in a subshell does not move the command after it");
+    assert.deepEqual(labels("cd sub | true; sh a.sh x", dir), ["a.sh"], "a cd in a pipeline does not move the command after it");
+    assert.deepEqual(labels("sh a.sh x; cd sub; sh a.sh x", dir), ["a.sh", "sub/a.sh"], "each directory's script is read");
+    // A wrapper execs a program, so a builtin after it changes nothing in this shell.
+    assert.deepEqual(labels("timeout 5 cd sub; sh a.sh x", dir), ["a.sh"], "timeout 5 cd runs no builtin cd");
+    assert.deepEqual(labels("nice -n 5 . ./a.sh", dir), [], "nice . runs no builtin source");
+    assert.deepEqual(labels("builtin cd sub && sh a.sh x", dir), ["sub/a.sh"], "builtin cd is the builtin");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a branch or a function the floor does not evaluate is still read: the floor fails closed", async () => {
+  const dir = await shapesProject();
+  try {
+    for (const command of ["if false; then sh a.sh x; fi", "f() { sh a.sh x; }", "false && sh a.sh x"]) {
+      assert.ok(bodyIds(command, dir).includes("rm-recursive-dangerous-target (via a.sh)"), `${command}: ${bodyIds(command, dir).join(", ")}`);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("source <(cat FILE) is held: bash 4 and later run it, though bash 3.2 runs nothing from it", async () => {
+  const dir = await shapesProject();
+  try {
+    assert.deepEqual(bodyIds("source <(cat a.sh)", dir), ["rm-recursive-dangerous-target (via a.sh)"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a delete is read by the command word bash runs: quoted, escaped, a path, an empty expansion, or after a case pattern", async () => {
+  const del = ["r", "m"].join("");
+  for (const command of [`\\${del} -rf ~`, `"${del}" -rf ~`, `r''m -rf ~`, `/bin/${del} -rf ~`, `\${x}${del} -rf ~`, `sudo /bin/${del} -rf ~`,
+    `case x in x)${del} -rf ~;; esac`, `bash -c '/bin/${del} -rf ~'`, `(cd /tmp && "${del}" -rf ~)`, `out=$(\\${del} -rf ~)`]) {
+    assert.ok(matchPatterns("bash", { command }, cwd).some(hit => hit.id === "rm-recursive-dangerous-target"), command);
+  }
+  for (const command of [`echo "/bin/${del} -rf ~"`, `echo /bin/${del} -rf ~`, `grep '"${del}" -rf' notes.txt`]) {
+    assert.ok(!matchPatterns("bash", { command }, cwd).some(hit => hit.id === "rm-recursive-dangerous-target"), command);
+  }
+  // A user rule reads the command as typed: the plain `rm` is only for the delete classifier.
+  const commandRules = [{ id: "bin-rm", pattern: `/bin/${del}\\b`, severity: "confirm" as const }];
+  assert.ok(matchPatterns("bash", { command: `/bin/${del} -rf build` }, cwd, { commandRules }).some(hit => hit.id === "bin-rm"));
+});
+
+test("script_lines carries a body delete written as /bin/rm", async () => {
+  const dir = await shapesProject();
+  try {
+    await writeFile(join(dir, "b.sh"), `#!/bin/sh\n/bin/${["r", "m"].join("")} -rf ~\n`);
+    const judge = judgeOf();
+    await evaluateAction({ tool: "bash", input: { command: "(sh b.sh)" }, cwd: dir, task: "run it" }, { config: { ...defaultConfig().action, traceSample: 0 }, judge });
+    assert.equal(judge.calls.length, 1);
+    assert.match(String(judge.calls[0]!.state.script_lines), /\/bin\/rm -rf ~/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the ask gate asks for a push in a script run inside a subshell, and not for a cat of it", async () => {
+  const dir = await shapesProject();
+  try {
+    for (const [command, requests] of [["(sh push.sh)", 1], ["(cat push.sh)", 0]] as const) {
+      const decision = actionAskGate("bash", { command }, stripDataText(command).text, dir);
+      if (requests) assert.match(decision.why, /^runs a script with /, command);
+      const judge = judgeOf();
+      await evaluateAction({ tool: "bash", input: { command }, cwd: dir, task: "run it" }, { config: { ...defaultConfig().action, traceSample: 0 }, judge });
+      assert.equal(judge.calls.length, requests, command);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
