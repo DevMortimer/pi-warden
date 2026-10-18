@@ -321,6 +321,11 @@ class ShellReader {
     let piped = false;
     let andOr = false;
     let undo: (() => void) | undefined;
+    // The directories where each and-or list started, by compound depth: `&` runs the list before it in a subshell.
+    const starts: Array<{ dir: string; alts: string[]; unless: string | undefined }> = [];
+    const depth = () => scope.braces.length + scope.guarded;
+    const mark = () => { const at = depth(); starts.length = at; starts[at] = { dir: scope.dir, alts: scope.alts, unless: scope.unless }; };
+    mark();
     for (;;) {
       this.blanks();
       const char = this.text[this.pos];
@@ -330,7 +335,7 @@ class ShellReader {
       }
       const two = this.text.slice(this.pos, this.pos + 2);
       if (char === "#") { this.comment(); continue; }
-      if (char === "\n") { this.newline(scope); piped = false; andOr = false; undo = undefined; scope.sure = false; continue; }
+      if (char === "\n") { this.newline(scope); piped = false; andOr = false; undo = undefined; scope.sure = false; mark(); continue; }
       if (two === ";;" || two === ";&") {
         if (stop !== "arm") throw new Unreadable("case arm outside case");
         this.pos += this.text.startsWith(";;&", this.pos) ? 3 : 2;
@@ -343,11 +348,16 @@ class ShellReader {
         this.pos += char === ";" ? 1 : 2;
         piped = false;
         undo = undefined;
+        if (char === ";") mark();
         continue;
       }
       if (char === "|" || (char === "&" && this.text[this.pos + 1] !== ">")) {
         // A cd in a pipeline or in the background runs in a subshell of its own.
-        undo?.();
+        let start: (typeof starts)[number] | undefined;
+        for (let at = Math.min(depth(), starts.length - 1); char === "&" && at >= 0 && !start; at--) start = starts[at];
+        if (start) Object.assign(scope, start);
+        else undo?.();
+        if (start) mark();
         undo = undefined;
         scope.sure = false;
         andOr = false;
