@@ -406,6 +406,13 @@ test("scriptSources reads no script where bash runs none, and follows a cd only 
     assert.deepEqual(labels("sh a.sh < sub/a.sh", dir), ["a.sh"], "a named file runs; the file on stdin is its input");
     assert.deepEqual(labels("(cd sub) && sh a.sh x", dir), ["a.sh"], "a cd in a subshell does not move the command after it");
     assert.deepEqual(labels("cd sub | true; sh a.sh x", dir), ["a.sh"], "a cd in a pipeline does not move the command after it");
+    // `&` puts the whole and-or list, or the compound command before it, in a subshell of its own.
+    for (const command of ["cd sub && true & sh a.sh x", "command cd sub || true & sh a.sh x", "{ cd sub; } & sh a.sh x", "if true; then cd sub; fi & sh a.sh x"]) {
+      assert.deepEqual(labels(command, dir), ["a.sh"], command);
+    }
+    for (const command of ["cd sub; cd .. && true & ./a.sh x", "{ cd sub; cd .. && true & ./a.sh x; }"]) {
+      assert.deepEqual(labels(command, dir), ["sub/a.sh"], command);
+    }
     assert.deepEqual(labels("sh a.sh x; cd sub && sh a.sh x", dir), ["a.sh", "sub/a.sh"], "each directory's script is read");
     // A cd that may be skipped leaves both directories possible; one that always runs fails only on a missing target.
     for (const command of ["false && cd sub; ./a.sh x", "if true; then cd sub; fi; ./a.sh x", "f() { cd sub; }; ./a.sh x"]) {

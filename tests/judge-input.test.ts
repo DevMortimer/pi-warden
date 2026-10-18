@@ -237,6 +237,8 @@ const live: Record<string, FloorCase> = {
     .map((command): [string, FloorCase] => [command, runs(command, homeScript)])),
   "a delete in a substitution inside a quoted substitution": { command: mode => `echo "$(echo "$(${act(mode, "~")})")"` },
   "a delete echoed into sh in a process substitution": { command: mode => `cat <(echo '${act(mode, "~")}' | sh)` },
+  // `&` runs the cd's whole list in a subshell: the script after it runs in the start directory.
+  "cd, then &, with a harmless namesake in sub": runs("cd sub && true & sh a.sh x; wait", mode => ({ ...argScript(mode), "sub/a.sh": "#!/bin/sh\necho ok\n" })),
   "(npm run NAME)": { command: () => "(npm run --silent clean)", files: cleanPackage },
   "(cd, then npm run NAME)": { command: () => "(cd sub && npm run --silent clean)", files: mode => cleanPackage(mode, "sub/package.json") },
   "${x}rm": deleteWord("${x}rm", "${x}touch"),
