@@ -537,6 +537,23 @@ test("a delete nested 10,000 deep in any construct is held, and nothing the floo
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a stray fi or done throws nowhere, holds nothing alone, and keeps a delete or a push after it in reach", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-stray-"));
+  try {
+    // Bash rejects these as syntax errors; inside a function, a case arm, or braces the closer has nothing of its own to close.
+    const strays = ["fi; ", "fi\n", "done; ", "done\n", "f() { done; }; ", "case x in x) fi;; esac; ", "{ fi; }; ", "if true; then done; fi; "];
+    for (const stray of strays) {
+      const command = `${stray}ls`;
+      assert.equal(destructive(matchPatterns("bash", { command }, dir)), false, command);
+      assert.doesNotThrow(() => scriptSources(command, dir), command);
+      assert.ok(destructive(matchPatterns("bash", { command: `${stray}${DEL}` }, dir)), `${stray}${DEL}`);
+      assert.equal(actionAskGate("bash", { command: `${stray}git push` }, stripDataText(`${stray}git push`).text, dir).ask, true, `${stray}git push`);
+    }
+    await writeFile(join(dir, "stray.sh"), `fi\n${DEL}\n`);
+    assert.ok(destructive(matchPatterns("bash", { command: "sh stray.sh" }, dir)), "a body whose first line is fi");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 /** The paths a run asks the file system about. */
 const fsPaths = (run: () => void): string[] => {
   const calls: string[] = [];
