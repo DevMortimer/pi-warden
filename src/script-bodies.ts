@@ -227,9 +227,10 @@ const MAX_COMMANDS = 2000;
  * `cd` left; neither applies in `sure`, the `&&` chain after a `cd`. `guarded` counts the branches, loops, and function
  * bodies around the cursor, and `braces` which open `{` is a function body.
  */
-interface Scope { dir: string; alts: string[]; unless?: string; sure: boolean; guarded: number; braces: boolean[]; functionBody: boolean }
+/** `blocks` holds the closer each open `if` or loop waits for: a closer that does not match is a syntax error in bash. */
+interface Scope { dir: string; alts: string[]; unless?: string; sure: boolean; guarded: number; braces: boolean[]; blocks: string[]; functionBody: boolean }
 interface Place { dir: string; alts: readonly string[]; unless?: string }
-const subScope = (scope: Scope): Scope => ({ ...scope, alts: [...scope.alts], braces: [...scope.braces] });
+const subScope = (scope: Scope): Scope => ({ ...scope, alts: [...scope.alts], braces: [...scope.braces], blocks: [...scope.blocks] });
 const OPENERS = new Set(["if", "while", "until"]);
 const CLOSERS = new Set(["fi", "done"]);
 
@@ -259,7 +260,7 @@ class ShellReader {
   }
 
   read(place: Place): void {
-    this.list({ dir: place.dir, alts: [...place.alts], ...(place.unless !== undefined ? { unless: place.unless } : {}), sure: false, guarded: 0, braces: [], functionBody: false }, "end");
+    this.list({ dir: place.dir, alts: [...place.alts], ...(place.unless !== undefined ? { unless: place.unless } : {}), sure: false, guarded: 0, braces: [], blocks: [], functionBody: false }, "end");
   }
 
   private blanks(): void {
@@ -395,8 +396,12 @@ class ShellReader {
       const plain = this.peekPlain();
       if (plain === undefined) break;
       if (KEYWORDS.has(plain)) {
-        if (OPENERS.has(plain)) scope.guarded++;
-        else if (CLOSERS.has(plain)) scope.guarded--;
+        if (OPENERS.has(plain)) { scope.guarded++; scope.blocks.push(plain === "if" ? "fi" : "done"); }
+        else if (CLOSERS.has(plain)) {
+          if (scope.blocks[scope.blocks.length - 1] !== plain) throw new Unreadable(`stray ${plain}`);
+          scope.blocks.pop();
+          scope.guarded--;
+        }
         else if (plain === "{") { scope.braces.push(scope.functionBody); if (scope.functionBody) scope.guarded++; scope.functionBody = false; }
         else if (plain === "}" && scope.braces.pop()) scope.guarded--;
         this.pos += plain.length;
@@ -408,7 +413,7 @@ class ShellReader {
         if (this.peekPlain() === "-p") this.pos += 2;
         continue;
       }
-      if (plain === "for" || plain === "select") { this.pos += plain.length; scope.guarded++; this.loopHeader(scope); continue; }
+      if (plain === "for" || plain === "select") { this.pos += plain.length; scope.guarded++; scope.blocks.push("done"); this.loopHeader(scope); continue; }
       if (plain === "case") { this.pos += plain.length; this.caseCommand(scope); return undefined; }
       if (plain === "[[") { this.pos += plain.length; this.condition(scope); return undefined; }
       if (plain === "function") {
