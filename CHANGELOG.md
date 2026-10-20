@@ -8,6 +8,24 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 1.11.3
+
+### Fixed
+
+- The floor finds a script run where bash runs it. It read a command by cutting it at every separator and taking the first word of each part, so it missed a script run inside `( )`, `{ }`, `$( )`, backticks, `<( )`, `if`/`elif`/`else`, a loop, a `case` arm, a function body, or an array assignment (`arr=($(sh a.sh))`); after `!` or a wrapper with options (`timeout 5`, `nice -n 5`, `env -i`, `xargs`); with a quoted path (`sh "a.sh"`); and inside a `-c` string, an `eval`, an `env -S` string, or the command of `find -exec`, `-execdir`, `-ok`, or `-okdir`. One reader of the simple commands that bash runs now feeds the floor, the `script_lines` of the judge request, and the ask gate, so the ask gate also asks about a push in a script run in these shapes. A quoted `~` stays literal, as in bash. A command the reader cannot read whole (an unclosed quote, a stray `fi`), or one nested more than 64 levels deep or with more than 50,000 constructs, is cut at every separator as before, so it reads more, never less. The floor does not evaluate conditions: a script in a branch that bash skips, or in a function that nobody calls, is read too.
+- A script fed to a shell on its input is read: `sh < a.sh`, `cat a.sh | sh`, `cat < a.sh | sh`, `sh /dev/stdin < a.sh`, `bash -s x < a.sh`, and `bash <(cat a.sh)`. So is a file's text run as code: `sh -c "$(cat a.sh)"`, `eval "$(< a.sh)"`, and `sh <<< "$(cat a.sh)"`. `/dev/stdin` itself is never opened. A heredoc fed to a shell inside `$( )` ends at its delimiter followed by `)`, as in bash, so the delete in `x=$(sh <<EOF` … `EOF)` is held.
+- A literal `cd` moves the script runs after it, inside its own subshell only. `(cd sub && sh a.sh)` reads `sub/a.sh`, so a harmless script is no longer held for a deleting namesake in the start folder, and a `cd sub &` moves nothing after it. After a `cd` that may be skipped (after `&&` or `||`, or in a branch, a loop, or a function), both folders are read; after a `cd` to a folder that does not exist, the old one is.
+- A delete is read by the command word bash runs: `\rm`, `"rm"`, `r''m`, `/bin/rm`, and `${x}rm` (an empty `x`) are `rm`, also after a `case` pattern's `)` and inside a `-c` or `eval` string. User `commandRules` still match the command as typed.
+- A script path with `..` is resolved before the roots check. `sh /tmp/../net/x/a.sh` passed the check on its literal text and reached the file system outside the roots, where a lookup can start an automount.
+
+### Tests
+
+- The differential test adds rows for the new shapes, typed and in script bodies, and runs each through `bash -c` with a `touch "$MARK"` twin: the floor holds an input exactly when bash creates the marker. Unit tests hold a delete nested 10,000 deep in each construct with no error, and check that a stray `fi` or `done` throws nowhere, that a quoted `~` reads no file in the home folder, that a `..` path asks the file system about nothing outside the roots, that stdin feeds are read, and that a `cd` before `&` does not move the commands after it.
+
+### Docs
+
+- The Script bodies paragraph in `docs/guards.md` lists the new ways the floor finds a script run, how it follows `cd`, and the nesting limit.
+
 ## 1.11.2
 
 ### Fixed
