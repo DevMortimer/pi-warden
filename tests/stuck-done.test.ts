@@ -572,7 +572,7 @@ test("evaluateDone: a UI change with no visual check is unverified even when tes
   assert.equal(verdict.unverified, true, "tests do not apply to a style change, the visual check does");
   assert.equal(verdict.falseClaim, false);
   assert.equal(verdict.unseenUi, "web/app.css");
-  assert.equal(doneNudge(verdict), "pi-warden: reports completion (0.90) after a UI change with no browser, screenshot, or device check since. You changed `web/app.css` but did not look at the result. Open it in a browser or take a screenshot before calling it done, or say it is unverified.");
+  assert.equal(doneNudge(verdict), "pi-warden: reports completion (0.90) after a UI change with no browser, screenshot, or device check since. You changed `web/app.css` but did not look at the result. Open it in a browser or take a screenshot before calling it done, or say it is unverified. A visual check counts when a tool result contains an image, an image file is read, or a `done.visualTools` command runs; a screenshot saved to disk counts once it is read.");
 
   const blocked = await evaluateDone("restyle the header", "Should the header be blue?", evidence, { config, judge: doneJudge(0.9, 0.1, "blocked"), timeoutMs: 1000 });
   assert.equal(blocked.unverified, false, "a question to the user is not a claim");

@@ -2583,7 +2583,7 @@ test("done-check: a UI change needs a visual check after it, even after passing 
   assert.equal(networkCalls, 1, "a passing test does not show the page: the claim is judged");
   assert.deepEqual(Object.keys(requests.at(-1)!.questions).sort(), ["claims_done", "claims_verified", "outcome", "verification_applies"], "no new question");
   assert.equal(sentMessages.length, 1);
-  assert.match(sentMessages[0]!.message.content, /after a UI change with no browser, screenshot, or device check since\. You changed `web\/app\.css` but did not look at the result\. Open it in a browser or take a screenshot before calling it done, or say it is unverified\.$/);
+  assert.match(sentMessages[0]!.message.content, /after a UI change with no browser, screenshot, or device check since\. You changed `web\/app\.css` but did not look at the result\. Open it in a browser or take a screenshot before calling it done, or say it is unverified\. A visual check counts when a tool result contains an image, an image file is read, or a `done\.visualTools` command runs; a screenshot saved to disk counts once it is read\.$/);
   assert.doesNotMatch(sentMessages[0]!.message.content, /Run the project's tests/, "the tests already passed");
 
   await newPrompt("and the footer");

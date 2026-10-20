@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Changed
+
+- The done-check UI nudge names what a visual check is: after "say it is unverified" it now adds that a check counts when a tool result contains an image, an image file is read, or a `done.visualTools` command runs, and that a screenshot saved to disk counts once it is read. The detection is unchanged — a scripted review that sends screenshots to a vision model over HTTP still leaves no session evidence — but the follow-up now says what would satisfy it instead of leaving the agent to repeat the same unrecognized steps (`#187`). `docs/configuration.md` documents the scripted-review shape under `done.visualTools`.
 
 ## 1.12.0
 
