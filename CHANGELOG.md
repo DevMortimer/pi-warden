@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 1.13.1
+
 ### Changed
 
 - The done-check UI nudge says what counts as looking at the result: seeing the changed page after the change — a page snapshot, a passing browser or device test, or a screenshot of the page that is then read; a screenshot saved to a file counts only once it is read. The detection is unchanged — a scripted review that sends screenshots to a vision model over HTTP still leaves no session evidence (`#187`). `docs/configuration.md` now says a custom `done.visualTools` list replaces its defaults and that a `commands` entry matches the command head the way the agent runs it.
