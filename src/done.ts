@@ -635,7 +635,7 @@ export function doneNudge(verdict: DoneVerdict, hint: NudgeHint = {}): string {
       : "Run the project's tests, build, or lint (whatever exists) on what you changed.";
   const code = codeUnverified ? ` ${detail} Then report the actual result. If no check exists or can run, say so explicitly instead of presenting the work as done.` : "";
   const open = hint.localUrl !== undefined ? `Open ${redact(hint.localUrl)} in a browser` : "Open it in a browser";
-  const ui = verdict.unseenUi !== undefined ? ` You changed \`${redact(verdict.unseenUi)}\` but did not look at the result. ${open} or take a screenshot before calling it done, or say it is unverified. A visual check counts when a tool result contains an image, an image file is read, or a \`done.visualTools\` command runs; a screenshot saved to disk counts once it is read.` : "";
+  const ui = verdict.unseenUi !== undefined ? ` You changed \`${redact(verdict.unseenUi)}\` but did not look at the result. ${open} or take a screenshot before calling it done, or say it is unverified. It counts when you see the changed page after the change: a page snapshot, a passing browser or device test, or a screenshot of the page that you then read (a screenshot saved to a file counts only once you read it).` : "";
   return `pi-warden: ${verdict.reasons.join("; ")}.${code}${ui}`;
 }
 

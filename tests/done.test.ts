@@ -132,7 +132,7 @@ test("the UI nudge names the last local URL a tool result printed", () => {
   };
   assert.match(done.doneNudge(verdict, { localUrl: "http://localhost:5173" }), /Open http:\/\/localhost:5173 in a browser/);
   assert.match(done.doneNudge(verdict), /Open it in a browser/);
-  assert.match(done.doneNudge(verdict), /A visual check counts when a tool result contains an image, an image file is read, or a `done\.visualTools` command runs; a screenshot saved to disk counts once it is read\./, "the nudge names what counts so the agent can comply next run");
+  assert.match(done.doneNudge(verdict), /It counts when you see the changed page after the change: a page snapshot, a passing browser or device test, or a screenshot of the page that you then read \(a screenshot saved to a file counts only once you read it\)\./, "the nudge names what counts so the agent can comply next run");
 });
 
 test("the done nudge names one check command instead of 'whatever exists'", () => {
