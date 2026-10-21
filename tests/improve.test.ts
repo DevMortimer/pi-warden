@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import {
-  applyProposals, buildProposals, computeCounts, countLines, countRepeatedRequests, countRepeats, formatDiff, formatEmpty,
-  formatHeld, gatherSessions, IMPROVE_MAX_DAYS, IMPROVE_MAX_PROPOSALS, IMPROVE_DEFAULT_DAYS, MIN_FIRED_PROPOSAL, parseImproveArgs,
-  QuietWindow, readSession, ruleSection, validateProposals, writeRulesFile, QUIET_MAX_MS,
+  backupRulesFile, computeCounts, countLines, countRepeatedRequests, countRepeats, formatCounts, formatDiff, formatEmpty,
+  formatHeld, formatScan, formatUnknownRules, gatherSessions, IMPROVE_MAX_DAYS, IMPROVE_DEFAULT_DAYS, improveRequest,
+  measuredCitations, parseImproveArgs, QuietWindow, readSession, ruleNames, summariseRulesChange, QUIET_MAX_MS,
 } from "../src/improve.js";
-import type { ImproveCounts, ImproveProposal, SessionReading } from "../src/improve.js";
+import type { ImproveCounts, SessionReading } from "../src/improve.js";
 import type { RuleRecord } from "../src/rules-log.js";
 
 const NOW = Date.parse("2026-01-05T00:00:00.000Z");
@@ -123,14 +123,18 @@ test("a session file with no recorded usage reports peak context as unavailable,
   assert.equal(countLines(counts).find(line => line.label === "peak context")!.value, "unavailable");
 });
 
-test("gathering skips a session file from another project and one that does not parse, and says why", async () => {
+test("gathering skips a session file from another project and one that does not parse, and reports the bytes it read", async () => {
   const sessions = await mkdtemp(join(dir, "sessions-"));
-  await writeFile(join(sessions, "2026-01-04T10-00-00-000Z_ours.jsonl"), sessionFile(CWD, [user("hello")]));
-  await writeFile(join(sessions, "2026-01-04T10-00-00-000Z_other.jsonl"), sessionFile("/scratch/other", [user("hello")]));
-  await writeFile(join(sessions, "2026-01-04T10-00-00-000Z_torn.jsonl"), Buffer.from('{"type":"session","cwd":"/scratch/project"}\nnot json\n{"type":"message","message":{"role":"user","content":"hi"}}\n'));
+  const ours = sessionFile(CWD, [user("hello")]);
+  const other = sessionFile("/scratch/other", [user("hello")]);
+  const torn = Buffer.from('{"type":"session","cwd":"/scratch/project"}\nnot json\n{"type":"message","message":{"role":"user","content":"hi"}}\n');
+  await writeFile(join(sessions, "2026-01-04T10-00-00-000Z_ours.jsonl"), ours);
+  await writeFile(join(sessions, "2026-01-04T10-00-00-000Z_other.jsonl"), other);
+  await writeFile(join(sessions, "2026-01-04T10-00-00-000Z_torn.jsonl"), torn);
   const gather = await gatherSessions({ dir: sessions, cwd: CWD, days: 30, now: NOW });
   assert.equal(gather.readings.length, 2, "our session and the torn one with one readable line are read");
   assert.deepEqual(gather.skipped.map(skip => skip.reason), ["another project (/scratch/other)"]);
+  assert.equal(gather.bytes, ours.byteLength + other.byteLength + torn.byteLength, "the scan reports every byte it read, skipped files included");
 });
 
 test("gathering counts a file whose entries are all unreadable as skipped, so an empty file is never a finding", async () => {
@@ -163,140 +167,181 @@ test("repeats: the same request typed twice is counted; a different request is n
   assert.equal(countRepeatedRequests([first, other]), 0);
 });
 
-// ── nothing to learn, nothing written ───────────────────────────────────────
+test("count labels: a call a waste detector flagged and a request typed twice are two different lines", () => {
+  const calls = [1, 21, 41].map(start => ({ tool: "read", input: { path: "src/big.ts", offset: start, limit: 20 }, cwd: CWD, failed: false, result: "" }));
+  const counts = countsFor({ readings: [reading("a.jsonl", calls)] });
+  const labels = countLines(counts).map(line => line.label);
+  assert.ok(labels.includes("calls flagged as repeats"));
+  assert.ok(labels.includes("requests typed twice"));
+  const text = formatCounts(counts);
+  assert.match(text, /calls flagged as repeats: 1/, "the detector count says what it counts");
+  assert.match(text, /requests typed twice: 0/, "the user's typed requests are their own line");
+  assert.doesNotMatch(text, /repeated calls:/, "the old label that mixed the two is gone");
+});
+
+// ── nothing to learn ────────────────────────────────────────────────────────
 
 const emptyCounts = (): ImproveCounts => computeCounts({ days: 7, now: NOW, readings: [], skipped: [], ruleRecords: [], holds: [], currentRules: [] });
 
-test("an empty record set prints 'nothing to learn from yet' and proposes nothing", () => {
+function countsFor(options: { records?: RuleRecord[]; readings?: SessionReading[]; holds?: Array<{ kind: string }>; rules?: Array<{ id: string; name: string }> } = {}): ImproveCounts {
+  return computeCounts({
+    days: 7, now: NOW,
+    readings: options.readings ?? [reading("2026-01-04T10-00-00-000Z_s1.jsonl", [], ["fix the bug"])],
+    skipped: [], ruleRecords: options.records ?? [], holds: options.holds ?? [], currentRules: options.rules ?? [],
+  });
+}
+
+test("no records: the pass says there is nothing to learn from yet and starts no model turn", () => {
   const counts = emptyCounts();
   assert.equal(counts.sessions, 0);
   assert.match(formatEmpty(7), /no recorded sessions in the last 7 days/);
-  const proposals = buildProposals({ counts, rulesText: RULES, rules: [{ id: "small-commits", name: "Small commits" }], ruleRecords: [], logPath: "/log.jsonl" });
-  assert.deepEqual(proposals, []);
+  const request = improveRequest({ days: 7, counts, countsText: formatCounts(counts), read: [], skipped: [], rulesText: RULES, file: "pi-warden.md" });
+  assert.ok("reason" in request, "no session and no rules record means no prompt");
+  assert.match(request.reason, /Nothing to learn from yet/);
 });
 
-test("no support: a rule that fired below the floor yields no proposal and the pass says the rules held", () => {
-  const records = [ruleRecord({}), ruleRecord({ at: "2026-01-04T11:00:00.000Z" })];
-  const counts = computeCounts({ days: 7, now: NOW, readings: [reading("a.jsonl", [])], skipped: [], ruleRecords: records, holds: [], currentRules: [{ id: "small-commits", name: "Small commits" }] });
-  const proposals = buildProposals({ counts, rulesText: RULES, rules: [{ id: "small-commits", name: "Small commits" }], ruleRecords: records, logPath: "/log.jsonl" });
-  assert.deepEqual(proposals, [], `two firings is under the ${MIN_FIRED_PROPOSAL} floor`);
-  const held = formatHeld(counts, 1);
-  assert.match(held, /The rules held in the last 7 days/);
-  assert.match(held, /2 fired/);
+test("zero judgments: the pass says nothing is known about the rules, never that they held", () => {
+  const counts = countsFor({});
+  const line = formatUnknownRules(counts);
+  assert.equal(counts.refusals.judged, 0);
+  assert.match(line, /The rules guard judged nothing for this project in the last 7 days/);
+  assert.match(line, /nothing is known about the rules/);
+  assert.doesNotMatch(line, /held/i);
+  assert.match(line, /1 turn/);
+  assert.match(line, /0 calls flagged as repeats/);
+  assert.match(line, /0 holds/);
 });
 
-// ── proposals, the count they cite, and the diff ────────────────────────────
+test("judged rules and no fire: the pass says the rules held, with the counts that show it", () => {
+  const records = [
+    ruleRecord({ finding: false, outcome: "compliant", violation: 0.1 }),
+    ruleRecord({ at: "2026-01-04T11:00:00.000Z", finding: false, outcome: "compliant", violation: 0.1 }),
+  ];
+  const counts = countsFor({ records, rules: [{ id: "small-commits", name: "Small commits" }] });
+  assert.equal(counts.refusals.judged, 2);
+  assert.equal(counts.refusals.fired, 0);
+  const line = formatHeld(counts, 1);
+  assert.match(line, /The rules held in the last 7 days/);
+  assert.match(line, /1 rule judged 2 times, 0 fired/);
+  assert.match(line, /nothing to change in pi-warden\.md/);
+});
+
+// ── the prompt the model gets ───────────────────────────────────────────────
 
 function supportedCounts(): { counts: ImproveCounts; records: RuleRecord[] } {
   const records = [
     ruleRecord({ path: "src/a.ts" }), ruleRecord({ path: "src/a.ts" }), ruleRecord({ path: "src/b.ts" }),
     ruleRecord({ id: "explain-every-command", name: "Explain every command", finding: false, violation: 0.1, outcome: "compliant", path: "src/c.ts" }),
   ];
-  const counts = computeCounts({
-    days: 7, now: NOW, readings: [reading("2026-01-04T10-00-00-000Z_s1.jsonl", [])], skipped: [], ruleRecords: records, holds: [],
-    currentRules: [{ id: "small-commits", name: "Small commits" }, { id: "explain-every-command", name: "Explain every command" }],
-  });
+  const counts = countsFor({ records, rules: [{ id: "small-commits", name: "Small commits" }, { id: "explain-every-command", name: "Explain every command" }] });
   return { counts, records };
 }
 
-test("proposal: a rule that fired three times gets the count written into its section, and only that section changes", () => {
-  const { counts, records } = supportedCounts();
-  const proposals = buildProposals({ counts, rulesText: RULES, rules: [{ id: "small-commits", name: "Small commits" }, { id: "explain-every-command", name: "Explain every command" }], ruleRecords: records, logPath: "/log.jsonl" });
-  assert.equal(proposals.length, 1);
-  const proposal = proposals[0]!;
-  assert.equal(proposal.ruleId, "small-commits");
-  assert.equal(proposal.count.value, 3);
-  assert.ok(countLines(counts).some(line => line.value === proposal.count.value), "the cited number is on the printed list");
-  assert.match(proposal.newText, /Measured 2026-01-05: 3 of 3 judgments against "Small commits" in the last 7 days were violations, most often on `src\/a.ts`/);
-  const after = applyProposals(RULES, proposals);
-  const section = ruleSection(after, "Small commits")!;
-  assert.match(after.slice(0, 0) + after.split("\n").slice(section.start, section.end).join("\n"), /Measured 2026-01-05/);
-  assert.ok(after.includes("## Explain every command\nSay why before a command runs.\n"), "the untouched rule is byte-identical");
-  const diff = formatDiff(RULES, after);
-  assert.equal(diff.split("\n").filter(line => line.startsWith("+ ")).length, 2, "the blank line and the measured line are the whole diff");
-  assert.equal(diff.split("\n").filter(line => line.startsWith("- ")).length, 0);
-  assert.ok(after.includes("Keep each commit to one change."));
-});
-
-test("proposal cap: at most three changes are proposed however many rules fired", () => {
-  const rules = Array.from({ length: 6 }, (_, index) => `## Rule ${index}\nBody ${index}.\n`).join("\n");
-  const records = Array.from({ length: 6 }, (_, index) => [0, 1, 2, 3].map(nth => ruleRecord({ id: `r${index}`, name: `Rule ${index}`, at: new Date(NOW - nth * 60_000).toISOString() }))).flat();
-  const counts = computeCounts({ days: 7, now: NOW, readings: [reading("a.jsonl", [])], skipped: [], ruleRecords: records, holds: [], currentRules: [] });
-  const proposals = buildProposals({ counts, rulesText: rules, rules: Array.from({ length: 6 }, (_, index) => ({ id: `r${index}`, name: `Rule ${index}` })), ruleRecords: records, logPath: "/log.jsonl" });
-  assert.equal(proposals.length, IMPROVE_MAX_PROPOSALS);
-});
-
-test("cited number: a proposal citing a number the pass did not print is refused, and its whole set with it", () => {
+test("prompt: the model is told the window, every printed count, the files read and skipped, the rules text, and the rules of the edit", () => {
   const { counts } = supportedCounts();
-  const good: ImproveProposal = {
-    kind: "clarify", ruleId: "small-commits", title: "Small commits", oldText: "Keep each commit to one change.", newText: "Keep each commit to one change.",
-    count: { label: "rules fired", value: 3 }, evidence: ["/log.jsonl"], why: "",
-  };
-  assert.equal(validateProposals([good], counts), undefined);
-  const bad: ImproveProposal = { ...good, count: { label: "rules fired", value: 4177 } };
-  const refusal = validateProposals([good, bad], counts);
-  assert.ok(refusal, "a set with one unsupported number is refused whole");
-  assert.match(refusal, /4177/);
-  assert.match(refusal, /nothing was written/);
+  const request = improveRequest({
+    days: 7, counts, countsText: formatCounts(counts),
+    read: ["/scratch/project/sessions/a.jsonl"], skipped: [{ path: "/scratch/project/sessions/b.jsonl", reason: "another project (/scratch/other)" }],
+    rulesText: RULES, file: "pi-warden.md",
+  });
+  assert.ok("prompt" in request);
+  const prompt = request.prompt;
+  assert.match(prompt, /last 7 days/, "the window is named");
+  for (const line of countLines(counts)) assert.ok(prompt.includes(`${line.label}: ${line.value}`), `${line.label} is printed to the model`);
+  assert.ok(prompt.includes("/scratch/project/sessions/a.jsonl"), "a session file read is named");
+  assert.ok(prompt.includes("/scratch/project/sessions/b.jsonl (another project (/scratch/other))"), "a skipped file and its reason are named");
+  assert.ok(prompt.includes("## Small commits") && prompt.includes("Keep each commit to one change."), "the rules file text is carried");
+  assert.match(prompt, /Change a rule only for a count printed above/);
+  assert.match(prompt, /Measured YYYY-MM-DD/);
+  assert.match(prompt, /session file it came from/);
+  assert.match(prompt, /the rules held/);
+  assert.match(prompt, /judged nothing/);
+  assert.match(prompt, /at most 3 rule changes/);
+  assert.match(prompt, /Do not add a second section/i, "the model is told a second run must not duplicate a rule");
+  assert.match(prompt, /Hand-over bound/);
+  assert.match(prompt, /Do not scan directories/);
+  assert.match(prompt, /calls flagged as repeats/);
+  assert.match(prompt, /requests typed twice/);
 });
 
-test("a second pass replaces the measured line instead of growing the file, and does not re-add a rule that is there", () => {
-  const { counts, records } = supportedCounts();
-  const rules = [{ id: "small-commits", name: "Small commits" }];
-  const first = buildProposals({ counts, rulesText: RULES, rules, ruleRecords: records, logPath: "/log.jsonl" });
-  const once = applyProposals(RULES, first);
-  const again = buildProposals({ counts, rulesText: once, rules, ruleRecords: records, logPath: "/log.jsonl" });
-  assert.equal(again.length, 1);
-  assert.match(again[0]!.oldText, /^Measured 2026-01-05/, "the existing measured line is the old text");
-  const twice = applyProposals(once, again);
-  assert.equal(twice, once, "the same counts leave the file as it was");
-  assert.equal(twice.match(/Measured 2026-01-05/g)?.length, 1);
+// ── the summary after the turn ──────────────────────────────────────────────
+
+test("summary: an added, a changed and a removed rule are each named, and each added or changed rule names the count it cites", () => {
+  const { counts } = supportedCounts();
+  const after = RULES
+    .replace("Keep each commit to one change.", "Keep each commit to one change.\n\nMeasured 2026-01-05: 3 of 4 judgments against \"Small commits\" in the last 7 days were violations.")
+    .replace("## Explain every command\nSay why before a command runs.\n", "")
+    + "## Read a file in one call\nRead one file with one call.\n\nMeasured 2026-01-05: 1 request typed twice in the last 7 days.\n";
+  assert.deepEqual(ruleNames(after), ["Project rules", "Small commits", "Read a file in one call"]);
+  const summary = summariseRulesChange(RULES, after, counts);
+  assert.deepEqual(summary.changed, ["Small commits"]);
+  assert.deepEqual(summary.added, ["Read a file in one call"]);
+  assert.deepEqual(summary.removed, ["Explain every command"]);
+  assert.deepEqual(summary.uncited, [], "both cited a number the pass printed");
+  assert.ok(summary.lines.some(line => line.startsWith("~ changed \"Small commits\"") && /rules fired 3/.test(line)), "the changed rule names the count it cited");
+  assert.ok(summary.lines.some(line => line.startsWith("+ added \"Read a file in one call\"") && / 1$/.test(line)), "the added rule names the count it cited");
+  assert.ok(summary.lines.includes("- removed \"Explain every command\""));
+  assert.equal(summary.lines.filter(line => line.includes("Project rules")).length, 0, "the title heading does not count as a changed rule");
 });
 
-test("a new rule from a repeat is added once: the same heading is not added again on the next pass", () => {
-  const calls = ["src/a.ts", "src/b.ts", "src/c.ts"].flatMap(file => [1, 21, 41]
-    .map(start => ({ tool: "read", input: { path: file, offset: start, limit: 20 }, cwd: CWD, failed: false, result: "" })));
-  const counts = computeCounts({ days: 7, now: NOW, readings: [reading("a.jsonl", calls)], skipped: [], ruleRecords: [], holds: [], currentRules: [] });
-  const first = buildProposals({ counts, rulesText: RULES, rules: [], ruleRecords: [], logPath: "/log.jsonl" });
-  assert.equal(first.length, 1);
-  assert.equal(first[0]!.kind, "add");
-  assert.match(first[0]!.newText, /^## Read a file in one call/);
-  const once = applyProposals(RULES, first);
-  assert.deepEqual(buildProposals({ counts, rulesText: once, rules: [], ruleRecords: [], logPath: "/log.jsonl" }), []);
+test("summary: a changed rule with no Measured line is named and its edit stays in the file", () => {
+  const { counts } = supportedCounts();
+  const after = RULES.replace("Say why before a command runs.", "Say why before a command runs, in one sentence.");
+  const summary = summariseRulesChange(RULES, after, counts);
+  assert.deepEqual(summary.changed, ["Explain every command"]);
+  assert.deepEqual(summary.uncited, ["Explain every command"]);
+  assert.match(summary.lines[0]!, /no Measured line with a number this pass printed/);
+  assert.ok(after.includes("in one sentence"), "the pass names the rule; it does not revert the model's edit");
 });
 
-// ── the write ───────────────────────────────────────────────────────────────
+test("citation: a Measured line's date and its window phrase are not counts, and only printed numbers count", () => {
+  const { counts } = supportedCounts();
+  assert.deepEqual(measuredCitations("## R\nMeasured 2026-01-05: 3 of 4 judgments, in the last 7 days.", counts), [3, 4], "printed numbers count and the window's 7 does not");
+  assert.deepEqual(measuredCitations("## R\nMeasured 2026-01-05: 9999 judgments in the last 7 days.", counts), [], "a number the pass did not print is no citation");
+  const after = RULES.replace("Say why before a command runs.", "Say why before a command runs.\n\nMeasured 2026-01-05: 9999 judgments in the last 7 days.");
+  assert.deepEqual(summariseRulesChange(RULES, after, counts).uncited, ["Explain every command"]);
+});
 
-test("write: the backup lands first and holds the old text, and the rules file gets the new text", async () => {
-  const file = join(await mkdtemp(join(dir, "write-")), "pi-warden.md");
+test("citation: a session path or a session id in the Measured line is where the count came from, not a count", () => {
+  const counts = countsFor({ holds: [{ kind: "a" }, { kind: "b" }] });
+  const line = "Measured 2026-01-05: holds 2 (/scratch/sessions/147791_01a159a7-aec7-7699-a919-5fd9f43eff66.jsonl).";
+  assert.deepEqual(measuredCitations(`## R\n${line}`, counts), [2], "the path's digits and the id's digits are not citations");
+  assert.deepEqual(measuredCitations("## R\nMeasured 2026-01-05: 2 holds in 99f9c9d9-aec7-7699-a919-5fd9f43eff66.", counts), [2]);
+});
+
+// ── the scan line and the diff ──────────────────────────────────────────────
+
+test("scan line: the pass prints the time, files and bytes it measured, not a budget it missed", () => {
+  const line = formatScan({ days: 7, read: 2, found: 3, skipped: 1, bytes: 1_572_864, elapsedMs: 441.4 });
+  assert.match(line, /last 7 days/);
+  assert.match(line, /2 of 3 session files read/);
+  assert.match(line, /1 skipped/);
+  assert.match(line, /1\.5 MB/);
+  assert.match(line, /441 ms/);
+  assert.doesNotMatch(line, /budget/i);
+});
+
+test("diff: the screen shows only the lines the model changed", () => {
+  const after = RULES.replace("Keep each commit to one change.", "Keep each commit to one change, and say what it does.");
+  const diff = formatDiff(RULES, after);
+  assert.equal(diff.split("\n").filter(line => line.startsWith("+ ")).length, 1);
+  assert.equal(diff.split("\n").filter(line => line.startsWith("- ")).length, 1);
+});
+
+// ── the backup before the turn ──────────────────────────────────────────────
+
+test("backup: the rules file is copied beside itself before the turn, and the file itself is left for the model", async () => {
+  const file = join(await mkdtemp(join(dir, "backup-")), "pi-warden.md");
   await writeFile(file, RULES);
-  const after = applyProposals(RULES, [{ kind: "add", ruleId: "new", title: "X", oldText: "", newText: "## X\nY.\n", count: { label: "repeated calls", value: 3 }, evidence: [], why: "" }]);
-  const written = await writeRulesFile({ file, before: RULES, after, now: NOW });
-  assert.ok(written.backup, "a backup path is returned");
-  assert.match(written.backup, /\.bak-2026-01-05T00-00-00-000Z$/);
-  assert.equal(await readFile(written.backup, "utf8"), RULES, "the backup holds the file as it was");
-  assert.equal(await readFile(file, "utf8"), after);
+  const first = await backupRulesFile(file, RULES, NOW);
+  assert.ok(first.path, "a backup path is returned");
+  assert.match(first.path, /\.bak-2026-01-05T00-00-00-000Z$/);
+  assert.equal(await readFile(first.path, "utf8"), RULES, "the backup holds the file as it was");
+  assert.equal(await readFile(file, "utf8"), RULES, "the pass does not write the rules file; the model does");
+  const second = await backupRulesFile(file, RULES, NOW + 1000);
+  assert.ok(second.path && second.path !== first.path, "a second run takes its own timestamped backup");
   const names = await readdir(join(file, ".."));
-  assert.equal(names.length, 2, "the backup sits beside the file and nothing else is written");
-});
-
-test("write: a rules file that changed since it was read is refused and stays byte-identical", async () => {
-  const file = join(await mkdtemp(join(dir, "stale-")), "pi-warden.md");
-  await writeFile(file, RULES);
-  const after = `${RULES}\n## Added\nText.\n`;
-  const written = await writeRulesFile({ file, before: "# something else\n", after, now: NOW });
-  assert.ok(written.error);
-  assert.match(written.error, /changed since this pass read it/);
-  assert.equal(await readFile(file, "utf8"), RULES);
-  const names = await readdir(join(file, ".."));
-  assert.equal(names.length, 1, "no backup is left behind by a refused write");
-});
-
-test("write: a missing rules file is an error, not an empty file", async () => {
-  const file = join(await mkdtemp(join(dir, "missing-")), "pi-warden.md");
-  const written = await writeRulesFile({ file, before: "", after: RULES, now: NOW });
-  assert.ok(written.error);
-  await assert.rejects(readFile(file, "utf8"));
+  assert.equal(names.length, 3, "the file and the two backups, and nothing else");
 });
 
 // ── the quiet window ────────────────────────────────────────────────────────

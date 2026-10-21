@@ -85,10 +85,10 @@ import { formatCompaction, relevanceCompaction } from "./relevance.js";
 import type { CompactionStats, FallbackReason } from "./relevance.js";
 import { applyLoopAction, formatLoopsForUser, formatOpenLoops, LOOP_ACTIONS, LOOP_CHARS, loopsFingerprint, loopsPath, openLoops, readLoops, updateLoops } from "./loops.js";
 import { changePrefsStore, emptyWordCounts, evaluatePrefs, forgetPref, formatPrefs, LESSON_CHARS, prefsMessage, prefsStorePath, readPrefsStore, recordLesson, scanPreferences } from "./prefs.js";
-import { MAX_SESSIONS, SCAN_BUDGET_MS } from "./prefs.js";
+import { MAX_SESSIONS } from "./prefs.js";
 import {
-  applyProposals, buildProposals, computeCounts, formatCounts, formatDiff, formatEmpty, formatHeld, formatProposals,
-  gatherSessions, IMPROVE_MAX_DAYS, parseImproveArgs, QuietWindow, readRecords, validateProposals, writeRulesFile,
+  backupRulesFile, computeCounts, formatCounts, formatDiff, formatEmpty, formatHeld, formatScan, formatUnknownRules,
+  gatherSessions, IMPROVE_MAX_DAYS, improveRequest, parseImproveArgs, QuietWindow, readRecords, summariseRulesChange,
 } from "./improve.js";
 import { armFor, isSuppressed, steerDeliveryKind, TRIAL_ENTRY_TYPE, trialText } from "./trial.js";
 import type { SuppressedKind, TrialArm, TrialDeliveryKind, TrialRecord } from "./trial.js";
@@ -589,6 +589,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let lastCheck: RulesCheckResult | undefined;
   /** True while /warden audit is sending a prompt and waiting for the agent to write the report. */
   let auditRunning = false;
+  /** True while /warden improve is sending its prompt and waiting for the model's edits to the rules file. */
+  let improveRunning = false;
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
@@ -2754,8 +2756,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
   });
 
-  // Block new user messages while /warden init or /warden audit is running. Extension-originated input passes the
-  // busy-guards: /warden init, tune, audit, and index set their *Running flag and THEN send their prompt with
+  // Block new user messages while /warden init, improve or /warden audit is running. Extension-originated input passes the
+  // busy-guards: /warden init, improve, tune, audit, and index set their *Running flag and THEN send their prompt with
   // sendUserMessage, which fires this same `input` event — swallowing it made the command wait on an idle agent and
   // report the file (or report, or index) was never created. The guards exist to queue operator input, and only
   // messages a person sends ("interactive", "rpc") are that.
@@ -2771,6 +2773,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
     if (operatorInput && indexRunning) {
       ctx.ui.notify("pi-warden is building the capability index. Please wait...", "warning");
+      return { action: "handled" };
+    }
+    if (operatorInput && improveRunning) {
+      ctx.ui.notify("pi-warden is running the improve pass. Please wait...", "warning");
       return { action: "handled" };
     }
     // Operator input invalidates in-flight conscience assessments
@@ -3311,18 +3317,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
           if (!dir) { report("warden: this session has no session directory, so there are no session files to read.", "warning"); return; }
           const exclude = typeof manager.getSessionFile === "function" ? manager.getSessionFile() : undefined;
           const quietMs = config.improve.quietMs;
-          let wrote = false;
+          // Armed before the turn, so the model's own edits to the rules file are not judged; re-armed from the end of the edits below.
           if (quietMs > 0) quiet.arm(session, quietMs);
+          let edited = false;
           try {
             const started = performance.now();
             const gather = await gatherSessions({ dir, cwd: ctx.cwd, exclude, days, maxSessions: MAX_SESSIONS });
             const now = Date.now();
-            const { logPath, records, holds } = await readRecords(ctx.cwd, dirs, gather.readings, days, now);
+            const { records, holds } = await readRecords(ctx.cwd, dirs, gather.readings, days, now);
             const set = rulesGuard.store.load(ctx.cwd, config.rules);
             const counts = computeCounts({ days, now, readings: gather.readings, skipped: gather.skipped, ruleRecords: records, holds, currentRules: set?.rules.map(rule => ({ id: rule.id, name: rule.name })) ?? [] });
-            const elapsed = Math.round(performance.now() - started);
-            const read = gather.found > gather.readings.length ? `${gather.readings.length} of ${gather.found} session files read` : `${gather.readings.length} session file${gather.readings.length === 1 ? "" : "s"} read`;
-            const head = `pi-warden improve: last ${days} day${days === 1 ? "" : "s"}, ${read}, ${counts.skipped} skipped, ${elapsed} ms (scan budget ${SCAN_BUDGET_MS} ms).`;
+            const head = formatScan({ days, read: gather.readings.length, found: gather.found, skipped: counts.skipped, bytes: gather.bytes, elapsedMs: performance.now() - started });
             const countsText = formatCounts(counts);
             const files = [
               `read: ${gather.readings.map(reading => reading.path).join(", ") || "none"}`,
@@ -3343,39 +3348,89 @@ export default function wardenExtension(host: ExtensionAPI): void {
               report([head, countsText, `warden: ${RULES_FILE} could not be read (${error instanceof Error ? error.message : String(error)}); nothing was written.`].join("\n"), "warning");
               return;
             }
-            const proposals = buildProposals({ counts, rulesText: before, rules: set.rules.map(rule => ({ id: rule.id, name: rule.name })), ruleRecords: records, logPath });
-            const refusal = validateProposals(proposals, counts);
-            if (refusal) { report([head, countsText, files, refusal].join("\n"), "warning"); return; }
-            if (!proposals.length) {
-              report([head, countsText, formatHeld(counts, set.rules.length), files].join("\n"));
-              return;
-            }
-            const after = applyProposals(before, proposals);
-            const diff = formatDiff(before, after);
-            const plan = [head, countsText, files, formatProposals(proposals), `Changes to ${RULES_FILE}:`, diff].join("\n");
+            const request = improveRequest({ days, counts, countsText, read: gather.readings.map(reading => reading.path), skipped: gather.skipped, rulesText: before, file: RULES_FILE });
+            if ("reason" in request) { report([head, countsText, files, request.reason].join("\n")); return; }
+            const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "the session model";
+            const plan = [head, countsText, files, `The session model (${model}) reads this and edits ${RULES_FILE} with its own tools; a timestamped backup is written first.`].join("\n");
             if (ctx.hasUI) {
-              if (!await ctx.ui.confirm(`warden: write ${proposals.length} change${proposals.length === 1 ? "" : "s"} to ${RULES_FILE}?`, plan)) {
-                report(`Cancelled. ${RULES_FILE} is unchanged.`);
-                return;
-              }
+              if (!await ctx.ui.confirm(`warden: send the improve prompt to ${model}?`, plan)) { report(`Cancelled. ${RULES_FILE} is unchanged and no model turn was started.`); return; }
             } else if (!yes) {
-              report([plan, `Nothing was written: a headless run needs --yes before /warden improve rewrites ${RULES_FILE}.`].join("\n"), "warning");
+              report([plan, `Nothing was sent: a headless run needs --yes before /warden improve starts a model turn.`].join("\n"), "warning");
               return;
             }
-            const written = await writeRulesFile({ file: rulesFile, before, after });
-            if (written.error) { report(written.error, "warning"); return; }
-            wrote = true;
-            // The user keeps editing the file after the pass, so the window counts from the end of the write, not its start.
+            const backup = await backupRulesFile(rulesFile, before);
+            if (backup.error) { report([head, countsText, backup.error].join("\n"), "warning"); return; }
+            report(plan);
+            improveRunning = true;
+            let sent = true;
+            let startedTurn = false;
+            const turnStart = performance.now();
+            try {
+              for (let attempt = 0; attempt < 40; attempt++) {
+                if (ctx.isIdle()) break;
+                await new Promise(resolve => setTimeout(resolve, 250));
+              }
+              const { started: turnStarted, ended } = injectRun(request.prompt);
+              pi.sendUserMessage(request.prompt);
+              if (await turnStarted) {
+                startedTurn = true;
+                await ended;
+                await awaitHostIdle(ctx);
+              } else {
+                // The prompt never became a run (no model, a preflight failure, or another extension handled it).
+                injectedRun = undefined;
+              }
+            } catch (err) {
+              sent = false;
+              const detail = err instanceof Error ? err.message : String(err);
+              report(`pi-warden improve failed: ${detail}.`, "error");
+            } finally {
+              improveRunning = false;
+            }
+            const turnMs = Math.round(performance.now() - turnStart);
+            if (!sent) return;
+            if (!startedTurn) {
+              report([head, countsText, `No model turn started: the prompt was not delivered (no model, or another extension handled it). ${RULES_FILE} is unchanged; the backup is at ${backup.path}.`].join("\n"), "warning");
+              return;
+            }
+            let after: string;
+            try {
+              after = await readFile(rulesFile, "utf8");
+            } catch (error) {
+              report([head, countsText, `warden: ${RULES_FILE} could not be read after the turn (${error instanceof Error ? error.message : String(error)}); the backup is at ${backup.path}.`].join("\n"), "warning");
+              return;
+            }
+            const quietLine = quiet.statusLine(session) ? `Quiet: the rules judge and the text guards stay quiet in this session until ${new Date(quiet.expiresAt).toISOString().slice(11, 16)}; /warden status shows it.` : "The quiet window is off (improve.quietMs is 0); the rules judge keeps running.";
+            const summary = summariseRulesChange(before, after, counts);
+            edited = after !== before;
+            if (!edited) {
+              // Zero judgments is not the rules holding: the closing line names the state the window is in.
+              report([
+                head,
+                countsText,
+                `The model changed nothing in ${RULES_FILE}; the file is unchanged (model turn ${turnMs} ms, backup at ${backup.path}).`,
+                counts.refusals.judged > 0 ? formatHeld(counts, set.rules.length) : formatUnknownRules(counts),
+                quietLine,
+              ].join("\n"));
+              return;
+            }
+            // The user keeps editing the file after the pass, so the window counts from the end of the edits, not their start.
             if (quietMs > 0) quiet.arm(session, quietMs);
+            const changed = summary.added.length + summary.changed.length + summary.removed.length;
             report([
-              `Wrote ${RULES_FILE}: ${proposals.length} change${proposals.length === 1 ? "" : "s"}, backup at ${written.backup}.`,
-              ...(quiet.statusLine(session) ? [`Quiet: the rules judge and the text guards stay quiet in this session until ${new Date(quiet.expiresAt).toISOString().slice(11, 16)}; /warden status shows it.`] : ["The quiet window is off (improve.quietMs is 0); the rules judge keeps running."]),
-              diff,
+              head,
+              countsText,
+              `Wrote ${RULES_FILE}: ${changed} rule change${changed === 1 ? "" : "s"}, backup at ${backup.path}, model turn ${turnMs} ms on ${model}.`,
+              ...summary.lines,
+              ...(counts.refusals.judged > 0 ? [] : [formatUnknownRules(counts)]),
+              `Changes to ${RULES_FILE}:`,
+              formatDiff(before, after),
+              quietLine,
             ].join("\n"));
             return;
           } finally {
             // Every exit path leaves this session's judge back on: an unfinished pass disarms the window it armed.
-            if (quietMs > 0 && !wrote) quiet.disarm();
+            if (quietMs > 0 && !edited) quiet.disarm();
           }
         }
         if (action === "recommend") {

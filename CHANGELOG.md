@@ -10,6 +10,24 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 - The done-check UI nudge names what a visual check is: after "say it is unverified" it now adds that a check counts when a tool result contains an image, an image file is read, or a `done.visualTools` command runs, and that a screenshot saved to disk counts once it is read. The detection is unchanged — a scripted review that sends screenshots to a vision model over HTTP still leaves no session evidence — but the follow-up now says what would satisfy it instead of leaving the agent to repeat the same unrecognized steps (`#187`). `docs/configuration.md` documents the scripted-review shape under `done.visualTools`.
 
+## 1.13.0
+
+### Added
+
+- `/warden improve` hands the judgement to the session's own model: the code prints the measured counts, the session files behind them and the rules text, and the model reads the sessions and edits this project's `pi-warden.md`. Each change carries a `Measured` line naming the count and the session file it came from, at most three changes are made, and a second run replaces an existing `Measured` line rather than adding one. The pass takes a timestamped backup before the turn, then prints each rule added, changed or removed with the count it cited, and the diff. The quiet window is armed before the turn, so the rules judge does not grade the rewrite; the destructive floor stays on.
+
+### Fixed
+
+- `/warden improve` called zero rule judgments "the rules held". It now says the guard judged nothing for this project in the window, so nothing is known about the rules, and gives the counts that do exist.
+- `/warden improve` printed "repeated calls" beside "repeated requests" as if they were the same number. They are now "calls flagged as repeats" and "requests typed twice".
+- `/warden improve` printed a 250 ms scan budget it missed. It now reports what it measured: files read, bytes, and time.
+
+## 1.12.1
+
+### Docs
+
+- README: the improve pass and its quiet window, the rules report, standing lessons and the capability index; how the offline floor reads a script a command runs, and which delete text it skips; the test and development scripts.
+
 ## 1.12.0
 
 ### Added

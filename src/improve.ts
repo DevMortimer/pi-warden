@@ -1,10 +1,10 @@
 /**
- * `/warden improve`: one project-local pass over this project's own sessions. It reads the session files of this
- * project (the same source and cwd filter as `prefs.ts`), the project's rules log, and the per-session hold logs, then
- * prints three counts: what reading cost, what work was sent twice, and which refusals of the same kind repeated. From
- * those counts alone it proposes at most three changes to `pi-warden.md`, each carrying the number it came from and the
- * records it read; a proposal whose number is not in the printed list is refused before anything is written. Nothing is
- * sent anywhere: the model is not asked, so a missing key or a judge error cannot produce a half-written rules file.
+ * `/warden improve`: one project-local pass over this project's own sessions. The code measures — session files read
+ * and skipped, turns, tool calls, whole-file reads, peak context, repeats, requests typed twice, rule judgments and
+ * holds — and hands those counts to the session's own model, which reads the cited sessions and edits `pi-warden.md`
+ * with its own tools. The code keeps the facts: the counts, the backup taken before the turn, the diff afterwards, and
+ * the check that each changed rule's `Measured …` line cites a number the pass printed. The judgement is the model's,
+ * so the code never writes a rule itself. No Jev request is made: the turn runs on the session's own model.
  *
  * The quiet window is the one timed thing here. It is held in this session's own extension instance, carries the
  * arming session id and its expiry, and every guard asks it with its own session id, so a window armed by one session
@@ -28,14 +28,11 @@ import { pagingNudge, recheckNudge, searchNudge, sleepNudge } from "./waste.js";
 /** The window `/warden improve` reads when no number is given, and the most it accepts. */
 export const IMPROVE_DEFAULT_DAYS = 7;
 export const IMPROVE_MAX_DAYS = 90;
-/** At most this many rule changes are proposed in one pass. */
-export const IMPROVE_MAX_PROPOSALS = 3;
+/** The most rule changes the model is asked for in one pass. */
+export const IMPROVE_MAX_CHANGES = 3;
 /** The default quiet window and the cap on it: ten minutes, never more than fifteen. */
 export const QUIET_DEFAULT_MS = 600_000;
 export const QUIET_MAX_MS = 900_000;
-/** A rule edit needs this many recorded events behind it; one event is an accident, not a pattern. */
-export const MIN_FIRED_PROPOSAL = 3;
-export const MIN_REPEAT_PROPOSAL = 3;
 /** Kept from the tool result for the waste detectors: enough for a failure line and a line count. */
 const RESULT_KEEP = 4000;
 /** A repeated request is compared on its content words, redacted and capped before that. */
@@ -208,6 +205,8 @@ export interface SessionGather {
   /** Session files found inside the window, before the session cap. */
   found: number;
   directories: number;
+  /** Bytes read from the session files that were read, so the pass reports what the scan cost, not a budget. */
+  bytes: number;
 }
 
 /**
@@ -227,12 +226,14 @@ export async function gatherSessions(options: {
   const { files, directories } = await projectSessionFiles({ dir: options.dir, cwd: options.cwd, exclude: options.exclude, oldest });
   const readings: SessionReading[] = [];
   const skipped: SkippedSession[] = [];
+  let bytes = 0;
   for (const file of files.slice(0, options.maxSessions ?? files.length)) {
     const data = await readFile(file.path).catch(() => undefined);
     if (!data) {
       skipped.push({ path: file.path, reason: "unreadable" });
       continue;
     }
+    bytes += data.byteLength;
     const header = firstEntry(data);
     if (header && typeof header.cwd === "string" && header.cwd !== options.cwd) {
       skipped.push({ path: file.path, reason: `another project (${header.cwd})` });
@@ -246,7 +247,7 @@ export async function gatherSessions(options: {
     }
     readings.push(reading);
   }
-  return { readings, skipped, found: files.length, directories };
+  return { readings, skipped, found: files.length, directories, bytes };
 }
 
 /** The `session` header of a session file, when it parses. */
@@ -381,8 +382,8 @@ export function countLines(counts: ImproveCounts): Array<{ label: string; value:
     { label: "tool calls", value: counts.toolCalls },
     { label: "whole-file reads", value: counts.wholeFileReads },
     { label: "peak context", value: counts.peakContext === undefined ? "unavailable" : counts.peakContext },
-    { label: "repeated calls", value: counts.repeats.total },
-    { label: "repeated requests", value: counts.repeatedRequests },
+    { label: "calls flagged as repeats", value: counts.repeats.total },
+    { label: "requests typed twice", value: counts.repeatedRequests },
     { label: "rule judgments", value: counts.refusals.judged },
     { label: "rules fired", value: counts.refusals.fired },
     { label: "cleared on a later edit", value: counts.refusals.cleared },
@@ -409,65 +410,13 @@ export function formatCounts(counts: ImproveCounts): string {
   return lines.join("\n");
 }
 
-// ── proposals ────────────────────────────────────────────────────────────────
-
-export type ProposalKind = "clarify" | "add";
-
-export interface ImproveProposal {
-  kind: ProposalKind;
-  /** The id of the rule it changes, or "new" for a rule the file does not hold yet. */
-  ruleId: string;
-  title: string;
-  /** The lines the proposal replaces; empty for an added section. */
-  oldText: string;
-  newText: string;
-  /** The number it came from, and the label of that number in the printed list. */
-  count: { label: string; value: number };
-  /** The records it read: session files, the rules log, the hold logs. */
-  evidence: string[];
-  /** One line for the screen. */
-  why: string;
-}
-
-export interface ProposalInput {
-  counts: ImproveCounts;
-  /** The rules text as the file holds it, before any change. */
-  rulesText: string;
-  rules: ReadonlyArray<{ id: string; name: string }>;
-  /** The rule records in the window, for the session ids a clarify proposal cites. */
-  ruleRecords: readonly RuleRecord[];
-  logPath: string;
-}
-
-/** A measured line the pass adds to a rule it has changed before; the same rule is updated, never duplicated. */
-const MEASURED = /^Measured \d{4}-\d{2}-\d{2}: /;
-
-/** The heading a detector's new rule gets, which is also how a second pass knows the rule is already there. */
-const DETECTOR_RULE: Record<keyof RepeatCounts["byDetector"], { heading: string; body: string }> = {
-  paging: {
-    heading: "Read a file in one call",
-    body: "Read one file with one `read` call, using `offset` and `limit` to cover the range you need. Do not page through the same file in adjacent ranges.",
-  },
-  search: {
-    heading: "Search a file once",
-    body: "Search one file with one `grep` or `rg` call, with the pattern that finds the line. Do not run a second search on the same file with an overlapping pattern.",
-  },
-  recheck: {
-    heading: "Run a check once",
-    body: "Run a check once without a pipe, so its full output arrives. Do not re-run the same check with a different filter on its output.",
-  },
-  sleep: {
-    heading: "Wait once",
-    body: "Wait for slow work with one blocking command or one sleep long enough. Do not poll with a sleep in a loop.",
-  },
-};
+// ── the rule sections, the model's prompt, and the summary after the turn ────
 
 const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
 
-/** The lines of one rule's section: its heading through the line before the next heading of the same level. */
+/** The lines of one rule: its heading through the line before the next heading, at any level. */
 export function ruleSection(rulesText: string, name: string): { start: number; end: number } | undefined {
   const lines = rulesText.split("\n");
-  let level = 0;
   let start = -1;
   for (let index = 0; index < lines.length; index++) {
     const match = HEADING.exec(lines[index]!);
@@ -475,133 +424,177 @@ export function ruleSection(rulesText: string, name: string): { start: number; e
     if (start < 0) {
       if (match[2] !== name) continue;
       start = index;
-      level = match[1]!.length;
       continue;
     }
-    if (match[1]!.length <= level) return { start, end: index };
+    return { start, end: index };
   }
   return start < 0 ? undefined : { start, end: lines.length };
 }
 
-/** The measured line a rule carries, with the day it was measured and the two counts behind it. */
-export function measuredLine(name: string, day: string, row: { fired: number; judged: number }, days: number, worstPath?: string): string {
-  const where = worstPath ? `, most often on \`${worstPath}\`` : "";
-  return `Measured ${day}: ${row.fired} of ${row.judged} judgments against "${name}" in the last ${days} day${days === 1 ? "" : "s"} were violations${where}.`;
+/** The heading names of a rules file, in file order. */
+export function ruleNames(rulesText: string): string[] {
+  return rulesText.split("\n").flatMap(line => {
+    const match = HEADING.exec(line);
+    return match ? [match[2]!] : [];
+  });
 }
+
+/** A `Measured …` line, with the date taken out: only what follows the date can cite a printed count. */
+const MEASURED = /^Measured \d{4}-\d{2}-\d{2}:\s*(.+)$/;
+/** The window phrase carries the day count, not a measured number: `in the last 7 days` is never a citation. */
+const WINDOW_PHRASE = /\bin the last \d+ days?\b/gi;
+/** A path, a timestamp or a session id names where a count came from; its digits are not a count. */
+const PATH_TOKEN = /\S*\/\S*/g;
+const ISO_STAMP = /\b\d{4}-\d{2}-\d{2}T[\d:.+-]*Z?\b/g;
+const ID_TOKEN = /\b(?=[0-9a-f-]*\d)[0-9a-f]{8,}(?:-[0-9a-f]+)+\b/gi;
 
 /**
- * At most three changes, ranked by the count behind each. A rule that fired MIN_FIRED_PROPOSAL times gets the count
- * written into it (or an existing measured line replaced with the fresh count); a repeat in the sessions with no rule
- * covering it gets a new rule. A rule the count does not reach is left alone: no rule is added to look busy.
+ * The prompt the session model gets. It carries the window, every printed count, the paths of the session files read
+ * and skipped, and the rules file; it states the hand-over bound, the citation rule and the second-run rule in it. It
+ * starts no turn itself: the command sends it through the same path `rules tune` uses.
  */
-export function buildProposals(input: ProposalInput): ImproveProposal[] {
-  const proposals: ImproveProposal[] = [];
-  const day = new Date(input.counts.until).toISOString().slice(0, 10);
-  const byId = new Map(input.rules.map(rule => [rule.id, rule]));
-  for (const row of input.counts.refusals.byRule) {
-    if (row.fired < MIN_FIRED_PROPOSAL || !byId.has(row.id)) continue;
-    const section = ruleSection(input.rulesText, byId.get(row.id)!.name);
-    if (!section) continue;
-    const lines = input.rulesText.split("\n");
-    const body = lines.slice(section.start, section.end);
-    const existing = body.findIndex(line => MEASURED.test(line.trim()));
-    const fresh = measuredLine(row.name, day, row, input.counts.days, worstPathFor(input.ruleRecords, row.id));
-    const evidence = [input.logPath, ...new Set(input.ruleRecords.filter(record => record.id === row.id).map(record => record.session))];
-    if (existing >= 0) {
-      proposals.push({
-        kind: "clarify", ruleId: row.id, title: byId.get(row.id)!.name,
-        oldText: body[existing]!, newText: fresh,
-        count: { label: "rules fired", value: row.fired }, evidence,
-        why: `"${row.name}" fired ${row.fired} of ${row.judged} times; its measured line is brought up to date.`,
-      });
-      continue;
-    }
-    const insertAt = lastContentIndex(body) + 1;
-    const withLine = [...body.slice(0, insertAt), "", fresh, ...body.slice(insertAt)];
-    proposals.push({
-      kind: "clarify", ruleId: row.id, title: byId.get(row.id)!.name,
-      oldText: body.join("\n"), newText: withLine.join("\n"),
-      count: { label: "rules fired", value: row.fired }, evidence,
-      why: `"${row.name}" fired ${row.fired} of ${row.judged} times; the count goes into the rule.`,
-    });
-  }
-  const repeats = Object.entries(input.counts.repeats.byDetector) as Array<[keyof RepeatCounts["byDetector"], number]>;
-  repeats.sort((a, b) => b[1] - a[1]);
-  for (const [kind, count] of repeats) {
-    if (count < MIN_REPEAT_PROPOSAL) continue;
-    const rule = DETECTOR_RULE[kind];
-    if (input.rulesText.includes(rule.heading)) continue;
-    proposals.push({
-      kind: "add", ruleId: "new", title: rule.heading,
-      oldText: "",
-      newText: `## ${rule.heading}\n${rule.body}\n\nMeasured ${day}: ${count} repeated ${kind === "sleep" ? "waits" : kind === "paging" ? "range reads" : kind === "search" ? "searches" : "checks"} in the last ${input.counts.days} day${input.counts.days === 1 ? "" : "s"}.`,
-      count: { label: "repeated calls", value: count },
-      evidence: input.counts.repeats.sessions[kind],
-      why: `${count} repeated ${kind} calls in this project's sessions, and no rule covers them.`,
-    });
-  }
-  return proposals.sort((a, b) => b.count.value - a.count.value || a.title.localeCompare(b.title)).slice(0, IMPROVE_MAX_PROPOSALS);
+export interface ImproveRequestOptions {
+  days: number;
+  counts: ImproveCounts;
+  /** The count lines exactly as the pass prints them, so the model cannot see a number the user does not. */
+  countsText: string;
+  read: readonly string[];
+  skipped: readonly SkippedSession[];
+  /** The rules file text as the pass read it. */
+  rulesText: string;
+  /** The rules file name, relative to the project root. */
+  file: string;
 }
 
-/** The path a rule fired on most in the window, when the records name one more than once. */
-function worstPathFor(records: readonly RuleRecord[], id: string): string | undefined {
-  const counts = new Map<string, number>();
-  for (const record of records) if (record.id === id && record.finding) counts.set(record.path, (counts.get(record.path) ?? 0) + 1);
-  const best = [...counts].sort((a, b) => b[1] - a[1])[0];
-  return best && best[1] > 1 ? best[0] : undefined;
+export function improveRequest(options: ImproveRequestOptions): { prompt: string } | { reason: string } {
+  if (!options.counts.sessions) return { reason: formatEmpty(options.days) };
+  const read = options.read.join("\n") || "none";
+  const skipped = options.skipped.length ? options.skipped.map(skip => `${skip.path} (${skip.reason})`).join("\n") : "none";
+  return {
+    prompt: [
+      `pi-warden improve: make this project's rules better from the last ${options.days} day${options.days === 1 ? "" : "s"} of its own sessions.`,
+      "",
+      "The counts below were measured by pi-warden from this project's session files, rules log and hold log. They are the only facts a rule change may rest on.",
+      "",
+      options.countsText,
+      "",
+      `Session files read (${options.read.length}):`,
+      read,
+      "",
+      `Session files skipped (${options.skipped.length}):`,
+      skipped,
+      "",
+      `The rules file, ${options.file}, holds this now:`,
+      `----- ${options.file} -----`,
+      options.rulesText.replace(/\s*$/, ""),
+      `----- end ${options.file} -----`,
+      "",
+      "What to do:",
+      "- Read the session files listed above that bear on a count you mean to change, and judge what actually went wrong in them.",
+      `- Change a rule only for a count printed above. For every rule you add or change, write a \`Measured YYYY-MM-DD: …\` line inside that rule's section that names the count (its label and value) and the session file it came from.`,
+      `- If nothing printed above supports a change, say what the counts show and change nothing. When rule judgments is above 0, say the rules held; when it is 0, say the rules guard judged nothing, so nothing is known about the rules.`,
+      `- Edit ${options.file} in place with your own tools (edit or write). Do not change any other file. A timestamped backup already sits beside it.`,
+      `- Make at most ${IMPROVE_MAX_CHANGES} rule changes. Change a rule in place; do not add a second section with a heading the file already has, and if a rule already carries a \`Measured …\` line, replace that line instead of adding another, so a second run does not duplicate one.`,
+      "- Hand-over bound: you get these counts, the session file paths above, the rules file text, and at most one short excerpt per finding. Do not scan directories or read session files that are not listed; stop before the list ends only if a file is unreadable, and say which files you did not read.",
+      "- When you are done, reply with one line per rule you added, changed or removed, with the count you cited.",
+    ].join("\n"),
+  };
 }
 
-function lastContentIndex(lines: readonly string[]): number {
-  for (let index = lines.length - 1; index >= 0; index--) if (lines[index]!.trim()) return index;
-  return 0;
+/** The labels a printed count carries, for a number the model cited. */
+function labelsForNumber(counts: ImproveCounts, value: number): string {
+  return countLines(counts).filter(line => line.value === value).map(line => line.label).join(" / ");
 }
 
-/**
- * The whole proposal set is refused when any proposal cites a number the pass did not print: a rule edit no count
- * supports never reaches the file, and neither does the rest of the set it arrived in.
- */
-export function validateProposals(proposals: readonly ImproveProposal[], counts: ImproveCounts): string | undefined {
+/** The printed counts a rule's `Measured …` lines cite; the date and the window phrase are not citations. */
+export function measuredCitations(section: string, counts: ImproveCounts): number[] {
   const printed = citedNumbers(counts);
-  for (const proposal of proposals) {
-    if (!printed.has(proposal.count.value)) {
-      return `warden: a proposal cites ${proposal.count.label} ${proposal.count.value}, which this pass did not print; nothing was written.`;
+  const bodies = section.split("\n").map(line => MEASURED.exec(line.trim())?.[1]).filter((body): body is string => body !== undefined);
+  const found = new Set<number>();
+  for (const body of bodies) {
+    const text = body.replace(WINDOW_PHRASE, " ").replace(PATH_TOKEN, " ").replace(ISO_STAMP, " ").replace(ID_TOKEN, " ");
+    for (const match of text.matchAll(/\d+/g)) {
+      const value = Number(match[0]);
+      if (printed.has(value)) found.add(value);
     }
   }
-  return undefined;
+  return [...found];
 }
 
-/** The rules text with every proposal applied; a proposal whose old text is gone is skipped, never guessed at. */
-export function applyProposals(rulesText: string, proposals: readonly ImproveProposal[]): string {
-  let text = rulesText;
-  for (const proposal of proposals) {
-    if (!proposal.oldText) {
-      text = `${text.replace(/\s*$/, "")}\n\n${proposal.newText}\n`;
+export interface RulesChangeSummary {
+  added: string[];
+  changed: string[];
+  removed: string[];
+  /** Added or changed rules whose `Measured …` line cites no number this pass printed; the edit is named, not reverted. */
+  uncited: string[];
+  /** One line per rule for the screen. */
+  lines: string[];
+}
+
+/**
+ * What the model changed, rule by rule, and whether each added or changed rule cites a printed count. Read-only: a
+ * rule with no citation is named for the user; its edit stays in the file.
+ */
+export function summariseRulesChange(before: string, after: string, counts: ImproveCounts): RulesChangeSummary {
+  const beforeNames = new Set(ruleNames(before));
+  const afterNames = ruleNames(after);
+  const sectionOf = (text: string, name: string) => {
+    const span = ruleSection(text, name);
+    return span ? text.split("\n").slice(span.start, span.end).join("\n") : "";
+  };
+  const summary: RulesChangeSummary = { added: [], changed: [], removed: [], uncited: [], lines: [] };
+  for (const name of afterNames) {
+    const previous = beforeNames.has(name);
+    if (previous && sectionOf(before, name) === sectionOf(after, name)) continue;
+    const kind = previous ? "changed" : "added";
+    (previous ? summary.changed : summary.added).push(name);
+    const cites = measuredCitations(sectionOf(after, name), counts);
+    if (!cites.length) {
+      summary.uncited.push(name);
+      summary.lines.push(`${previous ? "~" : "+"} ${kind} "${name}" — no Measured line with a number this pass printed`);
       continue;
     }
-    const at = text.indexOf(proposal.oldText);
-    if (at < 0) continue;
-    text = `${text.slice(0, at)}${proposal.newText}${text.slice(at + proposal.oldText.length)}`;
+    summary.lines.push(`${previous ? "~" : "+"} ${kind} "${name}" — cites ${cites.map(value => `${labelsForNumber(counts, value)} ${value}`).join(", ")}`);
   }
-  return text;
+  for (const name of beforeNames) {
+    if (afterNames.includes(name)) continue;
+    summary.removed.push(name);
+    summary.lines.push(`- removed "${name}"`);
+  }
+  return summary;
 }
 
-/** One line per proposal, with the count and the records behind it. */
-export function formatProposals(proposals: readonly ImproveProposal[]): string {
-  if (!proposals.length) return "";
-  return proposals.map((proposal, index) => [
-    `${index + 1}. ${proposal.kind === "add" ? "add rule" : "clarify rule"} "${proposal.title}" — ${proposal.count.label} ${proposal.count.value}`,
-    `   ${proposal.why}`,
-    `   read: ${proposal.evidence.join(", ")}`,
-  ].join("\n")).join("\n");
-}
-
-/** The one line a pass with nothing to change prints, with the counts that show it. */
+/** The closing sentence when the guard judged rules in the window and the model changed nothing. */
 export function formatHeld(counts: ImproveCounts, rules: number): string {
-  return `The rules held in the last ${counts.days} day${counts.days === 1 ? "" : "s"}: ${rules} rule${rules === 1 ? "" : "s"} judged ${counts.refusals.judged} time${counts.refusals.judged === 1 ? "" : "s"}, ${counts.refusals.fired} fired, ${counts.refusals.cleared} cleared on a later edit, ${counts.repeats.total} repeated calls in ${counts.sessions} session${counts.sessions === 1 ? "" : "s"}; nothing to change in pi-warden.md.`;
+  return `The rules held in the last ${counts.days} day${counts.days === 1 ? "" : "s"}: ${rules} rule${rules === 1 ? "" : "s"} judged ${counts.refusals.judged} time${counts.refusals.judged === 1 ? "" : "s"}, ${counts.refusals.fired} fired, ${counts.refusals.cleared} cleared on a later edit; ${counts.repeats.total} calls flagged as repeats, ${counts.repeatedRequests} requests typed twice in ${counts.sessions} session${counts.sessions === 1 ? "" : "s"}; nothing to change in pi-warden.md.`;
+}
+
+/**
+ * The closing sentence when the guard judged nothing. That is not the rules holding: no judgment was made, so it says
+ * nothing about the rules, and the counts that do exist are named instead.
+ */
+export function formatUnknownRules(counts: ImproveCounts): string {
+  return `The rules guard judged nothing for this project in the last ${counts.days} day${counts.days === 1 ? "" : "s"}, so nothing is known about the rules. The sessions still measured ${counts.turns} turn${counts.turns === 1 ? "" : "s"}, ${counts.toolCalls} tool call${counts.toolCalls === 1 ? "" : "s"}, ${counts.repeats.total} calls flagged as repeats, ${counts.repeatedRequests} requests typed twice and ${counts.refusals.holds} hold${counts.refusals.holds === 1 ? "" : "s"}.`;
 }
 
 export function formatEmpty(days: number): string {
   return `Nothing to learn from yet: this project has no recorded sessions in the last ${days} day${days === 1 ? "" : "s"}.`;
+}
+
+/** A byte count as the head line shows it. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * The head line: what the scan actually cost in time, files and bytes. It prints no budget, because a budget the pass
+ * misses is a claim it did not keep.
+ */
+export function formatScan(options: { days: number; read: number; found: number; skipped: number; bytes: number; elapsedMs: number }): string {
+  const files = options.found > options.read ? `${options.read} of ${options.found} session files read` : `${options.read} session file${options.read === 1 ? "" : "s"} read`;
+  return `pi-warden improve: last ${options.days} day${options.days === 1 ? "" : "s"}, ${files}, ${options.skipped} skipped, ${formatBytes(options.bytes)} in ${Math.round(options.elapsedMs)} ms.`;
 }
 
 // ── the diff and the write ───────────────────────────────────────────────────
@@ -672,31 +665,23 @@ export function backupPathFor(file: string, now = Date.now()): string {
   return `${file}.bak-${new Date(now).toISOString().replace(/[:.]/g, "-")}`;
 }
 
-export interface WriteResult {
-  backup?: string;
+export interface BackupResult {
+  path?: string;
   error?: string;
 }
 
 /**
- * Writes the new rules file: a timestamped backup first, then the file through a temporary name and a rename. The file
- * must still hold the text the pass read; when it changed under us the write is refused and the pass re-runs.
+ * Copies the rules file to a timestamped name beside it before the model's turn, through a temporary name and a rename.
+ * The rules file itself is untouched: the model edits it, and the pass compares against this copy afterwards.
  */
-export async function writeRulesFile(options: { file: string; before: string; after: string; now?: number }): Promise<WriteResult> {
-  let current: string;
+export async function backupRulesFile(file: string, before: string, now = Date.now()): Promise<BackupResult> {
+  const path = backupPathFor(file, now);
   try {
-    current = await readFile(options.file, "utf8");
+    await writeFileAtomic(path, before);
   } catch (error) {
-    return { error: `warden: ${options.file} could not be read (${error instanceof Error ? error.message : String(error)}); nothing was written.` };
+    return { error: `warden: the backup of ${file} could not be written (${error instanceof Error ? error.message : String(error)}); the model's turn was not started.` };
   }
-  if (current !== options.before) return { error: "warden: pi-warden.md changed since this pass read it; nothing was written. Run /warden improve again." };
-  const backup = backupPathFor(options.file, options.now);
-  try {
-    await writeFileAtomic(backup, options.before);
-    await writeFileAtomic(options.file, options.after);
-  } catch (error) {
-    return { error: `warden: writing pi-warden.md failed (${error instanceof Error ? error.message : String(error)}); the backup is at ${backup}.` };
-  }
-  return { backup };
+  return { path };
 }
 
 // ── the hold logs ────────────────────────────────────────────────────────────
@@ -740,26 +725,6 @@ export async function readHolds(options: {
 }
 
 // ── the whole pass ───────────────────────────────────────────────────────────
-
-export interface ImproveRun {
-  days: number;
-  elapsedMs: number;
-  budgetMs: number;
-  /** The rules file this pass would edit, when the project has one at the root. */
-  file?: string;
-  before?: string;
-  after?: string;
-  counts: ImproveCounts;
-  proposals: ImproveProposal[];
-  /** Set when the proposal set was refused; nothing is written then. */
-  refusal?: string;
-  /** The session files read and the ones skipped, printed so the run hides nothing. */
-  read: string[];
-  skipped: SkippedSession[];
-  rulesSource?: string;
-  /** Why no rule edit was possible at all (no rules file, a fallback document, a cap). */
-  rulesNote?: string;
-}
 
 export function rulesLogFile(cwd: string, dirs: HostDirs = defaultHostDirs()): string {
   return rulesLogPath(cwd, dirs);

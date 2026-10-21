@@ -44,10 +44,21 @@ Most guardrails stop and ask you. pi-warden tells **the agent** what it got wron
 | is about to `git push --force`, `reset --hard`, `rm -rf`, `DROP` | holds it before it runs. A built-in pattern holds the destructive ones with no key at all; with Jev on, a score of 0.9 or more for "cannot be undone" holds too |
 | retries the same failing fix for the third time | asks for a new hypothesis |
 | writes stubs, restating comments, hardcoded secrets | names them on the spot |
+| repeats the same mistake across sessions | counts it, and offers the rule that would have stopped it (`/warden improve`) |
 | floods its context with a huge log | keeps the lines that matter, stores the rest |
 | starts repeating itself forever | stops the reply |
 
 [Every guard, with its thresholds and calibration →](docs/guards.md)
+
+## It reads your sessions back
+
+`/warden improve` looks at the last seven days of this project's own sessions, rules log and hold log, and prints what actually cost you: whole-file reads and calls per turn, tool calls the waste detectors flag as repeats, requests typed twice, and the same refusal, rule by rule.
+
+Then it hands the judging to the model already running in this session. The model reads the sessions behind those numbers and edits `pi-warden.md`: at most three changes, each with a `Measured` line naming the count it came from and the session file. With nothing supported it changes nothing and says the rules held, with the counts that show it; when no rule was judged in the window it says that instead, because nothing is known about the rules then.
+
+A run writes a timestamped backup before the model's turn, then prints every rule added, changed or removed with the count it cited, and the diff. The counts, the backup and the checks are local: no extra key, no TypeSafe request, and the only cost is that one turn of the session model. `/warden improve 4` reads four days; the range is 1 to 90.
+
+While the pass runs, the rules judge goes quiet in that one session, so the rewrite is not graded against the rules it is rewriting. The window expires by the clock, another Pi session keeps judging, and the destructive floor stays on.
 
 ## Features
 
@@ -57,7 +68,7 @@ Every guard and feature, its default, and its status. Defaults are `defaultConfi
 | --- | --- | --- | --- |
 | Jev judgments | Sends redacted samples to Jev for the judged checks below | Off until `/warden enable` | Stable |
 | [Action guard](docs/guards.md#action-guard) | Checks each command, write, and edit before it runs: offline patterns plus one Jev request | On | Stable |
-| ↳ Offline floor | Holds destructive patterns (force push, `reset --hard`, `rm -rf` on a path outside scratch, `DROP`) with no key and no request; with Jev on, a pattern hit goes to Jev as evidence | On | Stable |
+| ↳ Offline floor | Holds destructive patterns (force push, `reset --hard`, `rm -rf` on a path outside scratch, `DROP`) with no key and no request. It reads a script that a command runs, one level deep, the way bash runs it (`( )`, `if`, a loop, `bash -c`, a pipe into a shell, a quoted path), and holds a delete spelled `\rm`, `"rm"`, `r''m` or `${x}rm`; delete text the shell never runs — a comment, an `echo` message, a file `grep` only reads — is skipped. With Jev on, a pattern hit goes to Jev as evidence | On | Stable |
 | ↳ Irreversible hold | Jev adds holds: a call scored 0.9 or more as irreversible is held; 0.5 to 0.9 warns | On | Stable |
 | ↳ Scratch deletes | A recursive `rm` of temp scratch the agent made warns instead of holding; data moved in keeps the hold | On | Stable |
 | ↳ Ask gate | Code decides offline when no Jev answer could change what the agent sees, so the call sends no request: 48.9% fewer requests, 327 of the 338 changed outcomes still asked | On. `action.ask` | Stable |
@@ -84,6 +95,11 @@ Every guard and feature, its default, and its status. Defaults are `defaultConfi
 | [Call-waste notes](docs/guards.md#call-waste) | One advisory line on polling, paging, repeated searches, and re-filtered checks | On | Stable |
 | ↳ Session tip | Adds one paragraph about call cost to the system prompt | Off. `waste.tip` | Stable |
 | [Open loops and recall](docs/guards.md#open-loops-and-recall) | `warden_loops` keeps the agent's promises; `warden_recall` lists what it already tried | On, no switch | Stable |
+| [Standing lessons](docs/guards.md#open-loops-and-recall) | `warden_remember` keeps one standing instruction for this project, so a later session starts with the correction you already made | On, no switch | Stable |
+| [Improve pass](docs/commands.md) | Reads the last 7 days of this project's sessions and proposes at most three count-backed edits to `pi-warden.md`; nothing supported means nothing written | On, no switch (`/warden improve`) | Stable |
+| ↳ Quiet window | The rules judge and the text guards go quiet in the arming session only, so the rules file can be rewritten; the floor stays on and the window expires by the clock | On. `improve.quietMs` | Stable |
+| [Rules report](docs/commands.md) | Per rule: judged, fired, cleared after a fire, and the flags `never fires`, `fires on everything`, `undecided` | On, local only (`/warden report`) | Stable |
+| [Capability index](docs/configuration.md) | `/warden index` builds a local index of your skills and tools so the conscience ranks candidates on your machine before it sends anything | On, local only | Stable |
 | [Subagent triage](docs/guards.md#subagent-triage) | Wakes the agent only for a subagent report that needs it | On | Stable |
 | [Token Guardian observer](docs/guards.md#token-guardian-observer) | Records Jev's answers to redacted supervision triggers in the trace; never answers Guardian or acts on them | On with Jev consent | Record-only |
 | [Judge cooldown](docs/guards.md#judge-cooldown) | Pauses Jev requests after repeated failures, so a dead backend costs no timeouts | On, no switch | Stable |
@@ -111,7 +127,7 @@ Jev requests cost money, so each 1.0 change was measured by what it saves. Each 
 | Approval on demand ([#160](https://github.com/DevMortimer/pi-warden/pull/160), [#161](https://github.com/DevMortimer/pi-warden/pull/161)) | Approval questions per 1,000 judged calls 90.0 → 0.7; wrong releases 45 → 1 in the measured runs | [Approval on demand](docs/guards.md#approval-on-demand-2026-10-01-three-designs-three-sets) |
 | Hold database ([#149](https://github.com/DevMortimer/pi-warden/pull/149)) | A copy of 52,362 rows shrinks from 285.9 MiB to 41.6 MiB | [Data handling](docs/data-handling.md#what-stays-on-this-machine) |
 
-Features that did not earn their cost did not ship: the working-memory pruning, the stale-result stubs, and a hybrid compaction failed their gates, and the off-task and should-proceed steers stay trace-only. The numbers are in the [Calibration](docs/guards.md#calibration) section.
+Features that did not earn their cost did not ship: the working-memory pruning, the stale-result stubs, and a hybrid compaction failed their gates, and the off-task and should-proceed steers stay trace-only. The numbers are in the [Calibration](docs/guards.md#calibration) section. `/warden report` sends no request at all; `/warden improve` spends one turn of the session model and no TypeSafe request.
 
 ## Rules no linter can check
 
@@ -169,6 +185,8 @@ From 1.0, pi-warden follows semver for: the documented config keys and their def
 ```bash
 npm install
 npm run check        # typecheck + offline tests + build
+npm test             # offline tests only
+npm run dev:pi       # start Pi with this working tree
 ```
 
 MIT licensed.
