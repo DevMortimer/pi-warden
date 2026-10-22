@@ -535,14 +535,8 @@ export interface WardenConfig {
   subagent: SubagentConfig;
   /** The status line above the editor and the trace panel. */
   widget: WidgetConfig;
-  /** Show steer messages in the transcript. They are always visible in the trace panel. */
-  steerVisible: boolean;
-  /** Per-call warning notices ("warden · …") in the transcript. Off by default; the widget and trace panel always show them. */
+  /** A toast for each guard notice. Off by default; the widget and the trace panel always show them. */
   notices: boolean;
-  /** Steers delivered to the agent per run before further non-critical ones are recorded in the trace only. Every delivered
-   * steer costs at least one LLM turn, and a closing run that collects six notices collects six restatements of the final
-   * status. 0 disables the budget. Critical guards (stuck, done, runaway, subagent wake) always deliver. */
-  steerBudget: number;
   /** Per-model steer adaptation. */
   steers: SteersConfig;
   /** Learning and adaptation settings. */
@@ -614,9 +608,7 @@ export function defaultConfig(): WardenConfig {
     judge: { cooldownMs: 60000, failuresBeforeCooldown: 3 },
     subagent: { enabled: true, wake: true, observer: true, threshold: 0.8, cooldownMs: 120000 },
     widget: defaultWidgetConfig(),
-    steerVisible: false,
     notices: false,
-    steerBudget: 3,
     steers: { adaptive: true, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 },
     learning: { patternAnalysis: true, retentionDays: 365, allowedRetentionDays: 90 },
     conscience: {
@@ -1167,9 +1159,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     ...shared,
     ...guards,
     widget: applyWidget(base.widget, raw.widget),
-    steerVisible: boolean(raw.steerVisible, base.steerVisible),
     notices: boolean(raw.notices, base.notices),
-    steerBudget: typeof raw.steerBudget === "number" && Number.isInteger(raw.steerBudget) && raw.steerBudget >= 0 ? raw.steerBudget : base.steerBudget,
     steers: applySteers(base.steers, raw.steers),
     learning: applyLearning(base.learning, raw.learning),
     conscience: applyConscience(base.conscience, raw.conscience),

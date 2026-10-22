@@ -103,9 +103,8 @@ Every guard and feature, its default, and its status. Defaults are `defaultConfi
 | [Subagent triage](docs/guards.md#subagent-triage) | Wakes the agent only for a subagent report that needs it | On | Stable |
 | [Token Guardian observer](docs/guards.md#token-guardian-observer) | Records Jev's answers to redacted supervision triggers in the trace; never answers Guardian or acts on them | On with Jev consent | Record-only |
 | [Judge cooldown](docs/guards.md#judge-cooldown) | Pauses Jev requests after repeated failures, so a dead backend costs no timeouts | On, no switch | Stable |
-| [Steer budget](docs/guards.md#steer-messages) | At most 3 non-critical steers per run; the rest go to the trace | On | Stable |
 | [Adaptive steers](docs/guards.md#adaptive-steers-per-model) | Makes a steer kind trace-only for a model that rarely follows or often disputes it | On | Stable |
-| Steers and notices in the transcript | Shows steers and per-call notices in the chat, not only in the trace | Off. `steerVisible`, `notices` | Stable |
+| Notices as toasts | Shows each guard notice as a toast besides the status line and the trace; nothing of it enters the conversation | Off. `notices` | Stable |
 | [Desktop notifications](docs/guards.md#desktop-notifications) | Holds, confirm dialogs, and runaway stops reach the desktop or your relay | Off. `notify.enabled` | Stable |
 | [Herdr pane state](docs/guards.md#herdr-pane-state) | In a herdr pane, a waiting confirm dialog shows as blocked in the herdr sidebar instead of working | On, no switch | Stable |
 | [Conscience](docs/guards.md#conscience) | Recommends a skill or tool the agent is missing; ranks candidates on your machine first and sends one request, or none | Off. `conscience.enabled` | Beta |
