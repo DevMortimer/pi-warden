@@ -2230,7 +2230,7 @@ test("a confirm-dialog write gets its rules and slop steer only after the user a
   }
 });
 
-test("prose: the final reply is scored against the audience and the agent is nudged for the next turn on a trend", async () => {
+test("prose: the final reply is scored against the audience and a trend is reported once with its symptoms", async () => {
   await grantConsent();
   await newPrompt("explain the bug");
   nextAnswers = { wordy: 0.9, cliches: 0.95, jargon: 0.1 };
@@ -2243,14 +2243,14 @@ test("prose: the final reply is scored against the audience and the agent is nud
 
   await newPrompt("and the fix?");
   await agentEnd(longReply);
-  assert.equal((await shownNotices()).length, 1, "two of the last three replies: nudge");
+  assert.equal((await shownNotices()).length, 1, "two of the last three replies: one notice");
   assert.match((await shownNotices())[0]!.message.content, /longer than the content needs[\s\S]*assistant clichés[\s\S]*From the next reply on, lead with the answer/);
-  assert.match(widgets.at(-1)!.at(-1)!, /^NUDGED\s+prose\s+wordy 0\.90/, "the nudge is a warning: prose keeps its own line");
+  assert.match(widgets.at(-1)!.at(-1)!, /^REPORTED\s+prose\s+wordy 0\.90/, "the notice is a warning: prose keeps its own line");
   assert.match(notices.at(-1)!.text, /warden · prose: wordy, cliches in 2 of the last 3 replies/);
 
   await newPrompt("ok");
   await agentEnd(longReply);
-  assert.equal((await shownNotices()).length, 1, "cool-down after a nudge");
+  assert.equal((await shownNotices()).length, 1, "cool-down after a notice");
   await newPrompt("short one");
   await agentEnd("Short.");
   assert.equal(requests.filter(request => "wordy" in request.questions).length, 3, "replies under minChars are not judged");
