@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, InlineExtension, SessionManager as AgentSessionManager } from "@earendil-works/pi-coding-agent";
 import { armFor } from "../src/trial.js";
+import { sessionFileId } from "../src/holds.js";
 
 // This file loads pi-warden exactly as Pi does: `package.json` → `pi.extensions` → `extensions/index.js` →
 // `dist/extension.js`. `tests/extension.test.ts` mounts `src/extension.ts` by hand, which cannot catch a broken
@@ -133,6 +134,26 @@ async function runSession(script: ScriptedReply[], record: Recorded, options: { 
   return { session, dir };
 }
 
+/** The trace file this session wrote: where a guard report goes when the host has no terminal UI. */
+async function traceText(session: { sessionManager: AgentSessionManager }): Promise<string> {
+  const dir = process.env.PI_WARDEN_TRACE_DIR;
+  if (!dir) return "";
+  const id = session.sessionManager.getSessionId();
+  const file = join(dir, `${sessionFileId(id)}.jsonl`);
+  // A trace the host has not written yet is not an error; an unreadable one raises.
+  return existsSync(file) ? readFile(file, "utf8") : "";
+}
+
+/** Waits for the trace write, which the host does not await, and returns the whole file text. */
+async function waitForTrace(session: { sessionManager: AgentSessionManager }, pattern: RegExp, what: string): Promise<string> {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const text = await traceText(session);
+    if (pattern.test(text)) return text;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${what} in the trace`);
+}
+
 /** The text of every custom message the session recorded, so a test asserts on what the model was shown. */
 function customMessages(session: { sessionManager: AgentSessionManager }): string {
   return session.sessionManager.getBranch()
@@ -148,6 +169,7 @@ before(async () => {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.TYPESAFE_API_KEY = "offline-test-key";
   process.env.PI_WARDEN_DB = join(agentDir, "pi-warden", "holds.db");
+  process.env.PI_WARDEN_TRACE_DIR = join(root, "trace");
   delete process.env.PI_WARDEN_ENABLED;
   delete process.env.PI_WARDEN_MODE;
   // `action.floor: "level"` is a user-only key: it makes the offline pattern floor decide the level, which is what
@@ -175,6 +197,7 @@ after(async () => {
   if (saved.enabled === undefined) delete process.env.PI_WARDEN_ENABLED; else process.env.PI_WARDEN_ENABLED = saved.enabled;
   if (saved.mode === undefined) delete process.env.PI_WARDEN_MODE; else process.env.PI_WARDEN_MODE = saved.mode;
   if (saved.db === undefined) delete process.env.PI_WARDEN_DB; else process.env.PI_WARDEN_DB = saved.db;
+  delete process.env.PI_WARDEN_TRACE_DIR;
   if (root) await rm(root, { recursive: true, force: true });
   for (const dir of dirs) await rm(dir, { recursive: true, force: true });
 });
@@ -198,14 +221,14 @@ test("the shipped pi-warden nudges an unverified done claim into the model's con
   let seenAfterNudge = "";
   const { session } = await runSession([
     faux.fauxAssistantMessage(faux.fauxToolCall("write", { path: "note.txt", content: "hello" })),
-    faux.fauxAssistantMessage("Done."),
-    (context: { messages: unknown[] }) => { seenAfterNudge = JSON.stringify(context.messages); return faux.fauxAssistantMessage("Understood."); },
+    (context: { messages: unknown[] }) => { seenAfterNudge = JSON.stringify(context.messages); return faux.fauxAssistantMessage("Done."); },
   ], record);
   await session.prompt("add a note");
   assert.equal(record.written.length, 1, "the edit ran once");
   assert.ok(record.written[0]!.endsWith("note.txt"), "the edit ran");
-  assert.match(seenAfterNudge, /no test, build, or lint run/, "the model's next request carries the done-check nudge");
-  assert.match(customMessages(session), /no test, build, or lint run/, "the session recorded the done-check nudge");
+  assert.doesNotMatch(seenAfterNudge, /no test, build, or lint run/, "the done-check notice never enters the model's context");
+  assert.match(await waitForTrace(session, /no test, build, or lint run/, "the done-check notice"), /warden · done-check/, "the trace file holds the notice");
+  assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "the session records no warden custom message");
 });
 
 test("the shipped pi-warden repeats note reaches the model after the same failing read twice", async () => {
@@ -214,13 +237,14 @@ test("the shipped pi-warden repeats note reaches the model after the same failin
   let seenAfterRepeat = "";
   const { session } = await runSession([
     faux.fauxAssistantMessage(faux.fauxToolCall("read", { path: "missing.txt" })),
-    () => faux.fauxAssistantMessage(faux.fauxToolCall("read", { path: "missing.txt" })),
+    (context: { messages: unknown[] }) => { seenAfterRepeat = JSON.stringify(context.messages); return faux.fauxAssistantMessage(faux.fauxToolCall("read", { path: "missing.txt" })) },
     (context: { messages: unknown[] }) => { seenAfterRepeat = JSON.stringify(context.messages); return faux.fauxAssistantMessage("Stopped."); },
   ], record);
   await session.prompt("read the missing file");
   assert.equal(record.readCalls, 2, "the same failing read ran twice");
-  assert.match(seenAfterRepeat, /you already ran/, "the model's next request carries the repeat note");
-  assert.match(customMessages(session), /you already ran/, "the session recorded the repeat note");
+  assert.doesNotMatch(seenAfterRepeat, /you already ran/, "the repeat note never enters the model's context");
+  assert.match(await waitForTrace(session, /you already ran/, "the repeat note"), /warden/, "the trace file holds the repeat notice");
+  assert.doesNotMatch(customMessages(session), /you already ran/, "the session records no warden custom message");
 });
 
 test("/warden init in a real session injects its prompt, waits for the agent, and reports the file created", async () => {
@@ -239,7 +263,8 @@ test("/warden init in a real session injects its prompt, waits for the agent, an
   await session.prompt("/warden init");
   assert.deepEqual(record.written, [join(dir, "pi-warden.md")], "the agent ran the init task and called write");
   assert.ok(existsSync(join(dir, "pi-warden.md")), "the rules file exists after the run");
-  assert.match(customMessages(session), /pi-warden\.md created/, "the command reported the file created only after the run ended");
+  assert.match(await waitForTrace(session, /pi-warden\.md created/, "the init report"), /headless warning/, "the command reported the file created through the trace, after the run ended");
+  assert.doesNotMatch(customMessages(session), /pi-warden\.md created/, "the report is not a custom message in the session");
 });
 
 /** The trial records of a session, in order. */
@@ -279,10 +304,12 @@ test("with the silent-half setting on, one arm records the arm and withholds the
       const suppressed = entries.slice(1).filter(entry => entry.record === "suppressed");
       if (arm === "silent") {
         assert.ok(suppressed.some(entry => entry.kind === "done"), "the suppressed done-check steer is recorded with its kind");
-        assert.equal(customMessages(session).includes("no test, build, or lint run"), false, "the done-check steer never reaches the model");
+        assert.doesNotMatch(await traceText(session), /"guards: done"/, "the silent arm writes no notice entry");
+        assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "no arm puts the notice in a custom message");
       } else {
         assert.deepEqual(suppressed, [], "the live arm suppresses nothing");
-        assert.match(customMessages(session), /no test, build, or lint run/, "the live arm delivers the done-check steer");
+        assert.match(await waitForTrace(session, /"guards: done"/, "the live arm's done-check notice"), /warden · done-check/, "the live arm reports the done-check notice on the trace");
+        assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "no arm puts the notice in a custom message");
       }
     }
   } finally {

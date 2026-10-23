@@ -217,6 +217,17 @@ async function runSession(script: ScriptedReply[], record: Recorded, options: { 
 }
 
 /** The custom messages the session recorded: the text the model was shown. */
+/** The trace file this session wrote: where a guard report goes when the host has no terminal UI. */
+async function traceFile(session: { sessionManager: AgentSessionManager }): Promise<string> {
+  const dir = process.env.PI_WARDEN_TRACE_DIR;
+  if (!dir) return "";
+  const { readdir, readFile } = await import("node:fs/promises");
+  // A trace the host has not written yet is not an error; an unreadable one is, and readFile raises it.
+  const files = existsSync(dir) ? await readdir(dir) : [];
+  const parts = await Promise.all(files.filter(name => name.endsWith(".jsonl")).map(name => readFile(join(dir, name), "utf8")));
+  return parts.join("");
+}
+
 function customMessages(session: { sessionManager: AgentSessionManager }): string {
   return session.sessionManager.getBranch()
     .filter(entry => entry.type === "custom_message")
@@ -252,6 +263,7 @@ before(async () => {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.TYPESAFE_API_KEY = "offline-test-key";
   process.env.PI_WARDEN_DB = join(agentDir, "pi-warden", "holds.db");
+  process.env.PI_WARDEN_TRACE_DIR = join(root, "trace");
   globalThis.fetch = stubFetch;
 });
 
@@ -260,6 +272,7 @@ after(async () => {
   if (saved.key === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = saved.key;
   if (saved.agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = saved.agentDir;
   if (saved.db === undefined) delete process.env.PI_WARDEN_DB; else process.env.PI_WARDEN_DB = saved.db;
+  delete process.env.PI_WARDEN_TRACE_DIR;
   if (root) await rm(root, { recursive: true, force: true });
   for (const dir of dirs) await rm(dir, { recursive: true, force: true });
 });
@@ -293,8 +306,9 @@ test("a live session delivers the done-check steer and records only the arm", as
   assert.equal(entries[0]!.record, "arm");
   assert.equal((entries[0] as Extract<TrialRecord, { record: "arm" }>).arm, "live");
   assert.deepEqual(entries.slice(1), [], "a live session has nothing suppressed to record");
-  assert.match(customMessages(session), /no test, build, or lint run/, "the live arm still steers");
-  assert.match(seenAfterNudge, /no test, build, or lint run/, "and the model reads it");
+  assert.match(await traceFile(session), /no test, build, or lint run/, "the live arm reports the done-check notice on the trace");
+  assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "the notice is not a custom message");
+  assert.equal(seenAfterNudge, "", "the notice asks for no follow-up turn");
 });
 
 test("with the setting off, no trial entries are written", async () => {
@@ -303,7 +317,8 @@ test("with the setting off, no trial entries are written", async () => {
   const { session } = await runSession([...writeThenDone, faux.fauxAssistantMessage("Understood.")], record, { id: idFor("silent"), trial: false });
   await session.prompt("add a note");
   assert.deepEqual(trialEntries(session), [], "the setting is off: nothing is recorded");
-  assert.match(customMessages(session), /no test, build, or lint run/, "and the steer is delivered as before");
+  assert.match(await traceFile(session), /no test, build, or lint run/, "and the notice is still reported on the trace");
+  assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "and it is not a custom message");
 });
 
 test("a silent session still holds an irreversible call", async () => {

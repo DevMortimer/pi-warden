@@ -1084,11 +1084,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
   /** The status line is one row; the whole sentence stays in the trace details. */
   const NOTICE_HEAD_MAX = 160;
   /**
-   * The one way a guard reports. It writes the trace entry and the status line, and toasts when the owner asked for
-   * notices; it holds no call that reaches the model, so no judgment can enter the conversation or ask the agent to
-   * answer it. False means the notice was held back as a repeat or by the silent trial arm.
+   * The one way a guard reports. It writes the trace entry and the status line; it holds no call that reaches the model,
+   * so no judgment can enter the conversation or ask the agent to answer it. A guard that keeps its own status chip and
+   * details passes them in `options`, so the judgment stays one entry and that guard toasts its own line. False means the
+   * notice was held back as a repeat or by the silent trial arm.
    */
-  const steer = (ctx: ExtensionContext, config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { kind?: TrialDeliveryKind }): boolean => {
+  const steer = (ctx: ExtensionContext, config: WardenConfig, guard: SteerGuard | readonly SteerGuard[], content: string, options?: { kind?: TrialDeliveryKind; line?: string; details?: string[] }): boolean => {
     const names = typeof guard === "string" ? [guard] : [...guard];
     for (const name of names) stats.steerGuards[name] = (stats.steerGuards[name] ?? 0) + 1;
     const critical = names.every(name => CRITICAL_STEER_GUARDS.has(name));
@@ -1104,8 +1105,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const text = redact(content);
     const head = text.split("\n")[0] ?? text;
     const line = head.length > NOTICE_HEAD_MAX ? `${head.slice(0, NOTICE_HEAD_MAX)}…` : head;
-    record(ctx, config, STEER_TRACE_GUARD[names[0] ?? "action"], line, [text, `guards: ${names.join(", ")}`]);
-    if (ctx.hasUI && config.notices) ctx.ui.notify(line.replace(/^pi-warden: /, ""), "warning");
+    // One entry per judgment: the guard's own line keeps the status chip, and the notice text rides its details.
+    record(ctx, config, STEER_TRACE_GUARD[names[0] ?? "action"], options?.line ?? line, [text, ...(options?.details ?? []), `guards: ${names.join(", ")}`]);
+    // A guard with a status line of its own toasts it; one without toasts the notice, so every report can reach the owner.
+    if (options?.line === undefined && ctx.hasUI && config.notices) ctx.ui.notify(line.replace(/^pi-warden: /, ""), "warning");
     return true;
   };
   /**
@@ -1697,6 +1700,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
                     const msg = buildLoadMessage(loadResult);
                     record(ctx, config, "conscience", `loaded: ${result.selected.id} (${loadResult.bytesLoaded} bytes)`, ["trigger: before_agent_start", `skipReason: none`, `delivery: instructions_supplied`]);
                     standingText.tip = msg;
+                    return undefined;
                   } else {
                     record(ctx, config, "conscience", `load failed: ${result.selected.id}`, ["trigger: before_agent_start", `skipReason: ${loadResult.skipReason}`]);
                     // Fall through to recommend mode
@@ -2177,7 +2181,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       }
       notes.push(...pathNotes);
       if (notes.length) {
-        const delivered = steer(ctx, config, [...noteGuards], notes.join("\n\n"), { kind: "action-notes" });
+        const delivered = steer(ctx, config, [...noteGuards], notes.join("\n\n"), { kind: "action-notes", line: actionFmt.line });
         const notePath = verdict.summary.path ?? shell?.writes[0]?.path;
         if (delivered) watchSteer(ctx, config, noteKinds, notePath ? { path: notePath } : {});
         for (const traceNote of pathNoteTraces) traceNote(delivered);
@@ -2613,11 +2617,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
     if (verdict.source === "repeat" && !verdict.stuck) return withWaste(patch);
     const nudge = verdict.stuck && config.stuck.nudge ? stuckNudge(verdict) : undefined;
-    record(ctx, config, "stuck", formatStuck(verdict, config.widget.stuck), stuckDetails(verdict, attempts.attempts, nudge));
-    if (!verdict.stuck) return withWaste(patch);
+    const stuckLine = formatStuck(verdict, config.widget.stuck);
+    const stuckDetail = stuckDetails(verdict, attempts.attempts, nudge);
+    if (!verdict.stuck) { record(ctx, config, "stuck", stuckLine, stuckDetail); return withWaste(patch); }
     stats.stuck++;
     if (ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}${nudge ? " (agent nudged)" : ""}`, "warning");
-    if (nudge && adaptiveSend(ctx, config, "stuck") && steer(ctx, config, "stuck", nudge)) watchSteer(ctx, config, ["stuck"], { call: { name: event.toolName, input: event.input as Record<string, unknown> } });
+    if (nudge && adaptiveSend(ctx, config, "stuck") && steer(ctx, config, "stuck", nudge, { line: stuckLine, details: stuckDetail })) watchSteer(ctx, config, ["stuck"], { call: { name: event.toolName, input: event.input as Record<string, unknown> } });
     return withWaste(patch);
   });
 
@@ -2924,11 +2929,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const due = verdict.error ? [] : prose.due(config.slop.prose.trend);
       const nudge = due.length ? proseNudge(due, config.slop.prose.audience, prose.counts) : undefined;
       if (nudge) { verdict.nudged = true; prose.markNudged(); stats.proseNudges++; }
-      record(ctx, config, "prose", renderTemplate(config.widget.prose, proseTokens(verdict)), proseDetails(verdict, finalMessage, config.slop.prose.audience, nudge));
+      const proseLine = renderTemplate(config.widget.prose, proseTokens(verdict));
+      const proseDetail = proseDetails(verdict, finalMessage, config.slop.prose.audience, nudge);
       if (nudge) {
         if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · prose: ${due.join(", ")} in ${config.slop.prose.trend} of the last 3 replies (agent nudged for the next reply)`, "warning");
-        if (adaptiveSend(ctx, config, "prose") && steer(ctx, config, "prose", nudge)) watchSteer(ctx, config, ["prose"], {}, true);
-      }
+        if (adaptiveSend(ctx, config, "prose") && steer(ctx, config, "prose", nudge, { line: proseLine, details: proseDetail })) watchSteer(ctx, config, ["prose"], {}, true);
+      } else record(ctx, config, "prose", proseLine, proseDetail);
     }
     let doneSteered = false;
     if (doneCheck) {
@@ -2939,15 +2945,18 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const nudge = verdict.unverified && config.done.nudge && !doneNudged
         ? doneNudge(verdict, { lastCheck: lastPassedCheck?.cwd === ctx.cwd ? lastPassedCheck.call : undefined, projectCheck: projectCheckCommand(ctx.cwd), localUrl: lastLocalUrl })
         : undefined;
-      record(ctx, config, "done", formatDone(verdict, config.widget.done), doneDetails(verdict, finalMessage, nudge));
+      const doneLine = formatDone(verdict, config.widget.done);
+      const doneDetail = doneDetails(verdict, finalMessage, nudge);
+      let doneLineRecorded = false;
       if (verdict.unverified) {
         stats.unverified++;
         if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · done-check: ${verdict.reasons.join("; ")}${nudge ? " (agent asked to verify)" : ""}`, "warning");
         if (nudge) {
           doneNudged = true;
-          if (steer(ctx, config, "done", nudge)) { watchSteer(ctx, config, ["done"]); doneSteered = true; }
+          if (steer(ctx, config, "done", nudge, { line: doneLine, details: doneDetail })) { watchSteer(ctx, config, ["done"]); doneSteered = true; doneLineRecorded = true; }
         }
       }
+      if (!doneLineRecorded) record(ctx, config, "done", doneLine, doneDetail);
     }
     // The cause-check judges a final reply that states a cause or hands a check to a person, and sends one follow-up
     // unless the done-check already steered this reply. The offline pre-filter keeps a reply about results costless.
@@ -2956,15 +2965,21 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const causeVerdict = await evaluateCause(task, finalMessage, activity, { config: config.cause, judge, timeoutMs: config.timeoutMs, signal: ctx.signal, store: causeStore, projectRoot: ctx.cwd, now: Date.now() });
       if (causeVerdict.error) noteError(ctx, causeVerdict.error, causeVerdict.errorCode);
       const causeSteer = causeVerdict.unchecked && config.cause.nudge && !causeNudged && !doneSteered ? causeNudge(causeVerdict) : undefined;
-      record(ctx, config, "cause", formatCause(causeVerdict, config.widget.cause), causeDetails(causeVerdict, finalMessage, causeSteer));
+      const causeLine = formatCause(causeVerdict, config.widget.cause);
+      const causeDetail = causeDetails(causeVerdict, finalMessage, causeSteer);
+      let causeLineRecorded = false;
       if (causeVerdict.unchecked) {
         stats.uncheckedCause++;
         if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · cause-check: ${causeVerdict.reasons.join("; ")}${causeSteer ? " (agent asked to check)" : ""}`, "warning");
         if (causeSteer) {
           causeNudged = true;
-          if (steer(ctx, config, "cause", causeSteer)) watchSteer(ctx, config, ["cause"]);
+          if (steer(ctx, config, "cause", causeSteer, { line: causeLine, details: causeDetail })) {
+            watchSteer(ctx, config, ["cause"]);
+            causeLineRecorded = true;
+          }
         }
       }
+      if (!causeLineRecorded) record(ctx, config, "cause", causeLine, causeDetail);
     }
   });
 

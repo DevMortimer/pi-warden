@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile as readfile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
@@ -392,6 +392,7 @@ before(async () => {
   process.env.PI_CODING_AGENT_DIR = join(temporary, "agent");
   process.env.TYPESAFE_API_KEY = "offline-test-key";
   process.env.PI_WARDEN_DB = join(temporary, "agent", "pi-warden", "holds.db");
+  process.env.PI_WARDEN_TRACE_DIR = join(temporary, "trace");
   delete process.env.PI_WARDEN_MODE;
   globalThis.fetch = async (input, init) => {
     const body = JSON.parse(String(init?.body)) as { state: Record<string, unknown>; questions: Record<string, { type: string; criteria?: unknown }> };
@@ -448,15 +449,34 @@ test("a held call's agent message keeps the words and drops the score", async ()
   assert.doesNotMatch(held?.reason ?? "", /\d+\.\d{2}/, "no Jev score reaches the agent");
 });
 
-test("a headless warn steer keeps the words and drops the score", async () => {
+test("a headless warn notice keeps the words and drops the score", async () => {
   await writeConfig();
   nextAnswers = { irreversible: 0.55, off_task: 0.1, scope: "expected_step", mutates: 0.9 };
   assert.equal(await toolCall("bash", { command: "npm run db:reset" }, context({ hasUI: false })), undefined);
-  const steer = sentMessages.find(sent => sent.message.content.includes("ran with a warning"));
-  assert.ok(steer, "the headless warn steer was delivered");
-  assert.match(steer!.message.content, /possibly irreversible/);
-  assert.doesNotMatch(steer!.message.content, /0\.55/);
-  assert.doesNotMatch(steer!.message.content, /\d+\.\d{2}/);
+  // The report goes to the trace, the channel a host without a TUI reads.
+  const dir = process.env.PI_WARDEN_TRACE_DIR!;
+  // The trace write is queued by the host, so it is read until it lands.
+  const readTrace = async () => {
+    // A trace the host has not written yet is not an error; an unreadable one raises.
+    const files = existsSync(dir) ? await readdir(dir) : [];
+    return (await Promise.all(files.filter(name => name.endsWith(".jsonl")).map(name => readfile(join(dir, name), "utf8")))).join("");
+  };
+  const warnLine = async () => {
+    const trace = await readTrace();
+    const entries = JSON.parse(`[${trace.split("\n").filter(Boolean).join(",")}]`) as Array<{ line?: string }>;
+    return entries.map(entry => entry.line ?? "").find(line => line.includes("ran with a warning"));
+  };
+  let warn = await warnLine();
+  for (let attempt = 0; attempt < 100 && !warn; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    warn = await warnLine();
+  }
+  const trace = await readTrace();
+  assert.ok(warn, `the headless warn notice was reported on the trace: ${JSON.stringify(trace).slice(0, 400)}`);
+  assert.equal(sentMessages.length, 0, "nothing of ours is a message in the conversation");
+  assert.match(warn!, /possibly irreversible/);
+  assert.doesNotMatch(warn!, /0\.55/);
+  assert.doesNotMatch(warn!, /\d+\.\d{2}/);
 });
 
 test("a declined call's reason keeps the words and drops the score", async () => {
