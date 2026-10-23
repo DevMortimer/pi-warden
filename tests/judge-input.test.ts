@@ -457,7 +457,8 @@ test("a headless warn notice keeps the words and drops the score", async () => {
   const dir = process.env.PI_WARDEN_TRACE_DIR!;
   // The trace write is queued by the host, so it is read until it lands.
   const readTrace = async () => {
-    // A trace the host has not written yet is not an error; an unreadable one raises.
+    // Observation only, not a guard path: a trace the host has not written yet reads as empty and the read is
+    // retried below, so a notice that never lands fails the test. An unreadable file raises.
     const files = existsSync(dir) ? await readdir(dir) : [];
     return (await Promise.all(files.filter(name => name.endsWith(".jsonl")).map(name => readfile(join(dir, name), "utf8")))).join("");
   };

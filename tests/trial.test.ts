@@ -222,7 +222,8 @@ async function traceFile(session: { sessionManager: AgentSessionManager }): Prom
   const dir = process.env.PI_WARDEN_TRACE_DIR;
   if (!dir) return "";
   const { readdir, readFile } = await import("node:fs/promises");
-  // A trace the host has not written yet is not an error; an unreadable one is, and readFile raises it.
+  // Observation only, not a guard path: a trace the host has not written yet reads as empty, and the assertion
+  // that follows fails loudly when the notice never lands. An unreadable file raises.
   const files = existsSync(dir) ? await readdir(dir) : [];
   const parts = await Promise.all(files.filter(name => name.endsWith(".jsonl")).map(name => readFile(join(dir, name), "utf8")));
   return parts.join("");
