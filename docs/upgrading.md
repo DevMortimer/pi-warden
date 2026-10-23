@@ -4,7 +4,7 @@ npm's `latest` is 0.74.1. This page lists what changes for you between that rele
 
 ## Settings that are gone
 
-`conscience.loadThreshold` and `learning.adaptiveThresholds` no longer exist. A config file that still sets one keeps loading: 1.0 ignores the key and names it in one config warning, shown once when a session starts and again in `/warden status`. The warning also says what happens now. Delete the keys when you next edit the file.
+`conscience.loadThreshold` and `learning.adaptiveThresholds` no longer exist, and neither do the keys that promised a steer the code no longer sends: `steerVisible`, `steerBudget`, `action.shouldProceed.steer`, `action.offTask.steer` (and its old name `action.offTask.confirm`), `action.intentTraceOnly`, and the `steers` block (`docs/configuration.md` has the table). A config file that still sets one keeps loading: 1.0 ignores the key and names it in one config warning, shown once when a session starts and again in `/warden status`. The warning also says what happens now. Delete the keys when you next edit the file.
 
 ## Project files can only tighten
 

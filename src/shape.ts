@@ -46,7 +46,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     timeoutMs: source.timeoutMs ?? 5000,
     maxRequests: source.maxRequests ?? 500,
     notices: source.notices ?? false,
-    action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, traceSample: 0, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1, steer: 1 }, intentMismatch: 1, visibleMismatch: 1, intentTraceOnly: "all", shouldProceed: { threshold: 0.6, steer: false }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
+    action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, traceSample: 0, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1 }, intentMismatch: 1, visibleMismatch: 1, shouldProceed: { threshold: 0.6 }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     cause: section("cause", { ...off, claimsCause: 1, nudge: false, windowDays: 7 }),
@@ -62,8 +62,6 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     judge: section("judge", { failuresBeforeCooldown: Number.MAX_SAFE_INTEGER, cooldownMs: 0 }),
     subagent: section("subagent", { ...off, wake: false, observer: false, threshold: 1, cooldownMs: 0 }),
     widget: section("widget", { ...off, placement: "aboveEditor", barMode: "live", shortcut: "", panelWidth: "40%", action: "", stuck: "", done: "", cause: "", prose: "", security: "", context: "", runaway: "", rules: "", subagent: "" }),
-    // A missing section turns adaptation off: every steer is sent, as before the section existed.
-    steers: section("steers", { adaptive: false, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 }),
     // A missing section turns the notes off: the guard is new, so nothing it says was expected.
     waste: section("waste", { ...off, tip: false, every: 20, sleep: false, paging: false, search: false, recheck: false }),
     learning: section("learning", { patternAnalysis: true, retentionDays: 365, allowedRetentionDays: 90 }),
@@ -122,14 +120,12 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.learning.allowedRetentionDays !== "number") config.learning = { ...config.learning, allowedRetentionDays: 90 };
   if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.9 };
   if (typeof config.action.visibleMismatch !== "number") config.action = { ...config.action, visibleMismatch: 0.8 };
-  if (config.action.intentTraceOnly !== "invisible" && config.action.intentTraceOnly !== "all" && config.action.intentTraceOnly !== "none") config.action = { ...config.action, intentTraceOnly: "all" };
-  if (typeof config.action.shouldProceed !== "object" || config.action.shouldProceed === null) config.action = { ...config.action, shouldProceed: { threshold: 0.6, steer: false } };
+  if (typeof config.action.shouldProceed !== "object" || config.action.shouldProceed === null) config.action = { ...config.action, shouldProceed: { threshold: 0.6 } };
   // 1.0 renamed shouldProceed.hold to shouldProceed.threshold; an older config module still delivers `hold`.
   if (typeof config.action.shouldProceed.threshold !== "number") {
     const hold = (config.action.shouldProceed as { hold?: unknown }).hold;
-    config.action = { ...config.action, shouldProceed: { threshold: typeof hold === "number" ? hold : 0.6, steer: config.action.shouldProceed.steer } };
+    config.action = { ...config.action, shouldProceed: { threshold: typeof hold === "number" ? hold : 0.6 } };
   }
-  if (typeof config.action.shouldProceed.steer !== "boolean") config.action = { ...config.action, shouldProceed: { ...config.action.shouldProceed, steer: false } };
   if (typeof config.action.escalationThreshold !== "number") config.action = { ...config.action, escalationThreshold: 0.85 };
   if (config.action.floor !== "level" && config.action.floor !== "evidence") config.action = { ...config.action, floor: "evidence" };
   // The soft rules tier was added inside the rules section later than the section itself; an older config module leaves it undefined and the tier stays off.
@@ -143,8 +139,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (!Array.isArray(config.action.exemptRules)) config.action = { ...config.action, exemptRules: [] };
   if (!Array.isArray(config.action.pathRules)) config.action = { ...config.action, pathRules: [] };
   if (!Array.isArray(config.action.armingRules)) config.action = { ...config.action, armingRules: [] };
-  // 0.12 renamed offTask.confirm to offTask.steer; an older config module still delivers `confirm`.
-  if (typeof config.action.offTask?.steer !== "number") config.action = { ...config.action, offTask: { warn: config.action.offTask?.warn ?? 1, steer: (config.action.offTask as { confirm?: number } | undefined)?.confirm ?? 1 } };
+  // 0.12 renamed offTask.confirm, then the second off-task threshold went with the steer it fed; an older config module still delivers one.
+  if (typeof config.action.offTask?.warn !== "number") config.action = { ...config.action, offTask: { warn: 1 } };
   // The runaway guard added its template later than the other sections; an older widget section renders the default line.
   if (typeof config.widget.runaway !== "string") config.widget = { ...config.widget, runaway: DEFAULT_TEMPLATES.runaway };
   if (typeof config.widget.rules !== "string") config.widget = { ...config.widget, rules: DEFAULT_TEMPLATES.rules };

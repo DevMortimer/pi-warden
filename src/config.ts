@@ -20,8 +20,6 @@ export interface Threshold {
 export interface OffTaskThreshold {
   /** P(off-task) at or above this, with a scope other than unclear, shows a warning. */
   warn: number;
-  /** P(off-task) at or above this, with scope unrelated on a call that can change something, also steers the agent back to the task. Never holds: on 17k recorded calls off-task holds caught nothing the user regretted. */
-  steer: number;
 }
 
 /** A user-defined command rule, matched against the stripDataText-processed command. */
@@ -54,14 +52,12 @@ export interface ActionGuardConfig {
   timeoutMs: number;
   irreversible: Threshold;
   offTask: OffTaskThreshold;
-  /** P(the call differs from the agent's own stated plan) at or above this warns and tells the agent; never holds on its own. */
+  /** P(the call differs from the agent's own stated plan) at or above this is reported on the status line and in the trace; never holds on its own. */
   intentMismatch: number;
   /** The same, for a command whose effect is visible outside the working tree (commit, push, merge, publish, launch): less mismatch is enough. */
   visibleMismatch: number;
-  /** Which intent mismatches stay in the trace without a steer: "all" (default) every one, "invisible" only a call with no visible effect (neither a commit, push, merge, tag, reset, pull request, release, or publish by `isVisibleCommand`, nor judged `visible` at 0.8 or more), "none" none. The steer arrives after the call ran: 275 of 275 recorded steers did. On blind labels of 140 sampled calls the score separates a differing call well (AUROC 0.815), but of 37 steers that would reach the agent, 36 were calls the plan or the user's latest request had asked for. */
-  intentTraceOnly: "invisible" | "all" | "none";
-  /** Low P(should_proceed) is trace-only unless steer is enabled; threshold is inclusive and never holds a call. `hold` is its deprecated 1.x name. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
-  shouldProceed: { threshold: number; steer: boolean };
+  /** Low P(should_proceed) is reported on the status line and in the trace; threshold is inclusive and never holds a call. `hold` is its deprecated 1.x name. Calibration: AUC 0.26 against regret, 44% flagged at 0.6 (100 targeted sessions, 2026-09-20). */
+  shouldProceed: { threshold: number };
   /** Write each judged call and what the user did next (approved, declined, re-planned, regretted) to an owner-only per-session file under the agent directory; redacted, never the command. */
   feedbackLog: boolean;
   /** User-defined command rules (user file only; project files cannot set severity above warn). */
@@ -215,7 +211,7 @@ export interface ProseConfig {
   audience: string;
   /** P(symptom) at or above this counts as a hit. */
   threshold: number;
-  /** A symptom must hit in this many of the last three replies before the agent is nudged. */
+  /** A symptom must hit in this many of the last three replies before it is reported. */
   trend: number;
   /** Replies with fewer characters are not judged. */
   minChars: number;
@@ -427,22 +423,6 @@ export interface TrialConfig {
   silentHalf: boolean;
 }
 
-/** Per-model steer adaptation: a steer kind a model rarely follows or often disputes becomes trace-only for it. */
-export interface SteersConfig {
-  /** Make a steer kind trace-only for a model that rarely follows or often disputes it. */
-  adaptive: boolean;
-  /** Steers observed for a (model, kind) pair before it can become trace-only. */
-  minSteers: number;
-  /** Trace-only when the followed share is under this. Kinds with no follow measure are judged by disputes alone. */
-  minFollowed: number;
-  /** Trace-only when the disputed share is over this. */
-  maxDisputed: number;
-  /** A trace-only pair is re-checked after this many further steers. */
-  recheckEvery: number;
-  /** While trace-only, 1 in this many steers is still sent, so the re-check has fresh data. */
-  probeEvery: number;
-}
-
 export interface LearningConfig {
   /** Enable pattern analysis and recommendations. */
   patternAnalysis: boolean;
@@ -538,7 +518,6 @@ export interface WardenConfig {
   /** A toast for each guard notice. Off by default; the widget and the trace panel always show them. */
   notices: boolean;
   /** Per-model steer adaptation. */
-  steers: SteersConfig;
   /** Learning and adaptation settings. */
   learning: LearningConfig;
   /** Broad-consideration coach: recommends or loads skills and tools before the agent acts. */
@@ -580,11 +559,10 @@ export function defaultConfig(): WardenConfig {
       timeoutMs: 5000,
       // 0.9 holds: below it the judge is wrong one call in two to one in seven, and the 0.7 to 0.9 band held no call the user regretted.
       irreversible: { warn: 0.5, confirm: 0.9 },
-      offTask: { warn: 0.6, steer: 0.85 },
+      offTask: { warn: 0.6 },
       intentMismatch: 0.9,
       visibleMismatch: 0.8,
-      intentTraceOnly: "all",
-      shouldProceed: { threshold: 0.6, steer: false },
+      shouldProceed: { threshold: 0.6 },
       feedbackLog: true,
       commandRules: [],
       commandDenyRules: [],
@@ -609,7 +587,6 @@ export function defaultConfig(): WardenConfig {
     subagent: { enabled: true, wake: true, observer: true, threshold: 0.8, cooldownMs: 120000 },
     widget: defaultWidgetConfig(),
     notices: false,
-    steers: { adaptive: true, minSteers: 30, minFollowed: 0.2, maxDisputed: 0.4, recheckEvery: 30, probeEvery: 5 },
     learning: { patternAnalysis: true, retentionDays: 365, allowedRetentionDays: 90 },
     conscience: {
       enabled: false,
@@ -672,12 +649,10 @@ function threshold(value: unknown, fallback: Threshold): Threshold {
   return { warn: Math.min(warn, confirm), confirm };
 }
 
-/** `confirm` is the pre-0.12 name of the upper off-task threshold; files that still set it keep working. */
+/** `confirm` and `steer` named a second, higher off-task threshold before every off-task judgment went to the trace. */
 function offTaskThreshold(value: unknown, fallback: OffTaskThreshold): OffTaskThreshold {
   if (!isObject(value)) return fallback;
-  const warn = probability(value.warn, fallback.warn);
-  const steer = probability(value.steer ?? value.confirm, fallback.steer);
-  return { warn: Math.min(warn, steer), steer };
+  return { warn: probability(value.warn, fallback.warn) };
 }
 
 function boolean(value: unknown, fallback: boolean): boolean {
@@ -905,11 +880,9 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     offTask: offTaskThreshold(raw.offTask, base.offTask),
     intentMismatch: probability(raw.intentMismatch, base.intentMismatch),
     visibleMismatch: Math.min(probability(raw.visibleMismatch, base.visibleMismatch), probability(raw.intentMismatch, base.intentMismatch)),
-    intentTraceOnly: raw.intentTraceOnly === "invisible" || raw.intentTraceOnly === "all" || raw.intentTraceOnly === "none" ? raw.intentTraceOnly : base.intentTraceOnly,
     shouldProceed: {
       // `hold` is the pre-1.0 name of `threshold`; files that still set it keep working through 1.x.
       threshold: probability(shouldProceed.threshold ?? shouldProceed.hold, base.shouldProceed.threshold),
-      steer: boolean(shouldProceed.steer, base.shouldProceed.steer),
     },
     feedbackLog: boolean(raw.feedbackLog, base.feedbackLog),
     // Only the user file declares these; a project file cannot add, edit, or remove them. The base (already the
@@ -1128,17 +1101,37 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
   };
 }
 
-/** Settings 0.74.1 documented and 1.0 removed: no code reads them. One warning per key found in a file, saying what happens now. */
-const REMOVED_KEYS: ReadonlyArray<{ section: "conscience" | "learning"; key: string; now: string }> = [
-  { section: "conscience", key: "loadThreshold", now: "no score loads a skill by itself; the conscience names a skill and asks the agent to load it, and conscience.skills.mode is the only switch for loading" },
-  { section: "learning", key: "adaptiveThresholds", now: "thresholds never change on their own; /warden recommend suggests changes from your hold history and you apply them" },
+const REMOVED_KEYS: ReadonlyArray<{ path: string; now: string }> = [
+  { path: "conscience.loadThreshold", now: "no score loads a skill by itself; the conscience names a skill and asks the agent to load it, and conscience.skills.mode is the only switch for loading" },
+  { path: "learning.adaptiveThresholds", now: "thresholds never change on their own; /warden recommend suggests changes from your hold history and you apply them" },
+  { path: "steerVisible", now: "every notice is on the status line and in the trace; nothing of it enters the conversation" },
+  { path: "steerBudget", now: "notices are not queued for the agent, so there is no per-run budget; a repeat of the same notice is held back" },
+  { path: "action.shouldProceed.steer", now: "a should-proceed judgment is reported on the status line and in the trace; no notice reaches the agent, so there is no steer to switch on" },
+  { path: "action.offTask.steer", now: "action.offTask.warn is the only off-task threshold; every off-task judgment is reported on the status line and in the trace" },
+  { path: "action.offTask.confirm", now: "action.offTask.warn is the only off-task threshold; every off-task judgment is reported on the status line and in the trace" },
+  { path: "action.intentTraceOnly", now: "an intent mismatch is always reported on the status line and in the trace; nothing is sent to the agent, so there is no mode to choose" },
+  { path: "steers.adaptive", now: "no notice is muted; the follow and dispute counts stay in /warden status" },
+  { path: "steers.minSteers", now: "no notice is muted; the follow and dispute counts stay in /warden status" },
+  { path: "steers.minFollowed", now: "no notice is muted; the follow and dispute counts stay in /warden status" },
+  { path: "steers.maxDisputed", now: "no notice is muted; the follow and dispute counts stay in /warden status" },
+  { path: "steers.recheckEvery", now: "no notice is muted; the follow and dispute counts stay in /warden status" },
+  { path: "steers.probeEvery", now: "no notice is muted; the follow and dispute counts stay in /warden status" },
 ];
+
+/** True when `path` (dot-separated) is set in `raw`; a null leaf counts, so a cleared key still gets its warning. */
+function hasPath(raw: Json, path: string): boolean {
+  let node: unknown = raw;
+  for (const part of path.split(".")) {
+    if (!isObject(node) || !Object.prototype.hasOwnProperty.call(node, part)) return false;
+    node = node[part];
+  }
+  return true;
+}
 
 function removedKeyWarnings(raw: Json, source: "user" | "project"): string[] {
   const warnings: string[] = [];
-  for (const { section, key, now } of REMOVED_KEYS) {
-    const group = raw[section];
-    if (isObject(group) && key in group) warnings.push(`${source === "project" ? "project file: " : ""}${section}.${key} was removed in 1.0 and is ignored; ${now}`);
+  for (const { path, now } of REMOVED_KEYS) {
+    if (hasPath(raw, path)) warnings.push(`${source === "project" ? "project file: " : ""}${path} was removed and is ignored; ${now}`);
   }
   return warnings;
 }
@@ -1160,7 +1153,6 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     ...guards,
     widget: applyWidget(base.widget, raw.widget),
     notices: boolean(raw.notices, base.notices),
-    steers: applySteers(base.steers, raw.steers),
     learning: applyLearning(base.learning, raw.learning),
     conscience: applyConscience(base.conscience, raw.conscience),
     prefs: applyPrefs(base.prefs, raw.prefs),
@@ -1238,18 +1230,6 @@ function applyImprove(base: ImproveConfig, raw: unknown, warnings: string[]): Im
     : base.quietMs;
   if (quietMs !== undefined && keptQuiet !== quietMs) warnings.push(`improve.quietMs ${String(quietMs)} is not a number of milliseconds from 0 to 900000; ${base.quietMs} is used`);
   return { days: keptDays, quietMs: keptQuiet };
-}
-
-function applySteers(base: SteersConfig, raw: unknown): SteersConfig {
-  if (!isObject(raw)) return base;
-  return {
-    adaptive: boolean(raw.adaptive, base.adaptive),
-    minSteers: positiveInteger(raw.minSteers, base.minSteers),
-    minFollowed: probability(raw.minFollowed, base.minFollowed),
-    maxDisputed: probability(raw.maxDisputed, base.maxDisputed),
-    recheckEvery: positiveInteger(raw.recheckEvery, base.recheckEvery),
-    probeEvery: positiveInteger(raw.probeEvery, base.probeEvery),
-  };
 }
 
 function applyLearning(base: LearningConfig, raw: unknown): LearningConfig {
@@ -1424,13 +1404,10 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "action.timeoutMs": { kind: "none", why: "user file only" },
   "action.irreversible.warn": { kind: "none", why: "a project cannot raise the warn threshold; the value is refused" },
   "action.irreversible.confirm": { kind: "none", why: "a project cannot raise the hold threshold; the value is refused" },
-  "action.offTask.warn": { kind: "high", check: "off-task steer", label: "warn threshold" },
-  "action.offTask.steer": { kind: "high", check: "off-task steer", label: "steer threshold" },
-  "action.intentMismatch": { kind: "high", check: "intent-mismatch steer", label: "threshold" },
-  "action.visibleMismatch": { kind: "high", check: "intent-mismatch steer", label: "visible-action threshold" },
-  "action.intentTraceOnly": { kind: "scale", check: "intent-mismatch steer", label: "trace-only mode", order: ["all", "invisible", "none"] },
-  "action.shouldProceed.threshold": { kind: "high", check: "should-proceed steer", label: "threshold" },
-  "action.shouldProceed.steer": { kind: "off", check: "should-proceed steer" },
+  "action.offTask.warn": { kind: "high", check: "off-task threshold", label: "warn threshold" },
+  "action.intentMismatch": { kind: "high", check: "intent-mismatch notice", label: "threshold" },
+  "action.visibleMismatch": { kind: "high", check: "intent-mismatch notice", label: "visible-action threshold" },
+  "action.shouldProceed.threshold": { kind: "high", check: "should-proceed notice", label: "threshold" },
   "action.feedbackLog": { kind: "none", why: "the hold record, not a check" },
   "action.commandRules": { kind: "none", why: "user file only" },
   "action.commandDenyRules": { kind: "none", why: "user file only" },

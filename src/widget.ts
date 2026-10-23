@@ -15,7 +15,7 @@ export type WidgetBarMode = typeof WIDGET_BAR_MODES[number];
 /** Palette shared by the status line and the trace sidebar: one place decides what a verdict looks like. */
 export interface ThemeLike { fg(color: string, text: string): string; bold(text: string): string }
 
-export const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", confirm: "error", deny: "error", stuck: "error", "false claim": "error", stopped: "error", "stopped, recovering": "error", violation: "warning", skipped: "muted", wake: "warning", silent: "muted", "appended silently": "muted", "possible credentials": "warning", error: "error" };
+export const LEVEL_COLOR: Record<string, string> = { allow: "success", ok: "success", warn: "warning", unverified: "warning", nudged: "warning", reported: "warning", confirm: "error", deny: "error", stuck: "error", "false claim": "error", stopped: "error", "stopped, recovering": "error", violation: "warning", skipped: "muted", wake: "warning", silent: "muted", "appended silently": "muted", "possible credentials": "warning", error: "error" };
 
 /** Verdicts that need no eye: the guard ran and found nothing. The rest keep a line of their own. */
 export const QUIET_COLORS = new Set(["success", "muted"]);
@@ -119,13 +119,13 @@ export const SENTENCE_TEMPLATES = {
     partial: "warden flagged done — {checksPassed}/{checks} checks passed, needs attention",
     no_checks: "warden flagged done claim — no verification checks run",
     typesafe_error: "warden done check unavailable — TypeSafe error",
-    unverified_nudged: "warden flagged done claim — agent asked to verify ({checksPassed}/{checks} passed)",
-    false_claim_nudged: "warden flagged false claim — agent asked to recheck",
+    unverified_nudged: "warden flagged done claim — notice recorded ({checksPassed}/{checks} passed)",
+    false_claim_nudged: "warden flagged false claim — notice recorded",
     default: "warden done check — {outcome}",
   },
   // --- Prose: 8 variants ---
   prose: {
-    nudged: "warden nudged prose — {status} in recent replies",
+    nudged: "warden flagged prose — {status} in recent replies; notice recorded",
     wordy: "warden flagged prose — wordy ({wordy})",
     cliches: "warden flagged prose — clichés detected ({cliches})",
     jargon: "warden flagged prose — jargon detected ({jargon})",
@@ -169,7 +169,7 @@ export const SENTENCE_TEMPLATES = {
   },
   // --- Subagent: 4 variants ---
   subagent: {
-    wake: "warden woke for subagent report — {agent}, {kind}",
+    wake: "warden flagged subagent report — {agent}, {kind}",
     silent: "warden ignored subagent report — {agent}, {kind}",
     appended: "warden appended subagent report — {agent}",
     default: "warden subagent — {agent}",
@@ -450,7 +450,7 @@ export function proseTokens(verdict: ProseVerdict, at = Date.now()): Tokens {
     wordy: fixed(verdict.scores?.wordy),
     cliches: fixed(verdict.scores?.cliches),
     jargon: fixed(verdict.scores?.jargon),
-    status: verdict.nudged ? "nudged" : verdict.flagged.length ? verdict.flagged.join(", ") : "ok",
+    status: verdict.nudged ? "reported" : verdict.flagged.length ? verdict.flagged.join(", ") : "ok",
     reasons: verdict.flagged.length ? verdict.flagged.join(", ") : undefined,
     model: verdict.model,
     ms: verdict.elapsedMs === undefined ? undefined : String(verdict.elapsedMs),

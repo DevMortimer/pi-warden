@@ -479,26 +479,14 @@ test("should-proceed defaults to trace-only for interactive and headless agents"
     reportBaseline = (await recordedSince()).length;
     nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.9, should_proceed: 0.3 };
     assert.equal(await toolCall("write", { path: "tests/example.ts", content: "export const n = 1;" }, context({ hasUI })), undefined);
-    assert.equal((await shownNotices()).length, 0);
-    assert.ok(!requests.some(request => "irreversible" in request.questions && "should_proceed" in request.questions), "by default only the sample asks should-proceed");
+    const sent = await shownNotices();
+    assert.equal(sent.length, 1, "the notice is reported on the trace");
+    assert.match(sent[0]!.message.content, /Pause.*approval before continuing/i, "the trace carries the guard's own notice text");
+    assert.deepEqual(sentMessages, [], "and nothing of it enters the conversation");
+    assert.ok(!requests.some(request => "irreversible" in request.questions && "should_proceed" in request.questions), "only the sample asks should-proceed");
     assert.ok(requests.some(request => "should_proceed" in request.questions && !("irreversible" in request.questions)));
     await runCommand("trace", context({ hasUI: false }));
-    assert.match((await latestReport()), /should-proceed 0\.30 \(trace-only until calibrated\)/);
-  }
-});
-
-test("should-proceed opt-in steers reach interactive and headless agents without holding or duplicate delivery", async () => {
-  for (const hasUI of [true, false]) {
-    await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, shouldProceed: { steer: true } }, ...STACK_BAR }));
-    await sessionStart(context({ hasUI }));
-    reportBaseline = (await recordedSince()).length;
-    notices.length = 0;
-    nextAnswers = { irreversible: 0.01, off_task: 0.01, scope: "expected_step", mutates: 0.01, should_proceed: 0.3 };
-    assert.equal(await toolCall("bash", { command: "npm test" }, context({ hasUI })), undefined);
-    assert.equal((await shownNotices()).length, 1, JSON.stringify((await shownNotices()).map(m => m.message.content.slice(0, 100))));
-    assert.match((await shownNotices())[0]!.message.content, /Pause.*approval before continuing/i);
-    assert.equal(notices.length, 0);
-    assert.ok("should_proceed" in requests.find(request => "irreversible" in request.questions)!.questions, "the opt-in puts should-proceed on the acting request");
+    assert.match((await latestReport()), /should-proceed 0\.30 \(may need user input before continuing\)/);
   }
 });
 
@@ -1477,8 +1465,8 @@ test("trace-only plausible side step does not leak through the headless generic 
   assert.match(trace, /why: off-task 0\.75 \(plausible side step; trace-only\)/);
 });
 
-test("trace-only off-task is silent headless and leaves the steer budget for a real warning", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, steerBudget: 1, action: { traceSample: 1 }, ...STACK_BAR }));
+test("trace-only off-task is silent headless and leaves the notice slot for a real warning", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, action: { traceSample: 1 }, ...STACK_BAR }));
   prompt = "Fix the login redirect";
   const headless = context({ hasUI: false });
 
@@ -1618,8 +1606,8 @@ test("the agent's plan comes from the message that makes the call or the text-on
   reportBaseline = (await recordedSince()).length;
   assert.equal(await toolCall("bash", { command: "npm run clean" }, earlier), undefined, "a mismatch warns; it never holds");
   assert.equal(requests.at(-1)!.state.plan, "Let me first list what is in build/ before removing anything.");
-  assert.ok(!(await shownNotices()).some(sent => sent.message.customType === "pi-warden-steer"), "by default every mismatch stays in the trace");
-  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only\)$/);
+  assert.equal((await shownNotices()).filter(sent => /what you said you were about to do/.test(sent.message.content)).length, 1, "the notice is recorded");
+  assert.match(notices.at(-1)!.text, /^warden · bash: intent mismatch 0\.91 \(the call differs from the agent's stated plan\)$/);
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+bash · .*off plan$/, "the mismatch leads the line as a warn chip");
 
   // A tool-calls-only message after an earlier tool call: the text before that call described it, so no plan, no question.
@@ -1642,52 +1630,40 @@ test("the agent's plan comes from the message that makes the call or the text-on
 
   await runCommand("status");
   const status = notices.at(-1)!.text;
-  assert.match(status, /1 off plan \(1 trace-only\)/);
-  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action, trace-only: all\);/);
+  assert.match(status, /1 off plan, 0 off task/);
+  assert.match(status, /intent mismatch 0\.9 \(0\.8 on a visible action\);/);
   const logPath = status.match(/Log: (.+?\.jsonl)\./)![1]!;
   const lines = await readLog(logPath, 4, false);
   assert.deepEqual(lines.map(record => [record.planChars, (record.scores as Record<string, unknown> | undefined)?.intentMismatch]), [["Now a live verification step: I will write a small fixture under /tmp. TOKEN=[redacted]".length, 0.1], ["Let me first list what is in build/ before removing anything.".length, 0.91], [0, undefined], [0, undefined]], "planChars says how often the agent called without a word");
 });
 
-test("intentTraceOnly: every mismatch is trace-only by default; \"invisible\" steers only a visible effect, \"none\" every mismatch", async () => {
+test("an intent mismatch is reported on the trace every time; a visible action needs less mismatch", async () => {
   prompt = "Verify the RPC endpoint end to end";
   const plan = "Let me first list what is in build/ before removing anything.";
   const branch = (command: string) => context({ hasUI: false, sessionManager: { getBranch: () => [
     { type: "message", message: { role: "user", content: prompt } },
     assistantEntry({ type: "text", text: plan }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command } }),
   ] } });
-  const intentSteers = async () => (await shownNotices()).filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content));
-  const run = async (intentTraceOnly: string | undefined, command: string, visible = 0.2) => {
-    await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, ...(intentTraceOnly ? { intentTraceOnly } : {}) }, ...STACK_BAR }));
+  const intentNotices = async () => (await shownNotices()).filter(sent => /what you said you were about to do/.test(sent.message.content)).length;
+  const run = async (command: string, visible = 0.2, mismatch = 0.91) => {
+    await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, ...STACK_BAR }));
     await sessionStart(context({ hasUI: false }));
     reportBaseline = (await recordedSince()).length;
-    nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, visible, intent_mismatch: 0.91, should_proceed: 1.0 };
+    nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, visible, intent_mismatch: mismatch, should_proceed: 1.0 };
     assert.equal(await toolCall("bash", { command }, branch(command)), undefined, "a mismatch never holds");
-    return (await intentSteers()).length;
+    return intentNotices();
   };
-
-  // Default "all": no steer, no headless warn notice, and one trace line that names the mismatch.
-  assert.equal(await run(undefined, "npm run clean"), 0);
-  assert.ok(!(await shownNotices()).some(sent => /ran with a warning/.test(sent.message.content)), "the headless warn steer drops the trace-only reason too");
+  assert.equal(await run("npm run clean"), 1, "the notice is recorded with the judgment");
+  assert.ok(!(await shownNotices()).some(sent => /ran with a warning/.test(sent.message.content) && /what you said you were about to do/.test(sent.message.content)), "no notice carries the other notice's text");
+  assert.deepEqual(sentMessages, []);
   await runCommand("trace", context({ hasUI: false }));
-  const trace = (await latestReport());
-  assert.equal(trace.match(/intent mismatch 0\.91 \(the call differs from the agent's stated plan; trace-only\)/g)?.length, 1);
-
-  // A push is visible by code and an install the judge scores visible: the default silences both.
-  assert.equal(await run(undefined, "git push origin main"), 0);
-  assert.equal(await run(undefined, "npm install left-pad", 0.85), 0);
-  // "invisible" tells the agent only about a call with a visible effect.
-  assert.equal(await run("invisible", "git push origin main"), 1);
-  assert.equal(await run("invisible", "npm install left-pad", 0.85), 1);
-  assert.equal(await run("invisible", "npm install left-pad", 0.5), 0);
-  // "none" restores the steer on every mismatch.
-  assert.equal(await run("none", "npm run clean"), 1);
-  assert.equal(await run("all", "npm run clean"), 0);
-  await runCommand("status");
-  assert.match(notices.at(-1)!.text, /1 off plan \(1 trace-only\)/);
+  assert.equal((await latestReport()).match(/intent mismatch 0\.91 \(the call differs from the agent's stated plan\)/g)?.length, 1);
+  assert.equal(await run("gh pr ready 12 && git push origin feature", 0.96, 0.83), 1, "a visible action needs less mismatch and is reported");
+  await runCommand("trace", context({ hasUI: false }));
+  assert.match((await latestReport()), /intent mismatch 0\.83 on a visible action/);
 });
 
-test("adaptive steers: an intent-mismatch steer the model does not follow becomes trace-only for that model, is probed, and unmutes", async () => {
+test("a notice the agent ignores is still reported after thirty of them, and /warden status counts it", async () => {
   prompt = "Verify the RPC endpoint end to end";
   const plan = "Let me first list what is in build/ before removing anything.";
   const command = "git push origin main";
@@ -1696,32 +1672,21 @@ test("adaptive steers: an intent-mismatch steer the model does not follow become
     { type: "message", message: { role: "user", content: prompt } },
     assistantEntry({ type: "text", text: plan }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command } }),
   ] } });
-  await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false, intentTraceOnly: "invisible" }, steers: { minSteers: 2, recheckEvery: 4, probeEvery: 2 }, ...STACK_BAR }));
-  const intentSteers = async () => (await shownNotices()).filter(sent => sent.message.customType === "pi-warden-steer" && /what you said you were about to do/.test(sent.message.content)).length;
-  /** One mismatching push; the agent's next two messages carry on without a course change. Returns whether the steer was sent. */
+  await writeConfig(JSON.stringify({ typesafe: true, notices: false, rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false }, action: { feedbackLog: false }, ...STACK_BAR }));
+  const intentNotices = async () => (await shownNotices()).filter(sent => /what you said you were about to do/.test(sent.message.content)).length;
+  /** One mismatching push, then two replies that carry on unchanged: the agent never follows the notice. */
   const run = async (id: string) => {
     await sessionStart(context({ hasUI: false, ...model(id) }));
     reportBaseline = (await recordedSince()).length;
     nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", mutates: 0.9, visible: 0.9, intent_mismatch: 0.95, should_proceed: 1.0 };
-    assert.equal(await toolCall("bash", { command }, branch(id)), undefined, "a mismatch never holds, muted or not");
-    const sent = (await intentSteers());
+    assert.equal(await toolCall("bash", { command }, branch(id)), undefined, "a mismatch never holds");
+    const sent = await intentNotices();
     for (const text of ["Pushed.", "Continuing with the next step."]) await fire("message_end", { message: { role: "assistant", content: [{ type: "text", text }, { type: "toolCall", id: "c", name: "bash", arguments: { command: "ls" } }] } }, context({ hasUI: false, ...model(id) }));
     return sent;
   };
-  assert.deepEqual([await run("a"), await run("a")], [1, 1], "under minSteers every steer is sent");
-  assert.equal(await run("b"), 1, "another model has its own counts");
-  assert.equal(await run("a"), 1, "the first steer after muting is a probe");
-  assert.equal(await run("a"), 0, "then trace-only");
-  await runCommand("trace", context({ hasUI: false }));
-  assert.match((await latestReport()), /steer trace-only · intent-mismatch · test\/a/);
+  for (let i = 0; i < 31; i++) assert.equal(await run("a"), 1, `notice ${i + 1} is recorded`);
   await runCommand("status", context({ hasUI: false, ...model("a") }));
-  assert.match((await latestReport()), /trace-only per model: test\/a: intent-mismatch \(\d+ steers, 0% followed, 0% disputed\)/);
-  await runCommand("unmute intent-mismatch", context({ hasUI: false, ...model("a") }));
-  assert.match((await latestReport()), /Reset intent-mismatch for test\/a/);
-  assert.equal(await run("a"), 1, "after unmute the steer is sent again");
-  await runCommand("unmute intent-mismatch test/b", context({ hasUI: false }));
-  await writeConfig(JSON.stringify({ typesafe: true, steers: { adaptive: false }, ...STACK_BAR }));
-  await runCommand("unmute intent-mismatch", context({ hasUI: false, ...model("a") }));
+  assert.match((await latestReport()), /Notices followed, per model: test\/a: intent-mismatch \(31 shown, 0% followed, 0% disputed\)/);
 });
 
 test("plan: a text-less git push after an earlier plan and an earlier tool call is judged against that plan", async () => {
@@ -2009,7 +1974,7 @@ test("off-task never holds: an unrelated write runs and stays with the user and 
   assert.match(widgets.at(-1)![0]!, /^WARN\s+action\s+write · .*off task$/, "the widget still shows the event, as a warn chip");
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /1 off task,/);
-  assert.match(notices.at(-1)!.text, /off-task warn 0\.6 \/ steer 0\.85 \(never holds\)/);
+  assert.match(notices.at(-1)!.text, /off-task warn 0\.6 \(never holds\)/);
   // A read-only command Jev finds unrelated is warned about without a steer.
   nextAnswers = { irreversible: 0.1, off_task: 0.95, scope: "unrelated", mutates: 0.05 };
   reportBaseline = (await recordedSince()).length;
@@ -2042,7 +2007,7 @@ test("slop symptoms steer the agent after the write without holding it; steers a
   assert.equal((await shownNotices()).length, 3);
   assert.match((await shownNotices())[2]!.message.content, /\(3th time this session\)[\s\S]*standing rule/);
 
-  await writeConfig(JSON.stringify({  typesafe: true, steerVisible: true, steerBudget: 0 , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, ...STACK_BAR }));
   await toolCall("write", { path: join(temporary, "src", "d.ts"), content: "export const d = () => null; // TODO" });
 });
 
@@ -2232,7 +2197,7 @@ test("a held write gets no rules or slop steer; the approved retry is judged aga
     assert.doesNotMatch(held?.reason ?? "", /just written/);
     assert.ok(!(await shownNotices()).some(message => /just written/.test(message.message.content)), "no steer about content that was never written");
     await runCommand("trace", context({ hasUI: false }));
-    assert.match((await latestReport()), /agent not told: the write was held/);
+    assert.match((await latestReport()), /notice held with the write: the write was held/);
 
     reportBaseline = (await recordedSince()).length;
     await newPrompt("yes, go ahead");
@@ -2311,7 +2276,7 @@ test("stuck detection: exact repeats are caught offline, varied failures ask Jev
   assert.equal((await shownNotices()).length, 1, "the 3rd identical failure still reaches the stuck check");
   assert.match((await shownNotices())[0]!.message.content, /the same call failed 3 times with the same output\. Stop retrying/);
   assert.match(widgets.at(-1)!.at(-1)!, /^STUCK\s+stuck\s+3 failures · exact repeat$/);
-  assert.match(notices.at(-1)!.text, /warden · stuck: .* \(agent nudged\)/);
+  assert.match(notices.at(-1)!.text, /warden · stuck: the same call failed 3 times with the same output/);
 
   await newPrompt("make the tests pass, try harder");
   await grantConsent();
@@ -3188,7 +3153,7 @@ test("the widget is a clickable component: a left click toggles a non-capturing 
   assert.match(text, /2 events/);
   assert.ok(text.indexOf("db:reset") < text.indexOf("npm test"), "newest first");
   assert.match(text, /· mode: steer/);
-  assert.match(text, /· agent told: pi-warden held this bash call/);
+  assert.match(text, /· notice recorded: pi-warden held this bash call/);
 
   widgetComponent!.handleMouse!({ type: "click", button: "left", x: 1, y: 0 });
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -3219,7 +3184,7 @@ test("/warden trace opens the panel with a UI and prints the trace without one; 
   const text = openPanels[1]!.render(140).join("\n");
   assert.match(text, /stuck\s+STUCK\s+3 failures · exact repeat/);
   assert.match(text, /· 1\. ✗ npm test → 1 failing/);
-  assert.match(text, /· agent told: pi-warden: the same call failed 3 times/);
+  assert.match(text, /· notice recorded: pi-warden: the same call failed 3 times/);
   assert.match(text, /done\s+UNVERIFIED\s+done-check · 1 changes/, "the status token becomes the chip");
   assert.match(text, /· final message: Fixed it\./);
   assert.match(text, /· evidence: 1 code change; checks: npm test → failed/);
@@ -3274,7 +3239,7 @@ test("each unseen credential banners its result and traces, and neither costs a 
 });
 
 test("each sensitive-path notice is recorded once and no report costs the model a turn", async () => {
-  await writeConfig(JSON.stringify({  typesafe: true, steerBudget: 1, rules: { sensitivePaths: { "tests/secrets/**": "never commit fixtures", "tests/private/**": "keep private" } } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, rules: { sensitivePaths: { "tests/secrets/**": "never commit fixtures", "tests/private/**": "keep private" } }, ...STACK_BAR }));
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   await toolCall("edit", { path: "tests/secrets/a.ts", edits: [{ oldText: "old", newText: "new" }] });
   assert.equal((await shownNotices()).length, 1, "the first notice of the run is delivered");
@@ -3292,7 +3257,7 @@ test("each sensitive-path notice is recorded once and no report costs the model 
 });
 
 test("critical guards deliver past the spent steer budget", async () => {
-  await writeConfig(JSON.stringify({  typesafe: true, steerBudget: 1, rules: { sensitivePaths: { "tests/secrets/**": "never commit fixtures" } } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, rules: { sensitivePaths: { "tests/secrets/**": "never commit fixtures" } }, ...STACK_BAR }));
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step" };
   await toolCall("edit", { path: "tests/secrets/a.ts", edits: [{ oldText: "old", newText: "new" }] });
   assert.equal((await shownNotices()).length, 1, "the budget is spent by the sensitive-path note");
@@ -6418,4 +6383,30 @@ test("a loosened set that goes away and comes back shows its line again", async 
   await sessionStart();
   assert.equal(lines().length, 1, "the same set coming back shows the line again");
   await clearProjectConfig();
+});
+
+test("a headless config warning is filed under notice, and /warden status counts no rules notice", async () => {
+  await writeConfig(JSON.stringify({ typesafe: true, steerBudget: 1, ...STACK_BAR }));
+  reportBaseline = (await recordedSince()).length;
+  await sessionStart(context({ hasUI: false }));
+  const warnings = (await recordedSince()).slice(reportBaseline).filter(entry => entry.details.includes("trigger: headless warning"));
+  assert.equal(warnings.length, 1, "one warning for the removed key");
+  assert.equal(warnings[0]!.guard, "notice", "a config warning is not a rules notice");
+  assert.match(warnings[0]!.line, /steerBudget was removed and is ignored/);
+  await runCommand("status", context({ hasUI: false }));
+  const status = await latestReport();
+  assert.match(status, /Config warnings: steerBudget was removed and is ignored/, "the status repeats the warning");
+  assert.match(status, /Notices shown: 0\./, "and counts no guard notice for it");
+});
+
+test("conscience: a tip set for one run is gone from the next run's system prompt", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  const result = await promptWithSkills("design a landing page", skills) as Record<string, unknown> | undefined;
+  assert.ok(result?.message, "the conscience names the skill");
+  const first = await nextPromptAppend("design a second page");
+  assert.match(first, /impeccable/, "the tip rides the next run's system prompt");
+  const second = await nextPromptAppend("design a third page");
+  assert.doesNotMatch(second, /impeccable/, "and only that one run");
 });

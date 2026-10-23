@@ -264,7 +264,7 @@ Semantics:
   text is semantic, and the judge is the semantic oracle. Without Jev, command-surface
   matches follow the rule's `action` (fail toward the user's declared severity, since the
   user wrote the pattern).
-- **`action` levels:** `note` (current behavior — agent told after the fact),
+- **`action` levels:** `note` (current behavior — reported on the status line and in the trace),
   `warn`, `confirm` (dialog; same semantics as PR 1's `action: "dialog"`),
   `block` (deny). Default `note` preserves today's behavior for a bare rule.
 - **`onlyIfExists`** defaults `true` (mirrors guardrails' best idea: phantom paths do not

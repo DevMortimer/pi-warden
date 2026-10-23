@@ -54,9 +54,8 @@ test("should-proceed keeps the trace reason at the threshold and leaves higher s
       judge: { async evaluate(request) { return onlyAsked({ ...result, answers: { ...result.answers, should_proceed: { type: "noul", noul: score } } }, request) as never; } },
     });
     assert.equal(verdict.judgment?.shouldProceed, score);
-    assert.equal(verdict.shouldProceedTraceOnly, score === 0.6 ? true : undefined);
     assert.equal(verdict.shouldProceedSteer, score === 0.6 ? true : undefined);
-    if (score === 0.6) assert.equal(verdict.reasons[verdict.shouldProceedTraceOnlyReasonIndex!], "should-proceed 0.60 (trace-only until calibrated)");
+    if (score === 0.6) assert.ok(verdict.reasons.includes("should-proceed 0.60 (may need user input before continuing)"));
   }
 });
 
@@ -83,7 +82,7 @@ test("off-task never holds: an unrelated change warns but is trace-only; a read-
   assert.equal(write.level, "warn", "write and edit always change something, and still never hold for scope alone");
   assert.equal(write.offTaskSteer, true);
   assert.equal(write.offTaskTraceOnly, true);
-  const below = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config: { ...config, offTask: { warn: 0.6, steer: 0.95 } }, traceSample: 1, judge: judge(0.2, 0.91, "unrelated", 0.95) });
+  const below = await evaluateAction({ ...inspect, input: { command: "npm install left-pad" } }, { config: { ...config, offTask: { warn: 0.99 } }, traceSample: 1, judge: judge(0.2, 0.91, "unrelated", 0.95) });
   assert.equal(below.offTaskSteer, true, "scope unrelated steers regardless of score threshold");
   assert.equal(below.level, "warn");
   const probe = judge(0.05, 0.05, "expected_step", 0.05);
@@ -1355,19 +1354,13 @@ test("the agent's plan travels with the request and is judged for intent mismatc
   assert.equal(drift.level, "warn");
   assert.equal(drift.intentMismatch, true);
   assert.equal(drift.judgment?.intentMismatch, 0.9);
-  assert.match(drift.reasons.join("; "), /intent mismatch 0\.90 \(the call differs from the agent's stated plan; trace-only\)/);
-  assert.equal(drift.intentTraceOnly, true, "the default keeps every mismatch in the trace only");
+  assert.match(drift.reasons.join("; "), /intent mismatch 0\.90 \(the call differs from the agent's stated plan\)/);
   assert.equal(drift.plan, "Let me first list what is in build/ before removing anything.");
   assert.match(formatVerdict(drift), /off plan · warn$/);
   assert.match(intentSteer(drift), /^pi-warden: this bash call does something different from what you said you were about to do\. It ran\./);
   assert.match(intentSteer(drift), /at most one short sentence/, "the steer bounds the demanded reply instead of inviting an accounting");
 
-  const told = await evaluateAction({ tool: "bash", input: { command: "rm -rf build" }, cwd, task: "clean the build", plan: "Let me first list what is in build/ before removing anything." }, { config: { ...config.action, intentTraceOnly: "none" }, judge: withIntent(0.9) });
-  assert.equal(told.intentMismatch, true);
-  assert.equal(told.intentTraceOnly, undefined, "\"none\" restores the steer for every mismatch");
-  assert.match(told.reasons.join("; "), /intent mismatch 0\.90 \(the call differs from the agent's stated plan\)/);
-
-  const readOnly = await evaluateAction({ tool: "bash", input: { command: "npm run check:manifest" }, cwd, task: "clean the build", plan: "I will delete build/ now." }, { config: config.action, judge: withIntent(0.9, 0.05) });
+    const readOnly = await evaluateAction({ tool: "bash", input: { command: "npm run check:manifest" }, cwd, task: "clean the build", plan: "I will delete build/ now." }, { config: config.action, judge: withIntent(0.9, 0.05) });
   assert.equal(readOnly.level, "allow", "a call that changes nothing is never warned about for drifting from the plan");
   assert.equal(readOnly.intentMismatch, undefined);
   assert.equal(readOnly.judgment?.intentMismatch, 0.9, "the score is still recorded");
@@ -1385,9 +1378,8 @@ test("the agent's plan travels with the request and is judged for intent mismatc
   assert.equal(offline.judgment, undefined);
 });
 
-test("a visible action (commit, push, merge, launch) needs less plan mismatch to be steered than a file edit", async () => {
-  const defaults = judgedAction();
-  const config = { ...defaults, intentTraceOnly: "invisible" as const };
+test("a visible action (commit, push, merge, launch) needs less plan mismatch to be reported than a file edit", async () => {
+  const config = judgedAction();
   const withVisible = (mismatch: number, visible: number): Judge => ({
     async evaluate(request) {
       const base = answers(0.1, 0.1, "expected_step", 0.9, 0.9) as { answers: Record<string, unknown> };
@@ -1404,17 +1396,13 @@ test("a visible action (commit, push, merge, launch) needs less plan mismatch to
   assert.match(drift.reasons.join("; "), /intent mismatch 0\.83 on a visible action \(0\.96; a commit, push, merge, publish, or launch the plan did not describe\)/);
   assert.match(intentSteer(drift), /and its effect is visible outside the working tree/);
   assert.match(formatVerdict(drift), /off plan · warn$/);
-  assert.equal(drift.intentTraceOnly, undefined, "under \"invisible\" a push and a pull request keep the steer");
   const install = { tool: "bash", input: { command: "npm install left-pad" }, cwd, task: "get the PR ready", plan: "I will run the tests once more before touching the PR." };
   const judgedVisible = await evaluateAction(install, { config, judge: withVisible(0.91, 0.85) });
   assert.equal(judgedVisible.intentMismatch, true);
-  assert.equal(judgedVisible.intentTraceOnly, undefined, "not visible by code, but the judge scores it visible: the steer stays");
+  assert.equal(judgedVisible.intentMismatch, true);
   const judgedLocal = await evaluateAction(install, { config, judge: withVisible(0.91, 0.5) });
-  assert.equal(judgedLocal.intentTraceOnly, true, "neither code nor judge finds a visible effect: trace-only");
-  const traced = await evaluateAction(call, { config: defaults, judge: withVisible(0.83, 0.96) });
-  assert.equal(traced.intentTraceOnly, true, "the default keeps even a visible mismatch in the trace only");
-  assert.equal(traced.intentTraceOnlyReasonIndex, traced.reasons.findIndex(reason => reason.startsWith("intent mismatch")));
-  assert.match(traced.reasons.join("; "), /the plan did not describe; trace-only\)/);
+  assert.equal(judgedLocal.intentMismatch, true, "the score alone clears the intent threshold");
+  assert.match(judgedLocal.reasons.join("; "), /the call differs from the agent's stated plan\)/);
   const quiet = await evaluateAction(call, { config, judge: withVisible(0.83, 0.2) });
   assert.equal(quiet.intentMismatch, undefined, "the same mismatch on an action nobody else sees is below the bar");
   assert.equal(quiet.level, "allow");

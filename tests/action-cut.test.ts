@@ -134,24 +134,25 @@ test("with the default config the acting request asks no off-task, scope, or sho
   assert.equal(verdict.judgment?.shouldProceed, undefined);
 });
 
-test("with shouldProceed.steer the acting request asks should-proceed, and a score at or below the threshold steers", async () => {
-  const cfg = { ...config(), traceSample: 0, shouldProceed: { threshold: 0.6, steer: true } };
-  const j = badAnswers(0.3);
-  const verdict = await evaluateAction({ ...write, cwd }, { config: cfg, judge: j });
-  assert.equal(j.calls.length, 1, "the opt-in adds a question, not a request");
-  assert.ok("should_proceed" in j.calls[0]!.questions);
-  assert.equal("off_task" in j.calls[0]!.questions || "scope" in j.calls[0]!.questions, false, "off-task stays off the acting request");
-  assert.equal(verdict.level, "warn");
-  assert.equal(verdict.shouldProceedSteer, true);
-  assert.equal(verdict.shouldProceedTraceOnly, undefined, "the opt-in steer reaches the agent");
-  assert.ok(verdict.reasons.includes("should-proceed 0.30 (may need user input before continuing)"));
-  const above = await evaluateAction({ ...write, cwd }, { config: cfg, judge: badAnswers(0.61) });
-  assert.equal(above.level, "allow");
-  assert.equal(above.shouldProceedSteer, undefined);
+test("the acting request asks no should-proceed question; a sampled score at or below the threshold is reported", async () => {
+  const cfg = config();
+  const acting = badAnswers(0.3);
+  const verdict = await evaluateAction({ ...write, cwd }, { config: cfg, judge: acting, traceSample: 0 });
+  assert.equal(acting.calls.length, 1);
+  assert.equal("should_proceed" in acting.calls[0]!.questions, false, "only the sampled request asks it");
+  assert.equal("off_task" in acting.calls[0]!.questions || "scope" in acting.calls[0]!.questions, false, "off-task stays off the acting request");
+  assert.equal(verdict.shouldProceedSteer, undefined, "no answer, nothing to report");
+  const sampled = badAnswers(0.3);
+  const reported = await evaluateAction({ ...write, cwd }, { config: cfg, judge: sampled, traceSample: 1 });
+  assert.equal(reported.level, "warn");
+  assert.equal(reported.shouldProceedSteer, true);
+  assert.ok(reported.reasons.includes("should-proceed 0.30 (may need user input before continuing)"));
+  const above = await evaluateAction({ ...write, cwd }, { config: cfg, judge: badAnswers(0.61), traceSample: 1 });
+  assert.equal(above.shouldProceedSteer, undefined, "a score above the threshold reports nothing");
 });
 
-test("the opt-in steer does not widen the ask gate: a call the gate decides offline gets no should-proceed answer", async () => {
-  const gated = { ...config(), traceSample: 0, shouldProceed: { threshold: 0.6, steer: true } };
+test("the ask gate decides a call offline whatever the sample setting is", async () => {
+  const gated = config();
   const j = badAnswers(0.1);
   const offline = await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "run the tests" }, { config: gated, judge: j });
   assert.equal(j.calls.length, 0, "no request at all");
@@ -159,26 +160,26 @@ test("the opt-in steer does not widen the ask gate: a call the gate decides offl
   assert.equal(offline.level, "allow");
   const everything = badAnswers(0.1);
   await evaluateAction({ tool: "bash", input: { command: "npm test" }, cwd, task: "run the tests" }, { config: { ...gated, ask: { enabled: false } }, judge: everything });
-  assert.ok("should_proceed" in everything.calls[0]!.questions, "ask.enabled false asks every judged call");
+  assert.ok("irreversible" in everything.calls[0]!.questions, "ask.enabled false asks every judged call");
+  assert.equal("should_proceed" in everything.calls[0]!.questions, false, "the acting request never asks it");
 });
 
-test("the acting should-proceed answer wins over the sampled one", async () => {
-  const cfg = { ...config(), shouldProceed: { threshold: 0.6, steer: true } };
+test("the sampled should-proceed answer is the one reported", async () => {
+  const cfg = config();
   const j = badAnswers(0.9, 0.1);
   const verdict = await evaluateAction({ ...write, cwd }, { config: cfg, judge: j, traceSample: 1 });
   assert.equal(j.calls.length, 2);
-  assert.equal(verdict.judgment?.shouldProceed, 0.9);
-  assert.equal(verdict.shouldProceedSteer, undefined);
+  assert.equal(verdict.judgment?.shouldProceed, 0.1);
+  assert.equal(verdict.shouldProceedSteer, true);
 });
 
-test("a sampled call runs its off-task and scope answers through the trace-only chain, and never holds", async () => {
+test("a sampled call reports its off-task and should-proceed answers, and never holds", async () => {
   const j = badAnswers(0.1);
   const verdict = await evaluateAction({ ...write, cwd }, { config: { ...config(), ask: { enabled: false } }, judge: j, traceSample: 1 });
   assert.equal(verdict.level, "warn");
   assert.equal(verdict.offTaskTraceOnly, true);
   assert.equal(verdict.reasons[verdict.offTaskTraceOnlyReasonIndex!], "off-task 0.95 (unrelated to the request; trace-only until AUC clears 0.51)");
-  assert.equal(verdict.shouldProceedTraceOnly, true);
-  assert.equal(verdict.reasons[verdict.shouldProceedTraceOnlyReasonIndex!], "should-proceed 0.10 (trace-only until calibrated)");
+  assert.ok(verdict.reasons.includes("should-proceed 0.10 (may need user input before continuing)"));
 });
 
 test("with traceSample 0 no call gets an off-task or should-proceed reason", async () => {

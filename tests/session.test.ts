@@ -215,7 +215,7 @@ test("the shipped pi-warden holds a destructive bash call: the tool never runs a
   assert.match(seenAfterHold, /pi-warden held this bash call before it ran/, "the tool result the model reads carries the hold text");
 });
 
-test("the shipped pi-warden nudges an unverified done claim into the model's context", async () => {
+test("the shipped pi-warden records an unverified done claim in the trace and keeps it out of the model's context", async () => {
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0, claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.95, outcome: "complete" };
   const record: Recorded = { bashRan: false, bashCommand: undefined, readCalls: 0, written: [] };
   let seenAfterNudge = "";
@@ -231,7 +231,7 @@ test("the shipped pi-warden nudges an unverified done claim into the model's con
   assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "the session records no warden custom message");
 });
 
-test("the shipped pi-warden repeats note reaches the model after the same failing read twice", async () => {
+test("the shipped pi-warden records the repeat note in the trace after the same failing read twice", async () => {
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
   const record: Recorded = { bashRan: false, bashCommand: undefined, readCalls: 0, written: [] };
   let seenAfterRepeat = "";

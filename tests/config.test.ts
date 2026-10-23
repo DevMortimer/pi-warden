@@ -50,21 +50,45 @@ test("subagent observer defaults on and accepts only boolean overrides", () => {
   }
 });
 
-test("should-proceed steer parser accepts booleans and defaults invalid or missing values", () => {
+test("should-proceed keeps its threshold and drops the removed steer switch", () => {
   const base = defaultConfig();
-  assert.deepEqual(base.action.shouldProceed, { threshold: 0.6, steer: false });
+  assert.deepEqual(base.action.shouldProceed, { threshold: 0.6 });
   for (const apply of [applyUserOverrides, applyProjectOverrides]) {
-    assert.deepEqual(apply(base, { action: { shouldProceed: { steer: true, threshold: 0.3 } } }).action.shouldProceed, { threshold: 0.3, steer: true });
-    for (const steer of [undefined, "true", 1, null, false]) {
-      assert.equal(apply(base, { action: { shouldProceed: { steer } } }).action.shouldProceed.steer, false);
-    }
+    assert.deepEqual(apply(base, { action: { shouldProceed: { threshold: 0.3 } } }).action.shouldProceed, { threshold: 0.3 });
   }
 });
+
+/** Every key the code no longer reads, with the shape that sets it. Proof that the warning fires and the value is gone. */
+const REMOVED: ReadonlyArray<{ path: string; raw: Record<string, unknown> }> = [
+  { path: "steerVisible", raw: { steerVisible: true } },
+  { path: "steerBudget", raw: { steerBudget: 3 } },
+  { path: "action.shouldProceed.steer", raw: { action: { shouldProceed: { steer: true } } } },
+  { path: "action.offTask.steer", raw: { action: { offTask: { steer: 0.9 } } } },
+  { path: "action.offTask.confirm", raw: { action: { offTask: { confirm: 0.7 } } } },
+  { path: "action.intentTraceOnly", raw: { action: { intentTraceOnly: "none" } } },
+  { path: "steers.adaptive", raw: { steers: { adaptive: false } } },
+  { path: "steers.minSteers", raw: { steers: { minSteers: 5 } } },
+  { path: "steers.minFollowed", raw: { steers: { minFollowed: 0.5 } } },
+  { path: "steers.maxDisputed", raw: { steers: { maxDisputed: 0.5 } } },
+  { path: "steers.recheckEvery", raw: { steers: { recheckEvery: 5 } } },
+  { path: "steers.probeEvery", raw: { steers: { probeEvery: 2 } } },
+];
+
+for (const { path, raw } of REMOVED) {
+  test(`a removed key ${path} is warned about once and changes nothing else`, () => {
+    const config = applyUserOverrides(defaultConfig(), raw);
+    const mine = (config.warnings ?? []).filter(warning => warning.startsWith(`${path} was removed`));
+    assert.equal(mine.length, 1, `one warning for ${path}`);
+    assert.match(mine[0]!, /was removed and is ignored; /, "the warning says the key is gone and ignored");
+    assert.deepEqual({ ...config, warnings: [] }, { ...defaultConfig(), warnings: [] }, `${path} changes no setting`);
+    assert.equal(applyProjectOverrides(defaultConfig(), raw).warnings?.filter(warning => warning.includes(path)).length, 1, "a project file is warned about too");
+  });
+}
 
 test("user overrides accept valid values and ignore junk", () => {
   const config = applyUserOverrides(defaultConfig(), {
     typesafe: true, mode: "advise", enabled: "yes", headless: "allow",
-    action: { tools: ["bash", 7, ""], irreversible: { warn: 0.9, confirm: 0.6 }, offTask: { confirm: 2 }, timeoutMs: -1, failOpen: false, unknown: 1 },
+    action: { tools: ["bash", 7, ""], irreversible: { warn: 0.9, confirm: 0.6 }, offTask: { warn: 2 }, timeoutMs: -1, failOpen: false, unknown: 1 },
     stuck: { minFailures: 20, window: 5, sameStrategy: 0.9, nudge: false },
     done: { claimsDone: 0.5 },
     slop: { placeholder: 0.6, prose: { audience: "plain", trend: 9, threshold: 2 } },
@@ -82,7 +106,7 @@ test("user overrides accept valid values and ignore junk", () => {
   assert.equal(config.enabled, true, "non-boolean falls back");
   assert.deepEqual(config.action.tools, ["bash"]);
   assert.deepEqual(config.action.irreversible, { warn: 0.6, confirm: 0.6 }, "warn is clamped to confirm");
-  assert.equal(config.action.offTask.steer, 0.85);
+  assert.equal(config.action.offTask.warn, 0.6, "a probability above 1 is junk and falls back");
   assert.equal(config.action.timeoutMs, 5000);
   assert.equal(config.action.failOpen, false);
   assert.equal(config.stuck.window, 5);
@@ -100,8 +124,7 @@ test("user overrides accept valid values and ignore junk", () => {
   assert.equal(config.slop.prose.audience, "plain");
   assert.equal(config.slop.prose.trend, 3, "trend is capped at the 3-reply window");
   assert.equal(config.slop.prose.threshold, 0.7, "out-of-range probability falls back");
-  assert.equal((applyUserOverrides(defaultConfig(), { steerVisible: true }) as { steerVisible?: boolean }).steerVisible, undefined, "a removed key is ignored, not applied");
-  assert.equal(applyUserOverrides(defaultConfig(), { notices: true }).notices, true);
+  assert.equal((applyUserOverrides(defaultConfig(), { notices: true }) as { notices?: boolean }).notices, true, "notices is read");
   assert.equal(applyUserOverrides(defaultConfig(), { mode: "loud" }).mode, "steer");
 });
 
@@ -212,8 +235,9 @@ test("loadConfig merges user then trusted project file, and survives malformed f
   await writeFile(join(project, ".pi", "pi-warden.json"), JSON.stringify({ typesafe: false, action: { offTask: { warn: 0.3, confirm: 0.4 } } }));
   const trusted = loadConfig({ cwd: project, projectTrusted: true });
   assert.equal(trusted.typesafe, true, "project file cannot flip consent");
-  assert.deepEqual(trusted.action.offTask, { warn: 0.3, steer: 0.4 }, "the pre-0.12 name `confirm` still sets the upper off-task threshold");
-  assert.deepEqual(applyUserOverrides(defaultConfig(), { action: { offTask: { warn: 0.5, steer: 0.4 } } }).action.offTask, { warn: 0.4, steer: 0.4 }, "warn is clamped to steer");
+  assert.deepEqual(trusted.action.offTask, { warn: 0.3 }, "the pre-0.12 name `confirm` no longer sets a second threshold");
+  assert.match((trusted.warnings ?? []).join("; "), /project file: action\.offTask\.confirm was removed and is ignored/);
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { action: { offTask: { warn: 0.5 } } }).action.offTask, { warn: 0.5 }, "warn is the only off-task threshold");
   const untrusted = loadConfig({ cwd: project, projectTrusted: false });
   assert.equal(untrusted.action.offTask.warn, 0.6, "untrusted projects are ignored");
 
@@ -491,10 +515,10 @@ test("project file: action.tools may add a tool but a left-out tool stays guarde
 });
 
 test("project file: other guards stay tunable both ways, and the user file is never limited", () => {
-  const loose = applyProjectOverrides(defaultConfig(), { stuck: { enabled: false }, rules: { threshold: 0.95 }, action: { offTask: { warn: 0.9, steer: 0.95 } } });
+  const loose = applyProjectOverrides(defaultConfig(), { stuck: { enabled: false }, rules: { threshold: 0.95 }, action: { offTask: { warn: 0.9 } } });
   assert.equal(loose.stuck.enabled, false);
   assert.equal(loose.rules.threshold, 0.95);
-  assert.deepEqual(loose.action.offTask, { warn: 0.9, steer: 0.95 });
+  assert.deepEqual(loose.action.offTask, { warn: 0.9 });
   assert.deepEqual(loose.warnings, []);
   const user = applyUserOverrides(defaultConfig(), { enabled: false, action: { enabled: false, failOpen: true, irreversible: { warn: 0.8, confirm: 0.99 } }, security: { enabled: false, threshold: 0.9 } });
   assert.equal(user.enabled, false);
@@ -534,8 +558,8 @@ test("action.shouldProceed.hold, the deprecated name of threshold, still sets it
   assert.equal(applyProjectOverrides(defaultConfig(), { action: { shouldProceed: { hold: 0.4 } } }).action.shouldProceed.threshold, 0.4);
   assert.equal(applyUserOverrides(defaultConfig(), { action: { shouldProceed: { hold: 0.3, threshold: 0.2 } } }).action.shouldProceed.threshold, 0.2, "the new name wins");
   // A config module from before the rename hands the extension `hold`.
-  const stale = { ...defaultConfig(), action: { ...defaultConfig().action, shouldProceed: { hold: 0.45, steer: true } } };
-  assert.deepEqual(completeConfig(stale as never).config.action.shouldProceed, { threshold: 0.45, steer: true });
+  const stale = { ...defaultConfig(), action: { ...defaultConfig().action, shouldProceed: { hold: 0.45 } } };
+  assert.deepEqual(completeConfig(stale as never).config.action.shouldProceed, { threshold: 0.45 });
 });
 
 test("a config file that still sets the removed keys loads, ignores them, and warns once for each of the two documented keys", async () => {
@@ -551,8 +575,8 @@ test("a config file that still sets the removed keys loads, ignores them, and wa
     assert.equal("loadThreshold" in config.conscience, false);
     assert.equal(config.conscience.recommendThreshold, 0.9, "the rest of the section still applies");
     assert.equal(config.warnings.length, 2, "one warning for conscience.loadThreshold and one for learning.adaptiveThresholds; the two undocumented keys give none");
-    assert.ok(config.warnings.some(warning => warning.startsWith("conscience.loadThreshold was removed in 1.0")));
-    assert.ok(config.warnings.some(warning => warning.startsWith("learning.adaptiveThresholds was removed in 1.0")));
+    assert.ok(config.warnings.some(warning => warning.startsWith("conscience.loadThreshold was removed and is ignored")));
+    assert.ok(config.warnings.some(warning => warning.startsWith("learning.adaptiveThresholds was removed and is ignored")));
   } finally {
     await rm(path, { force: true });
   }
@@ -575,11 +599,11 @@ test("removed keys: conscience.loadThreshold and learning.adaptiveThresholds eac
   for (const { section, key, value, now } of removed) {
     const user = applyUserOverrides(defaultConfig(), { [section]: { [key]: value } });
     assert.equal(user.warnings.length, 1, `${key}: one warning from the user file`);
-    assert.match(user.warnings[0]!, new RegExp(`^${section}\\.${key} was removed in 1\\.0 and is ignored; `));
+    assert.match(user.warnings[0]!, new RegExp(`^${section}\\.${key} was removed and is ignored; `));
     assert.match(user.warnings[0]!, now);
     const project = applyProjectOverrides(defaultConfig(), { [section]: { [key]: value } });
     assert.equal(project.warnings.length, 1, `${key}: one warning from a project file`);
-    assert.match(project.warnings[0]!, new RegExp(`^project file: ${section}\\.${key} was removed in 1\\.0 and is ignored; `));
+    assert.match(project.warnings[0]!, new RegExp(`^project file: ${section}\\.${key} was removed and is ignored; `));
   }
   const both = applyUserOverrides(defaultConfig(), { conscience: { loadThreshold: 1 }, learning: { adaptiveThresholds: false } });
   assert.equal(both.warnings.length, 2, "two keys, two warnings");
@@ -715,18 +739,17 @@ test("a session reads its user file once too: an outside edit waits for the next
   await rm(user, { force: true });
 });
 
-test("each direction that loosens is named, both ways: window days, trace-only mode, judge cooldown", () => {
+test("each direction that loosens is named, both ways: window days, off-task threshold, judge cooldown", () => {
   const user = defaultConfig();
   const of = (base: typeof user, raw: unknown) => loosenedChecks(base, applyProjectOverrides(base, raw));
   // A shorter cause window forgets earlier causes, so the repeat question is asked less: it loosens. A longer one tightens.
   assert.deepEqual(of(user, { cause: { windowDays: 1 } }).map(check => check.name), ["cause-check"]);
   assert.deepEqual(of(user, { cause: { windowDays: 90 } }), []);
   assert.match(of(user, { cause: { windowDays: 1 } })[0]!.detail ?? "", /window days 7 → 1/);
-  // "all" keeps every mismatch in the trace only and "none" always steers, so moving toward "all" loosens.
-  const traceOnly = applyUserOverrides(user, { action: { intentTraceOnly: "all" } });
-  assert.deepEqual(of(traceOnly, { action: { intentTraceOnly: "none" } }), [], "steering every mismatch is stricter");
-  const steers = applyUserOverrides(user, { action: { intentTraceOnly: "none" } });
-  assert.match(of(steers, { action: { intentTraceOnly: "all" } })[0]?.detail ?? "", /trace-only mode none → all/);
+  // A higher off-task threshold reports less, so raising it loosens; lowering it tightens.
+  assert.deepEqual(of(user, { action: { offTask: { warn: 0.9 } } }).map(check => check.name), ["off-task threshold"]);
+  assert.match(of(user, { action: { offTask: { warn: 0.9 } } })[0]!.detail ?? "", /warn threshold 0\.6 → 0\.9/);
+  assert.deepEqual(of(user, { action: { offTask: { warn: 0.2 } } }), []);
   // Fewer failures cool the judge down sooner, so a lower value loosens.
   assert.deepEqual(of(user, { judge: { failuresBeforeCooldown: 1 } }).map(check => check.name), ["judge"]);
   assert.match(of(user, { judge: { failuresBeforeCooldown: 1 } })[0]!.detail ?? "", /failures before cooldown 3 → 1/);

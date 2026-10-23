@@ -52,24 +52,18 @@ const options = (judge?: Judge): InspectOptions => ({ config: judgedAction(), cw
 const under = (task: string, siblings?: ToolCallRef[]): Conversation => ({ task, siblings });
 const askedApproval = (judge: { requests: Request[] }) => "approved" in judge.requests.at(-1)!.questions;
 
-test("should-proceed records low scores as trace-only by default and supports steer opt-in", async () => {
+test("should-proceed is reported at or below its threshold, and only the sampled request asks it", async () => {
   const judge = stubJudge();
   judge.next = { irreversible: 0.1, shouldProceed: 0.3 };
-  for (const steer of [false, true]) {
-    const opts = options(judge);
-    opts.config.shouldProceed.steer = steer;
-    // Trace-only reaches the question through the sample; the opt-in steer puts it on every acting request.
-    opts.config.traceSample = steer ? 0 : 1;
-    const verdict = await new ActionGuard().inspect(bash("quiet", "npm test"), under("run tests"), opts);
-    assert.equal(verdict.level, "warn");
-    assert.equal(verdict.judgment?.shouldProceed, 0.3);
-    assert.equal(verdict.shouldProceedSteer, true);
-    assert.equal(verdict.shouldProceedTraceOnly, steer ? undefined : true);
-    assert.ok(verdict.reasons.includes(`should-proceed 0.30 (${steer ? "may need user input before continuing" : "trace-only until calibrated"})`));
-    if (!steer) assert.equal(verdict.reasons[verdict.shouldProceedTraceOnlyReasonIndex!], "should-proceed 0.30 (trace-only until calibrated)");
-    const acting = judge.requests.filter(request => "irreversible" in request.questions);
-    assert.equal("should_proceed" in acting.at(-1)!.questions, steer);
-  }
+  const opts = options(judge);
+  opts.config.traceSample = 1;
+  const verdict = await new ActionGuard().inspect(bash("quiet", "npm test"), under("run tests"), opts);
+  assert.equal(verdict.level, "warn");
+  assert.equal(verdict.judgment?.shouldProceed, 0.3);
+  assert.equal(verdict.shouldProceedSteer, true);
+  assert.ok(verdict.reasons.includes("should-proceed 0.30 (may need user input before continuing)"));
+  const acting = judge.requests.filter(request => "irreversible" in request.questions);
+  assert.equal("should_proceed" in acting.at(-1)!.questions, false, "the acting request asks nothing only the trace reads");
 });
 
 test("a hold is released by a reply Jev reads as approval; the same prompt, a question, or a low score keep it held", async () => {

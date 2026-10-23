@@ -6,7 +6,7 @@ import type { RulesVerdict } from "./rules.js";
 import type { RunawayVerdict } from "./runaway.js";
 import type { Attempt, StuckVerdict } from "./stuck.js";
 
-export type GuardName = "action" | "stuck" | "done" | "cause" | "prose" | "security" | "context" | "runaway" | "rules" | "subagent" | "conscience" | "waste";
+export type GuardName = "action" | "stuck" | "done" | "cause" | "prose" | "security" | "context" | "runaway" | "rules" | "subagent" | "conscience" | "waste" | "notice";
 
 export interface TraceEntry {
   at: number;
@@ -82,7 +82,7 @@ export function actionDetails(verdict: Verdict, extra: { mode?: string; told?: s
   if (verdict.notAsked) lines.push(`not asked: ${verdict.notAsked}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
   if (extra.mode && verdict.level === "confirm") lines.push(`mode: ${extra.mode}`);
-  if (extra.told) lines.push(`agent told: ${clip(extra.told, 400)}`);
+  if (extra.told) lines.push(`notice recorded: ${clip(extra.told, 400)}`);
   return lines;
 }
 
@@ -91,7 +91,7 @@ export function stuckDetails(verdict: StuckVerdict, attempts: readonly Attempt[]
   if (verdict.judgment) lines.push(`jev: same strategy ${percent(verdict.judgment.sameStrategy)} · approach change ${verdict.judgment.approachChange.toFixed(2)}/2 · progress ${percent(verdict.judgment.progress)} · ${verdict.judgment.model} · ${verdict.judgment.elapsedMs} ms`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
-  if (told) lines.push(`agent told: ${clip(told, 400)}`);
+  if (told) lines.push(`notice recorded: ${clip(told, 400)}`);
   return lines;
 }
 
@@ -101,7 +101,7 @@ export function doneDetails(verdict: DoneVerdict, finalMessage: string, told?: s
   if (verdict.judgment) lines.push(`jev: claims done ${percent(verdict.judgment.claimsDone)} · claims verified ${percent(verdict.judgment.claimsVerified)} · checks apply ${percent(verdict.judgment.verificationApplies)} · ${verdict.judgment.outcome} · ${verdict.judgment.model} · ${verdict.judgment.elapsedMs} ms`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
-  if (told) lines.push(`agent told: ${clip(told, 400)}`);
+  if (told) lines.push(`notice recorded: ${clip(told, 400)}`);
   return lines;
 }
 
@@ -112,7 +112,7 @@ export function causeDetails(verdict: CauseVerdict, finalMessage: string, told?:
   if (verdict.previous !== undefined) lines.push(`earlier unchecked cause: recorded ${new Date(verdict.previous.at).toISOString().slice(0, 10)}`);
   if (verdict.reasons.length) lines.push(`why: ${verdict.reasons.join("; ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
-  if (told) lines.push(`agent told: ${clip(told, 400)}`);
+  if (told) lines.push(`notice recorded: ${clip(told, 400)}`);
   return lines;
 }
 
@@ -122,7 +122,7 @@ export function runawayDetails(verdict: RunawayVerdict, told: string | undefined
     `${verdict.count} times in ${verdict.chars} chars of ${verdict.kind}; signal: ${verdict.signal === "block" ? "identical paragraph" : "recurring trailing phrase"}`,
     recovering ? "run stopped; one follow-up turn started" : "run stopped; not restarted",
   ];
-  if (told) lines.push(`agent told: ${clip(told, 400)}`);
+  if (told) lines.push(`notice recorded: ${clip(told, 400)}`);
   return lines;
 }
 
@@ -131,7 +131,7 @@ export function proseDetails(verdict: ProseVerdict, reply: string, audience: str
   if (verdict.scores) lines.push(`jev: wordy ${percent(verdict.scores.wordy)} · clichés ${percent(verdict.scores.cliches)} · jargon ${percent(verdict.scores.jargon)}${verdict.model ? ` · ${verdict.model} · ${verdict.elapsedMs} ms` : ""}`);
   if (verdict.flagged.length) lines.push(`flagged: ${verdict.flagged.join(", ")}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
-  if (told) lines.push(`agent told: ${clip(told, 400)}`);
+  if (told) lines.push(`notice recorded: ${clip(told, 400)}`);
   return lines;
 }
 
@@ -141,6 +141,6 @@ export function rulesDetails(verdict: RulesVerdict, told?: string): string[] {
   if (verdict.findings.length) lines.push(`violations: ${verdict.findings.map(finding => `${finding.name} (${percent(finding.violation)})`).join("; ")}${verdict.editId ? ` in ${verdict.editId.replace("_", " ")}` : ""}`);
   if (verdict.skippedReason) lines.push(`skipped: ${verdict.skippedReason}`);
   if (verdict.error) lines.push(`typesafe: ${verdict.error}`);
-  if (told) lines.push(`agent told: ${clip(told, 400)}`);
+  if (told) lines.push(`notice recorded: ${clip(told, 400)}`);
   return lines;
 }

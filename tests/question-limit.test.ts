@@ -224,7 +224,7 @@ async function actionGuard(maxQuestions: number | undefined, targets: number) {
   const verdict = await evaluateAction(
     { tool: "bash", input: { command }, cwd: process.cwd(), task: "Tidy the workspace", plan: "Clear the old build output." },
     {
-      config: { ...base, shouldProceed: { ...base.shouldProceed, steer: true } },
+      config: base,
       judge,
       largeOutput: defaultConfig().context.largeOutput,
       previousActions: [{ id: "call_1", tool: "bash", command: "npm run build" }, { id: "call_2", tool: "bash", command: "ls build" }],
@@ -236,12 +236,12 @@ async function actionGuard(maxQuestions: number | undefined, targets: number) {
 const verdictOf = (verdict: Verdict) => ({ ...verdict, judgment: { ...verdict.judgment, elapsedMs: undefined } });
 
 test("action guard: 6 and 12 open violations plus 2 extension questions fit a 16-question backend, same verdict as one request", async () => {
-  for (const [targets, narrowCounts] of [[6, [16]], [12, [16, 6]]] as const) {
+  for (const [targets, narrowCounts] of [[6, [15]], [12, [16, 5]]] as const) {
     const wide = await actionGuard(32, targets);
     const narrow = await actionGuard(16, targets);
     assert.equal(wide.verdict.source, "typesafe");
     assert.equal(Object.keys(wide.verdict.extra ?? {}).filter(key => key.startsWith("violation_")).length, targets);
-    assert.deepEqual(wide.counts, [targets + 10]);
+    assert.deepEqual(wide.counts, [targets + 9]);
     assert.deepEqual(narrow.counts, narrowCounts);
     assert.deepEqual(verdictOf(narrow.verdict), verdictOf(wide.verdict));
   }
@@ -250,7 +250,7 @@ test("action guard: 6 and 12 open violations plus 2 extension questions fit a 16
 test("action guard: a judge with no limits sends the one request it sent before", async () => {
   const { verdict, counts } = await actionGuard(undefined, 12);
   assert.equal(verdict.source, "typesafe");
-  assert.deepEqual(counts, [22]);
+  assert.deepEqual(counts, [21]);
 });
 
 test("calibration: a sample with 20 questions takes two requests on a 16-question backend and one without limits, same scores", async () => {

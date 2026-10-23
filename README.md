@@ -32,7 +32,7 @@ pi install npm:pi-warden
 
 Then `/warden enable` (paste a [TypeSafe](https://console.typesafe.ai) key) and `/warden init` (writes a starter `pi-warden.md`). That's it. No key? The offline guards still run.
 
-## It steers. It doesn't nag.
+## It reports. It doesn't nag.
 
 Most guardrails stop and ask you. pi-warden tells **the agent** what it got wrong, and the agent corrects itself. You are pulled in only when something can't be undone. In a replay of 18,075 recorded calls (2026-09-21), **0.27% were held at the old 0.7 threshold and 0.1% at 0.9**, the default since 0.75.0 ([report](eval/reports/2026-09-21-calibration-0.33.3/report.md)).
 
@@ -73,9 +73,9 @@ Every guard and feature, its default, and its status. Defaults are `defaultConfi
 | ↳ Scratch deletes | A recursive `rm` of temp scratch the agent made warns instead of holding; data moved in keeps the hold | On | Stable |
 | ↳ Ask gate | Code decides offline when no Jev answer could change what the agent sees, so the call sends no request: 48.9% fewer requests, 327 of the 338 changed outcomes still asked | On. `action.ask` | Stable |
 | ↳ Approval on demand | After a hold, a call held again under your next reply gets one request that reads your reply and the agent's turn; released only when `approved` and `reply_points_at_action` are both 0.7 or more | On | Stable |
-| ↳ Off-task notice | Notes in the trace when a call looks unrelated to your request; never steers or holds | On, trace only | Stable |
-| ↳ Intent-mismatch steer | Tells the agent when a call differs from its stated plan; the score stays in the trace | Off: trace only. `action.intentTraceOnly: "invisible"` | Stable |
-| ↳ Should-proceed notice | Notes in the trace when the judge would ask you first. `action.shouldProceed.steer: true` also tells the agent; the 2026-09-30 labels do not support it (2 of 427 calls needed asking) | Off: trace only | Beta |
+| ↳ Off-task notice | Notes in the trace when a call looks unrelated to your request; never holds and never enters the conversation | On | Stable |
+| ↳ Intent-mismatch notice | Reports on the status line and in the trace when a call differs from its stated plan | On | Stable |
+| ↳ Should-proceed notice | Notes in the trace when the judge would ask you first; never holds a call and never enters the conversation. The 2026-09-30 labels do not support acting on it (2 of 427 calls needed asking) | On | Beta |
 | ↳ Your command, path, and arming rules | Warn, hold, or deny commands and paths you name | On, none set | Stable |
 | ↳ Large-output warning | Tells the agent to filter a command that will print far more than it needs | On | Stable |
 | [Rules](docs/guards.md#rules) | Judges every write and edit against the rules in your `pi-warden.md` | On | Stable |
@@ -103,7 +103,7 @@ Every guard and feature, its default, and its status. Defaults are `defaultConfi
 | [Subagent triage](docs/guards.md#subagent-triage) | Wakes the agent only for a subagent report that needs it | On | Stable |
 | [Token Guardian observer](docs/guards.md#token-guardian-observer) | Records Jev's answers to redacted supervision triggers in the trace; never answers Guardian or acts on them | On with Jev consent | Record-only |
 | [Judge cooldown](docs/guards.md#judge-cooldown) | Pauses Jev requests after repeated failures, so a dead backend costs no timeouts | On, no switch | Stable |
-| [Adaptive steers](docs/guards.md#adaptive-steers-per-model) | Makes a steer kind trace-only for a model that rarely follows or often disputes it | On | Stable |
+| [Steer follow rates](docs/guards.md#adaptive-steers-per-model) | Counts, per model and notice kind, how often the agent follows or disputes a notice; the counts change nothing | On | Stable |
 | Notices as toasts | Shows each guard notice as a toast besides the status line and the trace; nothing of it enters the conversation | Off. `notices` | Stable |
 | [Desktop notifications](docs/guards.md#desktop-notifications) | Holds, confirm dialogs, and runaway stops reach the desktop or your relay | Off. `notify.enabled` | Stable |
 | [Herdr pane state](docs/guards.md#herdr-pane-state) | In a herdr pane, a waiting confirm dialog shows as blocked in the herdr sidebar instead of working | On, no switch | Stable |
@@ -126,7 +126,7 @@ Jev requests cost money, so each 1.0 change was measured by what it saves. Each 
 | Approval on demand ([#160](https://github.com/DevMortimer/pi-warden/pull/160), [#161](https://github.com/DevMortimer/pi-warden/pull/161)) | Approval questions per 1,000 judged calls 90.0 → 0.7; wrong releases 45 → 1 in the measured runs | [Approval on demand](docs/guards.md#approval-on-demand-2026-10-01-three-designs-three-sets) |
 | Hold database ([#149](https://github.com/DevMortimer/pi-warden/pull/149)) | A copy of 52,362 rows shrinks from 285.9 MiB to 41.6 MiB | [Data handling](docs/data-handling.md#what-stays-on-this-machine) |
 
-Features that did not earn their cost did not ship: the working-memory pruning, the stale-result stubs, and a hybrid compaction failed their gates, and the off-task and should-proceed steers stay trace-only. The numbers are in the [Calibration](docs/guards.md#calibration) section. `/warden report` sends no request at all; `/warden improve` spends one turn of the session model and no TypeSafe request.
+Features that did not earn their cost did not ship: the working-memory pruning, the stale-result stubs, and a hybrid compaction failed their gates, and the off-task and should-proceed notices are reported, never sent to the agent. The numbers are in the [Calibration](docs/guards.md#calibration) section. `/warden report` sends no request at all; `/warden improve` spends one turn of the session model and no TypeSafe request.
 
 ## Rules no linter can check
 
@@ -157,8 +157,8 @@ Every number has a script and a raw report in [`eval/reports/`](eval/reports/) o
 Thresholds are set on recorded sessions. Where the data allows, a threshold is chosen on one half of the corpus and checked on the other. A feature that measured worse ships off or trace-only. [Calibration →](docs/guards.md#calibration)
 
 - **Irreversible hold at 0.9** (0.75.0). On 15,346 judged calls the judge was wrong on 15% of calls below confidence 0.8 and under 1% above it. A 0.9 cutoff chosen on one half removed about 52 false alarms on the other half and lost no true catch. Scores from 0.5 to 0.9 now warn.
-- **Intent steer in the trace only** (0.76.0). The score separates a differing call (AUROC 0.815 on 140 calls labelled blind to the score), but 36 of the 37 steers it would send were for calls the plan or your request had asked for.
-- **Failed gates stay off.** Pruning stale tool results had a safe point in 10 of 1,042 recorded sessions (median saving 0.00%); a hybrid compaction kept 5 of the 34 re-read files where the gate asked for 10; the working-memory gate's best cut dropped 23.5% of candidates and missed 12.8% where the gate allowed 10%; and no slice of the off-task or should-proceed steers reached 0.80 precision. Each is recorded in [Calibration](docs/guards.md#calibration).
+- **Intent notice in the trace** (0.76.0). The score separates a differing call (AUROC 0.815 on 140 calls labelled blind to the score), but 36 of the 37 notices it would send were for calls the plan or your request had asked for.
+- **Failed gates stay off.** Pruning stale tool results had a safe point in 10 of 1,042 recorded sessions (median saving 0.00%); a hybrid compaction kept 5 of the 34 re-read files where the gate asked for 10; the working-memory gate's best cut dropped 23.5% of candidates and missed 12.8% where the gate allowed 10%; and no slice of the off-task or should-proceed notices reached 0.80 precision. Each is recorded in [Calibration](docs/guards.md#calibration).
 - **Relevance compaction off** (0.78.0). In a replay of 48 recorded compactions its summary was 4.7 times the size of Pi's at the median and kept whole only 1 of the 34 files the agent read again.
 
 ## Privacy
@@ -173,7 +173,7 @@ Secrets and unshown paths are stripped before anything leaves your machine. The 
 
 ## Versioning
 
-From 1.0, pi-warden follows semver for: the documented config keys and their defaults (except `compaction.*`, `context.filter.*`, `conscience.*`, and `action.shouldProceed.steer`, which are experimental or beta); the `/warden` commands and their arguments; the `warden_remember`, `warden_loops`, and `warden_recall` tools; the documented `PI_WARDEN_*` environment variables; the widget template tokens; and the exports named in [docs/extension-authors.md](docs/extension-authors.md). The trace file format, the files in pi-warden's data folder, session message types, and every other export are internal and may change in any release.
+From 1.0, pi-warden follows semver for: the documented config keys and their defaults (except `compaction.*`, `context.filter.*`, and `conscience.*`, which are experimental or beta); the `/warden` commands and their arguments; the `warden_remember`, `warden_loops`, and `warden_recall` tools; the documented `PI_WARDEN_*` environment variables; the widget template tokens; and the exports named in [docs/extension-authors.md](docs/extension-authors.md). The trace file format, the files in pi-warden's data folder, session message types, and every other export are internal and may change in any release.
 
 ## Docs
 

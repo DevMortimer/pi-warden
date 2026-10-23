@@ -195,18 +195,9 @@ export interface Verdict {
   approvalError?: string;
   /** Redacted, truncated `plan` as sent to Jev and shown in the trace. */
   plan?: string;
-  /** True when Jev finds the call at odds with the agent's stated plan and the call can change something; the agent is told. */
   intentMismatch?: boolean;
-  /** The intent mismatch is recorded in the trace but the agent is not told (`action.intentTraceOnly`). */
-  intentTraceOnly?: boolean;
-  /** Index of the trace-only intent-mismatch reason; any prepend must adjust this index. */
-  intentTraceOnlyReasonIndex?: number;
-  /** True when Jev finds the call unrelated to the request on a call that can change something. Still steered in the reason log, but the steer message is suppressed until AUC improves above 0.51. */
   offTaskSteer?: boolean;
-  /** True when should_proceed is below the hold threshold; the agent is told to pause and ask. */
   shouldProceedSteer?: boolean;
-  shouldProceedTraceOnly?: boolean;
-  shouldProceedTraceOnlyReasonIndex?: number;
   /** Off-task steer is recorded in the trace but not delivered to the agent; the score has no reliable signal yet (AUC 0.51). */
   offTaskTraceOnly?: boolean;
   /** Index of the trace-only off-task diagnostic; later reasons append, and any prepend must adjust this index. */
@@ -3177,7 +3168,7 @@ function capScriptLines(lines: readonly string[]): string | undefined {
   return joined.length <= SCRIPT_LINES_CHARS ? joined : joined.slice(0, SCRIPT_LINES_CHARS);
 }
 
-export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; scriptLines?: string | undefined; spine?: TaskSpine | undefined; largeOutput?: boolean; shouldProceed?: boolean; traceOnly?: boolean } = {}) {
+export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; scriptLines?: string | undefined; spine?: TaskSpine | undefined; largeOutput?: boolean; traceOnly?: boolean } = {}) {
   const writesContent = (summary.tool === "write" || summary.tool === "edit" || summary.writes !== undefined) && hasContent(summary);
   const wantSlop = extras.slop && writesContent;
   const previous = (extras.previousActions ?? []).slice(-PREVIOUS_ACTIONS_LIMIT).map(action => ({ ...action, ...(action.command !== undefined ? { command: truncate(action.command, PREVIOUS_COMMAND_LIMIT) } : {}) }));
@@ -3185,8 +3176,7 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
   const traceOnly = extras.traceOnly === true;
   const violationQuestions = extras.violations?.length ? violationJudgmentQuestions(extras.violations) : {};
   // The acting request carries only what a delivered outcome reads: no earlier messages (`context`) and none of the
-  // off-task/scope questions, which are trace-only and ride the sampled `traceOnly` request instead. The should-proceed
-  // question rides it too, unless `shouldProceed` opts the acting request in to the steer that reads it.
+  // off-task/scope/questions that are reported rather than acted on, which ride the sampled `traceOnly` request instead.
   const baseQuestions = { irreversible: questions.irreversible, mutates: questions.mutates };
   // Jev must not read shell comments: the agent can write persuasive text into one to sway the judgment.
   const jevAction = summary.command === undefined ? summary : { ...summary, command: stripShellComments(summary.command) };
@@ -3211,7 +3201,7 @@ export function buildRequest(summary: ActionSummary, task: string | undefined, e
     },
     questions: traceOnly
       ? { ...traceOnlyQuestions }
-      : { ...baseQuestions, ...(summary.command !== undefined ? visibleQuestion : {}), ...(plan ? intentQuestion : {}), ...(extras.largeOutput && summary.tool === "bash" ? largeOutputQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.shouldProceed ? shouldProceedQuestion : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && writesContent ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}), ...violationQuestions, ...(extras.questions ?? {}) },
+      : { ...baseQuestions, ...(summary.command !== undefined ? visibleQuestion : {}), ...(plan ? intentQuestion : {}), ...(extras.largeOutput && summary.tool === "bash" ? largeOutputQuestion : {}), ...(wantSlop ? slopQuestions : {}), ...(extras.approval ? approvalQuestion : {}), ...(extras.security && writesContent ? securityQuestion : {}), ...(previous.length ? regretQuestions(previous) : {}), ...violationQuestions, ...(extras.questions ?? {}) },
   };
 }
 
@@ -3370,14 +3360,14 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   // count, so the content sent here is the content the guard judges with.
   const resolved = options.rules?.enabled === false ? null : resolveRulesFile(action.cwd, options.rules);
   const floorHits = builtInHits.length ? builtInHits.join("; ") : "none";
-  // The acting request carries only what a delivered outcome reads: no `context`, no off-task/scope questions, and
-  // should-proceed only when `shouldProceed.steer` is on. The rules content is only read by the per-violation questions, so it rides the request only while a
-  // violation is open.
+  // The acting request carries only what a delivered outcome reads: no `context`, no off-task/scope questions, no
+  // should-proceed question. The rules content is only read by the per-violation questions, so it rides the request only
+  // while a violation is open.
   const stateRules = remainingViolations.length ? resolved?.content : undefined;
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, security: options.security?.enabled ?? false, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, scriptLines, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false, shouldProceed: config.shouldProceed.steer });
-  // One call in twenty also asks the trace-only questions, in a second request that goes out beside the first. Its
-  // answers go through the off-task chain and the should-proceed block below, which keep them trace-only, so the
-  // recorded signal keeps coming without anything new reaching the agent.
+  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, security: options.security?.enabled ?? false, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, scriptLines, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false });
+  // One call in twenty also asks the judgment-only questions, in a second request that goes out beside the first. Its
+  // answers go through the off-task chain and the should-proceed block below, which report them, so the recorded signal
+  // keeps coming.
   const traceAnswer = traceSampled(options.traceSample)
     ? ask(judge, buildRequest(summary, action.task, { traceOnly: true, context: action.context, plan, rules: resolved?.content, rulesSource: resolved?.source, floorHits, scriptLines, spine: action.spine }), { timeoutMs: config.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) })
     : undefined;
@@ -3469,20 +3459,13 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
     addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask ?? 0)} (plausible side step; trace-only)`);
   } else if (judgment.scope === "unclear") {
     // Missing context is not itself off-task evidence; no warn.
-  } else {
-    // Fallback: scope answer was not provided (older judge). Fall back to the score, trace-only.
-    if ((judgment.offTask ?? 0) >= config.offTask.steer) {
-      offTaskWarned = true;
-      offTaskSteer = canChange;
-      offTaskTraceOnly = true;
-      level = higher(level, "warn");
-      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask ?? 0)} (trace-only until AUC clears 0.51)`);
-    } else if ((judgment.offTask ?? 0) >= config.offTask.warn) {
-      offTaskWarned = true;
-      offTaskTraceOnly = true;
-      level = higher(level, "warn");
-      addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask ?? 0)} (trace-only)`);
-    }
+  } else if ((judgment.offTask ?? 0) >= config.offTask.warn) {
+    // Fallback: scope answer was not provided (older judge). The score alone is the only signal there is.
+    offTaskWarned = true;
+    offTaskSteer = canChange;
+    offTaskTraceOnly = true;
+    level = higher(level, "warn");
+    addTraceOnlyOffTaskReason(`off-task ${percent(judgment.offTask ?? 0)} (trace-only)`);
   }
   if (options.security?.enabled && typeof answers.security_risk?.noul === "number") {
     judgment.securityRisk = answers.security_risk.noul;
@@ -3491,46 +3474,32 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
       reasons.push(`possible security weakness ${percent(judgment.securityRisk)} in written content`);
     }
   }
-  // A call at odds with the agent's own plan is warned about and the agent is told; never held on that alone. An action
-  // visible outside the working tree (commit, push, merge, publish, launch) needs less mismatch: that pair is what users
-  // object to on recorded sessions, a plan-drifting file edit far less so.
+  // A call at odds with the agent's own stated plan is reported on the status line and in the trace with the judgment;
+  // never held on that alone. An action visible outside the working tree (commit, push, merge, publish, launch) needs
+  // less mismatch: that pair is what users object to on recorded sessions, a plan-drifting file edit far less so.
   const visibleDrift = judgment.intentMismatch !== undefined && (judgment.visible ?? 0) >= VISIBLE_THRESHOLD && judgment.intentMismatch >= config.visibleMismatch;
   const mismatch = judgment.intentMismatch !== undefined && canChange && (judgment.intentMismatch >= config.intentMismatch || visibleDrift);
-  // The steer reaches the agent after the call ran (275 of 275 recorded steers), and a strict course change followed 8% of
-  // them; blind labels of 140 sampled calls found that of the 37 steers that would reach the agent, 36 were calls the plan
-  // or the user's latest request had asked for, so the default keeps every mismatch in the trace only ("all"). Under
-  // "invisible" only a call with a visible effect tells the agent: the code's (commit, push, merge, tag, reset, pull
-  // request, release, publish) or the judge's `visible` score at 0.8, which also covers an install, a launched program, or
-  // a message sent from a script.
-  const visibleEffect = (view?.shell === true && isVisibleCommand(view.command)) || (judgment.visible ?? 0) >= VISIBLE_THRESHOLD;
-  const intentTraceOnly = mismatch && (config.intentTraceOnly === "all" || (config.intentTraceOnly === "invisible" && !visibleEffect));
-  let intentTraceOnlyReasonIndex: number | undefined;
+  // Blind labels of 140 sampled calls found the score separates a differing call well (AUROC 0.815), but of the 37
+  // notices it would raise, 36 were calls the plan or the user's latest request had asked for, so they read as one
+  // reason in the trace and nothing more.
   if (mismatch) {
     level = higher(level, "warn");
-    if (intentTraceOnly) intentTraceOnlyReasonIndex = reasons.length;
-    const traceOnly = intentTraceOnly ? `; trace-only${config.intentTraceOnly === "invisible" ? ", no visible effect" : ""}` : "";
     reasons.push(visibleDrift && judgment.intentMismatch! < config.intentMismatch
-      ? `intent mismatch ${percent(judgment.intentMismatch!)} on a visible action (${percent(judgment.visible!)}; a commit, push, merge, publish, or launch the plan did not describe${traceOnly})`
-      : `intent mismatch ${percent(judgment.intentMismatch!)} (the call differs from the agent's stated plan${traceOnly})`);
+      ? `intent mismatch ${percent(judgment.intentMismatch!)} on a visible action (${percent(judgment.visible!)}; a commit, push, merge, publish, or launch the plan did not describe)`
+      : `intent mismatch ${percent(judgment.intentMismatch!)} (the call differs from the agent's stated plan)`);
   }
-  // Poor calibration makes this diagnostic-only unless the user opts into steers.
+  // Poor calibration: the judgment is reported and never holds a call.
   let shouldProceedSteer = false;
-  let shouldProceedTraceOnlyReasonIndex: number | undefined;
   if (typeof answers.should_proceed?.noul === "number") {
     judgment.shouldProceed = answers.should_proceed.noul;
     if (judgment.shouldProceed <= config.shouldProceed.threshold) {
       shouldProceedSteer = true;
       level = higher(level, "warn");
-      if (!config.shouldProceed.steer) shouldProceedTraceOnlyReasonIndex = reasons.length;
-      reasons.push(`should-proceed ${percent(judgment.shouldProceed)} (${config.shouldProceed.steer ? "may need user input before continuing" : "trace-only until calibrated"})`);
+      reasons.push(`should-proceed ${percent(judgment.shouldProceed)} (may need user input before continuing)`);
     }
   }
   const verdict: Verdict = withPlan({ level, source: "typesafe", summary, patterns, reasons, judgment });
   if (mismatch) verdict.intentMismatch = true;
-  if (intentTraceOnlyReasonIndex !== undefined) {
-    verdict.intentTraceOnly = true;
-    verdict.intentTraceOnlyReasonIndex = intentTraceOnlyReasonIndex;
-  }
   if (offTaskSteer) verdict.offTaskSteer = true;
   if (offTaskTraceOnly) verdict.offTaskTraceOnly = true;
   // Large output steers and never changes the level: the saver compresses what prints, this asks the agent to print less.
@@ -3539,10 +3508,6 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
     if (family) verdict.largeOutputFamily = family;
   }
   if (shouldProceedSteer) verdict.shouldProceedSteer = true;
-  if (shouldProceedTraceOnlyReasonIndex !== undefined) {
-    verdict.shouldProceedTraceOnly = true;
-    verdict.shouldProceedTraceOnlyReasonIndex = shouldProceedTraceOnlyReasonIndex;
-  }
   // Violation pipeline: parse per-violation Jev judgments, apply escalation, aggregate.
   // Answers are keyed by violation index (not ID) so two violations with the same ID
   // but different scopes each get their own Jev question and result.
@@ -3605,13 +3570,9 @@ export function releaseHeld(verdict: Verdict, reason: string): void {
   verdict.approvedByUser = true;
   verdict.reasons = [reason, ...verdict.reasons];
   if (verdict.offTaskTraceOnlyReasonIndex !== undefined) verdict.offTaskTraceOnlyReasonIndex++;
-  if (verdict.shouldProceedTraceOnlyReasonIndex !== undefined) verdict.shouldProceedTraceOnlyReasonIndex++;
-  if (verdict.intentTraceOnlyReasonIndex !== undefined) verdict.intentTraceOnlyReasonIndex++;
 }
 
-/** What the agent reads after a call that differs from its own plan ran: name the gap, bound the answer to one line.
- * Without the bound the model writes a full accounting of the notice at the end of every task, which is noise for the
- * user reading the transcript; the wording below caps the demanded reply at one short sentence. */
+/** The intent-mismatch notice, kept to one line because the trace records it word for word. */
 export function intentSteer(verdict: Verdict): string {
   const visible = (verdict.judgment?.visible ?? 0) >= VISIBLE_THRESHOLD ? " and its effect is visible outside the working tree (a commit, push, merge, publish, or launched program)" : "";
   return `pi-warden: this ${verdict.summary.tool} call does something different from what you said you were about to do${visible}. It ran. Do not write a report about this notice: in your next message, name what changed and why in at most one short sentence, then continue the task (or make the described call if it is still needed). If you already accounted for a similar notice, say nothing more about it.`;
