@@ -8,6 +8,30 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 2.0.0
+
+### Changed
+
+- **Guard notices no longer enter the conversation.** A judgment writes the trace entry and the status line, and shows a toast when `notices` is on; standing text the agent must follow (preferences, turn-start rules, conscience tip, compaction appendix, open loops) is appended to the run's system prompt. A hold still reaches the agent as the tool result of the call it held, with the rule and the retry. The channel that put a hidden custom message in the agent's context is gone, so no reply can answer a notice the user never saw.
+- **The trace always carries the guard's own notice text.** The per-model mute that silenced a notice kind after thirty observations is gone. `/warden status` still reports how often each notice kind was followed or disputed, per model; the counts no longer mute anything.
+- A conscience tip or a compaction appendix rides exactly one run's system prompt instead of every later run of the session.
+
+### Removed
+
+- The `steers` block, `steerVisible`, `steerBudget`, `action.shouldProceed.steer`, `action.offTask.steer` and `action.intentTraceOnly` were switches over a message the agent no longer receives. Each still loads with one warning that names it and says what replaced it.
+- `/warden unmute`, whose only job was to undo the mute above.
+
+### Fixed
+
+- A judgment that keeps its own status chip wrote two trace entries; it now writes one, with the chip and the notice text.
+- Load mode set the skill body as standing text and then overwrote it with the one-line recommendation.
+- Config and build warnings were filed under the `rules` guard in the trace; they now have their own `notice` guard, and `/warden status` no longer counts them as rules notices.
+- Status-line, toast and widget text said the agent was nudged or asked; they now say what happened, `notice recorded` or `flagged`.
+
+### Docs
+
+- The configuration rows for the removed keys state what replaced them, and the guard docs describe the notice channel and the one-run system-prompt text.
+
 ## 1.14.0
 
 ### Added
