@@ -8,6 +8,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 2.1.0
+
+### Changed
+
+- **pi-warden takes pi-typesafe 0.13.0.** That release keeps one API key per judgment backend and lets `/typesafe login <backend>` store, verify, and remove a backend's own key. The "judgments are off (no key)" notice now offers `Set <VARIABLE> or run /typesafe login <backend>` for every named backend, and `/warden enable` passes the configured backend to the key prompt, so a SubQ, OpenRouter, Command Code, or Liquid AI key is stored and used without an environment variable.
+- A request the client cancels on its own deadline counts as a timeout in the judge cooldown. SDK 0.7.0 reports a deadline as an abort, so three dead requests paused nothing and every judgment sent its own notice; they pause the judge again after three failures.
+
+### Fixed
+
+- The supervision cost estimate treats an unreported token count as zero, and a null supervision state is typed non-null, both as SDK 0.7.0 requires.
+
 ## 2.0.0
 
 ### Changed
