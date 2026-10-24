@@ -89,6 +89,6 @@
     "typescript": "^6.0.0"
   },
   "dependencies": {
-    "pi-typesafe": "^0.10.0"
+    "pi-typesafe": "^0.13.0"
   }
 }

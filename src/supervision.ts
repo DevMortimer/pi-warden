@@ -73,7 +73,7 @@ export function buildSupervisionRequest(metrics: RedactedSupervisionMetrics) {
   if (!validated) throw new TypeError("invalid redacted supervision metrics");
   // No question reads rootId, so it stays local and never leaves the machine.
   const { rootId: _rootId, ...sent } = validated.metrics;
-  const state = { ...sent, progress: sent.progress === null ? null : { ...sent.progress }, mcp: { ...sent.mcp } } as EntryType;
+  const state = { ...sent, progress: sent.progress === null ? null : { ...sent.progress }, mcp: { ...sent.mcp } } as NonNullable<EntryType>;
   return { state, questions: supervisionQuestions };
 }
 
@@ -93,9 +93,11 @@ export async function evaluateSupervision(metrics: unknown, options: Supervision
     const backend = resolveBackend(options.backend);
     const result = await ask(options.judge, buildSupervisionRequest(valid.metrics), { timeoutMs: options.timeoutMs });
     if (!result.ok) return { ok: false, reason: `judge error: ${result.error}${result.errorCode ? ` (${result.errorCode})` : ""}` };
+    // A backend that does not report tokens (SDK 0.7.0 types them nullable) costs nothing in the estimate.
+    const inputTokens = result.usage && typeof result.usage === "object" && "input_tokens" in result.usage ? result.usage.input_tokens ?? 0 : null;
     if (!record(result.answers) || !keys(result.answers, Object.keys(supervisionQuestions))
       || typeof result.model !== "string"
-      || !record(result.usage) || !count(result.usage.input_tokens)) return { ok: false, reason: "unusable judge result" };
+      || inputTokens === null || !count(inputTokens)) return { ok: false, reason: "unusable judge result" };
     const values = Object.keys(supervisionQuestions).map(id => {
       const answer = (result.answers as Record<string, unknown>)[id];
       return record(answer) && answer.type === "noul" && typeof answer.noul === "number" && Number.isFinite(answer.noul) && answer.noul >= 0 && answer.noul <= 1 ? answer.noul : undefined;
@@ -123,7 +125,7 @@ export async function evaluateSupervision(metrics: unknown, options: Supervision
     const price = (options.price ?? backendPrice)(backend, result.model) ?? DEFAULT_USD_PER_MTOK;
     const evaluatedAt = options.now();
     if (!amount(price) || !Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0) return { ok: false, reason: "invalid cost" };
-    const costUsd = estimateUsd(result.usage.input_tokens, price);
+    const costUsd = estimateUsd(inputTokens, price);
     if (!amount(costUsd)) return { ok: false, reason: "invalid cost" };
     const answers = Object.fromEntries(Object.keys(supervisionQuestions).map((id, index) => [id, values[index]!]));
     return { ok: true, result: { rootId: valid.metrics.rootId, kind, probability, confidence: Math.abs(2 * probability - 1), answers, model: result.model, evaluatedAt, costUsd } };

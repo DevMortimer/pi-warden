@@ -26,10 +26,12 @@ test("resolveJudgmentBackend: an endpoint object is kept as written, and one pi-
   assert.match(bad.backendRefusal!, /absolute https/);
 });
 
-test("loginStoresKey is true only for typesafe", () => {
+test("loginStoresKey is true for every named backend and false for an endpoint", () => {
   assert.equal(loginStoresKey("typesafe"), true);
-  assert.equal(loginStoresKey("openrouter"), false);
-  assert.equal(loginStoresKey("commandcode"), false);
+  assert.equal(loginStoresKey("openrouter"), true);
+  assert.equal(loginStoresKey("commandcode"), true);
+  assert.equal(loginStoresKey("liquid"), true);
+  assert.equal(loginStoresKey("subq"), true);
   assert.equal(loginStoresKey(gateway), false, "an endpoint object never gets the TypeSafe login store");
 });
 

@@ -2916,7 +2916,7 @@ test("/warden enable without a key asks for one after consent, verifies it, stor
     await runCommand("enable");
     assert.equal(modelListCalls, 1);
     assert.deepEqual(JSON.parse(await readFile(configPath(), "utf8")), { typesafe: true });
-    assert.deepEqual(JSON.parse(await readFile(storedKeyPath, "utf8")), { apiKey: keyInput });
+    assert.deepEqual(JSON.parse(await readFile(storedKeyPath, "utf8")), { version: 1, keys: { typesafe: keyInput } });
     assert.match(notices.at(-1)!.text, /key verified \(1 model\) and stored at/);
     assert.ok(notices.every(notice => !notice.text.includes("ts_live_key")), "the key is never echoed");
 
@@ -4805,13 +4805,13 @@ test("judgments off: each reason is said once per session with its fix, and work
   assert.deepEqual(judgmentsOff(), [], "a session with working judgments shows no notice");
 });
 
-test("judgments off: no key on OpenRouter names only its variable, since /typesafe login stores no OpenRouter key", async () => {
+test("judgments off: no key on OpenRouter names its variable and its own /typesafe login", async () => {
   await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: "openrouter", rules: { enabled: false }, ...STACK_BAR }));
   const savedOpenRouter = process.env.OPENROUTER_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
   try {
     await toolCall("bash", { command: "npm test" });
-    assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (no key for openrouter). Set OPENROUTER_API_KEY."]);
+    assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (no key for openrouter). Set OPENROUTER_API_KEY or run /typesafe login openrouter."]);
     assert.equal(networkCalls, 0);
   } finally {
     if (savedOpenRouter !== undefined) process.env.OPENROUTER_API_KEY = savedOpenRouter;

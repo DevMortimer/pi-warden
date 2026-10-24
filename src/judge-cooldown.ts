@@ -37,7 +37,12 @@ export function classifyJudgeError(err: unknown): JudgeFailureKind {
 export function cooldownFailureKind(err: unknown, signal?: AbortSignal): JudgeFailureKind | undefined {
   const code = err && typeof err === "object" && "code" in err ? (err as { code: unknown }).code : undefined;
   if (code === "budget" || code === "validation") return undefined;
-  if (code === "aborted") return (signal?.reason as { name?: unknown } | undefined)?.name === "TimeoutError" ? "timeout" : undefined;
+  // A deadline arrives as a cancellation: since the SDK 0.7.0 the client aborts its own call with AbortError, so the
+  // error says "aborted" rather than "timeout". A call with no signal that can be read says nothing about the backend.
+  if (code === "aborted") {
+    const reason = signal?.reason as { name?: unknown } | undefined;
+    return signal?.aborted && (reason?.name === "TimeoutError" || reason?.name === "AbortError") ? "timeout" : undefined;
+  }
   const status = err && typeof err === "object" && "status" in err ? (err as { status: unknown }).status : undefined;
   if (status === 401 || status === 403) return "auth";
   return classifyJudgeError(err);

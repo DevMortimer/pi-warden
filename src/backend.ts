@@ -40,9 +40,9 @@ export function backendName(backend: JudgmentBackend | undefined): string {
   return backend === undefined ? DEFAULT_BACKEND : typeof backend === "string" ? backend : resolveBackend(backend).label;
 }
 
-/** Whether the backend takes the TypeSafe key, the only one `/typesafe login` stores; true only for "typesafe". */
+/** Whether `/typesafe login <backend>` can store this backend's key. It names a registry backend; an endpoint object cannot be named. */
 export function loginStoresKey(backend: JudgmentBackend | undefined): boolean {
-  return backend === DEFAULT_BACKEND;
+  return typeof (backend ?? DEFAULT_BACKEND) === "string";
 }
 
 /** One phrase naming where judgments go — the label, the host, and the model sent — for consent text and status lines. */

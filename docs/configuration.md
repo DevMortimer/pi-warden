@@ -334,10 +334,10 @@ It is a backstop for sanctioned work, not a boundary anyone hostile respects: ke
 | Variable | Effect |
 | --- | --- |
 | `TYPESAFE_API_KEY` | Takes precedence over the key stored by `/warden enable` or `/typesafe login`. |
-| `OPENROUTER_API_KEY` | API key for the OpenRouter backend. Required when `typesafeBackend` is `"openrouter"`. |
-| `COMMANDCODE_API_KEY` | API key for the Command Code backend. Required when `typesafeBackend` is `"commandcode"`. |
-| `LIQUID_API_KEY` | API key for the Liquid AI backend. Required when `typesafeBackend` is `"liquid"`. |
-| `SUBQ_API_KEY` | API key for the SubQ backend. Required when `typesafeBackend` is `"subq"`. |
+| `OPENROUTER_API_KEY` | API key for the OpenRouter backend. Required when `typesafeBackend` is `"openrouter"` and no key is stored by `/typesafe login openrouter`; this variable then takes precedence. |
+| `COMMANDCODE_API_KEY` | API key for the Command Code backend. Required when `typesafeBackend` is `"commandcode"` and no key is stored by `/typesafe login commandcode`; this variable then takes precedence. |
+| `LIQUID_API_KEY` | API key for the Liquid AI backend. Required when `typesafeBackend` is `"liquid"` and no key is stored by `/typesafe login liquid`; this variable then takes precedence. |
+| `SUBQ_API_KEY` | API key for the SubQ backend. Required when `typesafeBackend` is `"subq"` and no key is stored by `/typesafe login subq`; this variable then takes precedence. |
 | `PI_WARDEN_ENABLED=1` | Grants consent for headless runs (same as `"typesafe": true`). |
 | `PI_WARDEN_MODE=steer\|confirm\|advise` | Overrides `mode`. |
 | `PI_WARDEN_DB=<path>` | SQLite file for the hold records, instead of `holds.db` next to the user config. |
@@ -356,7 +356,7 @@ Measured on 2026-10-03. Read this before you set `"typesafeBackend": "liquid"`: 
 - **Thresholds.** The default thresholds were calibrated on Jev. None has been calibrated on Liquid, so the same score can mean a different hold rate.
 - **Conscience.** The conscience delivers only under a policy measured for the model `jev-1.13.0`, so with Liquid it sends nothing.
 
-When a guard would ask Jev but cannot, Warden tells you once per session and reason why, and what to do: no consent (`/warden enable`, or `PI_WARDEN_ENABLED=1` headless), a refused `typesafeBackend` (the refusal message, quoted; fix the value in the user config), no key for the backend (set its key variable, or run `/typesafe login` for the TypeSafe backend), or a rejected key (named by where it comes from: run `/typesafe login` again for the key it saved, or check the key in the environment variable and run `/warden status`); a headless session gets a status message instead of a notice, and a spent request budget keeps its own warning.
+When a guard would ask Jev but cannot, Warden tells you once per session and reason why, and what to do: no consent (`/warden enable`, or `PI_WARDEN_ENABLED=1` headless), a refused `typesafeBackend` (the refusal message, quoted; fix the value in the user config), no key for the backend (set its key variable, or run `/typesafe login <backend>` for a named backend: the key is stored for that backend and verified before it is saved), or a rejected key (named by where it comes from: run `/typesafe login` again for the key it saved, or check the key in the environment variable and run `/warden status`); a headless session gets a status message instead of a notice, and a spent request budget keeps its own warning.
 
 ### Trace file
 

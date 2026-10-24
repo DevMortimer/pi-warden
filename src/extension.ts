@@ -12,6 +12,7 @@ type MouseRegionConstructor = new (child: ReturnType<typeof statusWidget>, onMou
 const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ MouseRegion: MouseRegionConstructor }>).MouseRegion;
 import { authState, backendHost, createTypeSafe, describeAuth, resolveBackend, chunkEvaluationRequest } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
+import { DEFAULT_BACKEND } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
 import { backendName, describeBackend, disclosureFor, judgeOptions, loginStoresKey } from "./backend.js";
 import type { BackendSetting, JudgmentsOffReason } from "./backend.js";
@@ -269,7 +270,12 @@ export function judgmentsOffText(reason: Exclude<JudgmentsOffReason, "budget">, 
   switch (reason) {
     case "no_consent": return `warden: Jev judgments are off (no consent). ${headless ? "Set PI_WARDEN_ENABLED=1." : "Run /warden enable."}`;
     case "bad_backend": return `warden: Jev judgments are off (typesafeBackend refused: ${setting.backendRefusal ?? "the configured value is not usable"})`;
-    case "no_key": return `warden: Jev judgments are off (no key for ${backendName(setting.typesafeBackend)}). Set ${resolveBackend(setting.typesafeBackend).keyEnv}${loginStoresKey(setting.typesafeBackend) ? " or run /typesafe login" : ""}.`;
+    case "no_key": {
+      const backend = setting.typesafeBackend;
+      const name = typeof backend === "string" ? backend : undefined;
+      const hint = !loginStoresKey(backend) || name === undefined ? "" : name === DEFAULT_BACKEND ? " or run /typesafe login" : ` or run /typesafe login ${name}`;
+      return `warden: Jev judgments are off (no key for ${backendName(backend)}). Set ${resolveBackend(backend).keyEnv}${hint}.`;
+    }
     case "key_rejected": return rejectedEnv
       ? `warden: Jev judgments are off (the key in ${rejectedEnv} was rejected). Check the key, then run /warden status.`
       : "warden: Jev judgments are off (the key saved by /typesafe login was rejected). Run /typesafe login.";
@@ -3439,7 +3445,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const path = writeUserSetting("typesafe", true);
           client = undefined;
           budgetExhausted = false;
-          report(`TypeSafe judgments enabled and saved to ${path}${key.login ? `; key verified (${key.login.models} model${key.login.models === 1 ? "" : "s"}) and stored at ${key.login.path}` : ` using the ${key.source === "stored" ? "stored key" : `key from ${resolveBackend(config.typesafeBackend).keyEnv}`}`}. This stays on in new sessions until /warden disable.`);
+          report(`TypeSafe judgments enabled and saved to ${path}${key.login ? `; key ${key.login.models === undefined ? "verified with one request" : `verified (${key.login.models} model${key.login.models === 1 ? "" : "s"})`} and stored at ${key.login.path}` : ` using the ${key.source === "stored" ? "stored key" : `key from ${resolveBackend(config.typesafeBackend).keyEnv}`}`}. This stays on in new sessions until /warden disable.`);
           return;
         }
         if (action === "disable") {

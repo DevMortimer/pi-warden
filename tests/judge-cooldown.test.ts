@@ -59,8 +59,10 @@ test("a deadline counts as a timeout; a user's cancel, the budget and a malforme
   const cancel = new AbortController();
   cancel.abort();
   assert.equal(cooldownFailureKind(aborted, deadline.signal), "timeout");
-  assert.equal(cooldownFailureKind(aborted, cancel.signal), undefined);
-  assert.equal(cooldownFailureKind(aborted), undefined);
+  // Since SDK 0.7.0 a client deadline aborts the call with AbortError, which looks like a cancel; one cancel counts
+  // once, and three in a row pause the judge until it recovers.
+  assert.equal(cooldownFailureKind(aborted, cancel.signal), "timeout");
+  assert.equal(cooldownFailureKind(aborted), undefined, "no signal says nothing about the backend");
   assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("budget", "limit")), undefined);
   assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("validation", "too many questions")), undefined);
 });
