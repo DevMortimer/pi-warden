@@ -343,7 +343,10 @@ interface CachedFile { mtimeMs: number; size: number; text: string }
 export class RuleStore {
   private readonly cache = new Map<string, CachedFile>();
 
+  constructor(private readonly readSource?: (path: string) => string | undefined) {}
+
   private read(path: string): string | undefined {
+    if (this.readSource) return this.readSource(path);
     let stat: { mtimeMs: number; size: number };
     try { stat = statSync(path); } catch { this.cache.delete(path); return undefined; }
     const cached = this.cache.get(path);
@@ -811,6 +814,11 @@ export function formatRules(verdict: RulesVerdict, template: string = DEFAULT_TE
   return renderTemplate(template, rulesTokens(verdict));
 }
 
+export function rulesCapNotice(verdict: RulesVerdict): string | undefined {
+  if (!verdict.dropped || !verdict.firstDropped) return undefined;
+  return `warden · rules · ${verdict.path}: ${verdict.dropped} rule${verdict.dropped === 1 ? "" : "s"} from ${verdict.sources.join(", ")} not judged, past the ${MAX_RULES}-question cap, starting with ${verdict.firstDropped}. A \`paths:\` line on a rule keeps it out of requests for other files. Shown once per session.`;
+}
+
 // ---------------------------------------------------------------------------
 // Sensitive paths: glob → note, code only, no request.
 
@@ -899,9 +907,10 @@ export class RulesGuard {
 
   /** The notice for the first write this session that had rules past the cap; undefined after that. */
   capNotice(verdict: RulesVerdict): string | undefined {
-    if (this.capNoted || !verdict.dropped || !verdict.firstDropped) return undefined;
-    this.capNoted = true;
-    return `warden · rules · ${verdict.path}: ${verdict.dropped} rule${verdict.dropped === 1 ? "" : "s"} from ${verdict.sources.join(", ")} not judged, past the ${MAX_RULES}-question cap, starting with ${verdict.firstDropped}. A \`paths:\` line on a rule keeps it out of requests for other files. Shown once per session.`;
+    if (this.capNoted) return undefined;
+    const notice = rulesCapNotice(verdict);
+    if (notice) this.capNoted = true;
+    return notice;
   }
 
   describe(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">): string {

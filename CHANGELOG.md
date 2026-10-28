@@ -6,7 +6,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- Claude Code per-edit rules hooks through the `pi-warden` CLI, with scoped installation and removal, captured Edit context, shared global rules configuration, bounded fail-open execution, and session request/replay reservations.
+
+### Fixed
+
+- Claude installation errors identify refused settings symlinks, invalid settings or receipts, and permission failures by path without exposing file contents. Settings symlinks remain unsupported on POSIX.
 
 ## 2.2.5
 

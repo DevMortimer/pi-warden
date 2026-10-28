@@ -25,6 +25,9 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "bin": {
+    "pi-warden": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
