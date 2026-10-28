@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,7 +13,8 @@ const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const TSX = import.meta.resolve("tsx");
 
 async function fixture(): Promise<{ root: string; project: string; agent: string; settings: string }> {
-  const root = await mkdtemp(join(tmpdir(), "pi-warden-claude-"));
+  // macOS hands out /var, a symlink to /private/var; the CLI reports the resolved cwd, so the fixture must too.
+  const root = await realpath(await mkdtemp(join(tmpdir(), "pi-warden-claude-")));
   const project = join(root, "project");
   const agent = join(root, "agent");
   await mkdir(join(project, ".claude"), { recursive: true });
