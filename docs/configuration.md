@@ -317,6 +317,8 @@ The exemptions belong in the user file — `action.exemptRules`, `commandRules`,
 - `remote-script-exec` — lets a lab setup pipe a remote script into a shell without a hold; a hostile URL in that shape is no longer caught offline.
 - `chmod-777` — lets the lab's broad permissions pass; the same command on a production path passes too.
 
+**There is no path allowlist.** A recursive `rm` is released by being placed inside the project root or a scratch root the host declared in its environment (`PI_WARDEN_SCRATCH_PATHS`, `TMPDIR`), never by naming a directory in a project file: a checked-out repo cannot add one, and cannot widen what its own scripts may delete. The only switch either side has over the classifier is `action.exemptRules`, which is a user-file key and silences the rule for every project at once.
+
 ### Engagement hard stop and measuring your own rate
 
 A deny rule blocks a call outright: no dialog, no TypeSafe request. Command rules are matched in code and never sent, and a match travels only as its id, so the hosts you name stay on this machine. Replace the placeholders below with the out-of-scope hosts from your own scope document (user file):

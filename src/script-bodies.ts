@@ -940,7 +940,7 @@ function readBody(file: string, reader: Reader, dir = ".", tilde = true): string
  * What a shell is asked to run, by the index of its argument: `code` for `-c` or a bundle such as `-lc`, `file` for a
  * script operand, or `stdin` when it reads its script from its input (no operand, or `-s`).
  */
-function shellCall(args: readonly string[]): { code?: number; file?: number; stdin?: true } {
+function shellCall(args: readonly string[]): { code?: number; file?: number; stdin?: true; noexec?: true } {
   let code = false;
   let stdin = false;
   for (let index = 0; index < args.length; index++) {
@@ -948,6 +948,8 @@ function shellCall(args: readonly string[]): { code?: number; file?: number; std
     const operand = arg === "--" || arg === "-" ? index + 1 : undefined;
     if (operand === undefined && arg.startsWith("--")) { if (SHELL_VALUE_FLAGS.has(arg)) index++; continue; }
     if (operand === undefined && /^[-+][A-Za-z]+$/.test(arg)) {
+      // `sh -n` reads the script and runs none of it, so it runs no body and no code string.
+      if (arg.startsWith("-") && arg.includes("n")) return { noexec: true };
       if (arg.startsWith("-") && arg.includes("c")) code = true;
       if (arg.startsWith("-") && arg.includes("s")) stdin = true;
       if (/[oO]$/.test(arg)) index++;
@@ -1022,6 +1024,8 @@ function makeCall(args: readonly string[]): MakeCall {
     if (arg.startsWith("--makefile=")) { call.file = arg.slice("--makefile=".length); continue; }
     if (arg.startsWith("--directory=")) { call.dir = arg.slice("--directory=".length); continue; }
     if (arg.startsWith("-")) { if (MAKE_VALUE_FLAGS.has(arg)) index++; continue; }
+    // `make BUILD=/tmp clean` sets a variable, so the word is not the target.
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) continue;
     if (call.target === undefined) call.target = arg;
   }
   return call;
@@ -1059,8 +1063,53 @@ function defaultMakeTarget(text: string): string | undefined {
   return undefined;
 }
 
+/** An assignment a makefile makes at its top level; a recipe line starts with a tab and is not one. */
+const MAKE_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\s*(::=|:=|\+=|\?=|=)\s*(.*)$/;
+
+/** A make value this guard can read: quoted or bare, with no expansion, glob, escape, comment, or shell operator. */
+function makeLiteral(raw: string): string | undefined {
+  const value = raw.replace(/\s+#.*$/, "").trim().replace(/^(["'])([\s\S]*)\1$/, "$2").trim();
+  if (!value || /[$`\\*?[\]{}#;|&<>()]/.test(value)) return undefined;
+  return value;
+}
+
+/**
+ * The variables a makefile gives a literal path, for a recipe whose deletion names one: an assignment the file makes
+ * once, with a value that stays inside the project. Anything else — a second assignment, `+=`, an expansion, a path
+ * outside, an environment value for `?=`, a `NAME=` on the make command line — leaves the recipe as written, so the
+ * target stays unplaceable and the hold stays.
+ */
+function makeVariables(text: string, assigned: ReadonlySet<string>, insideRoot: boolean, cwd: string | undefined): ReadonlyMap<string, string> {
+  const counts = new Map<string, number>();
+  const values = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    if (line.startsWith("\t")) continue;
+    const match = MAKE_ASSIGNMENT.exec(line.trim());
+    if (!match) continue;
+    const name = match[1]!;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+    if (match[2] === "+=") continue;
+    // `?=` applies only where the environment does not set the name, which this process can read.
+    if (match[2] === "?=" && process.env[name] !== undefined) continue;
+    if (assigned.has(name)) continue;
+    if (!insideRoot) continue;
+    const value = makeLiteral(match[3]!);
+    if (value === undefined) continue;
+    if (isAbsolute(value) ? cwd === undefined || !insideAny(value, [cwd]) : value.split(/[\\/]/).includes("..")) continue;
+    values.set(name, value);
+  }
+  for (const name of values.keys()) if (counts.get(name) !== 1) values.delete(name);
+  return values;
+}
+
+/** `$(NAME)` and `${NAME}` for a variable the same makefile gives a literal path; every other expansion stays written. */
+function expandMakeVariables(body: string, vars: ReadonlyMap<string, string>): string {
+  if (!vars.size) return body;
+  return body.replace(/\$[({]([A-Za-z_][A-Za-z0-9_]*)[)}]/g, (whole, name: string) => vars.get(name) ?? whole);
+}
+
 /** The recipe a `make` call runs, for its named target or the default one. */
-function makeBodies(args: readonly string[], reader: Reader, dir: string): ScriptSource[] {
+function makeBodies(args: readonly string[], reader: Reader, dir: string, assigned: ReadonlySet<string>): ScriptSource[] {
   if (reader.cwdText === undefined) return [];
   const call = makeCall(args);
   const directory = resolve(reader.cwdText, dir, call.dir ?? ".");
@@ -1072,7 +1121,9 @@ function makeBodies(args: readonly string[], reader: Reader, dir: string): Scrip
   if (target === undefined) return [];
   const recipe = recipeLines(text, target);
   if (!recipe.length) return [];
-  return [{ source: call.target === undefined ? "make" : `make ${call.target}`, kind: "shell", body: recipe.join("\n") }];
+  const insideRoot = reader.cwdText !== undefined && insideAny(directory, [reader.cwdText]);
+  const body = expandMakeVariables(recipe.join("\n"), makeVariables(text, assigned, insideRoot, reader.cwdText));
+  return [{ source: call.target === undefined ? "make" : `make ${call.target}`, kind: "shell", body }];
 }
 
 /** Whether `dir` is a directory inside the project or a temp root; a path outside them is never asked about. */
@@ -1096,6 +1147,8 @@ function labelOf(file: string, dir: string): string {
 export function scriptSources(command: string, cwd?: string): ScriptSource[] {
   const sources: ScriptSource[] = [];
   const reader = makeReader(cwd);
+  // A `NAME=value` word anywhere in the command reaches a recipe through make's environment or its command line.
+  const assigned = new Set([...command.matchAll(/(?:^|[\s;&|({`'"`])([A-Za-z_][A-Za-z0-9_]*)=/g)].map(match => match[1]!));
   const seen = new Set<string>();
   const push = (source: ScriptSource, dir: string): void => {
     const key = `${source.kind}\u0000${dir}\u0000${source.source}`;
@@ -1165,6 +1218,7 @@ export function scriptSources(command: string, cwd?: string): ScriptSource[] {
     }
     if (SHELLS.has(head)) {
       const shell = shellCall(args);
+      if (shell.noexec) continue;
       const operand = shell.file === undefined ? undefined : words[shell.file];
       if (shell.code !== undefined) code(words[shell.code]);
       if (shell.stdin || (operand && STDIN_FILES.has(operand.text))) stdin(call, dir);
@@ -1176,7 +1230,7 @@ export function scriptSources(command: string, cwd?: string): ScriptSource[] {
       continue;
     }
     if (head === "make") {
-      for (const source of makeBodies(args, reader, dir)) push(source, dir);
+      for (const source of makeBodies(args, reader, dir, assigned)) push(source, dir);
       continue;
     }
     if (head === "bun") {
