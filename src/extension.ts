@@ -1097,8 +1097,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
   const steerWatch = new SteerWatch();
   /** Session generation counter for conscience invalidation. Incremented on steer, abort, reload, switch, or config change. */
   let conscienceGeneration = 0;
-  /** Per-prompt error categories already warned about (one console.warn per category per prompt). */
-  let warnedErrorCategories = new Set<string>();
   /** Failure categories the owner was told about this session: the same failure on the next prompt is the same news. */
   const conscienceFailuresTold = new Set<string>();
   // ── Conscience state per prompt revision ──
@@ -1576,7 +1574,6 @@ export default function wardenExtension(host: ExtensionAPI): void {
     beforeAgentStartFired = true;
     if (config.enabled && config.conscience.enabled) void (async () => {
       const myGeneration = conscienceGeneration;
-      warnedErrorCategories = new Set();
       selectedCapability = null;
       pendingCapability = null;
       triggerConsumed = false;
@@ -1809,8 +1806,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
           try {
             const result = await assess(redactedText, "", cachedSkills as unknown as import("@earendil-works/pi-coding-agent").Skill[], toolInfos, activeSkills, [], { judge: judgeAdapter, config: config.conscience, sharedTimeoutMs: config.timeoutMs, now: () => Date.now(), globalIndex: globalIndexFile, projectIndex: projectIndexFile }, spine);
             if (conscienceGeneration !== myGeneration) return;
-            record(ctx, config, "conscience", `queued prompt assessed → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.skipReason ?? "none"})`, ["trigger: message_start", `origin: queued`, `skipReason: ${result.skipReason ?? "none"}`]);
-          } catch (err) { const cat = classifyJudgeError(err); if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
+            const queuedError = result.skipReason === "error" && result.errorCategory ? result.errorCategory : undefined;
+            if (queuedError) noteConscienceFailure(queuedError);
+            record(ctx, config, "conscience", `queued prompt assessed → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.skipReason ?? "none"})`, ["trigger: message_start", `origin: queued`, `skipReason: ${result.skipReason ?? "none"}`, ...(queuedError ? [`errorCategory: ${queuedError}`] : [])]);
+          } catch (err) { noteConscienceFailure(classifyJudgeError(err)); }
         } else {
           record(ctx, config, "conscience", `queued prompt: no judge or no skills`, ["trigger: message_start", `origin: queued`, "skipReason: catalog_unavailable"]);
         }
@@ -1882,8 +1881,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
             selectedCapability = { kind: result.selected.kind, id: result.selected.id };
             lastAssessmentHash = result.questionHash;
           }
-          record(ctx, config, "conscience", `turn_end reassessment → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.elapsedMs}ms, ${result.skipReason ?? "none"})`, ["trigger: turn_end", `assessments: ${assessmentsThisPrompt}/${config.conscience.maxAssessments}`, `skipReason: ${result.skipReason ?? "none"}`]);
-        } catch (err) { const cat = err instanceof Error ? (/(timeout|timed out)/i.test(err.message) ? "timeout" : /(auth|key|credential|401|403)/i.test(err.message) ? "auth" : /(network|fetch|connect)/i.test(err.message) ? "network" : "other") : "other"; if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
+          const turnError = result.skipReason === "error" && result.errorCategory ? result.errorCategory : undefined;
+          if (turnError) noteConscienceFailure(turnError);
+          record(ctx, config, "conscience", `turn_end reassessment → ${result.selected ? `${result.selected.kind}:${result.selected.id}` : "none"} (${result.elapsedMs}ms, ${result.skipReason ?? "none"})`, ["trigger: turn_end", `assessments: ${assessmentsThisPrompt}/${config.conscience.maxAssessments}`, `skipReason: ${result.skipReason ?? "none"}`, ...(turnError ? [`errorCategory: ${turnError}`] : [])]);
+        } catch (err) { noteConscienceFailure(classifyJudgeError(err)); }
       }
     }
   });
@@ -2894,7 +2895,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const msg = `Reminder: ${recommendationText(result.selected, redactedPrompt, "consider")}`;
           if (steer(ctx, config, "conscience", msg)) watchSteer(ctx, config, ["conscience"], { capability: { kind: result.selected.kind === "skill" ? "skill" : "tool", id: result.selected.id } });
         }
-      } catch (err) { const cat = err instanceof Error ? (/(timeout|timed out)/i.test(err.message) ? "timeout" : /(auth|key|credential|401|403)/i.test(err.message) ? "auth" : /(network|fetch|connect)/i.test(err.message) ? "network" : "other") : "other"; if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
+        // The reminder re-check writes no entry of its own, so its failure needs no detail line; the owner still hears it.
+        else if (result.skipReason === "error" && result.errorCategory) noteConscienceFailure(result.errorCategory);
+      } catch (err) { noteConscienceFailure(classifyJudgeError(err)); }
     }
     // ── Turn rules: one end-of-run judgment against the whole diff, and the files no per-edit check saw ──
     // One notice for the findings; the verdicts land in the rules log like the rest.
