@@ -897,6 +897,19 @@ function isDangerousTarget(target: WordPath, cwd: string | undefined): boolean {
   return clean.split(/[\\/]/).includes("..");
 }
 
+/**
+ * Whether a target is the project root or an ancestor of it: that deletes the project, so no release rule may answer.
+ * A temp path compares by real path, because `$TMPDIR` spells the same directory two ways; a non-temp path compares as
+ * written, so this never starts a file-system call for one, and one that cannot be resolved counts as the root.
+ */
+function deletesProject(target: WordPath, cwd: string | undefined): boolean {
+  if (cwd === undefined || target.kind !== "path") return false;
+  const real = tempCandidate(target.path) ? realTarget(target.path) : resolve(target.path);
+  const root = tempCandidate(cwd) ? realTarget(cwd) : resolve(cwd);
+  if (real === undefined || root === undefined) return true;
+  return underPath(root, real);
+}
+
 /** A `mv` or `ln` command word: both can put existing data under a path a later `rm` deletes. */
 const MOVER_WORD = /^(?:g|bsd)?(?:mv|ln)$/;
 
@@ -1033,6 +1046,9 @@ export function movedInTargets(tool: string, input: Record<string, unknown>, cwd
   return [...found];
 }
 
+/** The hit for an `rm` that deletes the project root or one of its ancestors, or a target the guard cannot place. */
+const DANGEROUS_TARGET: PatternHit = { id: "rm-recursive-dangerous-target", severity: "destructive", label: "recursive rm on an absolute, home, variable, or parent path" };
+
 /**
  * `rm` with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
  * risky. A quote, parenthesis, or backtick before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
@@ -1053,6 +1069,9 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
   // A directory change the guard does not read (`popd`, `eval`, `cd -`, …) leaves every later relative target unread:
   // it may name anything, so it is dangerous rather than merely risky.
   const dangerousTarget = targets.some(target => isDangerousTarget(target, cwd) || (context?.dirChanged === true && target.kind === "unknown"));
+  // A release deletes the project itself when a target is its root or above it, whatever spelling names it and wherever
+  // the project lives: the scratch and temp-subtree rules below answer first for a project under a temp root otherwise.
+  if (targets.some(target => deletesProject(target, cwd))) return DANGEROUS_TARGET;
   const budget = scratchBudget();
   const exemptions = context !== undefined;
   // A command or an earlier call that moved or linked data into a target keeps it: nothing about it is provable then.
@@ -1065,7 +1084,7 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
     if (roots.length && targets.every(target => clean(target) && isTempSubtree(target, roots))) {
       return { id: "rm-temp-subtree", severity: "risky", label: "recursive rm of a path under the temp directory" };
     }
-    return { id: "rm-recursive-dangerous-target", severity: "destructive", label: "recursive rm on an absolute, home, variable, or parent path" };
+    return DANGEROUS_TARGET;
   }
   if (force) return { id: "rm-rf", severity: "risky", label: "rm -rf on a project path" };
   return { id: "rm-recursive", severity: "risky", label: "recursive rm" };

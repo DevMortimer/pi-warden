@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -7,7 +7,7 @@ import { ActionGuard } from "../src/action-guard.js";
 import type { Conversation, InspectOptions, ToolCallRef } from "../src/action-guard.js";
 import { actionAskGate } from "../src/ask-gate.js";
 import { defaultConfig } from "../src/config.js";
-import { matchPatterns } from "../src/guard.js";
+import { matchPatterns, scratchIdentity } from "../src/guard.js";
 import { actionDetails } from "../src/trace.js";
 import type { Judge } from "pi-typesafe";
 import { judgedAction } from "./judged-action.js";
@@ -381,10 +381,19 @@ writeFileSync(join(placement, "Makefile"), [
 writeFileSync(join(placement, "scripts", "build-app.sh"), ["#!/bin/sh", "APP=dist/App.app", "rm -rf \"$APP\"", "mkdir -p \"$APP\"", ""].join("\n"));
 process.on("exit", () => rmSync(placement, { recursive: true, force: true }));
 
+// A project nested under $TMPDIR whose own makefile cleans the project root.
+const tree = mkdtempSync(join(tmpdir(), "pi-warden-tree-"));
+const nested = join(tree, "s", "proj");
+mkdirSync(join(nested, "build"), { recursive: true });
+writeFileSync(join(nested, "Makefile"), `ROOT := ${nested}\nclean:\n\trm -rf $(ROOT)\n`);
+process.on("exit", () => rmSync(tree, { recursive: true, force: true }));
+
 /** The rm-family hits of one command, run against the fixture project. */
 const rmHitsOf = (command: string) => matchPatterns("bash", { command }, placement, {}).filter(hit => /^rm/.test(hit.id));
 const rmIdsOf = (command: string) => rmHitsOf(command).map(hit => hit.id);
 const rmHeld = (command: string) => rmHitsOf(command).some(hit => hit.id === "rm-recursive-dangerous-target");
+/** The rm-family hits of one command, run against a chosen project root. */
+const rmHitsAt = (command: string, cwd: string) => matchPatterns("bash", { command }, cwd, {}).filter(hit => /^rm/.test(hit.id));
 
 test("a recursive rm is placed by what the command says: a variable, a glob prefix, and the scratch a mktemp made", () => {
   assert.deepEqual(rmIdsOf(`dir=src/core && rm -rf "$dir/__pycache__"`), ["rm-rf"], "a variable the same command sets to a literal path");
@@ -424,6 +433,31 @@ test("a make recipe is read with the makefile's own literal variables", () => {
   } finally {
     if (saved === undefined) delete process.env.BUILD; else process.env.BUILD = saved;
   }
+});
+
+test("a recursive rm of the project root or an ancestor is held wherever the project lives", () => {
+  // `nested` lives under $TMPDIR, where the temp-subtree and session-scratch rules answer before the root check.
+  for (const command of [
+    `d=$(pwd) && rm -rf "$d"`,
+    `d=${nested} && rm -rf "$d"`,
+    `rm -rf ${nested}`,
+    `rm -rf ${realpathSync(nested)}`,
+    `rm -rf ${tree}`,
+    `rm -rf ${join(tree, "s")}`,
+    `cd "${nested}" && rm -rf .`,
+  ]) assert.ok(rmHitsAt(command, nested).some(hit => hit.id === "rm-recursive-dangerous-target"), command);
+  // A project root the session recorded as scratch is still the project.
+  const scratch = new Map([[realpathSync(placement), scratchIdentity(realpathSync(placement))!]]);
+  const recorded = matchPatterns("bash", { command: `rm -rf ${placement}` }, placement, { scratch, platform: "darwin" });
+  assert.deepEqual(recorded.filter(hit => /^rm/.test(hit.id)).map(hit => hit.id), ["rm-recursive-dangerous-target"], "a recorded scratch root that is the project");
+  // A makefile recipe that deletes the root keeps the hold, and its message names the target the user typed.
+  const make = rmHitsAt("make clean", nested);
+  assert.deepEqual(make.map(hit => [hit.id, hit.severity]), [["rm-recursive-dangerous-target", "destructive"]]);
+  assert.match(make[0]!.label, /\(via make clean\)$/);
+  // What still releases: the command's own mktemp directory, and a path inside a temp-root project.
+  assert.deepEqual(rmIdsOf(`d=$(mktemp -d) && echo x > "$d/f" && rm -rf "$d"`), ["rm-session-scratch"]);
+  assert.deepEqual(rmIdsOf("rm -rf build/cache"), ["rm-rf"]);
+  assert.deepEqual(rmHitsAt(`rm -rf ${nested}/build`, nested).map(hit => hit.id), ["rm-rf"], "a path inside the project");
 });
 
 test("a shell asked only to parse a script runs none of its body", () => {
