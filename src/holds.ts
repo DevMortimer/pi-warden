@@ -308,8 +308,8 @@ export function textRegrets(prompt: string | undefined): boolean {
     || /\b(?:don[’']t|do not|never) (?:do|run|touch|push|delete|remove|commit) that\b/i.test(opening);
 }
 
-/** One line for the trace entry of a call whose outcome landed. */
-export function outcomeNote(record: CallRecord): string {
+/** One line for the trace entry of a call whose outcome landed. `undefined` writes no line at all. */
+export function outcomeNote(record: CallRecord): string | undefined {
   switch (record.outcome) {
     case "approved": return `outcome: approved by the user (${record.outcomeVia === "dialog" ? "confirm dialog" : "released on retry"}); the hold was a false positive`;
     case "declined": return record.outcomeVia === "deny"
@@ -318,7 +318,9 @@ export function outcomeNote(record: CallRecord): string {
     case "replanned": return "outcome: never approved after the user replied and replaced by another call that changes something; the hold stood";
     case "abandoned": return "outcome: the run after the user replied neither released the hold nor replaced it; nothing came of it";
     case "regretted": return `outcome: the user's next message regrets this call${record.regret !== undefined ? ` (${record.regret.toFixed(2)})` : ""}; it should have been held`;
-    case "accepted": return `outcome: the user's next message does not regret this call${record.regret !== undefined ? ` (${record.regret.toFixed(2)})` : ""}`;
+    // 12,036 of the week ending 2026-10-30's 12,038 labels were accepted, so this line said the same thing in all but
+    // two cases and told a reader nothing the status count does not. The label itself still lands in the hold log.
+    case "accepted": return undefined;
     default: return "outcome: pending";
   }
 }

@@ -47,7 +47,7 @@ test("a hold released by the user's reply is a false positive; the pending hold 
   assert.equal(snapshot.holds, 2);
   assert.equal(snapshot.approved, 2);
   assert.equal(snapshot.precision, 0);
-  assert.match(outcomeNote(bash), /released on retry.*false positive/);
+  assert.match(outcomeNote(bash)!, /released on retry.*false positive/);
 });
 
 test("a steer hold the reply neither releases nor replaces is abandoned when the run ends", () => {
@@ -69,7 +69,7 @@ test("a steer hold the reply neither releases nor replaces is abandoned when the
   assert.equal(snapshot.awaiting, 0);
   assert.equal(snapshot.labels, 0, "abandoned is not in the precision denominator");
   assert.equal(snapshot.precision, undefined, "nothing was measured as a true or false positive");
-  assert.match(outcomeNote(hold), /nothing came of it/);
+  assert.match(outcomeNote(hold)!, /nothing came of it/);
   assert.match(formatHolds(snapshot), /1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 abandoned, 0 awaiting your reply/);
 });
 
@@ -87,7 +87,7 @@ test("a steer hold becomes a re-plan once the reply has arrived and a mutating c
   assert.equal(snapshot.abandoned, 0);
   assert.equal(snapshot.precision, 1);
   assert.equal(snapshot.labels, 1);
-  assert.match(outcomeNote(hold), /replaced by another call that changes something/);
+  assert.match(outcomeNote(hold)!, /replaced by another call that changes something/);
 });
 
 test("only a steer hold waits for the reply; the dialog decides a confirm-mode hold at once", () => {
@@ -114,8 +114,8 @@ test("dialog decisions label the hold at once", () => {
   assert.equal(allowed.outcomeAt, 1);
   assert.equal(refused.outcomeVia, "dialog");
   assert.equal(ledger.snapshot().precision, 0.5);
-  assert.match(outcomeNote(allowed), /confirm dialog.*false positive/);
-  assert.match(outcomeNote(refused), /declined.*hold stood/);
+  assert.match(outcomeNote(allowed)!, /confirm dialog.*false positive/);
+  assert.match(outcomeNote(refused)!, /declined.*hold stood/);
 });
 
 test("allowed calls of the last turn are the regret candidates; the located one is the miss, the rest are accepted", () => {
@@ -139,7 +139,17 @@ test("allowed calls of the last turn are the regret candidates; the located one 
   assert.equal(snapshot.allowed, 2);
   assert.equal(snapshot.regretted, 1);
   assert.equal(snapshot.accepted, 1);
-  assert.match(outcomeNote(push), /regrets this call \(0\.88\); it should have been held/);
+  assert.match(outcomeNote(push)!, /regrets this call \(0\.88\); it should have been held/);
+});
+
+test("an accepted call writes no outcome line: it was 12,036 of the week's 12,038 labels and said one thing", () => {
+  const ledger = new HoldLedger();
+  const call = ledger.record(verdict({ level: "allow", command: "npm test" }), { held: false, mode: "steer" });
+  ledger.promptArrived();
+  ledger.regret({ regretted: false, probability: 0.02, via: "jev" });
+  assert.equal(call.outcome, "accepted", "the label itself still lands");
+  assert.equal(ledger.snapshot().accepted, 1, "and the status count still has it");
+  assert.equal(outcomeNote(call), undefined, "but the trace gets no line for it");
 });
 
 test("regret without a located target falls on the latest candidate; candidates two prompts old are no longer asked about", () => {

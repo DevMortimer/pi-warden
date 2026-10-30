@@ -1907,7 +1907,7 @@ test("hold feedback with Jev: the regret question rides the first action request
   await runCommand("trace", context({ hasUI: false }));
   assert.match((await latestReport()), /regret of last turn 0\.92/);
   assert.match((await latestReport()), /outcome: the user's next message regrets this call \(0\.92\); it should have been held/);
-  assert.match((await latestReport()), /outcome: the user's next message does not regret this call \(0\.92\)/);
+  assert.ok(!(await latestReport()).includes("outcome: the user's next message does not regret"), "the accepted call leaves no line of its own");
 
   // The agent only replies to the next prompt: no request carries the question, so the heuristic reads the prompt at the end of the run.
   const before = networkCalls;
@@ -1916,6 +1916,21 @@ test("hold feedback with Jev: the regret question rides the first action request
   assert.equal(networkCalls, before);
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /4 allowed \(2 regretted by you, 2 accepted\)/);
+});
+
+test("hold feedback: an accepted call writes no outcome line, while the status line still counts it", async () => {
+  await grantConsent();
+  prompt = "clean up the build";
+  assert.equal(await toolCall("bash", { command: "rm -rf build" }), undefined);
+  assert.equal(await toolCall("write", { path: "notes.txt", content: "cleaned" }), undefined);
+  await newPrompt("add a changelog line");
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", regretted: 0.0 };
+  assert.equal(await toolCall("bash", { command: "npm test" }), undefined);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /3 allowed \(0 regretted by you, 2 accepted\)/, "an accepted call still counts in the status line");
+  await recordedSince();
+  const written = await readFile(traceLog(), "utf8");
+  assert.ok(!written.includes("outcome: the user's next message does not regret"), "the accepted calls leave no line in the trace");
 });
 
 test("hold feedback in confirm mode: the dialog's answer labels the hold at once", async () => {
@@ -3638,6 +3653,16 @@ const writeConscienceConfig = (overrides: Record<string, unknown> = {}) =>
     conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0, localTopK: 64, localFloor: 0, ...overrides },
     ...STACK_BAR,
   }));
+/** The conscience config with the judge cooldown out of the way: these tests need many failures to stay failures. */
+const conscienceFailureConfig = () =>
+  writeConfig(JSON.stringify({
+    typesafe: true, notices: false,
+    rules: { enabled: false }, slop: { enabled: false }, security: { enabled: false },
+    action: { feedbackLog: false },
+    judge: { failuresBeforeCooldown: 99 },
+    conscience: { enabled: true, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, recommendThreshold: 0.5, advanceThreshold: 0.70, loadThreshold: 1.0, localTopK: 64, localFloor: 0 },
+    ...STACK_BAR,
+  }));
 
 test("conscience: no-tool lifecycle fixture for recommend mode", async () => {
   await writeConscienceConfig();
@@ -3890,6 +3915,46 @@ test("conscience: judge error fails open with trace", async () => {
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+test("conscience: a failed assessment records why the judge failed, in one word rather than the error's text", async () => {
+  await conscienceFailureConfig();
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  reportBaseline = (await recordedSince()).length;
+  failStatus = 503;
+  await fire("before_agent_start", { prompt: "design a landing page", systemPromptOptions: { cwd: temporary, skills } });
+  await settleBackground();
+  const entries = (await recordedSince()).filter(entry => entry.guard === "conscience");
+  const failed = entries.find(entry => entry.details.includes("skipReason: error"));
+  assert.ok(failed, "the failed assessment is traced");
+  assert.ok(failed.details.includes("errorCategory: network"), `the category sits beside the skip reason: ${failed.details.join(" | ")}`);
+  assert.ok(!entries.some(entry => entry.details.some(detail => /upstream|bad request/i.test(detail))), "the error's own text stays out of the record");
+  assert.deepEqual(sentMessages, [], "none of it becomes conversation text");
+});
+
+test("conscience: the first failure of a category warns the owner once, whatever successes fall between", async () => {
+  await conscienceFailureConfig();
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  const assessment = async (text: string, ctx = context()) => {
+    await fire("before_agent_start", { prompt: text, systemPromptOptions: { cwd: temporary, skills } }, ctx);
+    await settleBackground();
+  };
+  const told = (category: string) => notices.filter(notice => notice.text.includes(`capability judgments failed (${category})`));
+  failStatus = 503;
+  await assessment("design a landing page");
+  assert.equal(told("network").length, 1, "the first network failure reaches the owner");
+  assert.equal(told("network")[0]!.level, "warning");
+  assert.match(told("network")[0]!.text, /rules and action checks still run/, "the notice says what still runs");
+  failStatus = undefined;
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  await assessment("design a settings page");
+  failStatus = 503;
+  await assessment("design a login page");
+  assert.equal(told("network").length, 1, "a success between two failures does not buy a second notice");
+  // A different category is different news, so it speaks once of its own.
+  await assessment("design a pricing page", context({ sessionManager: { getBranch: () => { throw new Error("branch read failed"); } } }));
+  assert.equal(told("other").length, 1, "the next category the session fails on is told too");
+  assert.deepEqual(sentMessages, [], "no notice becomes conversation text");
 });
 
 test("conscience: long prompt is truncated and truncation recorded in trace", async () => {
