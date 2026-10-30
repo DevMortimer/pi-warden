@@ -3957,6 +3957,31 @@ test("conscience: the first failure of a category warns the owner once, whatever
   assert.deepEqual(sentMessages, [], "no notice becomes conversation text");
 });
 
+test("conscience: a failed queued prompt reaches the owner once and names its category", async () => {
+  await conscienceFailureConfig();
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  // The priming run holds the skill catalog the queued path assesses against; the message that follows it clears the
+  // run flag, and every user message after that one arrives with no before_agent_start: that is the queued path.
+  await fire("before_agent_start", { prompt: "add a rate limiter", systemPromptOptions: { cwd: temporary, skills } });
+  await settleBackground();
+  failStatus = 503;
+  const queued = async (content: string) => {
+    await fire("message_start", { message: { role: "user", content } });
+    await settleBackground();
+  };
+  await queued("clear the run flag");
+  const told = (category: string) => notices.filter(notice => notice.text.includes(`capability judgments failed (${category})`));
+  await queued("wire it into the app");
+  assert.equal(told("network").length, 1, "the first queued-prompt failure reaches the owner");
+  assert.equal(told("network")[0]!.level, "warning");
+  await queued("now the tests");
+  assert.equal(told("network").length, 1, "a second failure of the same category is not told twice");
+  const traced = (await recordedSince()).slice(reportBaseline).filter(entry => entry.guard === "conscience" && entry.details.includes("trigger: message_start") && entry.details.includes("skipReason: error"));
+  assert.ok(traced.length >= 2, `both queued-prompt failures are traced: ${traced.length} entries`);
+  assert.ok(traced.every(entry => entry.details.includes("errorCategory: network")), `each queued-prompt error names its category: ${traced.map(entry => entry.details.join(" | ")).join(" // ")}`);
+  assert.deepEqual(sentMessages, [], "no notice becomes conversation text");
+});
+
 test("conscience: long prompt is truncated and truncation recorded in trace", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
   const skills = [conscienceSkill("impeccable", "UI design")];
