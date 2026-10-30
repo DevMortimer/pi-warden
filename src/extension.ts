@@ -1063,7 +1063,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   const noteOutcomes = (config: WardenConfig, records: readonly CallRecord[]) => {
     for (const item of records) {
       const entry = traceOf.get(item);
-      if (entry) trace.amend(entry, outcomeNote(item));
+      const note = entry ? outcomeNote(item) : undefined;
+      if (entry && note) trace.amend(entry, note);
       const idPromise = learningIds.get(item.id);
       if (idPromise && item.outcome !== "pending") {
         idPromise.then(id => recordOutcome(id, item.outcome, dirs)).catch(err => console.warn("pi-warden: recordOutcome failed:", err));

@@ -1907,7 +1907,7 @@ test("hold feedback with Jev: the regret question rides the first action request
   await runCommand("trace", context({ hasUI: false }));
   assert.match((await latestReport()), /regret of last turn 0\.92/);
   assert.match((await latestReport()), /outcome: the user's next message regrets this call \(0\.92\); it should have been held/);
-  assert.match((await latestReport()), /outcome: the user's next message does not regret this call \(0\.92\)/);
+  assert.ok(!(await latestReport()).includes("outcome: the user's next message does not regret"), "the accepted call leaves no line of its own");
 
   // The agent only replies to the next prompt: no request carries the question, so the heuristic reads the prompt at the end of the run.
   const before = networkCalls;
@@ -1916,6 +1916,21 @@ test("hold feedback with Jev: the regret question rides the first action request
   assert.equal(networkCalls, before);
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /4 allowed \(2 regretted by you, 2 accepted\)/);
+});
+
+test("hold feedback: an accepted call writes no outcome line, while the status line still counts it", async () => {
+  await grantConsent();
+  prompt = "clean up the build";
+  assert.equal(await toolCall("bash", { command: "rm -rf build" }), undefined);
+  assert.equal(await toolCall("write", { path: "notes.txt", content: "cleaned" }), undefined);
+  await newPrompt("add a changelog line");
+  nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", regretted: 0.0 };
+  assert.equal(await toolCall("bash", { command: "npm test" }), undefined);
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /3 allowed \(0 regretted by you, 2 accepted\)/, "an accepted call still counts in the status line");
+  await recordedSince();
+  const written = await readFile(traceLog(), "utf8");
+  assert.ok(!written.includes("outcome: the user's next message does not regret"), "the accepted calls leave no line in the trace");
 });
 
 test("hold feedback in confirm mode: the dialog's answer labels the hold at once", async () => {
