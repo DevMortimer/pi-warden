@@ -880,6 +880,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (code === "budget") budgetExhausted = true;
     if (ctx.hasUI) ctx.ui.notify(`warden: ${message}${budgetExhausted ? " Pattern checks continue without TypeSafe for the rest of this session." : ""}`, "warning");
   };
+  /**
+   * The first failure of each category in a session reaches the owner on the channel the judge cooldown already uses,
+   * and a success between two failures does not buy a second notice: the news has not changed. A headless run keeps the
+   * console line, which is the only place it can read one. The category is safe to name; the error's text is not.
+   */
+  const noteConscienceFailure = (category: string) => {
+    if (conscienceFailuresTold.has(category)) return;
+    conscienceFailuresTold.add(category);
+    if (noticeUi) noticeUi.notify(`warden: capability judgments failed (${category}); rules and action checks still run.`, "warning");
+    else console.warn(`pi-warden: conscience ${category}`);
+  };
   /** Click, shortcut, and /warden trace all toggle the same sidebar. */
   const togglePanel = (ui: PanelUi | undefined, config: WardenConfig) => {
     if (!ui) return undefined;
@@ -1087,6 +1098,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let conscienceGeneration = 0;
   /** Per-prompt error categories already warned about (one console.warn per category per prompt). */
   let warnedErrorCategories = new Set<string>();
+  /** Failure categories the owner was told about this session: the same failure on the next prompt is the same news. */
+  const conscienceFailuresTold = new Set<string>();
   // ── Conscience state per prompt revision ──
   let selectedCapability: { kind: string; id: string } | null = null;
   let pendingCapability: { kind: string; id: string } | null = null;
@@ -1265,6 +1278,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       ctx.ui.notify(`warden: ${migrationMessage}`, "info");
     }
     cooldown.reset();
+    conscienceFailuresTold.clear();
     if (_event.reason === "reload" || _event.reason === "new") conscienceGeneration++;
     client = undefined;
     budgetExhausted = false;
@@ -1673,11 +1687,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const selectedName = result.selected ? `${result.selected.kind}:${result.selected.id}` : "none";
           const skipInfo = result.skipReason ? [`skipReason: ${result.skipReason}`] : [];
           const truncInfo = truncationRecorded.length ? truncationRecorded : [];
+          // Why the judge stopped, in the one word the next read of this file can be grouped by; never the error's text.
           if (result.skipReason === "error" && result.errorCategory) {
-            if (!warnedErrorCategories.has(result.errorCategory)) {
-              warnedErrorCategories.add(result.errorCategory);
-              console.warn(`pi-warden: conscience ${result.errorCategory}`);
-            }
+            skipInfo.push(`errorCategory: ${result.errorCategory}`);
+            noteConscienceFailure(result.errorCategory);
           }
           const skipTag = result.skipReason ? `, ${result.skipReason}` : "";
           record(ctx, config, "conscience",
@@ -1744,11 +1757,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           }
         } catch (err) {
           const category = classifyJudgeError(err);
-          if (!warnedErrorCategories.has(category)) {
-            warnedErrorCategories.add(category);
-            console.warn(`pi-warden: conscience ${category}`);
-          }
-          record(ctx, config, "conscience", `error: ${category}`, ["trigger: before_agent_start", `skipReason: error`]);
+          noteConscienceFailure(category);
+          record(ctx, config, "conscience", `error: ${category}`, ["trigger: before_agent_start", `skipReason: error`, `errorCategory: ${category}`]);
         } finally {
           clearTimeout(timer);
         }
@@ -1758,11 +1768,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
       // will not list) must not become an unhandled rejection: Node ends the Pi process on one. Fail open with the same
       // trace line as a judge error.
       const category = classifyJudgeError(error);
-      if (!warnedErrorCategories.has(category)) {
-        warnedErrorCategories.add(category);
-        console.warn(`pi-warden: conscience ${category}`);
-      }
-      record(ctx, config, "conscience", `error: ${category}`, ["trigger: before_agent_start", `skipReason: error`]);
+      noteConscienceFailure(category);
+      record(ctx, config, "conscience", `error: ${category}`, ["trigger: before_agent_start", `skipReason: error`, `errorCategory: ${category}`]);
       return undefined;
     });
 
