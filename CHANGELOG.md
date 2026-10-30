@@ -11,6 +11,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Fixed
 
 - A conscience assessment that fails now records `errorCategory` (timeout, network, auth, configuration, other) beside `skipReason: error` in the trace, and the first failure of each category in a session reaches you once as a warning notice — "capability judgments failed (timeout); rules and action checks still run" — instead of only a console line; a headless run keeps the console line.
+- A conscience judge failure in the queued-prompt assessment, the turn-end re-check, or the reminder re-check now reaches you as the same once-per-category warning notice, instead of a console line a session with a terminal never shows.
+- Those paths record `errorCategory` beside `skipReason: error` in the trace, and use the shared judge-error classifier rather than their own narrower pattern.
 - The trace no longer writes an `outcome:` line for accepted calls, which said the same sentence 12,036 times in one week against two regrets; `/warden status` still counts them, and the hold log and database still label them `accepted`.
 
 ## 2.3.0
