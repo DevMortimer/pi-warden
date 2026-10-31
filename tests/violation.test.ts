@@ -51,6 +51,18 @@ test("authorize: negation in the prompt prevents authorization", () => {
   assert.equal(authorize("don't push", violation).actionMatched, false);
 });
 
+test("authorize: a negated later use of the verb prevents authorization, not only the first use", () => {
+  const violation: Violation = { id: "rm-rf", severity: "risky", source: "pattern", description: "recursive removal", patternFamily: "rm-rf", scope: { paths: ["src/"] } };
+  assert.equal(isNegated("delete build/ but don't delete src/", "delete"), true);
+  assert.equal(isNegated("remove the logs, then never remove the cache", "remove"), true);
+  assert.equal(isNegated("delete build/ and delete dist/", "delete"), false);
+  assert.equal(isNegated("delete build/", ""), false);
+  const authorization = authorize("delete build/ but don't delete src/", violation);
+  assert.equal(authorization.authorized, false);
+  assert.equal(authorization.negated, true);
+  assert.equal(authorize("delete build/ and then delete src/", violation).authorized, true);
+});
+
 test("authorize: scope mismatch prevents authorization even when action matches", () => {
   const violation: Violation = {
     id: "rm-rf", severity: "destructive", source: "pattern", description: "rm -rf",

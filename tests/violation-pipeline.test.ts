@@ -47,6 +47,17 @@ test("authorization does not clear a destructive hold for an unrelated target or
   }
 });
 
+test("a prompt that refuses a target in a later clause does not authorize deleting it", async () => {
+  await mkdir(join(cwd, "src"), { recursive: true });
+  const action = (task: string) => ({ tool: "bash", input: { command: "rm -rf src" }, cwd, task });
+  assert.equal((await evaluateAction(action("delete src"), { config: judgedAction() })).level, "allow");
+  for (const task of ["delete build but don't delete src", "remove dist/, never remove src"]) {
+    const verdict = await evaluateAction(action(task), { config: judgedAction() });
+    assert.equal(verdict.level, "warn", task);
+    assert.ok(verdict.reasons.some(reason => reason.includes("rm -rf")), task);
+  }
+});
+
 test("non-rm bash violations fire in the pattern loop regardless of authorization", async () => {
   const config = judgedAction();
   // Destructive patterns always fire in the pattern loop, even when the user explicitly named the command.
