@@ -839,9 +839,11 @@ function underPath(child: string, parent: string): boolean {
 /**
  * A word resolved to the path it names: a literal path, `~`, a relative path against `dir`, a value a variable of the
  * same command holds, or the path a `mktemp` variable made. Undefined for a substitution, a glob-only word, a `..`
- * segment, a variable the command does not fix, and a relative word with no directory: those keep the hold.
+ * segment, a variable the command does not fix, and a relative word when no directory is known: those keep the hold.
+ * `root` stands in for a missing `dir` for a variable's value only: the command fixed that value, and a relative one
+ * names a path under the directory the call runs in, which a literal word of unknown spelling does not prove.
  */
-function resolveWord(word: string, dir: DirPath | undefined, vars: VarValues | undefined): WordPath {
+function resolveWord(word: string, dir: DirPath | undefined, vars: VarValues | undefined, root?: DirPath | undefined): WordPath {
   const clean = unquoteWord(word);
   if (!clean || clean === "." || clean === ".." || clean === "./" || clean === "../" || clean === "*") return { kind: "unknown", word };
   if (clean.split(/[\\/]/).includes("..")) return { kind: "unknown", word };
@@ -853,7 +855,7 @@ function resolveWord(word: string, dir: DirPath | undefined, vars: VarValues | u
     if (vars?.mktemp.has(name)) return { kind: "temp", key: name + rest };
     const value = vars?.literal.get(name);
     if (value === undefined) return { kind: "unknown", word };
-    return place(value + rest, dir, word);
+    return place(value + rest, dir ?? root, word);
   }
   return place(clean, dir, word);
 }
@@ -870,7 +872,7 @@ function place(text: string, dir: DirPath | undefined, word: string): WordPath {
 }
 
 /** An `rm` operand as the classifier reads it: a path it can place, or the word it cannot. */
-const targetWord = (word: string, dir: DirPath | undefined, vars: VarValues | undefined): WordPath => resolveWord(word, dir, vars);
+const targetWord = (word: string, dir: DirPath | undefined, vars: VarValues | undefined, root?: DirPath | undefined): WordPath => resolveWord(word, dir, vars, root);
 
 /** The concrete path a word names, or undefined when it cannot be pinned down. */
 function placedWord(word: string, dir: DirPath | undefined, vars: VarValues | undefined): string | undefined {
@@ -890,8 +892,22 @@ function isDangerousTarget(target: WordPath, cwd: string | undefined): boolean {
   if (target.kind === "temp") return true;
   const clean = unquoteWord(targetText(target));
   if (clean === "/" || clean === "~" || clean === "*" || clean === "." || clean === ".." || clean.startsWith("~/") || clean.startsWith("$") || clean.startsWith("/*") || clean === "./" || clean === "../") return true;
-  if (isAbsolute(clean)) return cwd === undefined ? true : !isInside(clean, cwd);
+  // The project root itself is destructive whatever spelling names it (`d=. && rm -rf "$d"`).
+  if (isAbsolute(clean)) return cwd === undefined || !isInside(clean, cwd) || resolve(clean) === resolve(cwd);
   return clean.split(/[\\/]/).includes("..");
+}
+
+/**
+ * Whether a target is the project root or an ancestor of it: that deletes the project, so no release rule may answer.
+ * A temp path compares by real path, because `$TMPDIR` spells the same directory two ways; a non-temp path compares as
+ * written, so this never starts a file-system call for one, and one that cannot be resolved counts as the root.
+ */
+function deletesProject(target: WordPath, cwd: string | undefined): boolean {
+  if (cwd === undefined || target.kind !== "path") return false;
+  const real = tempCandidate(target.path) ? realTarget(target.path) : resolve(target.path);
+  const root = tempCandidate(cwd) ? realTarget(cwd) : resolve(cwd);
+  if (real === undefined || root === undefined) return true;
+  return underPath(root, real);
 }
 
 /** A `mv` or `ln` command word: both can put existing data under a path a later `rm` deletes. */
@@ -1030,6 +1046,9 @@ export function movedInTargets(tool: string, input: Record<string, unknown>, cwd
   return [...found];
 }
 
+/** The hit for an `rm` that deletes the project root or one of its ancestors, or a target the guard cannot place. */
+const DANGEROUS_TARGET: PatternHit = { id: "rm-recursive-dangerous-target", severity: "destructive", label: "recursive rm on an absolute, home, variable, or parent path" };
+
 /**
  * `rm` with both recursive and force flags. Absolute, home, variable, or wildcard targets are destructive; relative ones are
  * risky. A quote, parenthesis, or backtick before `rm` is allowed so a quoted or substituted command is read; data quotes were blanked before this runs.
@@ -1043,10 +1062,16 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
   const recursive = flags.some(flag => flag === "--recursive" || (/^-[a-zA-Z]+$/.test(flag) && /[rR]/.test(flag)));
   const force = flags.some(flag => flag === "--force" || (/^-[a-zA-Z]+$/.test(flag) && flag.includes("f")));
   if (!recursive) return undefined;
-  const targets = rmOperands(tokens.filter(token => !token.startsWith("-"))).map(word => targetWord(word, context?.dir, context?.vars));
+  // A relative target resolves against the directory a `cd` moved to. Before any `cd` a variable's value resolves
+  // against the project root the call runs in; a directory change the guard cannot read leaves every target unknown.
+  const root = context?.dirChanged === true ? undefined : cwdPath(cwd);
+  const targets = rmOperands(tokens.filter(token => !token.startsWith("-"))).map(word => targetWord(word, context?.dir, context?.vars, root));
   // A directory change the guard does not read (`popd`, `eval`, `cd -`, …) leaves every later relative target unread:
   // it may name anything, so it is dangerous rather than merely risky.
   const dangerousTarget = targets.some(target => isDangerousTarget(target, cwd) || (context?.dirChanged === true && target.kind === "unknown"));
+  // A release deletes the project itself when a target is its root or above it, whatever spelling names it and wherever
+  // the project lives: the scratch and temp-subtree rules below answer first for a project under a temp root otherwise.
+  if (targets.some(target => deletesProject(target, cwd))) return DANGEROUS_TARGET;
   const budget = scratchBudget();
   const exemptions = context !== undefined;
   // A command or an earlier call that moved or linked data into a target keeps it: nothing about it is provable then.
@@ -1059,7 +1084,7 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
     if (roots.length && targets.every(target => clean(target) && isTempSubtree(target, roots))) {
       return { id: "rm-temp-subtree", severity: "risky", label: "recursive rm of a path under the temp directory" };
     }
-    return { id: "rm-recursive-dangerous-target", severity: "destructive", label: "recursive rm on an absolute, home, variable, or parent path" };
+    return DANGEROUS_TARGET;
   }
   if (force) return { id: "rm-rf", severity: "risky", label: "rm -rf on a project path" };
   return { id: "rm-recursive", severity: "risky", label: "recursive rm" };

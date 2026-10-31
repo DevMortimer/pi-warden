@@ -4,7 +4,16 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
-## Unreleased
+## 2.4.0
+
+### Changed
+
+- A recursive `rm` is placed by what the command itself says: a variable the same command fixes to a literal path inside the project (`dir=src/core && rm -rf "$dir/__pycache__"`) and the folder a `make` recipe's own makefile variable names (`BUILD ?= build` with `rm -rf $(BUILD)`) warn (`rm-rf`) instead of holding the call, and the label names the source. A second assignment, an expansion, a path outside the project, or a `VALUE=` on the make command line leaves the target unplaceable, so that recipe still holds.
+- `sh -n script` parses a file and runs none of it, so no script body is read for it and its deletes no longer hold the call.
+
+### Fixed
+
+- A recursive `rm` of the project root, or of a folder above it, is held (`rm-recursive-dangerous-target`) wherever the project lives. In a project under `$TMPDIR` — CI checkouts, temp clones — the temp-subtree release answered first, so the root was deleted with a risky warning; a temp path now compares by its real path, and the guard refuses every release for the root or an ancestor. A `mktemp` directory of the same command and paths inside the project still release.
 
 ## 2.3.1
 
