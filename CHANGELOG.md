@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 2.5.0
+
 ### Fixed
 
 - The read-only fast path, which skips the Jev judgment, no longer takes listed commands that run a program named in their arguments: `fd -x`/`-X` (`--exec`, `--exec-batch`, also bundled as `-Hx`), `rg --pre` and `rg --hostname-bin`, and `sort --compress-program` in any abbreviation GNU sort accepts (`--co=sh`). `fd -e py -x python3 {}` and `rg --pre ./run.sh x` ran a program on every match with no judgment. A literal pattern in option-value position (`rg -e '--pre=sh'`) now costs one judge request.
