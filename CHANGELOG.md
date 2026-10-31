@@ -8,7 +8,8 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Fixed
 
-- A prompt that refuses a target in a later clause no longer authorizes deleting it. Authorization looked for a negation only before the first use of the action verb, so with "delete build/ but don't delete src/" an `rm -rf src` was authorized and ran with no warning at all; every use of the verb is now checked, and that call warns (`rm-rf`) like any delete the prompt did not ask for.
+- The read-only fast path, which skips the Jev judgment, no longer takes listed commands that run a program named in their arguments: `fd -x`/`-X` (`--exec`, `--exec-batch`, also bundled as `-Hx`), `rg --pre` and `rg --hostname-bin`, and `sort --compress-program` in any abbreviation GNU sort accepts (`--co=sh`). `fd -e py -x python3 {}` and `rg --pre ./run.sh x` ran a program on every match with no judgment. A literal pattern in option-value position (`rg -e '--pre=sh'`) now costs one judge request.
+- A prompt that refuses a target in a later clause no longer authorizes deleting it when the negator sits within 40 characters before the refusing verb (the second "delete" in "delete build/ but don't delete src/"). That call now warns (`rm-rf`) like any delete the prompt did not ask for. A negator farther back, or an inflected refusal such as "without deleting", is still not read.
 
 ## 2.4.0
 

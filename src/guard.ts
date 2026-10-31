@@ -2775,6 +2775,32 @@ function writesOutputFile(head: string, words: readonly string[]): boolean {
   return false;
 }
 
+/** `fd` short flags that take a value: the rest of a cluster after one of them is that value (`-tx` is `--type x`). */
+const FD_SHORT_VALUE = new Set("deEtcjSoC");
+
+/**
+ * Listed commands that run a program named in their arguments: `fd -x`/`-X` (`--exec`, `--exec-batch`), `rg --pre`
+ * and `rg --hostname-bin`, and `sort --compress-program`, which GNU sort accepts from `--co` on. The shell removes
+ * quotes, so `'--pre=sh'` reaches the program as `--pre=sh`.
+ */
+function runsProgram(head: string, words: readonly string[]): boolean {
+  const flags = words.map(word => word.replace(/["'\\]/g, ""));
+  if (head === "fd") {
+    return flags.some(flag => {
+      if (/^--exec(?:-batch)?(?:=|$)/.test(flag)) return true;
+      if (!/^-[^-]/.test(flag)) return false;
+      for (const char of flag.slice(1)) {
+        if (char === "x" || char === "X") return true;
+        if (FD_SHORT_VALUE.has(char)) return false;
+      }
+      return false;
+    });
+  }
+  if (head === "rg") return flags.some(flag => /^--(?:pre|hostname-bin)(?:=|$)/.test(flag));
+  if (head === "sort") return flags.some(flag => /^--co/.test(flag) && "compress-program".startsWith(flag.slice(2).replace(/=.*$/s, "")));
+  return false;
+}
+
 export function isReadOnlyCommand(command: string): boolean {
   // `<(...)` runs its body like `$(...)` does.
   if (!command.trim() || /\$\(|`|<\(/.test(command)) return false;
@@ -2806,7 +2832,7 @@ export function isReadOnlyCommand(command: string): boolean {
     }
     if (head === "find" && /-(?:delete|exec\w*|ok\w*|fprint\w*|fls)\b/.test(segment)) return false;
     if (head === "sed") { if (!isReadOnlySed(segment)) return false; continue; }
-    if (writesOutputFile(head, tokens.slice(index + 1))) return false;
+    if (writesOutputFile(head, tokens.slice(index + 1)) || runsProgram(head, tokens.slice(index + 1))) return false;
     if (!READ_ONLY_COMMANDS.has(head)) return false;
   }
   return true;

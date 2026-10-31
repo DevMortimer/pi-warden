@@ -898,6 +898,19 @@ test("isReadOnlyCommand rejects listed commands that write a file named in their
   }
 });
 
+test("isReadOnlyCommand rejects listed commands that run a program named in their arguments", () => {
+  for (const command of ["fd -e ts src", "fd -H -t f x", "fd -tx", "fd -ex build", "fd -E node_modules -0 x", "rg --hidden x", "rg -n --pre-glob '*.gz' x src", "sort --check f", "sort -c f"]) {
+    assert.equal(isReadOnlyCommand(command), true, command);
+  }
+  for (const command of [
+    "fd -x rm", "fd -X sh", "fd -e py -x python3 {}", "fd -Hx touch", "fd -HIX node", "fd --exec rm", "fd --exec-batch rm",
+    "fd --exec=rm", "fd x '-x' sh", "rg --pre ./run.sh x", "rg --pre=sh x", "rg -n '--pre=sh' x src", "rg --hostname-bin=sh x",
+    "sort --compress-program=sh f", "sort --compress=sh -S 1 f", "sort --co=sh f", "cat f | sort --compress-program gzip",
+  ]) {
+    assert.equal(isReadOnlyCommand(command), false, command);
+  }
+});
+
 test("isReadOnlyCommand accepts leading assignments only for locale, time zone, and output-format variables", () => {
   for (const command of ["LANG=C sort f", "LC_ALL=C grep -n x f", "TZ=UTC date", "NO_COLOR=1 git log -3", "TERM=dumb COLUMNS=80 ls", "FORCE_COLOR=0 cat f", "LC_ALL=C sed -n 1p f"]) {
     assert.equal(isReadOnlyCommand(command), true, command);
