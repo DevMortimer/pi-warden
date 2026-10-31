@@ -4,6 +4,12 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## Unreleased
+
+### Fixed
+
+- The read-only fast path, which skips the Jev judgment, no longer takes listed commands that run a program named in their arguments: `fd -x`/`-X` (`--exec`, `--exec-batch`, also bundled as `-Hx`), `rg --pre` and `rg --hostname-bin`, and `sort --compress-program` in any abbreviation GNU sort accepts (`--co=sh`). `fd -e py -x python3 {}` and `rg --pre ./run.sh x` ran a program on every match with no judgment.
+
 ## 2.4.0
 
 ### Changed
