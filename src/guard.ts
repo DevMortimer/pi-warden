@@ -3698,13 +3698,17 @@ const ACTION_VERBS: Record<string, string[]> = {
 
 const NEGATORS = /\b(?:don'?t|do\s+not|never|skip|avoid|without|no\s+(?:need\s+to\s+)?)\b/i;
 
-/** Check if a negator precedes the action verb within 40 characters. */
+/**
+ * Check if a negator precedes any use of the action verb within 40 characters. Every use counts, not only the first:
+ * in "delete build/ but don't delete src/" the second "delete" is the one that names the protected path.
+ */
 export function isNegated(prompt: string, actionVerb: string): boolean {
+  if (!actionVerb) return false;
   const lower = prompt.toLowerCase();
-  const verbIndex = lower.indexOf(actionVerb);
-  if (verbIndex < 0) return false;
-  const beforeVerb = lower.slice(Math.max(0, verbIndex - 40), verbIndex);
-  return NEGATORS.test(beforeVerb);
+  for (let at = lower.indexOf(actionVerb); at !== -1; at = lower.indexOf(actionVerb, at + 1)) {
+    if (NEGATORS.test(lower.slice(Math.max(0, at - 40), at))) return true;
+  }
+  return false;
 }
 
 /** Deterministic scope matching: exact path or basename. For command-scoped violations

@@ -4,6 +4,12 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## Unreleased
+
+### Fixed
+
+- A prompt that refuses a target in a later clause no longer authorizes deleting it. Authorization looked for a negation only before the first use of the action verb, so with "delete build/ but don't delete src/" an `rm -rf src` was authorized and ran with no warning at all; every use of the verb is now checked, and that call warns (`rm-rf`) like any delete the prompt did not ask for.
+
 ## 2.4.0
 
 ### Changed
