@@ -1859,6 +1859,18 @@ test("isVisibleCommand finds a commit, push, merge, tag, reset, pull request, re
   }
 });
 
+test("isVisibleCommand reads a segment headed by an Object.prototype name as an ordinary command", () => {
+  for (const command of [
+    "cd repo && direnv exec . nix eval --impure --raw --expr '(builtins.getFlake (toString ./.)).inputs.nixpkgs.outPath'", "(toString x)", "constructor foo",
+    "builtins.toString x", "ls -la", ...Object.getOwnPropertyNames(Object.prototype).map(name => `${name} x`),
+  ]) {
+    assert.equal(isVisibleCommand(command), false, command);
+  }
+  for (const command of ["(cd repo && git push)", "nix eval --expr '(toString ./.)' && git push"]) {
+    assert.equal(isVisibleCommand(command), true, command);
+  }
+});
+
 test("commandFamily names the head and, for tools with subcommands, the subcommand", () => {
   assert.equal(commandFamily("npm test -- --verbose"), "npm test");
   assert.equal(commandFamily("npm run build 2>&1"), "npm run build");
