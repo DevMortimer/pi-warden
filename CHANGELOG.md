@@ -8,6 +8,31 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 2.6.0
+
+### Added
+
+- The Nace.AI judgment backend: `"typesafeBackend": "nace"` sends judgments to `https://console.nace.ai` with the model `drex-v2.0`, the key from `NACE_API_KEY` or `/typesafe login nace`, on pi-typesafe 0.14.0. Nace serves the SDK's own request and model-list paths and declares no narrower limits, so every request shape the schema allows goes out as one request.
+
+### Changed
+
+- `conscience.timeoutMs` accepts up to 60000 ms instead of 10000, so a local judge that needs 10 seconds or more for one capability assessment is no longer cut off (issue #208). The effective deadline is still the smaller of it and `timeoutMs`, which defaults to 5000.
+- pi-typesafe 0.14.0 vetoes a stored key only on a 401, and only for 15 minutes: a 403 no longer turns judgments off, and a rejected key recovers by itself. The key-rejected notice is therefore rarer and expires with the veto.
+
+### Fixed
+
+- A judgment that lands after a headless `pi -p` reply no longer ends the run with exit 1. Pi throws from a ctx whose session was replaced or ended, and the late trace write read `ctx.hasUI` on it, so the run crashed after recording its work; the status line, owner notices and desktop notifications now treat such a ctx as "no UI", and the trace still keeps the entry.
+
+### Docs
+
+- `docs/configuration.md` names `"nace"` beside the other named backends, adds the `NACE_API_KEY` row, and warns that Drex holds a request up to 55 seconds, so the default 5000 ms `timeoutMs` and `conscience.timeoutMs` must both be raised; it gives the per-model prices and says the conscience delivers nothing on Drex until its policy is measured there. `docs/data-handling.md` names `https://console.nace.ai` as the host for `"nace"`.
+- The `conscience.timeoutMs` row states the 100–60000 range and that a local judge needs both deadlines raised; the Liquid AI note no longer says "capped at 10000 ms".
+
+### Tests
+
+- A late trace write and a late owner warning on a ctx that throws Pi's stale error do not throw and keep their trace line, and any other error from the same read still surfaces.
+- `conscience.timeoutMs clamps to [100, 60000]` covers the clamp across its range, and the Nace test checks that `resolveJudgmentBackend`, `backendName`, `describeBackend` and `loginStoresKey` all know the new backend.
+
 ## 2.5.1
 
 ### Fixed
