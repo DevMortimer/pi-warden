@@ -446,7 +446,8 @@ export function isVisibleCommand(command: string): boolean {
   // A substitution or subshell runs its command too: `out=$(git push …)`, `(cd repo && git push)`.
   return splitShell(stripDataText(command).text).flatMap(segment => segment.split(/\$\(|`|\(/)).some(segment => {
     const head = headOf(segment);
-    const subcommands = head ? VISIBLE_SUBCOMMANDS[head] : undefined;
+    // Own keys only: a segment can start with an Object.prototype name, such as `toString` in a Nix expression.
+    const subcommands = head && Object.hasOwn(VISIBLE_SUBCOMMANDS, head) ? VISIBLE_SUBCOMMANDS[head] : undefined;
     if (!head || !subcommands) return false;
     const tokens = segment.trim().split(/\s+/);
     // `git -C dir push`, `git -c key=value commit`: the option value is not the subcommand.

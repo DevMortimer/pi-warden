@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 2.5.1
+
+### Fixed
+
+- A bash command with a segment that starts with an `Object.prototype` name no longer fails before it runs. The visible-action check also starts a segment after each `(`, `$(`, and backtick, and looked the first word of each segment up in a plain object, so in `nix eval --expr '(builtins.getFlake (toString ./.)).inputs.nixpkgs.outPath'` it found the inherited `toString`, and the call returned `subcommands.has is not a function` instead of running; `(toString x)` and `constructor foo` failed the same way. Such a word now reads as an ordinary command.
+
 ## 2.5.0
 
 ### Fixed
