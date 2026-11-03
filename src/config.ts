@@ -1258,7 +1258,8 @@ function applyConscience(base: ConscienceConfig, raw: unknown): ConscienceConfig
       exclude: Array.isArray(toolsRaw?.exclude) ? toolsRaw.exclude.filter((x: unknown) => typeof x === "string") : base.tools.exclude,
     },
     skipTools: Array.isArray(raw.skipTools) ? raw.skipTools.filter((x: unknown) => typeof x === "string") : base.skipTools,
-    timeoutMs: Math.max(100, Math.min(10000, typeof raw.timeoutMs === "number" ? raw.timeoutMs : base.timeoutMs)),
+    // 60000 is the ceiling because a local judge measured 9.3 s for one capability assessment.
+    timeoutMs: Math.max(100, Math.min(60000, typeof raw.timeoutMs === "number" ? raw.timeoutMs : base.timeoutMs)),
     maxAssessments: Math.max(1, Math.min(10, typeof raw.maxAssessments === "number" ? raw.maxAssessments : base.maxAssessments)),
     maxNudges: Math.max(1, Math.min(5, typeof raw.maxNudges === "number" ? raw.maxNudges : base.maxNudges)),
     maxSkillBytes: Math.max(1024, Math.min(131072, typeof raw.maxSkillBytes === "number" ? raw.maxSkillBytes : base.maxSkillBytes)),

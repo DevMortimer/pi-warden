@@ -406,6 +406,20 @@ test("conscience.advanceThreshold clamps to [0, 1]", () => {
   assert.equal(config3.conscience.advanceThreshold, 0.85, "valid value passes through");
 });
 
+test("conscience.timeoutMs clamps to [100, 60000]", () => {
+  // 60000 is the ceiling because a local judge measured 9.3 s for one capability assessment (issue #208).
+  const rows: Array<[unknown, number]> = [
+    [1, 100], [99, 100], [100, 100], [3000, 3000], [10000, 10000], [20000, 20000], [60000, 60000],
+    [60001, 60000], [1e400, 60000],
+    ["20000", 3000], [null, 3000], [{}, 3000], [[], 3000],
+  ];
+  for (const [raw, expected] of rows) {
+    const applied = applyUserOverrides(defaultConfig(), { conscience: { timeoutMs: raw } }).conscience.timeoutMs;
+    assert.equal(applied, expected, `timeoutMs ${String(raw)} applies as ${expected}`);
+    assert.ok(Number.isInteger(applied) && applied >= 100 && applied <= 60000, `stays an integer in [100, 60000]: ${applied}`);
+  }
+});
+
 test("prefs: on for /warden prefs, injection on by default; invalid values fall back", () => {
   assert.deepEqual(defaultConfig().prefs, { enabled: true, inject: true });
   assert.deepEqual(applyUserOverrides(defaultConfig(), { prefs: { inject: false } }).prefs, { enabled: true, inject: false });
