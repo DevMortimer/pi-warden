@@ -369,6 +369,7 @@ Measured on 2026-11-04. Read this before you set `"typesafeBackend": "nace"`: Na
 
 - **Speed.** Nace holds one request upstream for up to 55 seconds. The shared `timeoutMs` default is 5000 ms, so at the defaults every judgment is cancelled and the built-in patterns decide. To wait for Drex, raise the top-level `timeoutMs` in the user file (a project file cannot raise it) and raise `conscience.timeoutMs` with it, which accepts up to 60000 ms; the effective deadline is the smaller of the two. Every judged call then waits up to that long.
 - **Cost.** Drex is priced per million input tokens: `drex-v2.0` (the default model) $0.060, `drex-v1.5` $0.050, and `drex-max` and `drex-max-v1.1` $0.030. An alias or a retired id is billed at the version that answers it.
+- **Conscience.** The conscience delivers only under a policy measured for the model `jev-1.13.0`, so with Drex it sends nothing.
 
 ### Trace file
 
