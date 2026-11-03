@@ -875,10 +875,25 @@ export default function wardenExtension(host: ExtensionAPI): void {
       : event.kind === "configuration" ? " /warden status shows the backend setup." : "";
     noticeUi.notify(`warden: judgments paused for ${seconds}s after a ${event.kind} failure; pattern checks run alone until then.${remedy}`, "warning");
   };
+  /** Pi's ctx getters throw once its session is replaced or ended: a read of them after an await can end the run. */
+  const STALE_CTX = /extension ctx is stale/;
+  /**
+   * The live UI, or undefined when this ctx's session has ended or been replaced. The read is wrapped because Pi's
+   * `hasUI` and `ui` getters are the throw: testing `ctx.hasUI` first is the crash it is meant to avoid.
+   */
+  const liveUi = (ctx: ExtensionContext | ExtensionCommandContext): ExtensionContext["ui"] | undefined => {
+    try {
+      return ctx.hasUI ? ctx.ui : undefined;
+    } catch (error) {
+      if (!(error instanceof Error) || !STALE_CTX.test(error.message)) throw error;
+      return undefined;
+    }
+  };
   const noteError = (ctx: ExtensionContext, message: string, code: string | undefined) => {
     stats.errors++;
     if (code === "budget") budgetExhausted = true;
-    if (ctx.hasUI) ctx.ui.notify(`warden: ${message}${budgetExhausted ? " Pattern checks continue without TypeSafe for the rest of this session." : ""}`, "warning");
+    const ui = liveUi(ctx);
+    if (ui) ui.notify(`warden: ${message}${budgetExhausted ? " Pattern checks continue without TypeSafe for the rest of this session." : ""}`, "warning");
   };
   /**
    * The first failure of each category in a session reaches the owner on the channel the judge cooldown already uses,
@@ -915,9 +930,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     opened.closed.catch(() => undefined).finally(() => { if (configPanel === opened) configPanel = undefined; });
   };
   const paint = (ctx: ExtensionContext | ExtensionCommandContext, config: WardenConfig) => {
-    if (!ctx.hasUI) return;
-    lastUi = ctx.ui as unknown as PanelUi;
-    if (!config.widget.enabled || widget.size === 0) { ctx.ui.setWidget(WIDGET, undefined); return; }
+    const ui = liveUi(ctx);
+    if (!ui) return;
+    lastUi = ui as unknown as PanelUi;
+    if (!config.widget.enabled || widget.size === 0) { ui.setWidget(WIDGET, undefined); return; }
     let entries = [...widget].map(([guard, line]) => ({ guard, line }));
     // Live state, not an event: while this session's quiet window is live its line is the status line, and it goes
     // away by the clock. The trace keeps every verdict the window hides.
@@ -926,13 +942,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (quietEntry) entries = [quietEntry, ...entries];
     // In live mode: only show the most recent guard, re-rendered with sentence templates.
     if (config.widget.barMode === "live" && entries.length > 0) {
-      if (quietEntry) { ctx.ui.setWidget(WIDGET, (_tui, theme) => statusWidget([quietEntry], theme), { placement: config.widget.placement }); return; }
+      if (quietEntry) { ui.setWidget(WIDGET, (_tui, theme) => statusWidget([quietEntry], theme), { placement: config.widget.placement }); return; }
       const lastEntry = trace.entries().at(-1);
       if (lastEntry?.tokens) {
         const template = pickSentenceTemplate(lastEntry.guard, lastEntry.tokens);
         const sentence = renderTemplate(template, lastEntry.tokens);
         const chip = lastEntry.tokens.level ?? lastEntry.tokens.status;
-        ctx.ui.setWidget(WIDGET, (_tui, theme) => {
+        ui.setWidget(WIDGET, (_tui, theme) => {
           const color = LEVEL_COLOR[chip ?? ""] ?? "text";
           const chipText = chip ? `${theme.bold(theme.fg(color as "text", chip.toUpperCase()))}  ` : "";
           const guardText = theme.fg("muted", lastEntry.guard + " ");
@@ -963,7 +979,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // When the host TUI lacks MouseRegion (e.g. omp 18.2.5), the extension still loads — the widget
     // renders the same text, but a click does nothing. A missing named import is a link-time error
     // that kills the entire extension silently; a missing namespace property is undefined.
-    ctx.ui.setWidget(WIDGET, (_tui, theme) => {
+    ui.setWidget(WIDGET, (_tui, theme) => {
       const body = statusWidget(entries, theme);
       return MouseRegion ? new MouseRegion(body, event => {
         if (event.type !== "click" || event.button !== "left") return undefined;
@@ -982,7 +998,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
   };
   /** A warning for the owner, not the agent: a toast when there is a UI, a trace line when there is not. */
   const warnOwner = (ctx: ExtensionContext | ExtensionCommandContext, guard: GuardName, text: string): void => {
-    if (ctx.hasUI) ctx.ui.notify(text, "warning");
+    const ui = liveUi(ctx);
+    if (ui) ui.notify(text, "warning");
     else trace.push({ at: Date.now(), guard, line: redact(text), details: ["trigger: headless warning"] });
   };
   /** Appends standing text to the system prompt of this run, once; Pi re-renders the prompt from these options per request. */
@@ -1151,7 +1168,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // One entry per judgment: the guard's own line keeps the status chip, and the notice text rides its details.
     record(ctx, config, STEER_TRACE_GUARD[names[0] ?? "action"], options?.line ?? line, [text, ...(options?.details ?? []), `guards: ${names.join(", ")}`]);
     // A guard with a status line of its own toasts it; one without toasts the notice, so every report can reach the owner.
-    if (options?.line === undefined && ctx.hasUI && config.notices) ctx.ui.notify(line.replace(/^pi-warden: /, ""), "warning");
+    if (options?.line === undefined && config.notices) liveUi(ctx)?.notify(line.replace(/^pi-warden: /, ""), "warning");
     return true;
   };
   const modelKey = (ctx: ExtensionContext): string | undefined => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
@@ -1172,7 +1189,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
    * notification; if the host has no event bus the wait stays what it already was.
    */
   const reportHerdrBlocked = (ctx: ExtensionContext, active: boolean, label?: string) => {
-    if (!ctx.hasUI) return;
+    if (!liveUi(ctx)) return;
     try { pi.events.emit("herdr:blocked", active ? { active: true, label } : { active: false }); }
     catch { /* hosts without the bus keep the pane state they already show. */ }
   };
@@ -1181,7 +1198,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
    * or a subagent has nobody to call, and several of them would flood the desktop. Fire-and-forget; failures are silent.
    */
   const notifyDesktop = (ctx: ExtensionContext, config: WardenConfig, body: string) => {
-    if (!ctx.hasUI || !config.notify.enabled) return;
+    if (!config.notify.enabled || !liveUi(ctx)) return;
     const now = Date.now();
     if (now - lastNotifiedAt < config.notify.cooldownMs) return;
     lastNotifiedAt = now;
@@ -1313,7 +1330,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // files that still owe writes, not one per session.
     for (const retired of traceFiles) retired.flush().then(() => { traceFiles = traceFiles.filter(kept => kept !== retired); });
     judgmentsReported.clear();
-    judgmentsHeadless = !ctx.hasUI;
+    judgmentsHeadless = !liveUi(ctx);
     judgmentsNotify = text => { warnOwner(ctx, "notice", text); };
     sessionHostPaths = wardenHostPaths(undefined, dirs);
     const declaredScratch = scratchPaths(process.env, ctx.cwd);
@@ -1388,9 +1405,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
     indexNudged = false;
     indexRunning = false;
     for (const symptom of Object.keys(slopCounts) as SlopSymptom[]) slopCounts[symptom] = 0;
-    if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
+    liveUi(ctx)?.setWidget(WIDGET, undefined);
     // One-time notice when confirm mode falls back to steer (headless).
-    if (!warnedFallback && sessionUserConfig().mode === "confirm" && !ctx.hasUI) {
+    if (!warnedFallback && sessionUserConfig().mode === "confirm" && !liveUi(ctx)) {
       warnedFallback = true;
       const msg = "warden: confirm mode requires a UI; falling back to steer mode for this session.";
       warnOwner(ctx, "notice", msg);
@@ -1635,7 +1652,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
         // ── Index nudge: once per session when index is missing or stale ──
         if (!indexNudged && (globalIndexFile === undefined || projectIndexFile === undefined)) {
           indexNudged = true;
-          if (ctx.hasUI) ctx.ui.notify("pi-warden: run /warden index so the conscience recommends skills and tools from real descriptions.", "info");
+          const ui = liveUi(ctx);
+          if (ui) ui.notify("pi-warden: run /warden index so the conscience recommends skills and tools from real descriptions.", "info");
           else record(ctx, config, "conscience", "nudge: index missing", ["trigger: before_agent_start", "nudgeReason: missing_index"]);
         } else if (!indexNudged && skills.length > 0) {
           // Check if any cached skill has no matching index entry
@@ -1647,7 +1665,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           });
           if (missing.length > 0) {
             indexNudged = true;
-            if (ctx.hasUI) ctx.ui.notify("pi-warden: run /warden index so the conscience recommends skills and tools from real descriptions.", "info");
+            const ui = liveUi(ctx);
+            if (ui) ui.notify("pi-warden: run /warden index so the conscience recommends skills and tools from real descriptions.", "info");
             else record(ctx, config, "conscience", `nudge: ${missing.length} skill(s) unindexed`, ["trigger: before_agent_start", "nudgeReason: stale_index", ...missing.map(s => `unindexed: ${s.name}`)]);
           }
         }
@@ -1831,7 +1850,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const recover = config.runaway.recover && runawayStops === 1;
     const nudge = runawayNudge(verdict, recover);
     record(ctx, config, "runaway", formatRunaway(verdict, recover, config.widget.runaway), runawayDetails(verdict, nudge, recover));
-    if (ctx.hasUI) ctx.ui.notify(`warden · runaway: the same ${verdict.kind} block repeated ${verdict.count} times in ${verdict.chars} chars; run stopped${recover ? " (agent gets one follow-up turn)" : " (not restarted: second time for this prompt)"}`, "error");
+    liveUi(ctx)?.notify(`warden · runaway: the same ${verdict.kind} block repeated ${verdict.count} times in ${verdict.chars} chars; run stopped${recover ? " (agent gets one follow-up turn)" : " (not restarted: second time for this prompt)"}`, "error");
     notifyDesktop(ctx, config, `Runaway stopped: the same ${verdict.kind} block repeated ${verdict.count} times. ${recover ? "The agent gets one recovery turn." : "Second time for this prompt; the agent is waiting for you."}`);
     // Interactive Pi restores the user's queued messages to the editor before aborting; the follow-up is queued in agent_end, after that.
     conscienceGeneration++;
@@ -2072,7 +2091,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (verdict.judgment) stats.judged++;
     if (verdict.source === "error") noteError(ctx, verdict.error ?? "TypeSafe request failed.", verdict.errorCode);
     if (verdict.approvalError) noteError(ctx, `The approval request failed (${verdict.approvalError}); your reply was read offline.`, undefined);
-    const mode = activeMode(config, ctx.hasUI);
+    const mode = activeMode(config, liveUi(ctx) !== undefined);
     if (verdict.approvedByUser) {
       stats.approved++;
       const released = holds.approved(event.toolName);
@@ -2146,7 +2165,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       stats.slop++;
       const symptoms = verdict.slopSymptoms;
       const where = verdict.summary.path ?? (shell?.writes.length ? shell.writes.map(write => write.path).join(", ") : event.toolName);
-      if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · slop · ${where}: ${verdict.slopReasons.join("; ")}`, "warning");
+      if (config.notices) liveUi(ctx)?.notify(`warden · slop · ${where}: ${verdict.slopReasons.join("; ")}`, "warning");
       contentNotes.push(proceeds => {
         if (!proceeds) return undefined;
         for (const symptom of symptoms) slopCounts[symptom]++;
@@ -2162,8 +2181,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
         stats.ruleChecks++;
         if (rules.error) noteError(ctx, rules.error, rules.errorCode);
         // Only a shown notice uses up the once-per-session flag.
-        const capNotice = ctx.hasUI && config.notices ? rulesGuard.capNotice(rules) : undefined;
-        if (capNotice) ctx.ui.notify(capNotice, "warning");
+        const capNotice = config.notices && liveUi(ctx) ? rulesGuard.capNotice(rules) : undefined;
+        if (capNotice) liveUi(ctx)?.notify(capNotice, "warning");
         holds.recordRules({ source: rules.source, path: rules.path, findings: rules.findings.map(f => ({ name: f.name, violation: f.violation })), ...(rules.error ? { error: rules.error } : {}) });
         // A later judgment below the threshold clears an earlier finding of the same rule on this path: one trace line, no steer.
         if (rules.source === "typesafe") {
@@ -2173,7 +2192,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
         }
         if (rules.findings.length) {
           stats.ruleViolations++;
-          if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
+          if (config.notices) liveUi(ctx)?.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
         }
         contentNotes.push(proceeds => {
           const hasRules = rules.findings.length > 0 || (rules.softFindings?.length ?? 0) > 0;
@@ -2200,7 +2219,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
         // result instead of claiming it was recorded twice.
         pathNoteTraces.push((delivered: boolean) => {
           record(ctx, config, "rules", renderTemplate(config.widget.rules, { tool: event.toolName, path: verdict.summary.path, violations: `sensitive path ${hits.map(hit => hit.glob).join(", ")}`, status: "note" }), [`${event.toolName} ${verdict.summary.path} matches ${hits.map(hit => hit.glob).join(", ")} in rules.sensitivePaths`, delivered ? `notice recorded: ${told}` : `notice recorded once already (a repeat): ${told}`]);
-          if (delivered && ctx.hasUI && config.notices) ctx.ui.notify(`warden · sensitive path · ${verdict.summary.path} (${hits.map(hit => hit.glob).join(", ")}); the agent was given the note`, "warning");
+          if (delivered && config.notices) liveUi(ctx)?.notify(`warden · sensitive path · ${verdict.summary.path} (${hits.map(hit => hit.glob).join(", ")}); the agent was given the note`, "warning");
         });
         noteGuards.add("rules");
         noteKinds.push("sensitive-path");
@@ -2232,7 +2251,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       return sent;
     };
     // Nobody can approve the hold without a UI, so a write to pi-warden's own config is blocked in every mode there.
-    if (configNames.length && verdict.level !== "deny" && !ctx.hasUI) {
+    if (configNames.length && verdict.level !== "deny" && !liveUi(ctx)) {
       deliverNotes(false);
       stats.held++;
       actionGuard.hold(task);
@@ -2242,8 +2261,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (verdict.level === "warn") {
       deliverNotes(true);
       stats.warned++;
-      if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
-      else if (!ctx.hasUI) {
+      const warnUi = liveUi(ctx);
+      if (warnUi && config.notices) warnUi.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
+      else if (!warnUi) {
         const otherReasons = deliveryReasons.filter(r => !r.startsWith("should-proceed "));
         warnSteer(otherReasons);
       }
@@ -2254,7 +2274,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       deliverNotes(false);
       stats.held++;
       track(true, "declined", "deny");
-      if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · blocked ${event.toolName}: ${verdict.reasons.join("; ")}`, "error");
+      if (config.notices) liveUi(ctx)?.notify(`warden · blocked ${event.toolName}: ${verdict.reasons.join("; ")}`, "error");
       notifyDesktop(ctx, config, `Blocked ${event.toolName}: ${verdict.reasons.join("; ")}. A deny rule matched; the call never ran.`);
       return { block: true, reason: `pi-warden blocked this ${event.toolName} call (${agentReasons.join("; ")}). A deny rule matched; this command is not allowed to run. Ask the user if this is genuinely required.` };
     }
@@ -2266,11 +2286,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // asked. Advise mode keeps Jev holds advisory; it does not soften a prompt the operator asked for by name.
     // The action defaults to dialog at parse time (the reason one writes such a rule); hold restores steer semantics.
     const dialogRule = verdict.patterns.some(hit => hit.action === "dialog");
-    if (dialogRule && ctx.hasUI) {
+    const dialogUi = liveUi(ctx);
+    if (dialogRule && dialogUi) {
       notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
       reportHerdrBlocked(ctx, true, `warden: allow this ${event.toolName} call?`);
       let allowed: boolean;
-      try { allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {}); }
+      try { allowed = await dialogUi.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {}); }
       finally { reportHerdrBlocked(ctx, false); }
       deliverNotes(allowed);
       if (allowed) { track(true, "approved", "dialog"); return undefined; }
@@ -2281,16 +2302,20 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (mode === "advise") {
       deliverNotes(true);
       stats.warned++;
-      if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
-      else if (!ctx.hasUI) warnSteer(deliveryReasons);
+      const adviseUi = liveUi(ctx);
+      if (adviseUi && config.notices) adviseUi.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
+      else if (!adviseUi) warnSteer(deliveryReasons);
       track(false);
       return undefined;
     }
     if (mode === "confirm") {
+      const confirmUi = liveUi(ctx);
+      // A session that ended while the call was judged has nobody to ask: the call proceeds unheld, as in steer mode.
+      if (!confirmUi) { deliverNotes(true); track(false); return undefined; }
       notifyDesktop(ctx, config, `Waiting for you: allow this ${event.toolName} call? ${reasons}`);
       reportHerdrBlocked(ctx, true, `warden: allow this ${event.toolName} call?`);
       let allowed: boolean;
-      try { allowed = await ctx.ui.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {}); }
+      try { allowed = await confirmUi.confirm(`warden: allow this ${event.toolName} call?`, confirmMessage(verdict), ctx.signal ? { signal: ctx.signal } : {}); }
       finally { reportHerdrBlocked(ctx, false); }
       deliverNotes(allowed);
       if (allowed) { track(true, "approved", "dialog"); return undefined; }
@@ -2302,7 +2327,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     stats.held++;
     actionGuard.hold(task);
     track(true);
-    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
+    if (config.notices) liveUi(ctx)?.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
     notifyDesktop(ctx, config, `Held ${event.toolName}: ${reasons}. The agent will re-plan or ask you in chat.`);
     return { block: true, reason: told ?? steerReason(deliveryVerdict, { canApprove: judge !== undefined }) };
   });
@@ -2648,7 +2673,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       record(ctx, config, "stuck", `warden · stuck · repeat · ${quickRepeat.attempt.tool} · ${quickRepeat.attempt.failed ? "same failure" : "same output"} · ${sent ? "notice recorded" : "recorded only"}`, [
         `call: ${quickRepeat.attempt.call}`, `previous identical call: ${quickRepeat.callsAgo} calls ago, nothing changed between`, `notice: ${sent ? nudge : "none (a repeat of a recent notice, or the silent trial arm)"}`,
       ]);
-      if (sent && ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 repeat: ${quickRepeat.attempt.failed ? "same call failed the same way" : "same output re-read"}`, "warning");
+      if (sent && config.notices) liveUi(ctx)?.notify(`warden \u00b7 repeat: ${quickRepeat.attempt.failed ? "same call failed the same way" : "same output re-read"}`, "warning");
     }
     if (!verdict) return withWaste(patch);
     if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
@@ -2658,7 +2683,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const stuckDetail = stuckDetails(verdict, attempts.attempts, nudge);
     if (!verdict.stuck) { record(ctx, config, "stuck", stuckLine, stuckDetail); return withWaste(patch); }
     stats.stuck++;
-    if (ctx.hasUI && config.notices) ctx.ui.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}`, "warning");
+    if (config.notices) liveUi(ctx)?.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}`, "warning");
     if (nudge && steer(ctx, config, "stuck", nudge, { line: stuckLine, details: stuckDetail })) watchSteer(ctx, config, ["stuck"], { call: { name: event.toolName, input: event.input as Record<string, unknown> } });
     return withWaste(patch);
   });
@@ -2768,7 +2793,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const counts = `${stats.candidates} scored units, ${stats.requests} request${stats.requests === 1 ? "" : "s"}, ${stats.inputTokens} input tokens, ${stats.elapsedMs} ms`;
       if (!result.ok) {
         // A budget stop never turns judgments off: the guards keep what is left of the budget.
-        if (result.reason === "budget") { if (ctx.hasUI) ctx.ui.notify(`warden: relevance compaction stopped to spare the request budget (${result.detail ?? "budget reached"}); Pi's summary runs.`, "warning"); }
+        if (result.reason === "budget") liveUi(ctx)?.notify(`warden: relevance compaction stopped to spare the request budget (${result.detail ?? "budget reached"}); Pi's summary runs.`, "warning");
         else if (result.reason === "judge error") noteError(ctx, `Relevance compaction failed (${result.detail ?? "TypeSafe error"}); Pi's summary runs.`, undefined);
         return fallback(result.reason, [`${counts}; ${result.reason}${result.detail ? `: ${result.detail}` : ""}`], stats);
       }
@@ -2864,7 +2889,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           `${Math.round(share * 100)}% of this reply's substantive sentences were already sent in an earlier reply of this run`,
           "no steer: a nudge cannot retract the reply and would cost the turn it warns against",
         ]);
-        if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · prose: the final reply restates ${Math.round(share * 100)}% of what was already said this run (recorded, not steered)`, "warning");
+        if (config.notices) liveUi(ctx)?.notify(`warden · prose: the final reply restates ${Math.round(share * 100)}% of what was already said this run (recorded, not steered)`, "warning");
       }
     }
     const judge = judgeFor(config);
@@ -2940,7 +2965,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
             }
             if (verdict.findings.length) {
               stats.ruleViolations++;
-              if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${verdict.tool === "turn" ? "this run's changes" : verdict.path}: ${verdict.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
+              if (config.notices) liveUi(ctx)?.notify(`warden · rules · ${verdict.tool === "turn" ? "this run's changes" : verdict.path}: ${verdict.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
             }
             const notice = told && delivered ? `notice recorded: ${told}` : told ? `notice recorded once already (a repeat): ${told}` : undefined;
             record(ctx, config, "rules", shown, [...cuts, ...rulesDetails(verdict, notice)]);
@@ -2971,7 +2996,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const proseLine = renderTemplate(config.widget.prose, proseTokens(verdict));
       const proseDetail = proseDetails(verdict, finalMessage, config.slop.prose.audience, nudge);
       if (nudge) {
-        if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · prose: ${due.join(", ")} in ${config.slop.prose.trend} of the last 3 replies`, "warning");
+        if (config.notices) liveUi(ctx)?.notify(`warden · prose: ${due.join(", ")} in ${config.slop.prose.trend} of the last 3 replies`, "warning");
         if (steer(ctx, config, "prose", nudge, { line: proseLine, details: proseDetail })) watchSteer(ctx, config, ["prose"], {}, true);
       } else record(ctx, config, "prose", proseLine, proseDetail);
     }
@@ -2989,7 +3014,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       let doneLineRecorded = false;
       if (verdict.unverified) {
         stats.unverified++;
-        if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · done-check: ${verdict.reasons.join("; ")}`, "warning");
+        if (config.notices) liveUi(ctx)?.notify(`warden · done-check: ${verdict.reasons.join("; ")}`, "warning");
         if (nudge) {
           doneNoted = true;
           // The notice reaches the owner only: the entry carries the same line under the reply, and nothing is sent to the
@@ -3015,7 +3040,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       let causeLineRecorded = false;
       if (causeVerdict.unchecked) {
         stats.uncheckedCause++;
-        if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · cause-check: ${causeVerdict.reasons.join("; ")}`, "warning");
+        if (config.notices) liveUi(ctx)?.notify(`warden · cause-check: ${causeVerdict.reasons.join("; ")}`, "warning");
         if (causeSteer) {
           causeNudged = true;
           if (steer(ctx, config, "cause", causeSteer, { line: causeLine, details: causeDetail })) {
@@ -3117,7 +3142,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
       const [action = "status", argument] = tokens;
       const tail = tokens.slice(1).join(" ");
       const report = (text: string, level: "info" | "warning" | "error" = "info") => {
-        if (ctx.hasUI) ctx.ui.notify(text, level);
+        const ui = liveUi(ctx);
+        if (ui) ui.notify(text, level);
         else warnOwner(ctx, "notice", text);
       };
       try {
