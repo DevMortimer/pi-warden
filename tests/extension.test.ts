@@ -5059,10 +5059,10 @@ test("judge cooldown: a new session trusts the judge again", async () => {
   assert.ok(networkCalls > asked);
 });
 
-/** A saved 403 in pi-typesafe's auth-state record: the key in effect was rejected by the backend. */
+/** A saved 401 in pi-typesafe's auth-state record: the key in effect was rejected inside the 15-minute veto. */
 const rejectKey = async () => {
   await mkdir(join(temporary, "agent", "pi-typesafe"), { recursive: true });
-  await writeFile(join(temporary, "agent", "pi-typesafe", "auth-state.json"), JSON.stringify({ lastFailure: { code: "http", status: 403, message: "rejected", at: "2026-01-01T00:00:00.000Z" } }));
+  await writeFile(join(temporary, "agent", "pi-typesafe", "auth-state.json"), JSON.stringify({ lastFailure: { code: "http", status: 401, message: "rejected", at: new Date().toISOString() } }));
 };
 const judgmentsOff = () => notices.filter(notice => notice.text.includes("Jev judgments are off")).map(notice => notice.text);
 
@@ -5166,7 +5166,7 @@ test("judgments off: an unknown typesafeBackend name is refused with the message
   await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: "azure", rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("bash", { command: "npm test" });
   await toolCall("bash", { command: "npm run lint" });
-  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend \"azure\". Valid backends: typesafe, openrouter, commandcode, liquid, subq.)"], "said once, carrying pi-typesafe's refusal message");
+  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend \"azure\". Valid backends: typesafe, openrouter, commandcode, liquid, subq, nace.)"], "said once, carrying pi-typesafe's refusal message");
   assert.equal(networkCalls, 0, "no client is created and nothing is sent");
   assert.equal(requests.length, 0);
   await runCommand("status");

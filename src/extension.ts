@@ -800,7 +800,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (budgetExhausted) return "budget";
     const auth = authState({ backend });
     if (auth.usable) return undefined;
-    // No key in effect, or one whose last request came back 401 or 403.
+    // No key in effect, or one whose last request came back 401 and pi-typesafe's 15-minute veto has not expired.
     return auth.source === undefined ? "no_key" : "key_rejected";
   };
   // Where the judgments-off notice goes: the session's UI, or a status message for a headless session.
