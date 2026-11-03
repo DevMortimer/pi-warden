@@ -40,6 +40,13 @@ test("loginStoresKey is true for every named backend and false for an endpoint",
   assert.equal(loginStoresKey(gateway), false, "an endpoint object never gets the TypeSafe login store");
 });
 
+test("nace: the registry entry reaches our helpers, so a user config naming it shows the right destination", () => {
+  assert.deepEqual(resolveJudgmentBackend("nace"), { typesafeBackend: "nace" });
+  assert.equal(backendName("nace"), "nace");
+  assert.equal(describeBackend("nace"), "Nace.AI at console.nace.ai, model drex-v2.0");
+  assert.equal(loginStoresKey("nace"), true);
+});
+
 test("backendName shows the registry name or the endpoint label", () => {
   assert.equal(backendName("typesafe"), "typesafe");
   assert.equal(backendName("openrouter"), "openrouter");

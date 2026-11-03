@@ -484,7 +484,7 @@ export interface WardenConfig {
   enabled: boolean;
   /** Consent to send task and action summaries to api.typesafe.ai. Set by /warden enable; never by a project file. */
   typesafe: boolean;
-  /** The decisions service the judgments go to: a name ("typesafe", "openrouter", "commandcode") or a caller-supplied endpoint object. User file only: a project must not redirect judgments to another vendor. Undefined when the configured value was refused. */
+  /** The decisions service the judgments go to: a name ("typesafe", "openrouter", "commandcode", "liquid", "subq", "nace") or a caller-supplied endpoint object. User file only: a project must not redirect judgments to another vendor. Undefined when the configured value was refused. */
   typesafeBackend: JudgmentBackend | undefined;
   /** Why the configured typesafeBackend was refused: judgments stay off, and the once-per-session notice and /warden status quote this. */
   backendRefusal: string | undefined;
