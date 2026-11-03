@@ -3804,6 +3804,48 @@ test("conscience: a throw before the assessment's try is caught and traced, not 
   }
 });
 
+test("a late trace write does not touch a ctx whose session ended", async () => {
+  await writeConscienceConfig({ recommendThreshold: 0.5 });
+  const skills = [conscienceSkill("impeccable", "UI design")];
+  nextAnswers = { conscience_disposition: "advance", c1: 3 };
+  const staleMessage = () => new Error("This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().");
+  let ended = false;
+  let broken = false;
+  // Only the UI getters throw, as Pi's do: every other read still answers, so a failure names the UI write alone.
+  const dying = Object.defineProperties({}, {
+    ...Object.getOwnPropertyDescriptors(context()),
+    hasUI: { configurable: true, get: () => { if (broken) throw new Error("hasUI read failed"); if (ended) throw staleMessage(); return true; } },
+    ui: { configurable: true, get: () => { if (broken) throw new Error("ui read failed"); if (ended) throw staleMessage(); return ui; } },
+  }) as ReturnType<typeof context>;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const baseline = (await recordedSince()).length;
+    const before = answeredRequests;
+    holdNextJudge();
+    await fire("before_agent_start", { prompt: "design a landing page", systemPromptOptions: { cwd: temporary, skills } }, dying);
+    // The session ends with the assessment still out: the record and the owner warning below both land after that.
+    ended = true;
+    releaseJudge?.();
+    await waitFor(() => answeredRequests > before, "the late conscience assessment");
+    await settleBackground();
+    await tick();
+    assert.deepEqual(unhandled, [], "a late trace write must not reject unhandled");
+    const late = (await recordedSince()).slice(baseline);
+    assert.ok(late.some(entry => entry.guard === "conscience" && /assessed|error:/.test(entry.line)), "the late conscience entry is still in the trace");
+    // A later command on the same ended ctx reports through warnOwner, which keeps a trace line and shows no toast.
+    await runCommand("status", dying);
+    const warned = (await recordedSince()).slice(baseline).filter(entry => entry.details.includes("trigger: headless warning"));
+    assert.ok(warned.length > 0, "the late owner warning reaches the trace");
+    // Only Pi's stale throw is dropped: any other failure of the same read still surfaces.
+    broken = true;
+    await assert.rejects(runCommand("status", dying), /hasUI read failed/, "a real error is not swallowed");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("conscience: a per-run budget is no longer needed, so a stale steerBudget key does not block delivery", async () => {
   const skills = [conscienceSkill("impeccable", "UI design")];
   nextAnswers = { conscience_disposition: "advance", c1: 3 };
