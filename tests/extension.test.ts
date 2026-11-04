@@ -4024,6 +4024,24 @@ test("conscience: a failed queued prompt reaches the owner once and names its ca
   assert.deepEqual(sentMessages, [], "no notice becomes conversation text");
 });
 
+test("conscience: a prompt queued as content parts is assessed on its text", async () => {
+  await writeConscienceConfig();
+  const skills = [conscienceSkill("impeccable", "Frontend interface design, polish, and UX")];
+  // The priming run holds the skill catalog; the message that follows it clears the run flag, so the next user message
+  // takes the queued path. Pi sends a queued prompt (a steer, a follow-up, or sendUserMessage) as content parts.
+  await fire("before_agent_start", { prompt: "add a rate limiter", systemPromptOptions: { cwd: temporary, skills } });
+  await settleBackground();
+  await fire("message_start", { message: { role: "user", content: "clear the run flag" } });
+  await settleBackground();
+  nextAnswers = { conscience_disposition: "no_gap" };
+  requests.length = 0;
+  const queuedText = "Take a screenshot of the pricing page and make its design look better";
+  await fire("message_start", { message: { role: "user", content: [{ type: "text", text: queuedText }] } });
+  await settleBackground();
+  const tasks = requests.map(request => JSON.stringify(request.state));
+  assert.ok(tasks.some(task => task.includes(queuedText)), `the queued prompt's text reaches the judge: ${tasks.length} requests`);
+});
+
 test("conscience: long prompt is truncated and truncation recorded in trace", async () => {
   await writeConscienceConfig({ recommendThreshold: 0.5 });
   const skills = [conscienceSkill("impeccable", "UI design")];

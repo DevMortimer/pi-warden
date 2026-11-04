@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- A prompt queued during a run is assessed on its text. Pi sends a steer, a follow-up or `sendUserMessage` as content parts, and the queued-prompt assessment read only string content, so it judged an empty prompt against the session's earlier requests.
 
 ## 2.6.0
 

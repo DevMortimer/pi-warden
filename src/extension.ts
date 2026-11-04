@@ -1814,7 +1814,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
         const judge = judgeFor(config);
         if (judge && cachedSkills.length > 0) {
           const myGeneration = conscienceGeneration;
-          const prompt = typeof event.message.content === "string" ? event.message.content : "";
+          // Pi sends a queued prompt (a steer, a follow-up, or sendUserMessage) as content parts, not as a string.
+          const content = event.message.content;
+          const prompt = typeof content === "string" ? content : content.filter((part): part is { type: "text"; text: string } => part.type === "text").map(part => part.text).join("\n");
           const redactedText = redact(prompt).slice(0, 2000);
           const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
           const spine = taskSpine(branch, prompt);
