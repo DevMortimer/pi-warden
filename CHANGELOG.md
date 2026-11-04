@@ -9,6 +9,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 ### Fixed
 
 - A prompt queued during a run is assessed on its text. Pi sends a steer, a follow-up or `sendUserMessage` as content parts, and the queued-prompt assessment read only string content, so it judged an empty prompt against the session's earlier requests.
+- A capability assessment split into more than four requests now waits for all of them. It waited only for the first four in flight, so the answers of the fifth and later requests were dropped while the backend still did the work. A backend that takes six questions per request splits the stock 31 candidates that far, and one that takes 32 splits more than 124.
 
 ## 2.6.0
 
