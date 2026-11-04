@@ -818,7 +818,9 @@ export async function assess(
   }
 
   launchNext();
-  await Promise.all(inFlight);
+  // A settled chunk launches the next waiting one, so wait until none is left in flight: Promise.all on the
+  // array alone would wait for the first four chunks and drop the answers of the rest.
+  while (inFlight.length > 0) await Promise.all(inFlight);
 
   const elapsedMs = (deps.now?.() ?? Date.now()) - start;
   const { disposition, pAdvance, hash, requestCount, bestScored } = state_;
