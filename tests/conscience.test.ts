@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Skill } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_BACKEND_LIMITS } from "pi-typesafe";
 import {
   assess,
   buildBatchQuestions,
@@ -954,6 +955,35 @@ test("concurrent batches: 3 batches complete in ~one round-trip with 400ms delay
   assert.ok(callCount >= 3, `should issue 3 batches, got ${callCount} calls`);
 });
 
+
+test("assess waits for every batch, not only the first four in flight", async () => {
+  // A backend that takes six questions per request gets five candidates and the disposition question in each, so 31
+  // candidates make seven batches. At most four run at once; batches 5-7 start as the first four settle and answer
+  // after them, so their answers count only if assess waits for them too.
+  let calls = 0;
+  const judge: Judge = {
+    limits: { ...DEFAULT_BACKEND_LIMITS, maxQuestions: 6 },
+    evaluate: async () => {
+      const call = ++calls;
+      await new Promise(r => setTimeout(r, call <= 4 ? 50 : 150));
+      return {
+        answers: {
+          conscience_disposition: {
+            type: "choice", choice: "advance", confidence: 0.9,
+            probabilities: { advance: 0.9, awaiting_user: 0, no_gap: 0, unclear: 0.1 },
+          },
+        },
+      };
+    },
+  };
+  const skills = Array.from({ length: 31 }, (_, i) => fakeSkill(`skill-${i}`, `Skill ${i}`));
+  const result = await assess(
+    "test", "", skills, [], [], [],
+    { judge, config: fakeConfig(), sharedTimeoutMs: 5000, now: () => Date.now() },
+  );
+  assert.equal(calls, 7, "seven batches are sent");
+  assert.equal(result.requestCount, 7, "the answers of all seven batches count");
+});
 
 test("conscience config defaults: recommend mode, tools enabled, thresholds at 1.0", () => {
   const config = fakeConfig();
