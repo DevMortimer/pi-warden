@@ -79,9 +79,12 @@ test("authorize: an inflected refusal, or one farther back in the verb's clause,
   assert.equal(isNegated("merge main, but avoid merging the release branch", "merge"), true);
   assert.equal(isNegated("tidy build, but src is never tidied", "tidy"), true);
   assert.equal(isNegated("push docs; for the release branch, under no circumstances whatsoever should anyone push", "push"), true);
-  // The clause starts after a sentence end or a "but".
+  // The clause starts after a sentence end, a semicolon, a line break or a "but".
   assert.equal(authorize("Do not touch the tests or the generated docs folder, but delete src", violation).authorized, true);
   assert.equal(authorize("Never commit secrets to the repository, everyone knows that. Delete src", violation).authorized, true);
+  assert.equal(authorize("Don't push the tag for the release build today; delete src", violation).authorized, true);
+  assert.equal(authorize("Don't push the tag for the release build today\ndelete src", violation).authorized, true);
+  assert.equal(authorize("Don't push the tag for the release build today, delete src", violation).authorized, false);
   // A clause is read at most 100 characters back.
   assert.equal(isNegated("don't touch anything in the vendored third party packages or the lockfile at all, as we need every one of them, delete src", "delete"), false);
   // Within 40 characters a negator still counts across a break, as before.
