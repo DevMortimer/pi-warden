@@ -8,6 +8,12 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 2.7.0
+
+### Fixed
+
+- A prompt that refuses a delete with an inflected verb or a long qualifier no longer authorizes it (issue #205). "delete build without deleting src", "remove dist/, never removing src" and "delete build, but under no circumstances whatsoever should anyone ever delete src" now warn on `rm -rf src` like any delete the prompt did not ask for. The refusal is read on the verb's "-ing" form ("deleting", "removing", "purging") and the "-ies"/"-ied" forms of "tidy", and within the verb's clause up to 100 characters back, as well as within 40 characters across any break as before. The clause starts after a sentence end, a semicolon, a line break or a "but", so "do not touch the tests or the generated docs, but delete build" still authorizes deleting `build`.
+
 ## 2.6.1
 
 ### Fixed

@@ -3724,18 +3724,39 @@ const ACTION_VERBS: Record<string, string[]> = {
 };
 
 const NEGATORS = /\b(?:don'?t|do\s+not|never|skip|avoid|without|no\s+(?:need\s+to\s+)?)\b/i;
+/** A negator this close before a use of the verb refuses it, whatever lies between. */
+const NEGATION_NEAR = 40;
+/** How far back a negator in the verb's own clause still refuses it ("under no circumstances whatsoever should anyone ever delete"). */
+const NEGATION_CLAUSE = 100;
+/** What ends a clause: a sentence end, or a "but" that turns away from what came before. */
+const CLAUSE_BREAK = /[.!?;]\s|\n|\bbut\b/g;
 
 /**
- * Check if a negator precedes any use of the action verb within 40 characters. Every use counts, not only the first:
- * in "delete build/ but don't delete src/" the second "delete" is the one that names the protected path.
+ * Where the verb is used, inflected or not. A substring match already finds "deleted", "pushing" and "cleanup"; a verb
+ * ending in "e", or in a consonant and "y", changes its stem, so "delete" also finds "deleting" and "tidy" finds "tidies".
+ */
+function verbUses(lower: string, verb: string): number[] {
+  const form = /e$/.test(verb) ? `${escapeRegex(verb.slice(0, -1))}(?:e|ing)`
+    : /[^aeiou]y$/.test(verb) ? `${escapeRegex(verb.slice(0, -1))}(?:y|ie)`
+    : escapeRegex(verb);
+  return [...lower.matchAll(new RegExp(form, "g"))].map(match => match.index);
+}
+
+/**
+ * Check if a negator refuses any use of the action verb. Every use counts, not only the first: in "delete build/ but
+ * don't delete src/" the second "delete" is the one that names the protected path. A negator counts within 40 characters
+ * before the use, or farther back in the same clause, up to 100 characters. The clause starts after a sentence end or a
+ * "but", so "do not touch the tests or the generated docs, but delete build" stays allowed.
  */
 export function isNegated(prompt: string, actionVerb: string): boolean {
   if (!actionVerb) return false;
   const lower = prompt.toLowerCase();
-  for (let at = lower.indexOf(actionVerb); at !== -1; at = lower.indexOf(actionVerb, at + 1)) {
-    if (NEGATORS.test(lower.slice(Math.max(0, at - 40), at))) return true;
-  }
-  return false;
+  return verbUses(lower, actionVerb).some(at => {
+    const bound = Math.max(0, at - NEGATION_CLAUSE);
+    const lastBreak = [...lower.slice(bound, at).matchAll(CLAUSE_BREAK)].at(-1);
+    const from = lastBreak ? bound + lastBreak.index + lastBreak[0].length : bound;
+    return NEGATORS.test(lower.slice(Math.min(from, Math.max(0, at - NEGATION_NEAR)), at));
+  });
 }
 
 /** Deterministic scope matching: exact path or basename. For command-scoped violations

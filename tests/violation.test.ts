@@ -63,6 +63,34 @@ test("authorize: a negated later use of the verb prevents authorization, not onl
   assert.equal(authorize("delete build/ and then delete src/", violation).authorized, true);
 });
 
+test("authorize: an inflected refusal, or one farther back in the verb's clause, prevents authorization", () => {
+  const violation: Violation = { id: "rm-rf", severity: "risky", source: "pattern", description: "recursive removal", patternFamily: "rm-rf", scope: { paths: ["src"] } };
+  for (const prompt of [
+    "delete build, but under no circumstances whatsoever should anyone ever delete src",
+    "delete build but avoid deleting src",
+    "remove dist/, never removing src",
+    "delete build without deleting src",
+    "purge the cache and skip purging src",
+  ]) {
+    const authorization = authorize(prompt, violation);
+    assert.equal(authorization.negated, true, prompt);
+    assert.equal(authorization.authorized, false, prompt);
+  }
+  assert.equal(isNegated("merge main, but avoid merging the release branch", "merge"), true);
+  assert.equal(isNegated("tidy build, but src is never tidied", "tidy"), true);
+  assert.equal(isNegated("push docs; for the release branch, under no circumstances whatsoever should anyone push", "push"), true);
+  // The clause starts after a sentence end, a semicolon, a line break or a "but".
+  assert.equal(authorize("Do not touch the tests or the generated docs folder, but delete src", violation).authorized, true);
+  assert.equal(authorize("Never commit secrets to the repository, everyone knows that. Delete src", violation).authorized, true);
+  assert.equal(authorize("Don't push the tag for the release build today; delete src", violation).authorized, true);
+  assert.equal(authorize("Don't push the tag for the release build today\ndelete src", violation).authorized, true);
+  assert.equal(authorize("Don't push the tag for the release build today, delete src", violation).authorized, false);
+  // A clause is read at most 100 characters back.
+  assert.equal(isNegated("don't touch anything in the vendored third party packages or the lockfile at all, as we need every one of them, delete src", "delete"), false);
+  // Within 40 characters a negator still counts across a break, as before.
+  assert.equal(isNegated("Never. Delete src", "delete"), true);
+});
+
 test("authorize: scope mismatch prevents authorization even when action matches", () => {
   const violation: Violation = {
     id: "rm-rf", severity: "destructive", source: "pattern", description: "rm -rf",
