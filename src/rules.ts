@@ -77,6 +77,15 @@ export const FALLBACK_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"];
 /** TypeSafe answers at most 32 questions per request; one is kept for the edit locator. */
 export const MAX_RULES = 31;
 
+/** Rules one write may be asked about: `MAX_RULES` for each of `rules.maxRequests` requests, one when the key is absent. */
+export function ruleCap(config?: Partial<Pick<RulesConfig, "maxRequests">>): number {
+  const requests = config?.maxRequests;
+  return MAX_RULES * (typeof requests === "number" && Number.isSafeInteger(requests) && requests > 0 ? requests : 1);
+}
+
+/** What `RuleStore` reads to resolve and cap a rule set; `maxRequests` is optional so an older caller keeps the one-request cap. */
+export type RulesLoadConfig = Pick<RulesConfig, "files" | "fallback" | "maxChars"> & Partial<Pick<RulesConfig, "maxRequests">>;
+
 /** A judge that may know its backend's limits; a hand-built `{ evaluate }` does not. */
 export type LimitedJudge = Judge & Pick<TypeSafe, "limits">;
 
@@ -362,11 +371,11 @@ export class RuleStore {
   }
 
   /** Where a rule set came from; the order is the resolution order. */
-  loadTiered(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">): { set: RuleSet | undefined; tier: RulesTier } {
+  loadTiered(cwd: string, config: RulesLoadConfig): { set: RuleSet | undefined; tier: RulesTier } {
     const root = this.read(resolve(cwd, RULES_FILE));
-    if (root !== undefined) return { set: ruleSet([RULES_FILE], [root], config.maxChars), tier: "root" };
+    if (root !== undefined) return { set: ruleSet([RULES_FILE], [root], config.maxChars, ruleCap(config)), tier: "root" };
     const configured = config.files.map(file => ({ file, text: this.read(resolve(cwd, file)) })).filter((entry): entry is { file: string; text: string } => entry.text !== undefined);
-    if (configured.length) return { set: ruleSet(configured.map(entry => entry.file), configured.map(entry => entry.text), config.maxChars), tier: "configured" };
+    if (configured.length) return { set: ruleSet(configured.map(entry => entry.file), configured.map(entry => entry.text), config.maxChars, ruleCap(config)), tier: "configured" };
     if (!config.fallback) return { set: undefined, tier: "none" };
     for (const file of FALLBACK_FILES) {
       const text = this.read(resolve(cwd, file));
@@ -380,12 +389,12 @@ export class RuleStore {
   }
 
   /** The active rule set for a project, or undefined when no source exists. Never throws. */
-  load(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">): RuleSet | undefined {
+  load(cwd: string, config: RulesLoadConfig): RuleSet | undefined {
     return this.loadTiered(cwd, config).set;
   }
 }
 
-function ruleSet(sources: string[], texts: string[], maxChars: number): RuleSet | undefined {
+function ruleSet(sources: string[], texts: string[], maxChars: number, cap: number): RuleSet | undefined {
   const used = new Set<string>();
   const rules = texts.flatMap((text, index) => parseRules(text).map(rule => ({ ...rule, source: sources[index]! })))
     .map(rule => ({ ...rule, id: slug(rule.id, used), body: redact(rule.body) }));
@@ -394,7 +403,7 @@ function ruleSet(sources: string[], texts: string[], maxChars: number): RuleSet 
     return text ? { sources, rules: [], aggregate: condense(redact(text), maxChars), alwaysDropped: 0 } : undefined;
   }
   const unscoped = rules.filter(rule => !rule.paths.length).length;
-  return { sources, rules, alwaysDropped: Math.max(0, unscoped - MAX_RULES) };
+  return { sources, rules, alwaysDropped: Math.max(0, unscoped - cap) };
 }
 
 /** Rules that apply to a path: unscoped rules plus those whose `paths` match. */
@@ -412,12 +421,13 @@ export function turnRulesFor(set: RuleSet): Rule[] {
   return set.rules.filter(rule => rule.when === "turn");
 }
 
-export function describeRuleSet(set: RuleSet | undefined): string {
+/** `cap` is the rule cap the set was loaded with (`ruleCap(config)`), named when unscoped rules are past it. */
+export function describeRuleSet(set: RuleSet | undefined, cap: number = MAX_RULES): string {
   if (!set) return "none found";
   const where = set.sources.join(", ");
   if (set.proseOnly) return `no rules found in ${where} (prose only)`;
   if (set.aggregate !== undefined && !set.rules.length) return `${where} (no rule headings: judged as one document)`;
-  return `${where} (${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}${set.alwaysDropped ? `, ${set.alwaysDropped} unscoped past the ${MAX_RULES}-question cap for every file` : ""})`;
+  return `${where} (${set.rules.length} rule${set.rules.length === 1 ? "" : "s"}${set.alwaysDropped ? `, ${set.alwaysDropped} unscoped past the ${cap}-question cap for every file` : ""})`;
 }
 
 /** Detailed local-only view for `/warden rules`; nothing here is sent to Jev. */
@@ -551,12 +561,13 @@ export function ruleQuestion(rule: Rule) {
 }
 
 /**
- * The rules asked about for a write: scoped to its path first, `when: turn` rules excluded, then cut to the request cap
- * in file order. `requests` splits the questions to `maxQuestions` per request, each carrying the whole state.
+ * The rules asked about for a write: scoped to its path first, `when: turn` rules excluded, then cut to `maxRules`
+ * (`ruleCap(config)`) in file order. `requests` splits the questions to `maxQuestions` per request, each carrying the
+ * whole state, so rules past one request's worth go in the next request of the same judgment.
  */
-export function buildRulesRequest(target: RulesTarget, set: RuleSet, maxQuestions: number = DEFAULT_BACKEND_LIMITS.maxQuestions) {
+export function buildRulesRequest(target: RulesTarget, set: RuleSet, maxQuestions: number = DEFAULT_BACKEND_LIMITS.maxQuestions, maxRules: number = MAX_RULES) {
   const scoped = editRulesFor(set, target.path);
-  const applicable = scoped.slice(0, MAX_RULES);
+  const applicable = scoped.slice(0, maxRules);
   const dropped = scoped.length - applicable.length;
   const questions: Record<string, ReturnType<typeof choice>> = {};
   for (const rule of applicable) questions[`rule_${rule.id}`] = ruleQuestion(rule);
@@ -592,7 +603,7 @@ export function buildRulesRequest(target: RulesTarget, set: RuleSet, maxQuestion
     requests: chunkEvaluationRequest({ state, questions }, { maxQuestions }),
     applicable,
     dropped,
-    ...(dropped ? { firstDropped: scoped[MAX_RULES]!.id } : {}),
+    ...(dropped ? { firstDropped: scoped[maxRules]!.id } : {}),
   };
 }
 
@@ -761,7 +772,7 @@ export async function evaluateRulesTarget(target: RulesTarget | undefined, tool:
   const reason = skipReason(target, set, options.config);
   if (reason || !target || !set) return skipped(target, tool, shownPath, set, reason ?? "nothing to judge");
   if (!options.judge) return skipped(target, tool, shownPath, set, "TypeSafe judgments are off");
-  const request = buildRulesRequest(target, set, questionLimit(options.judge));
+  const request = buildRulesRequest(target, set, questionLimit(options.judge), ruleCap(options.config));
   const aggregate = set.aggregate !== undefined && !set.rules.length;
   const base = { tool: target.tool, path: target.path, sources: set.sources, asked: aggregate ? 1 : request.applicable.length, aggregate, ...(request.firstDropped ? { dropped: request.dropped, firstDropped: request.firstDropped } : {}) };
   const result = await askChunks(options.judge, request.requests, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
@@ -816,7 +827,8 @@ export function formatRules(verdict: RulesVerdict, template: string = DEFAULT_TE
 
 export function rulesCapNotice(verdict: RulesVerdict): string | undefined {
   if (!verdict.dropped || !verdict.firstDropped) return undefined;
-  return `warden · rules · ${verdict.path}: ${verdict.dropped} rule${verdict.dropped === 1 ? "" : "s"} from ${verdict.sources.join(", ")} not judged, past the ${MAX_RULES}-question cap, starting with ${verdict.firstDropped}. A \`paths:\` line on a rule keeps it out of requests for other files. Shown once per session.`;
+  // Rules were dropped, so every rule question asked filled the cap: `asked` is the cap this write ran with.
+  return `warden · rules · ${verdict.path}: ${verdict.dropped} rule${verdict.dropped === 1 ? "" : "s"} from ${verdict.sources.join(", ")} not judged, past the ${verdict.asked}-question cap, starting with ${verdict.firstDropped}. A \`paths:\` line on a rule keeps it out of requests for other files; \`rules.maxRequests\` asks ${MAX_RULES} more rules in each further request. Shown once per session.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -913,11 +925,11 @@ export class RulesGuard {
     return notice;
   }
 
-  describe(cwd: string, config: Pick<RulesConfig, "files" | "fallback" | "maxChars">): string {
-    return describeRuleSet(this.store.load(cwd, config));
+  describe(cwd: string, config: RulesLoadConfig): string {
+    return describeRuleSet(this.store.load(cwd, config), ruleCap(config));
   }
 
-  details(cwd: string, config: Pick<RulesConfig, "enabled" | "files" | "fallback" | "maxChars" | "exclude">): string {
+  details(cwd: string, config: RulesLoadConfig & Pick<RulesConfig, "enabled" | "exclude">): string {
     const { set, tier } = this.store.loadTiered(cwd, config);
     const text = formatRuleSetDetails(set, tier, config.exclude);
     return config.enabled ? text : `Rules guard is off (rules.enabled: false). These would apply:\n${text}`;

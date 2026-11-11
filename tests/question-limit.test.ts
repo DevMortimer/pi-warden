@@ -13,7 +13,7 @@ import { evaluateAction } from "../src/guard.js";
 import type { Verdict } from "../src/guard.js";
 import { relevanceCompaction } from "../src/relevance.js";
 import type { SpanMessage } from "../src/relevance.js";
-import { evaluateRulesTarget, parseRules, questionLimit } from "../src/rules.js";
+import { evaluateRulesTarget, parseRules, questionLimit, rulesCapNotice } from "../src/rules.js";
 import type { RuleSet, RulesTarget } from "../src/rules.js";
 import { calibrate } from "../src/rules-calibrate.js";
 import type { HistoryCommit } from "../src/rules-calibrate.js";
@@ -88,6 +88,34 @@ test("rules guard: 31 rules and the edit locator take two requests of 16 on a 16
   assert.equal(narrow.verdict.source, "typesafe");
   assert.ok(narrow.verdict.findings.length > 0 && narrow.verdict.editId, "the fake answers flag rules, so the locator answer is read");
   assert.deepEqual(withoutTime(narrow.verdict), withoutTime(wide.verdict));
+});
+
+test("rules guard: rules.maxRequests 2 judges a 40-rule file in two requests and merges the findings; the default drops 9", async () => {
+  const target: RulesTarget = { tool: "write", path: "src/a.ts", content: "const a = 1;" };
+  const violation = (_id: string, keys: string[]) => keys.includes("violation") ? "violation" : undefined;
+  const run = async (maxQuestions: number, maxRequests: number) => {
+    const { judge, counts } = fakeJudge(maxQuestions, id => id, violation);
+    const verdict = await evaluateRulesTarget(target, "write", "src/a.ts", { cwd: process.cwd(), config: { ...defaultConfig().rules, maxRequests }, set: ruleSet(40), judge, timeoutMs: 1000 });
+    return { verdict, counts };
+  };
+  const single = await run(32, 1);
+  assert.deepEqual(single.counts, [31]);
+  assert.equal(single.verdict.asked, 31);
+  assert.equal(single.verdict.dropped, 9);
+  assert.equal(single.verdict.firstDropped, "rule-32");
+  assert.match(rulesCapNotice(single.verdict) ?? "", /9 rules from pi-warden\.md not judged, past the 31-question cap, starting with rule-32\..*`rules\.maxRequests`/);
+
+  const double = await run(32, 2);
+  assert.deepEqual(double.counts, [32, 8]);
+  assert.equal(double.verdict.source, "typesafe");
+  assert.equal(double.verdict.asked, 40);
+  assert.equal(double.verdict.dropped, undefined);
+  assert.equal(rulesCapNotice(double.verdict), undefined, "nothing dropped, no notice");
+  assert.deepEqual(double.verdict.findings.map(finding => finding.id).sort(), ruleSet(40).rules.map(rule => rule.id).sort(), "findings from both requests reach the one verdict");
+
+  const narrow = await run(16, 2);
+  assert.deepEqual(narrow.counts, [16, 16, 8], "a 16-question backend splits the same judgment further");
+  assert.deepEqual(withoutTime(narrow.verdict), withoutTime(double.verdict));
 });
 
 test("turn rules: 31 rules take 16 + 15 questions on a 16-question backend, one request of 31 elsewhere, same verdict", async () => {

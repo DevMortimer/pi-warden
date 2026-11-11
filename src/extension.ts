@@ -347,7 +347,7 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
   const missing = [...result.missing];
   if (typeof config.rules !== "object" || config.rules === null || !Array.isArray(config.rules.exclude)) {
     if (!missing.includes("rules")) missing.push("rules");
-    config.rules = { enabled: false, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} };
+    config.rules = { enabled: false, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], sensitivePaths: {} };
   }
   if (typeof config.widget !== "object" || config.widget === null) {
     if (!missing.includes("widget")) missing.push("widget");

@@ -52,7 +52,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     cause: section("cause", { ...off, claimsCause: 1, nudge: false, windowDays: 7 }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false, shareLinkParams: [] }),
-    rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, exclude: [], skip: [], sensitivePaths: {} }),
+    rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], sensitivePaths: {} }),
     // A missing section turns the turn-start reminder off: it is new, so nothing it says was expected.
     rulesAtTurnStart: section("rulesAtTurnStart", { ...off, threshold: 1 }),
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } }),
@@ -130,6 +130,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (config.action.floor !== "level" && config.action.floor !== "evidence") config.action = { ...config.action, floor: "evidence" };
   // The soft rules tier was added inside the rules section later than the section itself; an older config module leaves it undefined and the tier stays off.
   if (typeof config.rules.softThreshold !== "number") config.rules = { ...config.rules, softThreshold: 0 };
+  // The request limit was added inside the rules section later too; an older config module gets the one request it always sent.
+  if (typeof config.rules.maxRequests !== "number") config.rules = { ...config.rules, maxRequests: 1 };
   // The turn-start reminder was added after the rules section; an older config module leaves it undefined and the reminder stays off.
   if (typeof config.rulesAtTurnStart?.threshold !== "number") config.rulesAtTurnStart = { ...off, threshold: 1 };
   if (typeof config.rulesAtTurnStart.enabled !== "boolean") config.rulesAtTurnStart = { ...config.rulesAtTurnStart, enabled: false };

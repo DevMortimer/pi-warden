@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- `rules.maxRequests` (default `1`) lets a write be judged against more than 31 rules (issue #63). With `2`, the rules past 31 that apply to a file go in a second request for the same write instead of being dropped: a 40-rule file is judged in two requests and drops none, and the findings of both arrive as one steer. That write spends two requests of `maxRequests`. The default sends one request and drops rules past 31 as before. `/warden status` counts an unscoped rule as dropped only past `31 × rules.maxRequests`, and the once-per-session notice for dropped rules names the cap in force and the key. A project file may lower the key, which the session-start line names as a loosened rules-check, but never raise it above the user's value. `ruleCap()` is exported for extension authors, and `buildRulesRequest()` takes the cap as an optional fourth argument.
 
 ## 2.7.0
 

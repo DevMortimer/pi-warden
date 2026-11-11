@@ -542,6 +542,20 @@ test("project file: other guards stay tunable both ways, and the user file is ne
   assert.deepEqual(user.warnings, []);
 });
 
+test("rules.maxRequests: default 1, a positive integer from the user file, and a project file may lower it but not raise it", () => {
+  assert.equal(defaultConfig().rules.maxRequests, 1);
+  assert.equal(applyUserOverrides(defaultConfig(), { rules: { maxRequests: 3 } }).rules.maxRequests, 3);
+  for (const bad of [0, -1, 1.5, "2", null]) assert.equal(applyUserOverrides(defaultConfig(), { rules: { maxRequests: bad } }).rules.maxRequests, 1, JSON.stringify(bad));
+  const user = applyUserOverrides(defaultConfig(), { rules: { maxRequests: 2 } });
+  const lowered = applyProjectOverrides(user, { rules: { maxRequests: 1 } });
+  assert.equal(lowered.rules.maxRequests, 1);
+  assert.deepEqual(lowered.warnings, []);
+  assert.deepEqual(loosenedChecks(user, lowered), [{ name: "rules-check", detail: "request limit 2 → 1" }], "fewer rules are judged, so the session-start line names it");
+  const raised = applyProjectOverrides(user, { rules: { maxRequests: 4 } });
+  assert.equal(raised.rules.maxRequests, 2, "a project cannot spend more of the user's requests");
+  assert.deepEqual(raised.warnings, ["project file: rules.maxRequests 4 is ignored; a project file may lower a request limit, not raise it, so the user value 2 applies"]);
+});
+
 test("project warnings follow the user file's own warnings", () => {
   const user = applyUserOverrides(defaultConfig(), { action: { commandRules: [{ id: "x", pattern: "x", severity: "nope" }] } });
   const project = applyProjectOverrides(user, { security: { enabled: false } });

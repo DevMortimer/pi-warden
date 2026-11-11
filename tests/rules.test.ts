@@ -7,7 +7,7 @@ import { defaultConfig } from "../src/config.js";
 import type { RulesConfig } from "../src/config.js";
 import type { Judge } from "pi-typesafe";
 import { execFileSync } from "node:child_process";
-import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeRuleSet, formatRuleSetDetails, describeTarget, evaluateRules, gitIgnored, isRuleShaped, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
+import { AGGREGATE_QUESTION, buildRulesRequest, condense, describeRuleSet, formatRuleSetDetails, describeTarget, evaluateRules, gitIgnored, isRuleShaped, LOCATOR_QUESTION, matchGlob, MAX_RULES, parseRules, pathNotes, pathNoteSteer, projectPath, ruleCap, RulesGuard, rulesSteer, RuleStore, skipReason } from "../src/rules.js";
 import type { RulesVerdict, RuleSet } from "../src/rules.js";
 
 let cwd: string;
@@ -167,6 +167,37 @@ test("the rule cap drops unscoped rules past 31 in file order and names the firs
     assert.equal(request.firstDropped, set!.rules[31]!.id);
     assert.equal(request.firstDropped, "rule-32");
     assert.equal(describeRuleSet(set), "pi-warden.md (40 rules, 9 unscoped past the 31-question cap for every file)");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("rules.maxRequests: 2 asks every rule of a 40-rule file in two requests, and caps at 62 past that", async () => {
+  const store = new RuleStore();
+  const markdown = (count: number) => Array.from({ length: count }, (_, index) => `# Rule ${index + 1}\nBody ${index + 1}.`).join("\n\n");
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rules-cap-"));
+  try {
+    assert.equal(ruleCap(), MAX_RULES, "no key: one request's worth");
+    assert.equal(ruleCap(rulesConfig()), MAX_RULES, "the default is one request");
+    assert.equal(ruleCap(rulesConfig({ maxRequests: 2 })), 62);
+    await writeFile(join(dir, "pi-warden.md"), markdown(40));
+    const set = store.load(dir, rulesConfig({ maxRequests: 2 }));
+    assert.equal(set?.alwaysDropped, 0);
+    const target = describeTarget("write", { path: "src/x.ts", content: "x" }, dir)!;
+    const request = buildRulesRequest(target, set!, 32, ruleCap(rulesConfig({ maxRequests: 2 })));
+    assert.equal(Object.keys(request.questions).filter(key => key.startsWith("rule_")).length, 40);
+    assert.deepEqual(request.requests.map(part => Object.keys(part.questions).length), [32, 8], "rules past one request's worth go in a second");
+    assert.equal(request.dropped, 0);
+    assert.equal(request.firstDropped, undefined);
+    assert.equal(describeRuleSet(set, ruleCap(rulesConfig({ maxRequests: 2 }))), "pi-warden.md (40 rules)");
+    assert.equal(buildRulesRequest(target, set!).dropped, 9, "without the cap argument the one-request cap applies");
+
+    await writeFile(join(dir, "pi-warden.md"), markdown(70));
+    const many = store.load(dir, rulesConfig({ maxRequests: 2 }));
+    assert.equal(many?.alwaysDropped, 8);
+    const capped = buildRulesRequest(target, many!, 32, 62);
+    assert.equal(capped.dropped, 8);
+    assert.equal(capped.firstDropped, "rule-63");
+    assert.equal(describeRuleSet(many, 62), "pi-warden.md (70 rules, 8 unscoped past the 62-question cap for every file)");
+    assert.match(new RulesGuard().describe(dir, rulesConfig({ maxRequests: 2 })), /8 unscoped past the 62-question cap/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
