@@ -57,6 +57,18 @@ test("a config module whose rules section predates the soft tier leaves it off, 
   assert.equal(kept.config.rules.softThreshold, 0.5);
 });
 
+test("a config module whose rules section predates rules.maxRequests sends the one request it always did, and a set value is kept", () => {
+  const older = defaultConfig() as unknown as Record<string, unknown>;
+  const rules = { ...(older.rules as Record<string, unknown>) };
+  delete rules.maxRequests;
+  older.rules = rules;
+  const result = completeConfig(older as never);
+  assert.deepEqual(result.missing, []);
+  assert.equal(result.config.rules.maxRequests, 1);
+  const kept = completeConfig({ ...defaultConfig(), rules: { ...defaultConfig().rules, maxRequests: 2 } } as never);
+  assert.equal(kept.config.rules.maxRequests, 2);
+});
+
 test("a 0.8 config module without the rules section disables the rules guard and renders its default widget line", () => {
   const older = defaultConfig() as unknown as Record<string, unknown>;
   delete older.rules;

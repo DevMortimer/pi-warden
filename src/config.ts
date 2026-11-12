@@ -247,6 +247,12 @@ export interface RulesConfig {
   fallback: boolean;
   /** Characters of a fallback document sent per request; every heading and the head of each section are kept within it. */
   maxChars: number;
+  /**
+   * Requests' worth of rules one write or edit may be judged against: `MAX_RULES` (31) rules each. With `2`, the rules past
+   * 31 that apply to a file are asked in a second request for the same write instead of being dropped. A project file may
+   * lower it, never raise it above the user's value: each request is spent from the user's budget.
+   */
+  maxRequests: number;
   /** Globs of files whose content is never sent to Jev for rules (secrets, generated, vendored). */
   exclude: string[];
   /** Globs of files the rules do not apply to, for example tests or docs. */
@@ -577,7 +583,7 @@ export function defaultConfig(): WardenConfig {
     cause: { enabled: true, claimsCause: 0.7, nudge: true, windowDays: 7 },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true, shareLinkParams: [] },
-    rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, exclude: [], skip: [], sensitivePaths: {} },
+    rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], sensitivePaths: {} },
     // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
     rulesAtTurnStart: { enabled: true, threshold: 0.3 },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
@@ -1001,7 +1007,15 @@ function globList(value: unknown, fallback: string[]): string[] {
   return Array.isArray(value) ? value.filter((glob): glob is string => typeof glob === "string" && glob.trim().length > 0).map(glob => glob.trim()) : fallback;
 }
 
-function applyRules(base: RulesConfig, raw: unknown): RulesConfig {
+/** A project request limit may be lowered, never raised above the user's: the requests are spent from the user's budget. */
+function projectRequests(key: string, value: unknown, base: number, warnings: string[]): number {
+  const parsed = positiveInteger(value, base);
+  if (parsed <= base) return parsed;
+  warnings.push(`project file: ${key} ${parsed} is ignored; a project file may lower a request limit, not raise it, so the user value ${base} applies`);
+  return base;
+}
+
+function applyRules(base: RulesConfig, raw: unknown, source: "user" | "project", warnings: string[]): RulesConfig {
   if (!isObject(raw)) return base;
   const notes = isObject(raw.sensitivePaths)
     ? Object.fromEntries(Object.entries(raw.sensitivePaths).filter((entry): entry is [string, string] => entry[0].trim().length > 0 && typeof entry[1] === "string" && entry[1].trim().length > 0))
@@ -1013,6 +1027,7 @@ function applyRules(base: RulesConfig, raw: unknown): RulesConfig {
     files: globList(raw.files, base.files),
     fallback: boolean(raw.fallback, base.fallback),
     maxChars: Math.max(500, positiveInteger(raw.maxChars, base.maxChars)),
+    maxRequests: source === "project" ? projectRequests("rules.maxRequests", raw.maxRequests, base.maxRequests, warnings) : positiveInteger(raw.maxRequests, base.maxRequests),
     exclude: globList(raw.exclude, base.exclude),
     skip: globList(raw.skip, base.skip),
     sensitivePaths: notes,
@@ -1055,7 +1070,7 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
   return {
     compaction: applyCompaction(base.compaction, raw.compaction, source),
     waste: applyWaste(base.waste, raw.waste),
-    rules: applyRules(base.rules, raw.rules),
+    rules: applyRules(base.rules, raw.rules, source, warnings),
     rulesAtTurnStart: applyRulesAtTurnStart(base.rulesAtTurnStart, raw.rulesAtTurnStart, source, warnings),
     runaway: applyRunaway(base.runaway, raw.runaway),
     subagent: applySubagent(base.subagent, raw.subagent),
@@ -1384,6 +1399,7 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "rules.softThreshold": { kind: "high", check: "rules-check", label: "soft threshold" },
   "rules.fallback": { kind: "off", check: "rules-check", label: "fallback" },
   "rules.maxChars": { kind: "low", check: "rules-check", label: "rules text limit" },
+  "rules.maxRequests": { kind: "low", check: "rules-check", label: "request limit" },
   "rules.files": { kind: "fewer", check: "rules-check", label: "files" },
   "rules.exclude": { kind: "more", check: "rules-check", label: "excluded paths" },
   "rules.skip": { kind: "more", check: "rules-check", label: "skipped paths" },
