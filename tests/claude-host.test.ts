@@ -758,3 +758,205 @@ test("uninstall removes only entries installed in this scope and keeps user edit
     await rm(fx.root, { recursive: true, force: true });
   }
 });
+
+function sessionPayload(fx: Awaited<ReturnType<typeof fixture>>, event: string, fields: Record<string, unknown>): string {
+  return JSON.stringify({ session_id: "session-1", cwd: fx.project, hook_event_name: event, ...fields });
+}
+
+function bashPayload(fx: Awaited<ReturnType<typeof fixture>>, command: string, id: string, result: { stdout?: string; error?: string; background?: boolean; interrupted?: boolean }): string {
+  const tool_input = { command, ...(result.background ? { run_in_background: true } : {}) };
+  return result.error !== undefined
+    ? sessionPayload(fx, "PostToolUseFailure", { tool_name: "Bash", tool_use_id: id, tool_input, error: result.error })
+    : sessionPayload(fx, "PostToolUse", { tool_name: "Bash", tool_use_id: id, tool_input, tool_response: { stdout: result.stdout ?? "", stderr: "", interrupted: result.interrupted ?? false, isImage: false } });
+}
+
+/** One prompt and one successful Write: the session has a change and nothing has checked it yet. */
+async function changedProject(fx: Awaited<ReturnType<typeof fixture>>, env: NodeJS.ProcessEnv, prompt = "Add the value module"): Promise<void> {
+  await writeFile(join(fx.project, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  assert.equal((await cli(fx, ["hook", "claude", "UserPromptSubmit"], sessionPayload(fx, "UserPromptSubmit", { prompt }), env)).code, 0);
+  const file = join(fx.project, "value.ts");
+  await writeFile(file, "export const value = 1;\n");
+  assert.equal((await cli(fx, ["hook", "claude", "PostToolUse"], payload(fx, "Write", { file_path: file, content: "export const value = 1;\n" }, "write-1"), env)).code, 0);
+}
+
+const stop = (fx: Awaited<ReturnType<typeof fixture>>, message: string): string => sessionPayload(fx, "Stop", { stop_hook_active: false, last_assistant_message: message });
+
+/** The done-check requests sent so far; the fixture's Write also sends its rules request. */
+async function requests(env: NodeJS.ProcessEnv): Promise<Array<{ state: Record<string, unknown>; questions: Record<string, unknown> }>> {
+  const text = await readFile(env.CLAUDE_TEST_CAPTURE!, "utf8").catch(() => "");
+  return text.trim() ? text.trim().split("\n").map(line => JSON.parse(line)).filter(request => "claims_done" in request.questions) : [];
+}
+
+test("init claude adds the done-check hooks, and init on an older install adds only those", async () => {
+  const fx = await fixture();
+  try {
+    const legacy = [
+      { event: "PreToolUse", matcher: "Edit" },
+      { event: "PostToolUse", matcher: "Write|Edit" },
+      { event: "PostToolUseFailure", matcher: "Edit" },
+    ].map(entry => ({ ...entry, hook: { type: "command", command: `pi-warden hook claude ${entry.event}`, timeout: 10 } }));
+    const hooks = Object.fromEntries(legacy.map(entry => [entry.event, [{ matcher: entry.matcher, hooks: [entry.hook] }]]));
+    await writeFile(fx.settings, JSON.stringify({ hooks }));
+    const receipt = join(fx.agent, "pi-warden", "hosts", "claude", `${createHash("sha256").update(fx.settings).digest("hex")}.json`);
+    await mkdir(join(fx.agent, "pi-warden", "hosts", "claude"), { recursive: true });
+    await writeFile(receipt, JSON.stringify({ version: 1, settings: createHash("sha256").update(fx.settings).digest("hex"), owned: legacy }));
+    const result = await cli(fx, ["init", "claude", "--project"]);
+    assert.equal(result.code, 0, result.stderr);
+    const settings = JSON.parse(await readFile(fx.settings, "utf8"));
+    assert.deepEqual(settings.hooks.PostToolUse.map((group: { matcher: string }) => group.matcher), ["Write|Edit", "Bash"]);
+    assert.deepEqual(settings.hooks.PostToolUseFailure.map((group: { matcher: string }) => group.matcher), ["Edit", "Bash"]);
+    for (const event of ["UserPromptSubmit", "Stop"]) {
+      assert.deepEqual(settings.hooks[event], [{ hooks: [{ type: "command", command: `pi-warden hook claude ${event}`, timeout: 10 }] }], "Claude takes no matcher on this event");
+    }
+    assert.equal(settings.hooks.PreToolUse.length, 1);
+    assert.equal((await cli(fx, ["uninstall", "claude", "--project"])).code, 0);
+    assert.deepEqual(JSON.parse(await readFile(fx.settings, "utf8")), {}, "the old and the new entries are both owned");
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a done claim after an unchecked change tells the owner once, never the model", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await changedProject(fx, env, "Add the value module, token sk-fixture1234567890SECRET");
+    const result = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done: the value module is added."), env);
+    assert.equal(result.code, 0, result.stderr);
+    const output = JSON.parse(result.stdout || "{}");
+    assert.match(output.systemMessage ?? "", /^pi-warden: reports completion \(0\.95\) after 1 file change with no test, build, or lint run since the last change\. Run npm run test on what you changed\./);
+    assert.equal(output.decision, undefined, "the done-check never holds the stop");
+    assert.equal(output.continue, undefined);
+    assert.equal(output.hookSpecificOutput, undefined, "nothing reaches the model");
+    const sent = await requests(env);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]!.state.final_message, "Done: the value module is added.");
+    assert.match(String(sent[0]!.state.task), /^Add the value module, token /);
+    assert.doesNotMatch(String(sent[0]!.state.task), /sk-fixture1234567890SECRET/);
+    assert.deepEqual(sent[0]!.state.run, { file_changes: 1, checks_run: [] });
+    const again = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done again."), env);
+    assert.equal(again.stdout.trim(), "{}", "one judgment per prompt");
+    assert.equal((await requests(env)).length, 1);
+    await cli(fx, ["hook", "claude", "UserPromptSubmit"], sessionPayload(fx, "UserPromptSubmit", { prompt: "Rename it" }), env);
+    const next = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done: renamed."), env);
+    assert.match(JSON.parse(next.stdout || "{}").systemMessage ?? "", /reports completion/);
+    assert.equal((await requests(env)).at(-1)!.state.task, "Rename it");
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a passing Bash check after the change sends no done-check request", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await changedProject(fx, env);
+    const passed = await cli(fx, ["hook", "claude", "PostToolUse"], bashPayload(fx, "npm test", "bash-1", { stdout: "ℹ tests 3\nℹ pass 3\nℹ fail 0\n" }), env);
+    assert.equal(passed.code, 0, passed.stderr);
+    assert.equal(passed.stdout.trim(), "{}");
+    const result = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done: the value module is added."), env);
+    assert.equal(result.stdout.trim(), "{}");
+    assert.deepEqual(await requests(env), []);
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a failed, backgrounded, interrupted or earlier check does not verify the change", async () => {
+  for (const scenario of ["failed", "background", "interrupted", "before"]) {
+    const fx = await fixture();
+    try {
+      const env = await judgeProject(fx);
+      const pass = { stdout: "ℹ tests 3\nℹ pass 3\nℹ fail 0\n" };
+      if (scenario === "before") await cli(fx, ["hook", "claude", "PostToolUse"], bashPayload(fx, "npm test", "bash-before", pass), env);
+      await changedProject(fx, env);
+      if (scenario === "failed") await cli(fx, ["hook", "claude", "PostToolUseFailure"], bashPayload(fx, "npm test", "bash-1", { error: "Exit code 1\nℹ tests 3\nℹ pass 2\nℹ fail 1\n" }), env);
+      if (scenario === "background") await cli(fx, ["hook", "claude", "PostToolUse"], bashPayload(fx, "npm test", "bash-1", { stdout: "Command running in background with ID: b1", background: true }), env);
+      if (scenario === "interrupted") await cli(fx, ["hook", "claude", "PostToolUse"], bashPayload(fx, "npm test", "bash-1", { ...pass, interrupted: true }), env);
+      const result = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done: tests pass."), env);
+      assert.equal(result.code, 0, result.stderr);
+      const message = JSON.parse(result.stdout || "{}").systemMessage ?? "";
+      const sent = await requests(env);
+      assert.equal(sent.length, 1, scenario);
+      if (scenario === "failed") {
+        assert.match(message, /with 1 failed check and no passing one.*The last check that ran failed: npm test\. Fix that first\./);
+        assert.deepEqual((sent[0]!.state.run as { checks_run: string[] }).checks_run, ["npm test → failed"]);
+      } else {
+        assert.match(message, /no test, build, or lint run since the last change/);
+        assert.deepEqual((sent[0]!.state.run as { checks_run: string[] }).checks_run, []);
+      }
+      if (scenario === "before") assert.match(message, /Run npm test on what you changed/, "the last passing check is the one to run again");
+      if (scenario === "background") assert.match(message, /claims checks passed \(0\.95\) but none ran/);
+    } finally { await rm(fx.root, { recursive: true, force: true }); }
+  }
+});
+
+test("a reply that claims nothing, or a session with no change, is not reported", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await writeFile(join(fx.project, "package.json"), "{}");
+    const untouched = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done: nothing needed changing."), env);
+    assert.equal(untouched.stdout.trim(), "{}");
+    assert.deepEqual(await requests(env), [], "no change, no request");
+    await changedProject(fx, env);
+    const partial = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "I added the module; the export still needs a test."), env);
+    assert.equal(partial.stdout.trim(), "{}");
+    assert.equal((await requests(env)).length, 1);
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("the done-check needs consent and a key, says so once, and stays off when disabled", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    const noConsent = { ...env, PI_WARDEN_ENABLED: "" };
+    await changedProject(fx, env);
+    const first = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done."), noConsent);
+    assert.equal(first.code, 0, first.stderr);
+    assert.match(JSON.parse(first.stdout || "{}").systemMessage ?? "", /done-check is off; set PI_WARDEN_ENABLED=1/);
+    await cli(fx, ["hook", "claude", "UserPromptSubmit"], sessionPayload(fx, "UserPromptSubmit", { prompt: "Again" }), noConsent);
+    assert.equal((await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done."), noConsent)).stdout.trim(), "{}", "the owner hears it once per session");
+    assert.deepEqual(await requests(env), []);
+    for (const done of [{ enabled: false }, { nudge: false }]) {
+      const off = await fixture();
+      try {
+        const offEnv = await judgeProject(off, { done });
+        await changedProject(off, offEnv);
+        assert.equal((await cli(off, ["hook", "claude", "Stop"], stop(off, "Done."), offEnv)).stdout.trim(), "{}");
+        assert.deepEqual(await requests(offEnv), []);
+        const state = join(off.agent, "pi-warden", "state", "claude");
+        const sessions = await readdir(state);
+        assert.ok(!(await readdir(join(state, sessions[0]!))).some(name => name.startsWith("evidence-") || name === "prompt.json"), "nothing is recorded for a check that is off");
+      } finally { await rm(off.root, { recursive: true, force: true }); }
+    }
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a replayed tool result is one piece of evidence and a judge failure fails open", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await changedProject(fx, env);
+    const file = join(fx.project, "value.ts");
+    await cli(fx, ["hook", "claude", "PostToolUse"], payload(fx, "Write", { file_path: file, content: "export const value = 1;\n" }, "write-1"), env);
+    const failed = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done."), { ...env, CLAUDE_TEST_HTTP_FAIL: "1" });
+    assert.equal(failed.code, 0);
+    assert.match(JSON.parse(failed.stdout || "{}").systemMessage ?? "", /done-check judgment failed; the reply stands unchecked/);
+    const sent = await requests(env);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0]!.state.run, { file_changes: 1, checks_run: [] });
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a session with full evidence skips only its done-check and keeps rules feedback", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    const state = join(fx.agent, "pi-warden", "state", "claude", createHash("sha256").update("session-1").digest("hex"));
+    await mkdir(state, { recursive: true });
+    await Promise.all(Array.from({ length: 10_000 }, (_, index) => writeFile(join(state, `evidence-${index}.json`), '{"version":1,"outcome":"mutation"}')));
+    const file = join(fx.project, "a.ts");
+    await writeFile(file, "BAD");
+    const write = await cli(fx, ["hook", "claude", "PostToolUse"], payload(fx, "Write", { file_path: file, content: "BAD" }), env);
+    assert.match(JSON.parse(write.stdout || "{}").hookSpecificOutput?.additionalContext ?? "", /No BAD marker/);
+    const result = await cli(fx, ["hook", "claude", "Stop"], stop(fx, "Done."), env);
+    assert.equal(result.code, 0);
+    assert.match(result.stderr, /skipped/);
+    assert.deepEqual(await requests(env), []);
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});

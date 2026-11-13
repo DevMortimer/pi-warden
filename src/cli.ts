@@ -31,15 +31,15 @@ async function main(): Promise<void> {
   const [command, agent, event] = process.argv.slice(2);
   try {
     if (command === "--help" || command === "-h") {
-      process.stdout.write("Usage: pi-warden hook claude <event> | init claude [--project] | uninstall claude [--project]\nClaude Write/Edit rules only.\n");
+      process.stdout.write("Usage: pi-warden hook claude <event> | init claude [--project] | uninstall claude [--project]\nClaude Write/Edit rules and the done-check.\n");
       return;
     }
     if (command === "hook") {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
       try {
-        if (agent !== "claude" || !event || !["PreToolUse", "PostToolUse", "PostToolUseFailure"].includes(event) || process.argv.length !== 5) {
-          process.stderr.write("pi-warden: unsupported hook; only Claude Write/Edit rules are implemented.\n");
+        if (agent !== "claude" || !event || !["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop"].includes(event) || process.argv.length !== 5) {
+          process.stderr.write("pi-warden: unsupported hook; only Claude Write/Edit rules and the done-check are implemented.\n");
           return;
         }
         const input = await readInput(controller.signal);
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
     }
     throw new Error("Usage: pi-warden hook claude <event> | init claude [--project] | uninstall claude [--project]");
   } catch (error) {
-    process.stderr.write(command === "hook" ? "pi-warden: rules check skipped; invalid input, unavailable state or judge, or hook deadline.\n"
+    process.stderr.write(command === "hook" ? "pi-warden: check skipped; invalid input, unavailable state or judge, or hook deadline.\n"
       : error instanceof HostFileError ? `pi-warden: ${error.message}\n`
       : "pi-warden: settings could not be changed; check the JSON, receipt and file permissions.\n");
     process.exitCode = command === "hook" ? 0 : 1;

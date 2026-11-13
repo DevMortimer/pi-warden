@@ -8,6 +8,18 @@ import { object, readText } from "./io.js";
 
 export const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 
+/** A done-check fact: a project file change, or a check run with its redacted, clipped command. */
+export interface EvidenceRecord { outcome: "mutation" | "check-pass" | "check-fail"; call?: string }
+/** The latest prompt, redacted; its id scopes the done-check to one judgment per prompt. */
+export interface PromptRecord { id: string; task: string }
+
+/** Bounds the done-check's read at Stop well inside the hook deadline; a fuller session is not judged. */
+const EVIDENCE_LIMIT = 10_000;
+const CALL_LIMIT = 256;
+/** A clipped call stays under this even when JSON escapes every character. */
+const RECORD_BYTES = 4096;
+export const TASK_LIMIT = 2000;
+
 /** Empty exclusive markers are reservations, including when their creating process crashes. */
 function marker(path: string): boolean {
   try {
@@ -53,7 +65,7 @@ export class ClaudeState {
     if (!object(raw) || raw.version !== 1 || raw.maxRequests !== this.maxRequests) throw new Error("Claude session budget is incomplete or changed.");
   }
 
-  once(kind: "processed" | "sensitive" | "notice", identity: string): boolean {
+  once(kind: "processed" | "sensitive" | "notice" | "evidence" | "done", identity: string): boolean {
     this.signal.throwIfAborted();
     return marker(join(this.directory, `${kind}-${digest(identity)}.claim`));
   }
@@ -64,6 +76,61 @@ export class ClaudeState {
       if (marker(join(this.directory, `request-${index}.claim`))) return;
     }
     throw new TypeSafeIntegrationError("budget", "Claude session request budget reached; no request was submitted.");
+  }
+
+  /**
+   * Exclusive numbered files keep the order calls finished in, without a shared file that is read and rewritten. A full
+   * session records nothing more and its Stop skips the done-check; the rules judgment of the same call still runs.
+   */
+  recordEvidence(identity: string, record: EvidenceRecord): void {
+    if (!this.once("evidence", identity)) return;
+    const text = JSON.stringify({ version: 1, ...record });
+    for (let index = 0; index < EVIDENCE_LIMIT; index++) {
+      this.signal.throwIfAborted();
+      let fd: number;
+      try { fd = openSync(join(this.directory, `evidence-${index}.json`), "wx", 0o600); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+        throw error;
+      }
+      try { writeFileSync(fd, text); }
+      finally { closeSync(fd); }
+      return;
+    }
+  }
+
+  /** Records in the order they were claimed. A record a crashed hook left empty or invalid is not evidence. */
+  async evidence(): Promise<EvidenceRecord[]> {
+    const records: EvidenceRecord[] = [];
+    for (let index = 0; ; index++) {
+      if (index >= EVIDENCE_LIMIT) throw new Error("Claude session evidence is full; done-check skipped.");
+      const text = await readText(join(this.directory, `evidence-${index}.json`), this.signal, RECORD_BYTES);
+      if (text === undefined) return records;
+      let raw: unknown;
+      try { raw = JSON.parse(text); }
+      catch { continue; }
+      if (!object(raw) || raw.version !== 1 || !["mutation", "check-pass", "check-fail"].includes(raw.outcome as string)) continue;
+      if (raw.call !== undefined && (typeof raw.call !== "string" || raw.call.length > CALL_LIMIT)) continue;
+      records.push({ outcome: raw.outcome as EvidenceRecord["outcome"], ...(typeof raw.call === "string" ? { call: raw.call } : {}) });
+    }
+  }
+
+  /** Replaced whole by rename: one prompt at a time per session, so the newest write is the prompt in force. */
+  async recordPrompt(task: string): Promise<void> {
+    const path = join(this.directory, "prompt.json");
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, JSON.stringify({ version: 1, id: randomUUID(), task }), { mode: 0o600, flag: "wx", signal: this.signal });
+      await rename(temporary, path);
+    } finally { await rm(temporary, { force: true }); }
+  }
+
+  async prompt(): Promise<PromptRecord | undefined> {
+    const text = await readText(join(this.directory, "prompt.json"), this.signal, 16 * 1024);
+    if (text === undefined) return undefined;
+    const raw: unknown = JSON.parse(text);
+    if (!object(raw) || raw.version !== 1 || typeof raw.id !== "string" || !/^[a-f0-9-]{36}$/.test(raw.id) || typeof raw.task !== "string" || raw.task.length > TASK_LIMIT) throw new Error("Invalid Claude prompt record.");
+    return { id: raw.id, task: raw.task };
   }
 
   async capture(identity: string, value: unknown): Promise<void> {

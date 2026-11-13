@@ -32,16 +32,16 @@ pi install npm:pi-warden
 
 Then `/warden enable` (paste a [TypeSafe](https://console.typesafe.ai) key) and `/warden init` (writes a starter `pi-warden.md`). That's it. No key? The offline guards still run.
 
-### Claude Code: per-edit rules
+### Claude Code: per-edit rules and the done-check
 
 ```bash
 npm install --global pi-warden
 pi-warden init claude
 ```
 
-Launch Claude with `PI_WARDEN_ENABLED=1` and the active backend's key variable (`TYPESAFE_API_KEY` for the default backend). Successful `Write` and `Edit` calls receive advisory feedback from your `pi-warden.md` and the existing rules configuration. Claude support covers per-edit rules; the other guards below run inside Pi.
+Launch Claude with `PI_WARDEN_ENABLED=1` and the active backend's key variable (`TYPESAFE_API_KEY` for the default backend). Successful `Write` and `Edit` calls receive advisory feedback from your `pi-warden.md` and the existing rules configuration. When a reply presents changed code as done and no test, build, or lint run passed since the last change, the done-check tells you under the reply; Claude is not told. Claude support covers per-edit rules and the done-check; the other guards below run inside Pi.
 
-Use `init claude --project` for this project's `.claude/settings.json`, and `uninstall claude [--project]` to remove the entries installed in that scope. Shared settings, keys, history and rules files stay in place. [Configuration, limits and uninstall behavior →](docs/claude-code.md)
+Use `init claude --project` for this project's `.claude/settings.json`, and `uninstall claude [--project]` to remove the entries installed in that scope. After upgrading from a version without the done-check, run `init claude` again to add its hooks. Shared settings, keys, history and rules files stay in place. [Configuration, limits and uninstall behavior →](docs/claude-code.md)
 
 ## It reports. It doesn't nag.
 

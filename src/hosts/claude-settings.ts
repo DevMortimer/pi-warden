@@ -5,13 +5,21 @@ import { join, resolve } from "node:path";
 import { defaultHostDirs } from "../host-dirs.js";
 import { HostFileError, object, readText, replaceText } from "./io.js";
 
-export const CLAUDE_HOOKS = [
+/**
+ * One entry per event and matcher; an entry added later sits beside the earlier ones, so `init` on an older install adds
+ * only what is missing. `UserPromptSubmit` and `Stop` take no matcher in Claude.
+ */
+export const CLAUDE_HOOKS: ReadonlyArray<{ event: HookEvent; matcher?: string }> = [
   { event: "PreToolUse", matcher: "Edit" },
   { event: "PostToolUse", matcher: "Write|Edit" },
   { event: "PostToolUseFailure", matcher: "Edit" },
-] as const;
-type HookEvent = typeof CLAUDE_HOOKS[number]["event"];
-interface OwnedHook { event: HookEvent; matcher: string; hook: Record<string, unknown> }
+  { event: "PostToolUse", matcher: "Bash" },
+  { event: "PostToolUseFailure", matcher: "Bash" },
+  { event: "UserPromptSubmit" },
+  { event: "Stop" },
+];
+type HookEvent = "PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "UserPromptSubmit" | "Stop";
+interface OwnedHook { event: HookEvent; matcher?: string; hook: Record<string, unknown> }
 interface Receipt {
   version: 1;
   settings: string;
@@ -36,8 +44,7 @@ function matches(value: unknown, expected: Record<string, unknown>): boolean {
 
 function ownedHook(value: unknown): value is OwnedHook {
   if (!object(value)) return false;
-  const definition = CLAUDE_HOOKS.find(item => item.event === value.event);
-  return definition !== undefined && value.matcher === definition.matcher && matches(value.hook, handler(definition.event));
+  return CLAUDE_HOOKS.some(definition => definition.event === value.event && value.matcher === definition.matcher && matches(value.hook, handler(definition.event)));
 }
 
 function parseJson(text: string, path: string, kind: "settings" | "installation receipt"): unknown {
@@ -90,9 +97,9 @@ export async function installClaude(path: string): Promise<void> {
   for (const definition of CLAUDE_HOOKS) {
     const groups = groupsFor(settings.hooks, definition.event, path);
     const hook = handler(definition.event);
-    // A pre-existing command belongs to its author, even when it looks exactly like ours.
-    if (groups.some(group => group.hooks.some(item => object(item) && item.command === hook.command))) continue;
-    groups.push({ matcher: definition.matcher, hooks: [hook] });
+    // A pre-existing command under the same matcher belongs to its author, even when it looks exactly like ours.
+    if (groups.some(group => group.matcher === definition.matcher && group.hooks.some(item => object(item) && item.command === hook.command))) continue;
+    groups.push({ ...(definition.matcher !== undefined ? { matcher: definition.matcher } : {}), hooks: [hook] });
     settings.hooks[definition.event] = groups;
     added.push({ ...definition, hook });
   }
