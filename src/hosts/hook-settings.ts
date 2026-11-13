@@ -25,6 +25,12 @@ export const CLAUDE_HOST: HookHost = {
   ],
 };
 
+/** Codex reports every file edit as `apply_patch`, and runs `PostToolUse` only after the patch applied. */
+export const CODEX_HOST: HookHost = {
+  name: "codex", title: "Codex", file: "hooks", groups: "hook groups",
+  hooks: [{ event: "PostToolUse", matcher: "apply_patch" }],
+};
+
 interface OwnedHook { event: string; matcher: string; hook: Record<string, unknown> }
 interface Receipt {
   version: 1;
@@ -39,9 +45,11 @@ const fingerprint = (text: string | undefined): string => hash(JSON.stringify([t
 const json = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
 const handler = (host: HookHost, event: string): Record<string, unknown> => ({ type: "command", command: `pi-warden hook ${host.name} ${event}`, timeout: 10 });
 
-/** Claude: `~/.claude/settings.json`. `--project` uses the project's folder. */
-export function hookSettingsPath(_host: HookHost, cwd: string, project: boolean): string {
-  return join(project ? cwd : homedir(), ".claude", "settings.json");
+/** Claude: `~/.claude/settings.json`. Codex: `hooks.json` in `$CODEX_HOME` (default `~/.codex`). `--project` uses the project's folder. */
+export function hookSettingsPath(host: HookHost, cwd: string, project: boolean): string {
+  if (host.name === "claude") return join(project ? cwd : homedir(), ".claude", "settings.json");
+  const codexHome = process.env.CODEX_HOME?.trim();
+  return join(project ? join(cwd, ".codex") : codexHome ? resolve(codexHome) : join(homedir(), ".codex"), "hooks.json");
 }
 
 function matches(value: unknown, expected: Record<string, unknown>): boolean {

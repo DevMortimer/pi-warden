@@ -43,6 +43,15 @@ Launch Claude with `PI_WARDEN_ENABLED=1` and the active backend's key variable (
 
 Use `init claude --project` for this project's `.claude/settings.json`, and `uninstall claude [--project]` to remove the entries installed in that scope. Shared settings, keys, history and rules files stay in place. [Configuration, limits and uninstall behavior →](docs/claude-code.md)
 
+### Codex: per-edit rules
+
+```bash
+npm install --global pi-warden
+pi-warden init codex
+```
+
+Review the new hook once with `/hooks` in Codex, then launch Codex with `PI_WARDEN_ENABLED=1` and the same key variable. Each file an `apply_patch` call adds or updates is judged against your `pi-warden.md`, and findings come back to the model as advisory feedback. Use `init codex --project` for this project's `.codex/hooks.json`, and `uninstall codex [--project]` to remove the entry. [Patch handling, limits and uninstall behavior →](docs/codex.md)
+
 ## It reports. It doesn't nag.
 
 Most guardrails stop and ask you. pi-warden tells **the agent** what it got wrong, and the agent corrects itself. You are pulled in only when something can't be undone. In a replay of 18,075 recorded calls (2026-09-21), **0.27% were held at the old 0.7 threshold and 0.1% at 0.9**, the default since 0.75.0 ([report](eval/reports/2026-09-21-calibration-0.33.3/report.md)).

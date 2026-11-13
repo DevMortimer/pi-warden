@@ -12,7 +12,7 @@ import type { RulesTarget, RuleSet } from "../rules.js";
 import type { HostName, HostState } from "./state.js";
 import { object, readText } from "./io.js";
 
-/** The `PostToolUse` answer of a host hook: context for the model after the call, never a hold. */
+/** Claude Code and Codex read the same `PostToolUse` shape: context for the model after the call, never a hold. */
 export interface HookOutput { hookSpecificOutput?: { hookEventName: "PostToolUse"; additionalContext: string } }
 
 export function feedback(notes: string[]): HookOutput {
@@ -21,6 +21,7 @@ export function feedback(notes: string[]): HookOutput {
 
 const HOOKS: Record<HostName, () => Promise<(event: string, input: unknown, signal: AbortSignal) => Promise<HookOutput>>> = {
   claude: async () => (await import("./claude.js")).claudeHook,
+  codex: async () => (await import("./codex.js")).codexHook,
 };
 
 /** A child process makes the deadline enforceable during native synchronous SDK reads as well. */
@@ -162,7 +163,7 @@ if (process.env.PI_WARDEN_HOOK_CHILD === "1" && process.send) {
   process.on("disconnect", () => controller.abort());
   process.on("message", (message: unknown) => {
     if (message === "abort") { controller.abort(); return; }
-    if (started || !object(message) || typeof message.event !== "string" || message.host !== "claude") return;
+    if (started || !object(message) || typeof message.event !== "string" || (message.host !== "claude" && message.host !== "codex")) return;
     started = true;
     void HOOKS[message.host]().then(hook => hook(message.event as string, message.input, controller.signal)).then(
       output => send({ ok: true, output }),

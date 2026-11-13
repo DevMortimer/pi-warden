@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- Codex per-edit rules hooks (issue #127). `pi-warden init codex [--project]` adds one `PostToolUse` hook for `apply_patch` to `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`, or the project's `.codex/hooks.json`), and `uninstall codex [--project]` removes only that entry. The hook parses the patch as Codex does and judges each added file as a write and each updated file as an edit, one entry per `@@` chunk, with the patch's own context lines; a moved file is judged at its new path. Up to four files of one patch are judged in parallel and the rest are named. Findings return as `additionalContext`, never as a block. Consent, key, rule sources, the request budget and replay protection work as for the Claude Code hooks. ([Codex rules hooks](docs/codex.md))
 
 ## 2.8.0
 

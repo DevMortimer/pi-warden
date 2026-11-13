@@ -19,7 +19,7 @@ function marker(path: string): boolean {
   }
 }
 
-export type HostName = "claude";
+export type HostName = "claude" | "codex";
 
 /** One directory per host session; every record in it is created exclusively, so parallel hook processes never rewrite a shared file. */
 export class HostState {
