@@ -43,18 +43,18 @@ async function main(): Promise<void> {
           return;
         }
         const input = await readInput(controller.signal);
-        const { runClaudeHook } = await import("./hosts/claude.js");
-        process.stdout.write(`${JSON.stringify(await runClaudeHook(event, input, controller.signal))}\n`);
+        const { runHostHook } = await import("./hosts/headless.js");
+        process.stdout.write(`${JSON.stringify(await runHostHook("claude", event, input, controller.signal))}\n`);
       }
       finally { clearTimeout(timer); }
       return;
     }
     if (agent !== "claude") throw new Error("Expected the claude host.");
     if ((command === "init" || command === "uninstall") && process.argv.slice(4).every(argument => argument === "--project") && process.argv.length <= 5) {
-      const { claudeSettingsPath, installClaude, uninstallClaude } = await import("./hosts/claude-settings.js");
-      const path = claudeSettingsPath(process.cwd(), process.argv.includes("--project"));
-      if (command === "init") await installClaude(path);
-      else if (await uninstallClaude(path)) process.stderr.write("pi-warden: user-modified or duplicated hook entries were retained.\n");
+      const { CLAUDE_HOST, hookSettingsPath, installHooks, uninstallHooks } = await import("./hosts/hook-settings.js");
+      const path = hookSettingsPath(CLAUDE_HOST, process.cwd(), process.argv.includes("--project"));
+      if (command === "init") await installHooks(CLAUDE_HOST, path);
+      else if (await uninstallHooks(CLAUDE_HOST, path)) process.stderr.write("pi-warden: user-modified or duplicated hook entries were retained.\n");
       return;
     }
     throw new Error("Usage: pi-warden hook claude <event> | init claude [--project] | uninstall claude [--project]");

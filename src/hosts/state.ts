@@ -15,14 +15,17 @@ function marker(path: string): boolean {
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-    throw new TypeSafeIntegrationError("budget", "Cannot persist a Claude session reservation; no request was submitted.");
+    throw new TypeSafeIntegrationError("budget", "Cannot persist a session reservation; no request was submitted.");
   }
 }
 
-export class ClaudeState {
+export type HostName = "claude";
+
+/** One directory per host session; every record in it is created exclusively, so parallel hook processes never rewrite a shared file. */
+export class HostState {
   readonly directory: string;
-  constructor(session: string, private readonly maxRequests: number, private readonly signal: AbortSignal) {
-    this.directory = join(defaultHostDirs().agentDir, "pi-warden", "state", "claude", digest(session));
+  constructor(host: HostName, session: string, private readonly maxRequests: number, private readonly signal: AbortSignal) {
+    this.directory = join(defaultHostDirs().agentDir, "pi-warden", "state", host, digest(session));
   }
 
   async prepare(): Promise<void> {
@@ -50,7 +53,7 @@ export class ClaudeState {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     const raw: unknown = JSON.parse((await readText(path, this.signal, 256)) ?? "null");
-    if (!object(raw) || raw.version !== 1 || raw.maxRequests !== this.maxRequests) throw new Error("Claude session budget is incomplete or changed.");
+    if (!object(raw) || raw.version !== 1 || raw.maxRequests !== this.maxRequests) throw new Error("Session budget is incomplete or changed.");
   }
 
   once(kind: "processed" | "sensitive" | "notice", identity: string): boolean {
@@ -63,13 +66,13 @@ export class ClaudeState {
       this.signal.throwIfAborted();
       if (marker(join(this.directory, `request-${index}.claim`))) return;
     }
-    throw new TypeSafeIntegrationError("budget", "Claude session request budget reached; no request was submitted.");
+    throw new TypeSafeIntegrationError("budget", "Session request budget reached; no request was submitted.");
   }
 
   async capture(identity: string, value: unknown): Promise<void> {
     const path = join(this.directory, "targets", `${digest(identity)}.json`);
     const text = JSON.stringify(value);
-    if (Buffer.byteLength(text) > 256 * 1024) throw new Error("Claude Edit capture exceeds its byte limit.");
+    if (Buffer.byteLength(text) > 256 * 1024) throw new Error("Edit capture exceeds its byte limit.");
     try {
       await writeFile(path, text, { mode: 0o600, flag: "wx", signal: this.signal });
     } catch (error) {
