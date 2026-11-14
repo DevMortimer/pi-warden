@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 2.9.0
+
 ### Added
 
 - The done-check runs in Claude Code (issue #127). `pi-warden init claude` now also installs `PostToolUse` and `PostToolUseFailure` hooks for `Bash`, a `UserPromptSubmit` hook and a `Stop` hook. Successful `Write` and `Edit` calls inside the project count as changes, and Bash runs count as passed or failed checks by Pi's own classifier; a backgrounded or interrupted run is not a check. At `Stop`, a reply that presents changed code as done with no check passed since the last change is judged once per prompt, and an unverified claim is shown to the owner as a `systemMessage`. Claude is not told and the stop is never blocked, as in Pi. `done.enabled`, `done.claimsDone` and `done.nudge` apply; `done.uiProof` is not checked on this host. The state is one exclusively created record per change or check under the session directory, and the latest prompt, both redacted. An installation from an earlier version gets the new entries from another `init claude`; installer entries are now matched per event and matcher, so the older entries stay owned and `uninstall claude` removes both.

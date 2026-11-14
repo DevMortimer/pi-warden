@@ -1,6 +1,6 @@
 # Claude Code hooks
 
-Install the CLI once with `npm install --global pi-warden`, then run `pi-warden init claude`. It adds command hooks to `~/.claude/settings.json`: `PreToolUse` for `Edit`, `PostToolUse` and `PostToolUseFailure` for `Write`/`Edit` and for `Bash`, `UserPromptSubmit`, and `Stop`. `pi-warden init claude --project` uses the current project's `.claude/settings.json` instead. Project installation selects the hook settings scope; Claude's own workspace trust and managed settings still govern whether hooks run.
+Install the CLI once with `npm install --global pi-warden`, then run `pi-warden init claude`. It adds command hooks to `~/.claude/settings.json`: `PreToolUse` for `Edit`, `PostToolUse` for `Write`/`Edit` and for `Bash`, `PostToolUseFailure` for `Edit` and for `Bash`, `UserPromptSubmit`, and `Stop`. `pi-warden init claude --project` uses the current project's `.claude/settings.json` instead. Project installation selects the hook settings scope; Claude's own workspace trust and managed settings still govern whether hooks run.
 
 On POSIX, the selected `settings.json` must be a regular file, not a symbolic link into a dotfiles repository. An existing link, including a dangling one, is refused on the initial settings read, before settings or receipt writes. The error reports its path and the reason, leaving the link, its target and any installation receipt unchanged. Settings and receipt errors identify the affected file without printing its contents.
 
