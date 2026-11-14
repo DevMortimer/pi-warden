@@ -1,67 +1,23 @@
-import { execFile, fork } from "node:child_process";
 import { realpath } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { authStatePath, createTypeSafe, openUsageLedger, resolveBackend, usagePath } from "pi-typesafe";
-import type { Judge } from "pi-typesafe";
-import { judgeOptions } from "../backend.js";
-import { loadConfig, userConfigPath } from "../config.js";
-import type { RulesConfig, WardenConfig } from "../config.js";
+import { isAbsolute } from "node:path";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, needsDoneCheck, projectCheckCommand, recordOutcome } from "../done.js";
 import { redact } from "../redact.js";
-import { describeTarget, EDIT_CONTEXT_LINES, EDIT_TEXT_LIMIT, evaluateRulesTarget, FALLBACK_FILES, MAX_EDITS, pathNotes, pathNoteSteer, projectPath, RuleStore, RULES_FILE, rulesCapNotice, rulesSteer, skipReason } from "../rules.js";
-import type { EditView, RulesTarget, RuleSet } from "../rules.js";
-import { ClaudeState, digest, TASK_LIMIT } from "./claude-state.js";
-import type { EvidenceRecord } from "./claude-state.js";
+import { describeTarget, EDIT_CONTEXT_LINES, EDIT_TEXT_LIMIT, MAX_EDITS, projectPath } from "../rules.js";
+import type { EditView, RulesTarget } from "../rules.js";
+import { feedback, globalConfig, headlessJudge, RulesRun } from "./headless.js";
+import type { HookOutput } from "./headless.js";
+import { digest, HostState, TASK_LIMIT } from "./state.js";
+import type { EvidenceRecord } from "./state.js";
 import { FILE_BYTES, object, readText } from "./io.js";
 
-export interface ClaudeOutput { hookSpecificOutput?: { hookEventName: "PostToolUse"; additionalContext: string }; systemMessage?: string }
+/** Claude's hook result: context for the model after a call, or the owner-facing message the model never sees. */
+export interface ClaudeOutput extends HookOutput { systemMessage?: string }
 
 const CLAUDE_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop"] as const;
-
-function feedback(notes: string[]): ClaudeOutput {
-  return notes.length ? { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: redact(notes.join("\n")).slice(0, 9000) } } : {};
-}
 
 /** Pi's done-check tells the owner, never the model, so the notice is Claude's user-facing message, not a Stop block. */
 function ownerNotice(text: string | undefined): ClaudeOutput {
   return text ? { systemMessage: redact(text).slice(0, 9000) } : {};
-}
-
-/** A child process makes the deadline enforceable during native synchronous SDK reads as well. */
-export async function runClaudeHook(event: string, input: unknown, signal: AbortSignal): Promise<ClaudeOutput> {
-  signal.throwIfAborted();
-  return new Promise((done, reject) => {
-    const engine = fork(fileURLToPath(import.meta.url), [], {
-      env: { ...process.env, PI_WARDEN_CLAUDE_CHILD: "1" },
-      stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "advanced",
-    });
-    let output: ClaudeOutput | undefined;
-    let failed = false;
-    let terminate: ReturnType<typeof setTimeout> | undefined;
-    const abort = (): void => {
-      if (engine.connected) engine.send("abort", () => undefined);
-      // Git is awaited before entering the SDK. Allow its async cancellation and close callback first.
-      terminate = setTimeout(() => {
-        // This native ChildProcess handle still owns an unreaped leader; no numeric group is signalled.
-        if (engine.pid !== undefined && engine.exitCode === null && engine.signalCode === null) engine.kill("SIGKILL");
-      }, 100);
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    engine.on("message", (message: unknown) => {
-      if (object(message) && message.ok === true && object(message.output)) output = message.output as ClaudeOutput;
-      else failed = true;
-    });
-    engine.on("error", () => { failed = true; });
-    engine.once("close", code => {
-      clearTimeout(terminate);
-      signal.removeEventListener("abort", abort);
-      if (signal.aborted || failed || code !== 0 || output === undefined) reject(new Error("Claude hook did not finish within its limits."));
-      else done(output);
-    });
-    engine.send({ event, input }, error => { if (error) failed = true; });
-    if (signal.aborted) abort();
-  });
 }
 
 const sampleEdit = (text: string): string => redact(text).slice(0, EDIT_TEXT_LIMIT);
@@ -73,7 +29,7 @@ function around(text: string, at: number, length: number): string {
   return sampleEdit(lines.slice(Math.max(0, first - EDIT_CONTEXT_LINES), last + EDIT_CONTEXT_LINES + 1).join("\n").trimEnd());
 }
 
-async function captureEdit(input: Record<string, unknown>, cwd: string, identity: string, inputHash: string, state: ClaudeState, signal: AbortSignal): Promise<void> {
+async function captureEdit(input: Record<string, unknown>, cwd: string, identity: string, inputHash: string, state: HostState, signal: AbortSignal): Promise<void> {
   if (typeof input.old_string !== "string" || !input.old_string || typeof input.new_string !== "string" || (input.replace_all !== undefined && typeof input.replace_all !== "boolean")) throw new Error("Invalid Claude Edit input.");
   const oldText = input.old_string;
   const newText = input.new_string;
@@ -95,7 +51,7 @@ async function captureEdit(input: Record<string, unknown>, cwd: string, identity
   await state.capture(identity, { version: 1, expires: Date.now() + 600_000, inputHash, afterHash: digest(after), target });
 }
 
-async function consumeEdit(input: Record<string, unknown>, cwd: string, identity: string, inputHash: string, state: ClaudeState, signal: AbortSignal): Promise<RulesTarget> {
+async function consumeEdit(input: Record<string, unknown>, cwd: string, identity: string, inputHash: string, state: HostState, signal: AbortSignal): Promise<RulesTarget> {
   const record = await state.consume(identity);
   const path = projectPath(input.file_path as string, cwd);
   if (!object(record) || record.version !== 1 || typeof record.expires !== "number" || !Number.isSafeInteger(record.expires) || record.expires < Date.now() || record.inputHash !== inputHash || !object(record.target)
@@ -111,59 +67,6 @@ async function consumeEdit(input: Record<string, unknown>, cwd: string, identity
   const more = record.target.moreEdits;
   if (more !== undefined && (typeof more !== "number" || !Number.isSafeInteger(more) || more < 1 || more > FILE_BYTES)) throw new Error("Invalid Claude Edit count.");
   return { tool: "edit", path: path!, edits, ...(typeof more === "number" ? { moreEdits: more } : {}) };
-}
-
-async function loadRules(cwd: string, config: RulesConfig, signal: AbortSignal): Promise<RuleSet | undefined> {
-  const sources = new Map<string, string>();
-  const read = async (file: string): Promise<string | undefined> => {
-    const path = resolve(cwd, file);
-    const text = await readText(path, signal);
-    if (text !== undefined) sources.set(path, text);
-    return text;
-  };
-  if (await read(RULES_FILE) === undefined) {
-    for (const file of config.files) await read(file);
-    if (!sources.size && config.fallback) {
-      for (const file of FALLBACK_FILES) if ((await read(file))?.trim()) break;
-    }
-  }
-  return new RuleStore(path => sources.get(path)).load(cwd, config);
-}
-
-async function ignored(path: string, cwd: string, signal: AbortSignal): Promise<boolean> {
-  return new Promise((done, reject) => {
-    execFile("git", ["check-ignore", "-q", "--", path], {
-      cwd, signal, timeout: 1500, killSignal: "SIGKILL", maxBuffer: 4096, windowsHide: true,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-    }, error => {
-      if (signal.aborted || error?.killed) reject(new Error("Git ignore check exceeded the hook deadline."));
-      else done(!error);
-    });
-  });
-}
-
-async function globalConfig(signal: AbortSignal): Promise<WardenConfig> {
-  const user = await readText(userConfigPath(), signal);
-  const userRaw: unknown = user === undefined ? {} : JSON.parse(user);
-  if (!object(userRaw)) throw new Error("Invalid global Warden configuration.");
-  return loadConfig({ userRaw: { value: userRaw } });
-}
-
-type Unavailable = { reason: "no-consent" | "bad-backend" | "no-key"; problem: string };
-
-/** Headless consent and the active backend's key come from the environment only; each request reserves a session slot first. */
-async function headlessJudge(config: WardenConfig, state: ClaudeState, signal: AbortSignal): Promise<Judge | Unavailable> {
-  if (process.env.PI_WARDEN_ENABLED !== "1") return { reason: "no-consent", problem: "set PI_WARDEN_ENABLED=1 for this headless host" };
-  const backend = config.typesafeBackend;
-  if (backend === undefined) return { reason: "bad-backend", problem: "fix typesafeBackend in the global user config" };
-  const key = process.env[resolveBackend(backend).keyEnv]?.trim();
-  if (!key) return { reason: "no-key", problem: "set the active backend key in the environment" };
-  await readText(authStatePath(), signal);
-  await readText(usagePath(), signal);
-  const observed = openUsageLedger();
-  return createTypeSafe({ ...judgeOptions({ ...config, typesafeBackend: backend }), apiKey: key,
-    ledger: { ...observed, recordStart: () => { state.reserveRequest(); observed.recordStart(); } },
-  });
 }
 
 function sessionOf(raw: Record<string, unknown>): { cwd: string; session: string } {
@@ -198,7 +101,7 @@ async function promptHook(raw: Record<string, unknown>, signal: AbortSignal): Pr
   if (typeof raw.prompt !== "string") throw new Error("Invalid Claude prompt.");
   const config = await globalConfig(signal);
   if (!config.enabled || !config.done.enabled || !config.done.nudge) return {};
-  const state = new ClaudeState(session, config.maxRequests, signal);
+  const state = new HostState("claude", session, config.maxRequests, signal);
   await state.prepare();
   await state.recordPrompt(redact(raw.prompt.trim()).slice(0, TASK_LIMIT));
   return {};
@@ -212,7 +115,7 @@ async function stopHook(raw: Record<string, unknown>, signal: AbortSignal): Prom
   const config = await globalConfig(signal);
   // An unverified claim with `done.nudge` off shows nothing here, and this host has no trace to record it in.
   if (!config.enabled || !config.done.enabled || !config.done.nudge) return {};
-  const state = new ClaudeState(session, config.maxRequests, signal);
+  const state = new HostState("claude", session, config.maxRequests, signal);
   await state.prepare();
   const evidence = emptyEvidence();
   let lastCheck: string | undefined;
@@ -247,7 +150,7 @@ export async function claudeHook(event: string, raw: unknown, signal: AbortSigna
   const rules = config.enabled && config.rules.enabled;
   const done = config.enabled && config.done.enabled && config.done.nudge;
   if (!rules && !done) return {};
-  const state = new ClaudeState(session, config.maxRequests, signal);
+  const state = new HostState("claude", session, config.maxRequests, signal);
   await state.prepare();
   const identity = JSON.stringify([raw.agent_id ?? null, toolId, raw.tool_name]);
   if (raw.tool_name === "Bash") {
@@ -273,39 +176,5 @@ export async function claudeHook(event: string, raw: unknown, signal: AbortSigna
   const target = raw.tool_name === "Write" ? describeTarget("write", { path: input.file_path, content: input.content }, project)
     : await consumeEdit(input, project, identity, inputHash, state, signal);
   if (!target) return {};
-  const notes: string[] = [];
-  const sensitive = pathNotes(target.path, config.rules.sensitivePaths).filter(hit => state.once("sensitive", JSON.stringify([project, target.path, hit.glob])));
-  if (sensitive.length) notes.push(pathNoteSteer(target.path, sensitive));
-  const set = await loadRules(project, config.rules, signal);
-  if (skipReason(target, set, config.rules) || await ignored(target.path, project, signal)) return feedback(notes);
-  const unavailable = (reason: string, message: string): ClaudeOutput => {
-    if (state.once("notice", reason)) notes.push(`pi-warden: ${message}`);
-    return feedback(notes);
-  };
-  const judge = await headlessJudge(config, state, signal);
-  if ("reason" in judge) return unavailable(judge.reason, `rules judgments are off; ${judge.problem}.`);
-  const verdict = await evaluateRulesTarget(target, target.tool, target.path, { cwd: project, config: config.rules, set, judge, timeoutMs: config.timeoutMs, signal });
-  if (verdict.source === "error") return unavailable(verdict.errorCode === "budget" ? "budget" : "judge-error", verdict.errorCode === "budget" ? "rules request budget reached or unavailable; no further request was submitted." : "rules judgment failed; this call continues.");
-  const cap = rulesCapNotice(verdict);
-  if (cap && state.once("notice", "rules-cap")) notes.push(cap);
-  if (verdict.findings.length || verdict.softFindings?.length) notes.push(rulesSteer(verdict, new Map()));
-  return feedback(notes);
-}
-
-if (process.env.PI_WARDEN_CLAUDE_CHILD === "1" && process.send) {
-  const controller = new AbortController();
-  let started = false;
-  const send = (message: unknown): void => {
-    if (process.connected) process.send!(message, () => { if (process.connected) process.disconnect(); });
-  };
-  process.on("disconnect", () => controller.abort());
-  process.on("message", (message: unknown) => {
-    if (message === "abort") { controller.abort(); return; }
-    if (started || !object(message) || typeof message.event !== "string") return;
-    started = true;
-    void claudeHook(message.event, message.input, controller.signal).then(
-      output => send({ ok: true, output }),
-      () => send({ ok: false }),
-    );
-  });
+  return feedback(await new RulesRun(project, config, state, signal).notes(target));
 }
