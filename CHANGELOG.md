@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- The done-check runs in Codex (issue #127). `pi-warden init codex` now also installs a `PostToolUse` hook for `Bash`, a `UserPromptSubmit` hook and a `Stop` hook, after the existing `apply_patch` entry so its review in `/hooks` stays valid. A successful `apply_patch` that adds, updates, moves or deletes a project file counts as a change, also with `rules.enabled: false`. At `Stop`, a reply that presents changed code as done with no check passed since the last change is judged once per prompt, and an unverified claim is shown to the owner as a `systemMessage`; Codex is not told and the turn is not continued. Codex gives hooks a command's output but not its exit status, so a run counts as a check only when its output shows the result: a runner's summary, a failure line such as npm's, an exit code the command prints, or the empty output of a silent runner such as `tsc`. `done.enabled`, `done.claimsDone` and `done.nudge` apply; `done.uiProof` is not checked. An installation from an earlier version gets the three new entries from another `init codex`, and `uninstall codex` removes all four. ([Codex hooks](docs/codex.md))
+- `classifyToolResult()` and `checkSkipReason()` accept `undefined` for `failed` when the host reports no exit status. Such a run counts as a check only when its output shows the result, and otherwise gets the reason "exit code not reported; no runner summary". A boolean is read as before.
 
 ## 2.9.0
 

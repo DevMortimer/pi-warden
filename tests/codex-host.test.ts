@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,7 +107,7 @@ test("parsePatch accepts the heredoc wrapper and CRLF lines, and rejects what Co
   ]) assert.throws(() => parsePatch(bad), /Invalid apply_patch input/, JSON.stringify(bad));
 });
 
-test("init codex --project adds one apply_patch PostToolUse hook, keeps user hooks, and uninstall restores the file", async () => {
+test("init codex --project adds the rules and done-check hooks, keeps user hooks, and uninstall restores the file", async () => {
   const fx = await fixture();
   try {
     const userHook = { matcher: "Bash", hooks: [{ type: "command", command: "echo user-hook" }] };
@@ -115,8 +116,10 @@ test("init codex --project adds one apply_patch PostToolUse hook, keeps user hoo
     assert.equal((await cli(fx, ["init", "codex", "--project"])).code, 0);
     const installed = JSON.parse(await readFile(fx.hooks, "utf8"));
     assert.equal(installed.description, "team hooks");
-    assert.deepEqual(installed.hooks.PostToolUse, [userHook, { matcher: "apply_patch", hooks: [{ type: "command", command: "pi-warden hook codex PostToolUse", timeout: 10 }] }]);
-    assert.deepEqual(Object.keys(installed.hooks), ["PostToolUse"], "Codex needs no PreToolUse capture");
+    const handler = (event: string) => ({ type: "command", command: `pi-warden hook codex ${event}`, timeout: 10 });
+    assert.deepEqual(installed.hooks.PostToolUse, [userHook, { matcher: "apply_patch", hooks: [handler("PostToolUse")] }, { matcher: "Bash", hooks: [handler("PostToolUse")] }]);
+    for (const event of ["UserPromptSubmit", "Stop"]) assert.deepEqual(installed.hooks[event], [{ hooks: [handler(event)] }], "Codex takes no matcher on this event");
+    assert.deepEqual(Object.keys(installed.hooks), ["PostToolUse", "UserPromptSubmit", "Stop"], "Codex needs no PreToolUse capture");
     const text = await readFile(fx.hooks, "utf8");
     assert.equal((await cli(fx, ["init", "codex", "--project"])).code, 0);
     assert.equal(await readFile(fx.hooks, "utf8"), text, "a second init adds nothing");
@@ -278,5 +281,161 @@ test("missing consent is said once, and gitignored or disabled rules send nothin
     await judgeProject(fx, { rules: { enabled: false } });
     await cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, add, "disabled"), env);
     assert.equal((await requests(env)).length, 0);
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+/** A Codex payload for another hook event, with the fields its hook schema requires. */
+function eventPayload(fx: Fixture, event: string, fields: Record<string, unknown>): string {
+  return JSON.stringify({ session_id: "session-1", transcript_path: null, cwd: fx.project, hook_event_name: event, model: "gpt-test", permission_mode: "default", turn_id: "turn-1", ...fields });
+}
+
+/** A finished Codex shell command: the hook gets its output text and no exit status. */
+const bash = (fx: Fixture, command: string, output: string, id: string): string => eventPayload(fx, "PostToolUse", { tool_name: "Bash", tool_use_id: id, tool_input: { command }, tool_response: output });
+
+const stop = (fx: Fixture, message: string | null): string => eventPayload(fx, "Stop", { stop_hook_active: false, last_assistant_message: message });
+
+const owner = (result: { stdout: string }): string => JSON.parse(result.stdout || "{}").systemMessage ?? "";
+
+/** The done-check requests sent so far; rules requests for the same patches are left out. */
+async function doneRequests(env: NodeJS.ProcessEnv): Promise<Array<{ state: Record<string, unknown> }>> {
+  const text = await readFile(env.CLAUDE_TEST_CAPTURE!, "utf8").catch(() => "");
+  return text.trim() ? text.trim().split("\n").map(line => JSON.parse(line)).filter(request => "claims_done" in request.questions) : [];
+}
+
+/** One prompt and one applied patch: the session has a change and nothing has checked it yet. */
+async function changedProject(fx: Fixture, env: NodeJS.ProcessEnv, prompt = "Add the value module"): Promise<void> {
+  await writeFile(join(fx.project, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  assert.equal((await cli(fx, ["hook", "codex", "UserPromptSubmit"], eventPayload(fx, "UserPromptSubmit", { prompt }), env)).code, 0);
+  await writeFile(join(fx.project, "value.ts"), "export const value = 1;\n");
+  const patched = await cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, patchOf("*** Add File: value.ts", "+export const value = 1;"), "patch-1"), env);
+  assert.equal(patched.code, 0, patched.stderr);
+}
+
+const PASSING = "\u2139 tests 3\n\u2139 pass 3\n\u2139 fail 0\n";
+
+test("init codex on an install from before the done-check adds only the new entries", async () => {
+  const fx = await fixture();
+  try {
+    const legacy = { event: "PostToolUse", matcher: "apply_patch", hook: { type: "command", command: "pi-warden hook codex PostToolUse", timeout: 10 } };
+    await writeFile(fx.hooks, JSON.stringify({ hooks: { PostToolUse: [{ matcher: "apply_patch", hooks: [legacy.hook] }] } }));
+    const settings = createHash("sha256").update(fx.hooks).digest("hex");
+    await mkdir(join(fx.agent, "pi-warden", "hosts", "codex"), { recursive: true });
+    await writeFile(join(fx.agent, "pi-warden", "hosts", "codex", `${settings}.json`), JSON.stringify({ version: 1, settings, owned: [legacy] }));
+    const result = await cli(fx, ["init", "codex", "--project"]);
+    assert.equal(result.code, 0, result.stderr);
+    const installed = JSON.parse(await readFile(fx.hooks, "utf8"));
+    assert.deepEqual(installed.hooks.PostToolUse.map((group: { matcher: string }) => group.matcher), ["apply_patch", "Bash"], "the reviewed hook keeps its position");
+    assert.equal(installed.hooks.Stop.length, 1);
+    assert.equal(installed.hooks.UserPromptSubmit.length, 1);
+    assert.equal((await cli(fx, ["uninstall", "codex", "--project"])).code, 0);
+    assert.deepEqual(JSON.parse(await readFile(fx.hooks, "utf8")), {}, "the old and the new entries are both owned");
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a done claim after an unchecked patch tells the owner once, never the model", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await changedProject(fx, env, "Add the value module, token sk-fixture1234567890SECRET");
+    const result = await cli(fx, ["hook", "codex", "Stop"], stop(fx, "Done: the value module is added."), env);
+    assert.equal(result.code, 0, result.stderr);
+    const output = JSON.parse(result.stdout || "{}");
+    assert.match(output.systemMessage ?? "", /^pi-warden: reports completion \(0\.95\) after 1 file change with no test, build, or lint run since the last change\. Run npm run test on what you changed\./);
+    assert.equal(output.decision, undefined, "the done-check never holds the stop");
+    assert.equal(output.continue, undefined);
+    assert.equal(output.hookSpecificOutput, undefined, "nothing reaches the model");
+    const sent = await doneRequests(env);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]!.state.final_message, "Done: the value module is added.");
+    assert.match(String(sent[0]!.state.task), /^Add the value module, token /);
+    assert.doesNotMatch(String(sent[0]!.state.task), /sk-fixture1234567890SECRET/);
+    assert.deepEqual(sent[0]!.state.run, { file_changes: 1, checks_run: [] });
+    assert.equal((await cli(fx, ["hook", "codex", "Stop"], stop(fx, "Done again."), env)).stdout.trim(), "{}", "one judgment per prompt");
+    assert.equal((await cli(fx, ["hook", "codex", "Stop"], stop(fx, null), env)).stdout.trim(), "{}", "a turn with no final message is not judged");
+    assert.equal((await doneRequests(env)).length, 1);
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a shell run counts as a check only when its output shows the result", async () => {
+  for (const scenario of ["passed", "silent", "printed-exit", "failed", "no-summary", "before"]) {
+    const fx = await fixture();
+    try {
+      const env = await judgeProject(fx);
+      if (scenario === "before") await cli(fx, ["hook", "codex", "PostToolUse"], bash(fx, "npm test", PASSING, "bash-before"), env);
+      await changedProject(fx, env);
+      const run = {
+        passed: ["npm test", PASSING], silent: ["npx tsc --noEmit", ""], "printed-exit": ["npm run build; echo \"exit=$?\"", "built\nexit=0"],
+        failed: ["npm test", "\u2139 tests 3\n\u2139 pass 2\n\u2139 fail 1\n"], "no-summary": ["npm run build", "built, maybe"], before: undefined,
+      }[scenario];
+      if (run) assert.equal((await cli(fx, ["hook", "codex", "PostToolUse"], bash(fx, run[0]!, run[1]!, "bash-1"), env)).stdout.trim(), "{}");
+      const result = await cli(fx, ["hook", "codex", "Stop"], stop(fx, "Done: tests pass."), env);
+      assert.equal(result.code, 0, result.stderr);
+      const sent = await doneRequests(env);
+      if (["passed", "silent", "printed-exit"].includes(scenario)) {
+        assert.equal(result.stdout.trim(), "{}", scenario);
+        assert.deepEqual(sent, [], `${scenario}: a passing check after the change sends nothing`);
+        continue;
+      }
+      assert.equal(sent.length, 1, scenario);
+      if (scenario === "failed") {
+        assert.match(owner(result), /with 1 failed check and no passing one.*The last check that ran failed: npm test\. Fix that first\./);
+        assert.deepEqual((sent[0]!.state.run as { checks_run: string[] }).checks_run, ["npm test \u2192 failed"]);
+      } else {
+        assert.match(owner(result), /no test, build, or lint run since the last change/, scenario);
+        assert.deepEqual((sent[0]!.state.run as { checks_run: string[] }).checks_run, []);
+      }
+      if (scenario === "no-summary") assert.match(owner(result), /claims checks passed \(0\.95\) but none ran/, "a run that shows no result is not a check");
+      if (scenario === "before") assert.match(owner(result), /Run npm test on what you changed/, "the last passing check is the one to run again");
+    } finally { await rm(fx.root, { recursive: true, force: true }); }
+  }
+});
+
+test("a patch inside the project is a change even when it only deletes, and one outside is not", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await writeFile(join(fx.project, "package.json"), "{}");
+    await cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, patchOf("*** Add File: ../outside.ts", "+x", `*** Add File: ${join(fx.root, "elsewhere.ts")}`, "+x"), "outside"), env);
+    assert.equal((await cli(fx, ["hook", "codex", "Stop"], stop(fx, "Done."), env)).stdout.trim(), "{}");
+    assert.deepEqual(await doneRequests(env), [], "a patch outside the project changes nothing here");
+    await cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, patchOf("*** Delete File: old.ts"), "delete"), env);
+    assert.match(owner(await cli(fx, ["hook", "codex", "Stop"], stop(fx, "Done."), env)), /after 1 file change/);
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("the done-check runs with rules off, needs consent, and records nothing when it is off", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx, { rules: { enabled: false } });
+    await changedProject(fx, { ...env, PI_WARDEN_ENABLED: "" });
+    const first = await cli(fx, ["hook", "codex", "Stop"], stop(fx, "Done."), { ...env, PI_WARDEN_ENABLED: "" });
+    assert.equal(first.code, 0, first.stderr);
+    assert.match(owner(first), /done-check is off; set PI_WARDEN_ENABLED=1/);
+    await cli(fx, ["hook", "codex", "UserPromptSubmit"], eventPayload(fx, "UserPromptSubmit", { prompt: "Again" }), env);
+    assert.match(owner(await cli(fx, ["hook", "codex", "Stop"], stop(fx, "Done."), env)), /reports completion/, "the change made with rules off still counts");
+    assert.equal((await requests(env)).length, 1, "only the done-check request; no rules request");
+    for (const done of [{ enabled: false }, { nudge: false }]) {
+      const off = await fixture();
+      try {
+        const offEnv = await judgeProject(off, { done, rules: { enabled: false } });
+        await changedProject(off, offEnv);
+        await cli(off, ["hook", "codex", "PostToolUse"], bash(off, "npm test", PASSING, "bash-1"), offEnv);
+        assert.equal((await cli(off, ["hook", "codex", "Stop"], stop(off, "Done."), offEnv)).stdout.trim(), "{}");
+        assert.deepEqual(await requests(offEnv), []);
+        await assert.rejects(readdir(join(off.agent, "pi-warden", "state", "codex")), { code: "ENOENT" }, "nothing is recorded for a check that is off");
+      } finally { await rm(off.root, { recursive: true, force: true }); }
+    }
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a replayed patch or shell result is one piece of evidence", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await changedProject(fx, env);
+    await Promise.all(Array.from({ length: 2 }, () => cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, patchOf("*** Add File: value.ts", "+export const value = 1;"), "patch-1"), env)));
+    await Promise.all(Array.from({ length: 2 }, () => cli(fx, ["hook", "codex", "PostToolUse"], bash(fx, "npm test", "\u2139 tests 3\n\u2139 pass 2\n\u2139 fail 1\n", "bash-1"), env)));
+    await cli(fx, ["hook", "codex", "Stop"], stop(fx, "Done."), env);
+    assert.deepEqual((await doneRequests(env))[0]!.state.run, { file_changes: 1, checks_run: ["npm test \u2192 failed"] });
   } finally { await rm(fx.root, { recursive: true, force: true }); }
 });

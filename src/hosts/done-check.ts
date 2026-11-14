@@ -23,7 +23,7 @@ export function sessionOf(raw: Record<string, unknown>): { cwd: string; session:
 }
 
 /** A shell run as Pi's done-check counts it: a passed or failed check with its redacted, clipped command, or nothing. */
-export function checkRecord(input: Record<string, unknown>, failed: boolean, output: string, cwd: string): EvidenceRecord | undefined {
+export function checkRecord(input: Record<string, unknown>, failed: boolean | undefined, output: string, cwd: string): EvidenceRecord | undefined {
   const outcome = classifyToolResult("bash", input, failed, output, cwd);
   if (outcome !== "check-pass" && outcome !== "check-fail") return undefined;
   const call = recordOutcome(emptyEvidence(), outcome, input);

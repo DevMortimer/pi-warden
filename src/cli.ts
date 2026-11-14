@@ -33,14 +33,14 @@ const USAGE = "Usage: pi-warden hook <claude|codex> <event> | init <claude|codex
 /** The events each host's installer registers; any other event is not implemented. */
 const HOOK_EVENTS: Record<HostName, readonly string[]> = {
   claude: ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop"],
-  codex: ["PostToolUse"],
+  codex: ["PostToolUse", "UserPromptSubmit", "Stop"],
 };
 
 async function main(): Promise<void> {
   const [command, agent, event] = process.argv.slice(2);
   try {
     if (command === "--help" || command === "-h") {
-      process.stdout.write(`${USAGE}\nClaude Write/Edit rules and the done-check; Codex apply_patch rules.\n`);
+      process.stdout.write(`${USAGE}\nClaude Write/Edit rules and the done-check; Codex apply_patch rules and the done-check.\n`);
       return;
     }
     if (command === "hook") {
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
       const timer = setTimeout(() => controller.abort(), 8000);
       try {
         if ((agent !== "claude" && agent !== "codex") || !event || !HOOK_EVENTS[agent].includes(event) || process.argv.length !== 5) {
-          process.stderr.write("pi-warden: unsupported hook; only Claude rules, the done-check and Codex apply_patch rules are implemented.\n");
+          process.stderr.write("pi-warden: unsupported hook; only Claude rules, Codex apply_patch rules and the done-check on both are implemented.\n");
           return;
         }
         const input = await readInput(controller.signal);

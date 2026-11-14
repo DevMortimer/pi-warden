@@ -43,14 +43,14 @@ Launch Claude with `PI_WARDEN_ENABLED=1` and the active backend's key variable (
 
 Use `init claude --project` for this project's `.claude/settings.json`, and `uninstall claude [--project]` to remove the entries installed in that scope. After upgrading from a version without the done-check, run `init claude` again to add its hooks. Shared settings, keys, history and rules files stay in place. [Configuration, limits and uninstall behavior →](docs/claude-code.md)
 
-### Codex: per-edit rules
+### Codex: per-edit rules and the done-check
 
 ```bash
 npm install --global pi-warden
 pi-warden init codex
 ```
 
-Review the new hook once with `/hooks` in Codex, then launch Codex with `PI_WARDEN_ENABLED=1` and the same key variable. Each file an `apply_patch` call adds or updates is judged against your `pi-warden.md`, and findings come back to the model as advisory feedback. Use `init codex --project` for this project's `.codex/hooks.json`, and `uninstall codex [--project]` to remove the entry. [Patch handling, limits and uninstall behavior →](docs/codex.md)
+Review the new hooks once with `/hooks` in Codex, then launch Codex with `PI_WARDEN_ENABLED=1` and the same key variable. Each file an `apply_patch` call adds or updates is judged against your `pi-warden.md`, and findings come back to the model as advisory feedback. When a reply presents changed code as done and no check passed since the last change, the done-check tells you on the turn; Codex is not told. Codex does not give hooks a command's exit status, so a run counts as a check only when its output shows the result. Use `init codex --project` for this project's `.codex/hooks.json`, and `uninstall codex [--project]` to remove the entries. After upgrading from a version without the done-check, run `init codex` again to add its hooks. [Patch handling, checks, limits and uninstall behavior →](docs/codex.md)
 
 ## It reports. It doesn't nag.
 
