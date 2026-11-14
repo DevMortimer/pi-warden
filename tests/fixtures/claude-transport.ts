@@ -84,10 +84,20 @@ globalThis.fetch = async (input, init) => {
     }), { headers: { "content-type": "application/json" } });
   }
   if (process.env.CLAUDE_TEST_HTTP_FAIL === "1") return new Response("upstream body must never be echoed", { status: 503 });
-  const state = body.state as { content?: string; edits?: Array<{ before?: string; after?: string; newText: string }> };
+  const state = body.state as { content?: string; edits?: Array<{ before?: string; after?: string; newText: string }>; final_message?: string };
   const answers: Record<string, unknown> = {};
   for (const [id, raw] of Object.entries(body.questions)) {
-    const question = raw as { criteria: Record<string, unknown> };
+    const question = raw as { type?: string; criteria: Record<string, unknown> };
+    // Done-check: a reply that says "done" claims completion, and one that says tests pass claims verification.
+    if (question.type === "noul") {
+      const claims = id === "claims_done" ? /\bdone\b/i : id === "claims_verified" ? /\btests? pass/i : /./;
+      answers[id] = { type: "noul", noul: claims.test(state.final_message ?? "") ? 0.95 : 0.05 };
+      continue;
+    }
+    if (id === "outcome") {
+      answers[id] = { type: "choice", choice: "complete", confidence: 0.95, probabilities: { complete: 0.95, partial: 0.02, blocked: 0.02, other: 0.01 } };
+      continue;
+    }
     const breaks = (text: string): boolean => id.includes("documents") ? /export function/.test(text) && !/@returns/.test(text) : text.includes("BAD");
     const violation = state.content !== undefined ? breaks(state.content)
       : (state.edits ?? []).some(edit => breaks(edit.after ?? edit.newText) && !breaks(edit.before ?? ""));

@@ -32,7 +32,7 @@ const USAGE = "Usage: pi-warden hook <claude|codex> <event> | init <claude|codex
 
 /** The events each host's installer registers; any other event is not implemented. */
 const HOOK_EVENTS: Record<HostName, readonly string[]> = {
-  claude: ["PreToolUse", "PostToolUse", "PostToolUseFailure"],
+  claude: ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop"],
   codex: ["PostToolUse"],
 };
 
@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   const [command, agent, event] = process.argv.slice(2);
   try {
     if (command === "--help" || command === "-h") {
-      process.stdout.write(`${USAGE}\nPer-edit rules: Claude Write/Edit, Codex apply_patch.\n`);
+      process.stdout.write(`${USAGE}\nClaude Write/Edit rules and the done-check; Codex apply_patch rules.\n`);
       return;
     }
     if (command === "hook") {
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
       const timer = setTimeout(() => controller.abort(), 8000);
       try {
         if ((agent !== "claude" && agent !== "codex") || !event || !HOOK_EVENTS[agent].includes(event) || process.argv.length !== 5) {
-          process.stderr.write("pi-warden: unsupported hook; only Claude Write/Edit and Codex apply_patch rules are implemented.\n");
+          process.stderr.write("pi-warden: unsupported hook; only Claude rules, the done-check and Codex apply_patch rules are implemented.\n");
           return;
         }
         const input = await readInput(controller.signal);
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
     }
     throw new Error(USAGE);
   } catch (error) {
-    process.stderr.write(command === "hook" ? "pi-warden: rules check skipped; invalid input, unavailable state or judge, or hook deadline.\n"
+    process.stderr.write(command === "hook" ? "pi-warden: check skipped; invalid input, unavailable state or judge, or hook deadline.\n"
       : error instanceof HostFileError ? `pi-warden: ${error.message}\n`
       : `pi-warden: ${agent === "codex" ? "hooks" : "settings"} could not be changed; check the JSON, receipt and file permissions.\n`);
     process.exitCode = command === "hook" ? 0 : 1;

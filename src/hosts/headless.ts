@@ -97,10 +97,10 @@ async function ignored(path: string, cwd: string, signal: AbortSignal): Promise<
   });
 }
 
-type Unavailable = { reason: "no-consent" | "bad-backend" | "no-key"; problem: string };
+export type Unavailable = { reason: "no-consent" | "bad-backend" | "no-key"; problem: string };
 
 /** Headless consent and the active backend's key come from the environment only; each request reserves a session slot first. */
-async function headlessJudge(config: WardenConfig, state: HostState, signal: AbortSignal): Promise<Judge | Unavailable> {
+export async function headlessJudge(config: WardenConfig, state: HostState, signal: AbortSignal): Promise<Judge | Unavailable> {
   if (process.env.PI_WARDEN_ENABLED !== "1") return { reason: "no-consent", problem: "set PI_WARDEN_ENABLED=1 for this headless host" };
   const backend = config.typesafeBackend;
   if (backend === undefined) return { reason: "bad-backend", problem: "fix typesafeBackend in the global user config" };
