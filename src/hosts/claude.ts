@@ -3,19 +3,29 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatePath, createTypeSafe, openUsageLedger, resolveBackend, usagePath } from "pi-typesafe";
+import type { Judge } from "pi-typesafe";
 import { judgeOptions } from "../backend.js";
 import { loadConfig, userConfigPath } from "../config.js";
-import type { RulesConfig } from "../config.js";
+import type { RulesConfig, WardenConfig } from "../config.js";
+import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, needsDoneCheck, projectCheckCommand, recordOutcome } from "../done.js";
 import { redact } from "../redact.js";
 import { describeTarget, EDIT_CONTEXT_LINES, EDIT_TEXT_LIMIT, evaluateRulesTarget, FALLBACK_FILES, MAX_EDITS, pathNotes, pathNoteSteer, projectPath, RuleStore, RULES_FILE, rulesCapNotice, rulesSteer, skipReason } from "../rules.js";
 import type { EditView, RulesTarget, RuleSet } from "../rules.js";
-import { ClaudeState, digest } from "./claude-state.js";
+import { ClaudeState, digest, TASK_LIMIT } from "./claude-state.js";
+import type { EvidenceRecord } from "./claude-state.js";
 import { FILE_BYTES, object, readText } from "./io.js";
 
-export interface ClaudeOutput { hookSpecificOutput?: { hookEventName: "PostToolUse"; additionalContext: string } }
+export interface ClaudeOutput { hookSpecificOutput?: { hookEventName: "PostToolUse"; additionalContext: string }; systemMessage?: string }
+
+const CLAUDE_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop"] as const;
 
 function feedback(notes: string[]): ClaudeOutput {
   return notes.length ? { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: redact(notes.join("\n")).slice(0, 9000) } } : {};
+}
+
+/** Pi's done-check tells the owner, never the model, so the notice is Claude's user-facing message, not a Stop block. */
+function ownerNotice(text: string | undefined): ClaudeOutput {
+  return text ? { systemMessage: redact(text).slice(0, 9000) } : {};
 }
 
 /** A child process makes the deadline enforceable during native synchronous SDK reads as well. */
@@ -132,27 +142,127 @@ async function ignored(path: string, cwd: string, signal: AbortSignal): Promise<
   });
 }
 
-export async function claudeHook(event: string, raw: unknown, signal: AbortSignal): Promise<ClaudeOutput> {
-  if (!["PreToolUse", "PostToolUse", "PostToolUseFailure"].includes(event)) return {};
-  if (!object(raw) || raw.hook_event_name !== event || (raw.tool_name !== "Write" && raw.tool_name !== "Edit") || !object(raw.tool_input)) return {};
-  const { cwd, session_id: session, tool_use_id: toolId } = raw;
-  if (typeof cwd !== "string" || !isAbsolute(cwd) || typeof session !== "string" || !session || session.length > 512 || typeof toolId !== "string" || !toolId || toolId.length > 512) throw new Error("Invalid Claude tool identity.");
-  if (raw.agent_id !== undefined && (typeof raw.agent_id !== "string" || !raw.agent_id || raw.agent_id.length > 512)) throw new Error("Invalid Claude actor identity.");
-  const input = { ...raw.tool_input };
-  if (typeof input.file_path !== "string" || !isAbsolute(input.file_path)) throw new Error("Invalid Claude file path.");
-  const shownPath = input.file_path;
+async function globalConfig(signal: AbortSignal): Promise<WardenConfig> {
   const user = await readText(userConfigPath(), signal);
   const userRaw: unknown = user === undefined ? {} : JSON.parse(user);
   if (!object(userRaw)) throw new Error("Invalid global Warden configuration.");
-  const config = loadConfig({ userRaw: { value: userRaw } });
-  if (!config.enabled || !config.rules.enabled) return {};
+  return loadConfig({ userRaw: { value: userRaw } });
+}
+
+type Unavailable = { reason: "no-consent" | "bad-backend" | "no-key"; problem: string };
+
+/** Headless consent and the active backend's key come from the environment only; each request reserves a session slot first. */
+async function headlessJudge(config: WardenConfig, state: ClaudeState, signal: AbortSignal): Promise<Judge | Unavailable> {
+  if (process.env.PI_WARDEN_ENABLED !== "1") return { reason: "no-consent", problem: "set PI_WARDEN_ENABLED=1 for this headless host" };
+  const backend = config.typesafeBackend;
+  if (backend === undefined) return { reason: "bad-backend", problem: "fix typesafeBackend in the global user config" };
+  const key = process.env[resolveBackend(backend).keyEnv]?.trim();
+  if (!key) return { reason: "no-key", problem: "set the active backend key in the environment" };
+  await readText(authStatePath(), signal);
+  await readText(usagePath(), signal);
+  const observed = openUsageLedger();
+  return createTypeSafe({ ...judgeOptions({ ...config, typesafeBackend: backend }), apiKey: key,
+    ledger: { ...observed, recordStart: () => { state.reserveRequest(); observed.recordStart(); } },
+  });
+}
+
+function sessionOf(raw: Record<string, unknown>): { cwd: string; session: string } {
+  const { cwd, session_id: session } = raw;
+  if (typeof cwd !== "string" || !isAbsolute(cwd) || typeof session !== "string" || !session || session.length > 512) throw new Error("Invalid Claude session identity.");
+  return { cwd, session };
+}
+
+/**
+ * A Bash result as Pi's done-check reads it. A background run returns before the runner does, and an interrupted one
+ * reports neither a pass nor a failure of the code, so neither is a check.
+ */
+function bashOutcome(event: string, raw: Record<string, unknown>, input: Record<string, unknown>, cwd: string): EvidenceRecord | undefined {
+  if (typeof input.command !== "string" || input.run_in_background === true) return undefined;
+  let output: string;
+  if (event === "PostToolUseFailure") {
+    if (raw.is_interrupt === true || typeof raw.error !== "string") return undefined;
+    output = raw.error;
+  } else {
+    const response = object(raw.tool_response) ? raw.tool_response : {};
+    if (response.interrupted === true) return undefined;
+    output = [response.stdout, response.stderr].filter((part): part is string => typeof part === "string" && part !== "").join("\n");
+  }
+  const outcome = classifyToolResult("bash", input, event === "PostToolUseFailure", output, cwd);
+  if (outcome !== "check-pass" && outcome !== "check-fail") return undefined;
+  const call = recordOutcome(emptyEvidence(), outcome, input);
+  return { outcome, ...(call !== undefined ? { call } : {}) };
+}
+
+async function promptHook(raw: Record<string, unknown>, signal: AbortSignal): Promise<ClaudeOutput> {
+  const { session } = sessionOf(raw);
+  if (typeof raw.prompt !== "string") throw new Error("Invalid Claude prompt.");
+  const config = await globalConfig(signal);
+  if (!config.enabled || !config.done.enabled || !config.done.nudge) return {};
+  const state = new ClaudeState(session, config.maxRequests, signal);
+  await state.prepare();
+  await state.recordPrompt(redact(raw.prompt.trim()).slice(0, TASK_LIMIT));
+  return {};
+}
+
+/** Pi's run-end done-check: one judgment per prompt, only when files changed and no check passed since the last change. */
+async function stopHook(raw: Record<string, unknown>, signal: AbortSignal): Promise<ClaudeOutput> {
+  const { cwd, session } = sessionOf(raw);
+  const finalMessage = typeof raw.last_assistant_message === "string" ? raw.last_assistant_message.trim() : "";
+  if (!finalMessage) return {};
+  const config = await globalConfig(signal);
+  // An unverified claim with `done.nudge` off shows nothing here, and this host has no trace to record it in.
+  if (!config.enabled || !config.done.enabled || !config.done.nudge) return {};
+  const state = new ClaudeState(session, config.maxRequests, signal);
+  await state.prepare();
+  const evidence = emptyEvidence();
+  let lastCheck: string | undefined;
+  for (const record of await state.evidence()) {
+    recordOutcome(evidence, record.outcome, record.call !== undefined ? { command: record.call } : {});
+    if (record.outcome === "check-pass") lastCheck = record.call;
+  }
+  if (!needsDoneCheck(evidence)) return {};
+  const prompt = await state.prompt();
+  if (!state.once("done", prompt?.id ?? "no prompt recorded")) return {};
+  const notice = (reason: string, text: string): ClaudeOutput => ownerNotice(state.once("notice", `done-${reason}`) ? `pi-warden: ${text}` : undefined);
+  const judge = await headlessJudge(config, state, signal);
+  if ("reason" in judge) return notice(judge.reason, `done-check is off; ${judge.problem}.`);
+  const project = await realpath(cwd);
+  const verdict = await evaluateDone(prompt?.task, finalMessage, evidence, { config: config.done, judge, timeoutMs: config.timeoutMs, signal });
+  if (verdict.error !== undefined) return verdict.errorCode === "budget" ? notice("budget", "done-check request budget reached or unavailable; no further request was submitted.") : notice("judge-error", "done-check judgment failed; the reply stands unchecked.");
+  return verdict.unverified ? ownerNotice(doneNudge(verdict, { lastCheck, projectCheck: projectCheckCommand(project) })) : {};
+}
+
+export async function claudeHook(event: string, raw: unknown, signal: AbortSignal): Promise<ClaudeOutput> {
+  if (!(CLAUDE_EVENTS as readonly string[]).includes(event) || !object(raw) || raw.hook_event_name !== event) return {};
+  if (event === "UserPromptSubmit") return promptHook(raw, signal);
+  if (event === "Stop") return stopHook(raw, signal);
+  if ((raw.tool_name !== "Write" && raw.tool_name !== "Edit" && raw.tool_name !== "Bash") || !object(raw.tool_input)) return {};
+  const { cwd, session } = sessionOf(raw);
+  const toolId = raw.tool_use_id;
+  if (typeof toolId !== "string" || !toolId || toolId.length > 512) throw new Error("Invalid Claude tool identity.");
+  if (raw.agent_id !== undefined && (typeof raw.agent_id !== "string" || !raw.agent_id || raw.agent_id.length > 512)) throw new Error("Invalid Claude actor identity.");
+  const input = { ...raw.tool_input };
+  if (raw.tool_name !== "Bash" && (typeof input.file_path !== "string" || !isAbsolute(input.file_path))) throw new Error("Invalid Claude file path.");
+  const config = await globalConfig(signal);
+  const rules = config.enabled && config.rules.enabled;
+  const done = config.enabled && config.done.enabled && config.done.nudge;
+  if (!rules && !done) return {};
   const state = new ClaudeState(session, config.maxRequests, signal);
   await state.prepare();
   const identity = JSON.stringify([raw.agent_id ?? null, toolId, raw.tool_name]);
+  if (raw.tool_name === "Bash") {
+    const record = done && event !== "PreToolUse" ? bashOutcome(event, raw, input, await realpath(cwd)) : undefined;
+    if (record) state.recordEvidence(identity, record);
+    return {};
+  }
+  // A failed Write or Edit left the file as it was, so it is no change for the done-check.
   if (event === "PostToolUseFailure") { await state.consume(identity); return {}; }
+  const shownPath = input.file_path as string;
   const project = await realpath(cwd);
   const file = await realpath(shownPath);
   if (!projectPath(file, project)) return {};
+  if (done && event === "PostToolUse") state.recordEvidence(identity, { outcome: "mutation" });
+  if (!rules) return {};
   input.file_path = file;
   const inputHash = digest(JSON.stringify([cwd, project, shownPath, file, input.old_string, input.new_string, input.replace_all ?? false]));
   if (event === "PreToolUse") {
@@ -172,17 +282,8 @@ export async function claudeHook(event: string, raw: unknown, signal: AbortSigna
     if (state.once("notice", reason)) notes.push(`pi-warden: ${message}`);
     return feedback(notes);
   };
-  if (process.env.PI_WARDEN_ENABLED !== "1") return unavailable("no-consent", "rules judgments are off; set PI_WARDEN_ENABLED=1 for this headless host.");
-  const backend = config.typesafeBackend;
-  if (backend === undefined) return unavailable("bad-backend", "rules judgments are off; fix typesafeBackend in the global user config.");
-  const key = process.env[resolveBackend(backend).keyEnv]?.trim();
-  if (!key) return unavailable("no-key", "rules judgments are off; set the active backend key in the environment.");
-  await readText(authStatePath(), signal);
-  await readText(usagePath(), signal);
-  const observed = openUsageLedger();
-  const judge = createTypeSafe({ ...judgeOptions({ ...config, typesafeBackend: backend }), apiKey: key,
-    ledger: { ...observed, recordStart: () => { state.reserveRequest(); observed.recordStart(); } },
-  });
+  const judge = await headlessJudge(config, state, signal);
+  if ("reason" in judge) return unavailable(judge.reason, `rules judgments are off; ${judge.problem}.`);
   const verdict = await evaluateRulesTarget(target, target.tool, target.path, { cwd: project, config: config.rules, set, judge, timeoutMs: config.timeoutMs, signal });
   if (verdict.source === "error") return unavailable(verdict.errorCode === "budget" ? "budget" : "judge-error", verdict.errorCode === "budget" ? "rules request budget reached or unavailable; no further request was submitted." : "rules judgment failed; this call continues.");
   const cap = rulesCapNotice(verdict);
