@@ -1,24 +1,20 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, needsDoneCheck, projectCheckCommand, recordOutcome } from "../done.js";
 import { redact } from "../redact.js";
 import { describeTarget, EDIT_CONTEXT_LINES, EDIT_TEXT_LIMIT, MAX_EDITS, projectPath } from "../rules.js";
 import type { EditView, RulesTarget } from "../rules.js";
-import { feedback, globalConfig, headlessJudge, RulesRun } from "./headless.js";
+import { checkRecord, promptHook, sessionOf, stopHook } from "./done-check.js";
+import type { OwnerOutput } from "./done-check.js";
+import { feedback, globalConfig, RulesRun } from "./headless.js";
 import type { HookOutput } from "./headless.js";
-import { digest, HostState, TASK_LIMIT } from "./state.js";
+import { digest, HostState } from "./state.js";
 import type { EvidenceRecord } from "./state.js";
 import { FILE_BYTES, object, readText } from "./io.js";
 
 /** Claude's hook result: context for the model after a call, or the owner-facing message the model never sees. */
-export interface ClaudeOutput extends HookOutput { systemMessage?: string }
+export type ClaudeOutput = HookOutput & OwnerOutput;
 
 const CLAUDE_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop"] as const;
-
-/** Pi's done-check tells the owner, never the model, so the notice is Claude's user-facing message, not a Stop block. */
-function ownerNotice(text: string | undefined): ClaudeOutput {
-  return text ? { systemMessage: redact(text).slice(0, 9000) } : {};
-}
 
 const sampleEdit = (text: string): string => redact(text).slice(0, EDIT_TEXT_LIMIT);
 
@@ -69,12 +65,6 @@ async function consumeEdit(input: Record<string, unknown>, cwd: string, identity
   return { tool: "edit", path: path!, edits, ...(typeof more === "number" ? { moreEdits: more } : {}) };
 }
 
-function sessionOf(raw: Record<string, unknown>): { cwd: string; session: string } {
-  const { cwd, session_id: session } = raw;
-  if (typeof cwd !== "string" || !isAbsolute(cwd) || typeof session !== "string" || !session || session.length > 512) throw new Error("Invalid Claude session identity.");
-  return { cwd, session };
-}
-
 /**
  * A Bash result as Pi's done-check reads it. A background run returns before the runner does, and an interrupted one
  * reports neither a pass nor a failure of the code, so neither is a check.
@@ -90,55 +80,13 @@ function bashOutcome(event: string, raw: Record<string, unknown>, input: Record<
     if (response.interrupted === true) return undefined;
     output = [response.stdout, response.stderr].filter((part): part is string => typeof part === "string" && part !== "").join("\n");
   }
-  const outcome = classifyToolResult("bash", input, event === "PostToolUseFailure", output, cwd);
-  if (outcome !== "check-pass" && outcome !== "check-fail") return undefined;
-  const call = recordOutcome(emptyEvidence(), outcome, input);
-  return { outcome, ...(call !== undefined ? { call } : {}) };
-}
-
-async function promptHook(raw: Record<string, unknown>, signal: AbortSignal): Promise<ClaudeOutput> {
-  const { session } = sessionOf(raw);
-  if (typeof raw.prompt !== "string") throw new Error("Invalid Claude prompt.");
-  const config = await globalConfig(signal);
-  if (!config.enabled || !config.done.enabled || !config.done.nudge) return {};
-  const state = new HostState("claude", session, config.maxRequests, signal);
-  await state.prepare();
-  await state.recordPrompt(redact(raw.prompt.trim()).slice(0, TASK_LIMIT));
-  return {};
-}
-
-/** Pi's run-end done-check: one judgment per prompt, only when files changed and no check passed since the last change. */
-async function stopHook(raw: Record<string, unknown>, signal: AbortSignal): Promise<ClaudeOutput> {
-  const { cwd, session } = sessionOf(raw);
-  const finalMessage = typeof raw.last_assistant_message === "string" ? raw.last_assistant_message.trim() : "";
-  if (!finalMessage) return {};
-  const config = await globalConfig(signal);
-  // An unverified claim with `done.nudge` off shows nothing here, and this host has no trace to record it in.
-  if (!config.enabled || !config.done.enabled || !config.done.nudge) return {};
-  const state = new HostState("claude", session, config.maxRequests, signal);
-  await state.prepare();
-  const evidence = emptyEvidence();
-  let lastCheck: string | undefined;
-  for (const record of await state.evidence()) {
-    recordOutcome(evidence, record.outcome, record.call !== undefined ? { command: record.call } : {});
-    if (record.outcome === "check-pass") lastCheck = record.call;
-  }
-  if (!needsDoneCheck(evidence)) return {};
-  const prompt = await state.prompt();
-  if (!state.once("done", prompt?.id ?? "no prompt recorded")) return {};
-  const notice = (reason: string, text: string): ClaudeOutput => ownerNotice(state.once("notice", `done-${reason}`) ? `pi-warden: ${text}` : undefined);
-  const judge = await headlessJudge(config, state, signal);
-  if ("reason" in judge) return notice(judge.reason, `done-check is off; ${judge.problem}.`);
-  const project = await realpath(cwd);
-  const verdict = await evaluateDone(prompt?.task, finalMessage, evidence, { config: config.done, judge, timeoutMs: config.timeoutMs, signal });
-  if (verdict.error !== undefined) return verdict.errorCode === "budget" ? notice("budget", "done-check request budget reached or unavailable; no further request was submitted.") : notice("judge-error", "done-check judgment failed; the reply stands unchecked.");
-  return verdict.unverified ? ownerNotice(doneNudge(verdict, { lastCheck, projectCheck: projectCheckCommand(project) })) : {};
+  return checkRecord(input, event === "PostToolUseFailure", output, cwd);
 }
 
 export async function claudeHook(event: string, raw: unknown, signal: AbortSignal): Promise<ClaudeOutput> {
   if (!(CLAUDE_EVENTS as readonly string[]).includes(event) || !object(raw) || raw.hook_event_name !== event) return {};
-  if (event === "UserPromptSubmit") return promptHook(raw, signal);
-  if (event === "Stop") return stopHook(raw, signal);
+  if (event === "UserPromptSubmit") return promptHook("claude", raw, signal);
+  if (event === "Stop") return stopHook("claude", raw, signal);
   if ((raw.tool_name !== "Write" && raw.tool_name !== "Edit" && raw.tool_name !== "Bash") || !object(raw.tool_input)) return {};
   const { cwd, session } = sessionOf(raw);
   const toolId = raw.tool_use_id;

@@ -106,7 +106,7 @@ export class HostState {
   async evidence(): Promise<EvidenceRecord[]> {
     const records: EvidenceRecord[] = [];
     for (let index = 0; ; index++) {
-      if (index >= EVIDENCE_LIMIT) throw new Error("Claude session evidence is full; done-check skipped.");
+      if (index >= EVIDENCE_LIMIT) throw new Error("Session evidence is full; done-check skipped.");
       const text = await readText(join(this.directory, `evidence-${index}.json`), this.signal, RECORD_BYTES);
       if (text === undefined) return records;
       let raw: unknown;
@@ -132,7 +132,7 @@ export class HostState {
     const text = await readText(join(this.directory, "prompt.json"), this.signal, 16 * 1024);
     if (text === undefined) return undefined;
     const raw: unknown = JSON.parse(text);
-    if (!object(raw) || raw.version !== 1 || typeof raw.id !== "string" || !/^[a-f0-9-]{36}$/.test(raw.id) || typeof raw.task !== "string" || raw.task.length > TASK_LIMIT) throw new Error("Invalid Claude prompt record.");
+    if (!object(raw) || raw.version !== 1 || typeof raw.id !== "string" || !/^[a-f0-9-]{36}$/.test(raw.id) || typeof raw.task !== "string" || raw.task.length > TASK_LIMIT) throw new Error("Invalid prompt record.");
     return { id: raw.id, task: raw.task };
   }
 
