@@ -33,10 +33,19 @@ export const CLAUDE_HOST: HookHost = {
   ],
 };
 
-/** Codex reports every file edit as `apply_patch`, and runs `PostToolUse` only after the patch applied. */
+/**
+ * Codex reports every file edit as `apply_patch` and every shell command as `Bash`, and runs `PostToolUse` only after
+ * the call succeeded. New entries go after the first, so the reviewed `apply_patch` hook keeps its position.
+ * `UserPromptSubmit` and `Stop` take no matcher in Codex.
+ */
 export const CODEX_HOST: HookHost = {
   name: "codex", title: "Codex", file: "hooks", groups: "hook groups",
-  hooks: [{ event: "PostToolUse", matcher: "apply_patch" }],
+  hooks: [
+    { event: "PostToolUse", matcher: "apply_patch" },
+    { event: "PostToolUse", matcher: "Bash" },
+    { event: "UserPromptSubmit" },
+    { event: "Stop" },
+  ],
 };
 
 interface OwnedHook { event: string; matcher?: string; hook: Record<string, unknown> }

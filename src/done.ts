@@ -216,30 +216,36 @@ function printedCode(pattern: RegExp, output: string): number | undefined {
   return last ? Number(last[1]) : undefined;
 }
 
-/** True when a silent runner's own segment is behind a pass-through pipe and its output is empty. */
-function silentRunnerPass(runner: { text: string; hides: HiddenCause | undefined }, output: string | undefined): boolean {
-  if (runner.hides?.sep !== "|" || output === undefined) return false;
+/**
+ * True when a silent runner printed nothing where its report would show: behind a pass-through pipe, or, on a host that
+ * reports no exit status, in its own segment with no redirect of its output (`2>&1` only joins the streams).
+ */
+function silentRunnerPass(runner: { text: string; hides: HiddenCause | undefined }, output: string | undefined, unreported: boolean): boolean {
+  if (output === undefined || !SILENT_RUNNER.test(runner.text) || !silentOutput(output)) return false;
+  if (runner.hides === undefined) return unreported && !/>/.test(runner.text.replace(/\d*>&\d+/g, ""));
+  if (runner.hides.sep !== "|") return false;
   const head = runner.hides.after.trim().split(/\s+/)[0]?.replace(/^-+/, "") ?? "";
-  return PASS_THROUGH.has(head) && SILENT_RUNNER.test(runner.text) && silentOutput(output);
+  return PASS_THROUGH.has(head);
 }
 
 /**
  * What a finished tool call contributes to the run's evidence. Only write/edit inside the project count as code changes: shell side effects
  * (deleting a temp dir, installing a package) are too varied to demand a test run for. Custom tools are unknown. A shell command counts as a
  * check only when a check runner starts one of its shell segments; a runner name in an argument (`grep -n jest package.json`) does not.
+ * `failed` is undefined when the host reports no exit status (Codex hooks): a check then counts only when its output shows the result.
  */
-export function classifyToolResult(tool: string, input: Record<string, unknown>, failed: boolean, output?: string, cwd?: string): ToolOutcome {
+export function classifyToolResult(tool: string, input: Record<string, unknown>, failed: boolean | undefined, output?: string, cwd?: string): ToolOutcome {
   return classify(tool, input, failed, output, cwd).outcome;
 }
 
 /** Why a run that names a check runner is not counted as a check (for one trace detail); undefined when it counts or names no runner. */
-export function checkSkipReason(tool: string, input: Record<string, unknown>, failed: boolean, output?: string, cwd?: string): string | undefined {
+export function checkSkipReason(tool: string, input: Record<string, unknown>, failed: boolean | undefined, output?: string, cwd?: string): string | undefined {
   return classify(tool, input, failed, output, cwd).reason;
 }
 
 interface Classification { outcome: ToolOutcome; reason?: string }
 
-function classify(tool: string, input: Record<string, unknown>, failed: boolean, output: string | undefined, cwd: string | undefined): Classification {
+function classify(tool: string, input: Record<string, unknown>, failed: boolean | undefined, output: string | undefined, cwd: string | undefined): Classification {
   if (tool === "write" || tool === "edit") return { outcome: cwd !== undefined && isOutsideProject(input, cwd) ? "unknown" : "mutation" };
   if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return { outcome: "read" };
   const view = commandOf(tool, input);
@@ -257,22 +263,25 @@ function classify(tool: string, input: Record<string, unknown>, failed: boolean,
     const generic = runners.length > 0 && output !== undefined && genericCheckFailure(output);
     // A generic failure line decides even when another line reads as a pass; otherwise the summary decides.
     const verdict = generic ? "fail" : summary;
+    // With no exit status from the host, every runner's exit code is hidden, as one behind a pipe is.
+    const unreported = failed === undefined;
     // Each hidden runner is covered only by its own printed exit code, its own silent pass, or the summary verdict.
     const evidence = runners.map(runner => ({
       code: output === undefined || runner.printed === undefined ? undefined : printedCode(runner.printed, output),
-      silent: silentRunnerPass(runner, output),
+      silent: silentRunnerPass(runner, output, unreported),
     }));
     const anyPrintedFail = evidence.some(entry => entry.code !== undefined && entry.code !== 0);
-    const someVisible = runners.some((runner, index) => runner.hides === undefined || evidence[index]!.code !== undefined || evidence[index]!.silent);
-    const allCovered = runners.every((runner, index) => verdict !== undefined || runner.hides === undefined || evidence[index]!.code !== undefined || evidence[index]!.silent);
+    const visible = (runner: { hides: HiddenCause | undefined }, index: number): boolean => (runner.hides === undefined && !unreported) || evidence[index]!.code !== undefined || evidence[index]!.silent;
+    const someVisible = runners.some(visible);
+    const allCovered = verdict !== undefined || runners.every(visible);
     const hidden = runners.map(runner => runner.hides).find(cause => cause !== undefined);
-    if (hidden !== undefined && verdict === undefined && !anyPrintedFail && !allCovered) {
+    if ((hidden !== undefined || unreported) && !anyPrintedFail && !allCovered) {
       // A visible failure stays a failed check when another runner in the same call had a visible exit code.
       if (failed && someVisible) return { outcome: "check-fail" };
-      return { outcome: "unknown", reason: hiddenReason(hidden) };
+      return { outcome: "unknown", reason: hidden !== undefined ? hiddenReason(hidden) : "exit code not reported; no runner summary" };
     }
     // A failure summary wins over exit code 0; a visible failure stays a failed check, also with a passing summary.
-    return { outcome: verdict === "fail" || failed || anyPrintedFail ? "check-fail" : "check-pass" };
+    return { outcome: verdict === "fail" || failed === true || anyPrintedFail ? "check-fail" : "check-pass" };
   }
   const read: Classification = { outcome: view.shell && isReadOnlyCommand(view.command) ? "read" : "unknown" };
   return namesRunner ? { ...read, reason: "runner name in an argument does not make a check" } : read;

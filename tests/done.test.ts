@@ -256,6 +256,27 @@ test("a silent runner behind a pass-through pipe is a passing check", () => {
   assert.equal(verdict("npx tsc --noEmit 2>&1 | tail -5", "note: something"), "unknown", "non-empty output is not the runner's own silence");
 });
 
+test("with no exit status from the host, a run is a check only when its output shows the result", () => {
+  const unreported = (command: string, output: string) => done.classifyToolResult("bash", { command }, undefined, output);
+  const passingJest = "PASS src/a.test.ts\nTests:       3 passed, 3 total\n";
+  assert.equal(unreported("npm test", passingJest), "check-pass", "the runner's own summary");
+  assert.equal(unreported("npm test", "Tests:       1 failed, 2 passed, 3 total\n"), "check-fail");
+  assert.equal(unreported("npm run build", "npm error Lifecycle script `build` failed with error:\n"), "check-fail", "npm's failure line");
+  assert.equal(unreported("npm test; echo \"exit=$?\"", "some output\nexit=1"), "check-fail", "a printed exit code");
+  assert.equal(unreported("npm test; echo \"exit=$?\"", "some output\nexit=0"), "check-pass");
+  assert.equal(unreported("npx tsc --noEmit", ""), "check-pass", "a silent runner that printed nothing");
+  assert.equal(unreported("npx tsc --noEmit 2>&1", "> app@1.0.0 typecheck\n> tsc --noEmit"), "check-pass", "2>&1 only joins the streams");
+  assert.equal(unreported("npx tsc --noEmit", "src/a.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\n"), "check-fail");
+  assert.equal(unreported("npm run build", "compiled, maybe"), "unknown", "exit code 0 is not known, so nothing proves a pass");
+  assert.equal(unreported("npm test", ""), "unknown", "a runner that is not silent proves nothing by printing nothing");
+  assert.equal(unreported("npx tsc --noEmit > tsc.log", ""), "unknown", "a redirect sends the report elsewhere");
+  assert.equal(unreported("flake8 src", "src/a.py:1:1: F401 'os' imported but unused\n"), "unknown");
+  assert.equal(done.checkSkipReason("bash", { command: "npm run build" }, undefined, "compiled, maybe"), "exit code not reported; no runner summary");
+  assert.equal(done.checkSkipReason("bash", { command: "npm test | tail -5" }, undefined, "compiled, maybe"), "exit code hidden by | tail; no runner summary", "a hiding separator is still named");
+  assert.equal(done.classifyToolResult("bash", { command: "npx tsc --noEmit" }, false, ""), "check-pass", "a reported exit code still decides alone");
+  assert.equal(done.classifyToolResult("bash", { command: "npx tsc --noEmit > tsc.log" }, true, ""), "check-fail");
+});
+
 test("runner forms: a path, python -m, wrapper options, manager options, make options and shell -c", () => {
   for (const command of [
     ".venv/bin/pytest -q",
