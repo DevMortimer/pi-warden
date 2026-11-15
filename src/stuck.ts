@@ -165,8 +165,9 @@ export class AttemptWindow {
     this.quickRepeated.clear();
   }
 
-  markJudged(): void {
-    this.sinceJudgment = 0;
+  /** A host that rebuilds the window for every call passes how many results ago its last judgment was. */
+  markJudged(resultsAgo = 0): void {
+    this.sinceJudgment = resultsAgo;
   }
 
   failures(): number {

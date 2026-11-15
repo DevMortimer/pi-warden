@@ -1,5 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import type { WardenConfig } from "../config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, needsDoneCheck, projectCheckCommand, recordOutcome } from "../done.js";
 import { redact } from "../redact.js";
 import { globalConfig, headlessJudge } from "./headless.js";
@@ -12,7 +13,7 @@ import type { EvidenceRecord, HostName } from "./state.js";
  */
 export interface OwnerOutput { systemMessage?: string }
 
-function ownerNotice(text: string | undefined): OwnerOutput {
+export function ownerNotice(text: string | undefined): OwnerOutput {
   return text ? { systemMessage: redact(text).slice(0, 9000) } : {};
 }
 
@@ -30,12 +31,15 @@ export function checkRecord(input: Record<string, unknown>, failed: boolean | un
   return { outcome, ...(call !== undefined ? { call } : {}) };
 }
 
-/** The latest prompt, kept as the done-check's task. */
-export async function promptHook(host: HostName, raw: Record<string, unknown>, signal: AbortSignal): Promise<OwnerOutput> {
+/** With `done.nudge` off an unverified claim would show nothing, and this host has no trace to record it in. */
+export const doneActive = (config: WardenConfig): boolean => config.enabled && config.done.enabled && config.done.nudge;
+
+/** The latest prompt, kept as the task of the checks `uses` names; its id also starts the stuck-check's window. */
+export async function promptHook(host: HostName, raw: Record<string, unknown>, signal: AbortSignal, uses: (config: WardenConfig) => boolean = doneActive): Promise<OwnerOutput> {
   const { session } = sessionOf(raw);
   if (typeof raw.prompt !== "string") throw new Error("Invalid hook prompt.");
   const config = await globalConfig(signal);
-  if (!config.enabled || !config.done.enabled || !config.done.nudge) return {};
+  if (!uses(config)) return {};
   const state = new HostState(host, session, config.maxRequests, signal);
   await state.prepare();
   await state.recordPrompt(redact(raw.prompt.trim()).slice(0, TASK_LIMIT));
@@ -48,8 +52,7 @@ export async function stopHook(host: HostName, raw: Record<string, unknown>, sig
   const finalMessage = typeof raw.last_assistant_message === "string" ? raw.last_assistant_message.trim() : "";
   if (!finalMessage) return {};
   const config = await globalConfig(signal);
-  // An unverified claim with `done.nudge` off shows nothing here, and this host has no trace to record it in.
-  if (!config.enabled || !config.done.enabled || !config.done.nudge) return {};
+  if (!doneActive(config)) return {};
   const state = new HostState(host, session, config.maxRequests, signal);
   await state.prepare();
   const evidence = emptyEvidence();

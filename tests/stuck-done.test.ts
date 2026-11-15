@@ -89,6 +89,14 @@ test("AttemptWindow trims, counts failures and exact repeats, and honours the co
   repeats.push(makeAttempt("bash", { command: "ls" }, text("ok"), false));
   assert.equal(repeats.shouldJudge(stuckConfig), false, "latest result succeeded");
 
+  // A host that rebuilds the window for each call restores the cool-down from how long ago its last judgment was.
+  const rebuilt = new AttemptWindow(12);
+  for (let index = 0; index < 4; index++) rebuilt.push(makeAttempt("bash", { command: "npm test" }, text("fail"), true));
+  rebuilt.markJudged(2);
+  assert.equal(rebuilt.shouldJudge(stuckConfig), false, "cool-down: 2 results since the last check");
+  rebuilt.markJudged(3);
+  assert.equal(rebuilt.shouldJudge(stuckConfig), true);
+
   const polling = new AttemptWindow(12);
   const poll = { command: "sleep 5 && gh pr checks 2673" };
   for (let index = 0; index < 2; index++) polling.push(makeAttempt("bash", poll, text("all checks passed"), false));

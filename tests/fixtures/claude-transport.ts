@@ -88,6 +88,15 @@ globalThis.fetch = async (input, init) => {
   const answers: Record<string, unknown> = {};
   for (const [id, raw] of Object.entries(body.questions)) {
     const question = raw as { type?: string; criteria: Record<string, unknown> };
+    // Stuck-check: the test sets how alike the attempts look; the approach is always a cosmetic change.
+    if (id === "same_strategy" || id === "progress") {
+      answers[id] = { type: "noul", noul: id === "same_strategy" ? Number(process.env.CLAUDE_TEST_SAME_STRATEGY ?? "0.05") : 0.1 };
+      continue;
+    }
+    if (question.type === "score") {
+      answers[id] = { type: "score", score: 1, confidence: 0.9, probabilities: { "0": 0.05, "1": 0.9, "2": 0.05 }, legend: question.criteria };
+      continue;
+    }
     // Done-check: a reply that says "done" claims completion, and one that says tests pass claims verification.
     if (question.type === "noul") {
       const claims = id === "claims_done" ? /\bdone\b/i : id === "claims_verified" ? /\btests? pass/i : /./;

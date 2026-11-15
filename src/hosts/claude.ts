@@ -1,14 +1,18 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import type { WardenConfig } from "../config.js";
 import { redact } from "../redact.js";
 import { describeTarget, EDIT_CONTEXT_LINES, EDIT_TEXT_LIMIT, MAX_EDITS, projectPath } from "../rules.js";
 import type { EditView, RulesTarget } from "../rules.js";
-import { checkRecord, promptHook, sessionOf, stopHook } from "./done-check.js";
+import { makeAttempt } from "../stuck.js";
+import type { Attempt } from "../stuck.js";
+import { checkRecord, doneActive, promptHook, sessionOf, stopHook } from "./done-check.js";
 import type { OwnerOutput } from "./done-check.js";
 import { feedback, globalConfig, RulesRun } from "./headless.js";
 import type { HookOutput } from "./headless.js";
 import { digest, HostState } from "./state.js";
 import type { EvidenceRecord } from "./state.js";
+import { stuckActive, stuckCheck } from "./stuck-check.js";
 import { FILE_BYTES, object, readText } from "./io.js";
 
 /** Claude's hook result: context for the model after a call, or the owner-facing message the model never sees. */
@@ -66,26 +70,42 @@ async function consumeEdit(input: Record<string, unknown>, cwd: string, identity
 }
 
 /**
- * A Bash result as Pi's done-check reads it. A background run returns before the runner does, and an interrupted one
- * reports neither a pass nor a failure of the code, so neither is a check.
+ * A Bash run's output as Claude reports it. A background run returns before the command does, and an interrupted one
+ * reports neither a pass nor a failure of the code, so neither has a result to read.
  */
-function bashOutcome(event: string, raw: Record<string, unknown>, input: Record<string, unknown>, cwd: string): EvidenceRecord | undefined {
+function bashOutput(event: string, raw: Record<string, unknown>, input: Record<string, unknown>): string | undefined {
   if (typeof input.command !== "string" || input.run_in_background === true) return undefined;
-  let output: string;
-  if (event === "PostToolUseFailure") {
-    if (raw.is_interrupt === true || typeof raw.error !== "string") return undefined;
-    output = raw.error;
-  } else {
-    const response = object(raw.tool_response) ? raw.tool_response : {};
-    if (response.interrupted === true) return undefined;
-    output = [response.stdout, response.stderr].filter((part): part is string => typeof part === "string" && part !== "").join("\n");
+  if (event === "PostToolUseFailure") return raw.is_interrupt === true || typeof raw.error !== "string" ? undefined : raw.error;
+  const response = object(raw.tool_response) ? raw.tool_response : {};
+  if (response.interrupted === true) return undefined;
+  return [response.stdout, response.stderr].filter((part): part is string => typeof part === "string" && part !== "").join("\n");
+}
+
+/** A Bash run as Pi's done-check reads it. */
+function bashOutcome(event: string, raw: Record<string, unknown>, input: Record<string, unknown>, cwd: string): EvidenceRecord | undefined {
+  const output = bashOutput(event, raw, input);
+  return output === undefined ? undefined : checkRecord(input, event === "PostToolUseFailure", output, cwd);
+}
+
+/**
+ * A tool result in the shape of Pi's own tools, so the stuck guard keys, classifies and diffs it as in Pi. A successful
+ * Write or Edit has no output worth comparing; a failed one keeps Claude's error.
+ */
+function claudeAttempt(event: string, raw: Record<string, unknown>, input: Record<string, unknown>): Attempt | undefined {
+  const failed = event === "PostToolUseFailure";
+  if (raw.tool_name === "Bash") {
+    const output = bashOutput(event, raw, input);
+    return output === undefined ? undefined : makeAttempt("bash", { command: input.command }, [{ type: "text", text: output }], failed);
   }
-  return checkRecord(input, event === "PostToolUseFailure", output, cwd);
+  if (failed && (raw.is_interrupt === true || typeof raw.error !== "string")) return undefined;
+  const view = raw.tool_name === "Write" ? { path: input.file_path, content: input.content }
+    : { path: input.file_path, oldText: input.old_string, newText: input.new_string, ...(input.replace_all === true ? { replaceAll: true } : {}) };
+  return makeAttempt(raw.tool_name === "Write" ? "write" : "edit", view, [{ type: "text", text: failed ? raw.error as string : "" }], failed);
 }
 
 export async function claudeHook(event: string, raw: unknown, signal: AbortSignal): Promise<ClaudeOutput> {
   if (!(CLAUDE_EVENTS as readonly string[]).includes(event) || !object(raw) || raw.hook_event_name !== event) return {};
-  if (event === "UserPromptSubmit") return promptHook("claude", raw, signal);
+  if (event === "UserPromptSubmit") return promptHook("claude", raw, signal, config => doneActive(config) || stuckActive(config));
   if (event === "Stop") return stopHook("claude", raw, signal);
   if ((raw.tool_name !== "Write" && raw.tool_name !== "Edit" && raw.tool_name !== "Bash") || !object(raw.tool_input)) return {};
   const { cwd, session } = sessionOf(raw);
@@ -96,11 +116,25 @@ export async function claudeHook(event: string, raw: unknown, signal: AbortSigna
   if (raw.tool_name !== "Bash" && (typeof input.file_path !== "string" || !isAbsolute(input.file_path))) throw new Error("Invalid Claude file path.");
   const config = await globalConfig(signal);
   const rules = config.enabled && config.rules.enabled;
-  const done = config.enabled && config.done.enabled && config.done.nudge;
-  if (!rules && !done) return {};
+  const done = doneActive(config);
+  const stuck = stuckActive(config);
+  if (!rules && !done && !stuck) return {};
   const state = new HostState("claude", session, config.maxRequests, signal);
   await state.prepare();
   const identity = JSON.stringify([raw.agent_id ?? null, toolId, raw.tool_name]);
+  const attempt = stuck && event !== "PreToolUse" ? claudeAttempt(event, raw, input) : undefined;
+  // Both may wait for a judgment, so they share the hook's deadline instead of taking turns at it.
+  const [notice, output] = await Promise.all([
+    attempt ? stuckCheck(config, state, identity, attempt, signal) : {},
+    afterCall(event, raw, input, cwd, config, state, identity, signal),
+  ]);
+  return { ...output, ...notice };
+}
+
+/** The rules judgment and the done-check's evidence for one call; the stuck-check runs beside it. */
+async function afterCall(event: string, raw: Record<string, unknown>, input: Record<string, unknown>, cwd: string, config: WardenConfig, state: HostState, identity: string, signal: AbortSignal): Promise<HookOutput> {
+  const rules = config.enabled && config.rules.enabled;
+  const done = doneActive(config);
   if (raw.tool_name === "Bash") {
     const record = done && event !== "PreToolUse" ? bashOutcome(event, raw, input, await realpath(cwd)) : undefined;
     if (record) state.recordEvidence(identity, record);
