@@ -1247,3 +1247,25 @@ test("a new prompt removes the previous prompt's stuck-check records", async () 
     assert.equal((await storedAttempts(directory)).length, 1, "only the current prompt's result is kept");
   } finally { await rm(fx.root, { recursive: true, force: true }); }
 });
+
+test("a Write keeps its rules feedback and its stuck notice when both arrive in time", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await prompt(fx, env, "Add the value module");
+    const file = join(fx.project, "a.ts");
+    await writeFile(file, "BAD");
+    const writes: Array<{ rules?: string; notice?: string }> = [];
+    for (const id of ["write-1", "write-2", "write-3"]) {
+      const result = await cli(fx, ["hook", "claude", "PostToolUse"], payload(fx, "Write", { file_path: file, content: "BAD" }, id), env);
+      assert.equal(result.code, 0, result.stderr);
+      const output = JSON.parse(result.stdout || "{}");
+      writes.push({ rules: output.hookSpecificOutput?.additionalContext, notice: output.systemMessage });
+    }
+    assert.match(writes[0]!.rules ?? "", /No BAD marker/);
+    assert.equal(writes[0]!.notice, undefined);
+    assert.match(writes[2]!.rules ?? "", /No BAD marker/, "the rules feedback still reaches the model");
+    assert.match(writes[2]!.notice ?? "", /^pi-warden: the same call succeeded 3 times with the same output/, "the stuck notice arrives in the same answer");
+    assert.deepEqual(await stuckRequests(env), [], "a successful repeat is decided in code");
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
