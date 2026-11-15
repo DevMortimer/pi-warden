@@ -10,6 +10,12 @@ import { createStallWatch, progressCount } from "../eval/stall.mjs";
 
 const SCRIPT = join(import.meta.dirname, "..", "scripts", "eval-ab.mjs");
 
+/**
+ * A boot slower than the 1.8 s stall limit, so the count does not depend on how fast node boots on the machine running
+ * the suite. Named without the `PI_` prefix because `tests/setup-env.ts` clears every `PI_*` before this file loads.
+ */
+const BOOT_DELAY_MS = process.env.STALL_TEST_BOOT_DELAY_MS ?? "0";
+
 const assistant = { message: { role: "assistant", stopReason: "stop" } };
 const toolResult = { message: { role: "toolResult" } };
 const user = { message: { role: "user" } };
@@ -47,9 +53,10 @@ const sessionDir = args[args.indexOf("--session-dir") + 1];
 const agentDir = process.env.PI_CODING_AGENT_DIR;
 const warden = args.some((a, i) => args[i - 1] === "-e" && a.endsWith(path.join("extensions", "index.js")));
 const line = (role) => JSON.stringify({ type: "message", message: Object.assign({ role, timestamp: Date.now() }, role === "assistant" ? { content: [{ type: "text", text: "done" }], stopReason: "stop", usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15 } } : {}) }) + "\\n";
+const bootDelay = Number(process.env.PI_FAKE_BOOT_DELAY_MS || 0);
+if (bootDelay > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, bootDelay);
 fs.mkdirSync(sessionDir, { recursive: true });
 fs.appendFileSync(path.join(sessionDir, "s.jsonl"), line("assistant"));
-fs.appendFileSync(path.join(process.env.PI_FAKE_STATE, "starts.log"), "start\\n");
 if (process.env.PI_FAKE_MODE === "hang") {
   if (warden) {
     // A ledger write cut short by the kill: the stall must not read as a Jev failure.
@@ -67,19 +74,30 @@ if (process.env.PI_FAKE_MODE === "hang") {
 }
 `;
 
+/**
+ * The start line is the shell's, not the child's: an append in the wrapper costs milliseconds, so a spawn is counted even
+ * when the child is killed at the stall limit before node has finished booting. `exec` keeps one pid, so the kill lands.
+ */
+const WRAPPER = `#!/bin/sh
+printf 'start\\n' >> "$PI_FAKE_STATE/starts.log"
+exec node "$PI_FAKE_PI" "$@"
+`;
+
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "eval-stall-"));
   const bin = join(root, "bin");
   const state = join(root, "state");
   mkdirSync(bin);
   mkdirSync(state);
-  writeFileSync(join(bin, "pi"), FAKE_PI);
+  writeFileSync(join(bin, "fake-pi.js"), FAKE_PI);
+  writeFileSync(join(bin, "pi"), WRAPPER);
   chmodSync(join(bin, "pi"), 0o755);
   const out = join(root, "report");
   const go = (args: string[], mode: string) =>
     spawnSync("node", [SCRIPT, "--tasks", "t1-redact", "--model", "fake/model", "--retry-delays", "0,0", "--concurrency", "1", "--repeats", "1", "--stall-min", "0.03", "--timeout-min", "5", "--out", out, ...args], {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, PI_FAKE_STATE: state, PI_FAKE_MODE: mode },
+      // The delayed boot is the hang case's arm; a delayed "slow" child would itself read as a stall.
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, PI_FAKE_STATE: state, PI_FAKE_PI: join(bin, "fake-pi.js"), PI_FAKE_MODE: mode, PI_FAKE_BOOT_DELAY_MS: mode === "hang" ? BOOT_DELAY_MS : "0" },
     });
   const read = () => JSON.parse(readFileSync(join(out, "runs.json"), "utf8"));
   const starts = () => (existsSync(join(state, "starts.log")) ? readFileSync(join(state, "starts.log"), "utf8").trim().split("\n").length : 0);
