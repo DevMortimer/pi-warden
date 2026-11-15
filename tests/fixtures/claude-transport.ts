@@ -43,6 +43,16 @@ promises.open = (async (...args) => {
   return handle;
 }) as typeof promises.open;
 fs.openSync = ((path, flags, mode) => {
+  // A race test holds both hooks of a session at `prepare()`, before either one reads or claims anything.
+  const ready = process.env.CLAUDE_TEST_READY_BARRIER;
+  if (ready && String(path).replaceAll("\\", "/").endsWith("/budget.json")) {
+    fs.writeFileSync(join(ready, String(process.pid)), "ready");
+    const until = Date.now() + 3000;
+    while (fs.readdirSync(ready).length < 2) {
+      if (Date.now() > until) throw new Error("Fixture barrier timed out.");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+    }
+  }
   if (/request-\d+\.claim$/.test(String(path))) {
     if (process.env.CLAUDE_TEST_DENY_CLAIM === "1") throw Object.assign(new Error("Fixture persistence failure."), { code: "EACCES" });
     const barrier = process.env.CLAUDE_TEST_BARRIER;
@@ -70,6 +80,8 @@ globalThis.fetch = async (input, init) => {
   const body = JSON.parse(String(init?.body));
   if (process.env.CLAUDE_TEST_CAPTURE) appendFileSync(process.env.CLAUDE_TEST_CAPTURE, `${JSON.stringify(body)}\n`);
   if (process.env.CLAUDE_TEST_HANG === "ignore") return new Promise<Response>(() => { setInterval(() => undefined, 60_000); });
+  // Only the stuck judge stalls, so the rules request of the same hook still answers.
+  if (process.env.CLAUDE_TEST_HANG_STUCK === "1" && "same_strategy" in (body.questions as Record<string, unknown>)) return new Promise<Response>(() => { setInterval(() => undefined, 60_000); });
   if (process.env.CLAUDE_TEST_AUTH_FIFO === "1") {
     const path = join(process.env.PI_CODING_AGENT_DIR!, "pi-typesafe", "auth-state.json");
     fs.rmSync(path, { force: true });

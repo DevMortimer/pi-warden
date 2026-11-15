@@ -22,19 +22,20 @@ function storedText(text: string): string {
 }
 
 /**
- * Pi's stuck guard for one tool result of a host whose hooks run in separate processes. The prompt's results are
- * numbered files, so the window is rebuilt from the latest `stuck.window` of them; a marker per judged result carries
- * the cooldown, and a marker per call key keeps the quick repeat to once per call per prompt. A stuck verdict, else a
- * quick repeat, goes to the owner only, as Pi reports both on the status line and never to the agent.
+ * Pi's stuck guard for one tool result of a host whose hooks run in separate processes. Each agent of a prompt has its
+ * own numbered results, so the window is rebuilt from the latest `stuck.window` of that agent's; a marker per judged
+ * result carries the cooldown, and a marker per call key keeps the quick repeat to once per call per prompt. A stuck
+ * verdict, else a quick repeat, goes to the owner only, as Pi reports both on the status line and never to the agent.
  */
-export async function stuckCheck(config: WardenConfig, state: HostState, identity: string, attempt: Attempt, signal: AbortSignal): Promise<OwnerOutput> {
-  const prompt = await state.prompt();
-  const scope = prompt?.id ?? "no prompt recorded";
+export async function stuckCheck(config: WardenConfig, state: HostState, agent: string | undefined, identity: string, attempt: Attempt, signal: AbortSignal): Promise<OwnerOutput> {
+  const record = await state.prompt();
+  const prompt = record?.id ?? "no prompt recorded";
+  const scope = JSON.stringify([prompt, agent ?? null]);
   const stored: Attempt = { ...attempt, text: storedText(attempt.text) };
-  const index = state.recordAttempt(scope, identity, stored);
+  const index = state.recordAttempt(prompt, agent, identity, stored);
   if (index === undefined) return {};
   const window = new AttemptWindow(config.stuck.window);
-  for (const earlier of await state.attempts(scope, index - config.stuck.window + 1, index - 1)) window.push(earlier);
+  for (const earlier of await state.attempts(prompt, agent, index - config.stuck.window + 1, index - 1)) window.push(earlier);
   window.push(stored);
   const judged = (at: number): string => JSON.stringify([scope, at]);
   for (let ago = 1; ago < config.stuck.cooldown && ago <= index; ago++) {
@@ -44,8 +45,13 @@ export async function stuckCheck(config: WardenConfig, state: HostState, identit
   const repeat = candidate && state.once("repeat", JSON.stringify([scope, candidate.attempt.key])) ? candidate : undefined;
   if (!window.shouldJudge(config.stuck)) return ownerNotice(repeat && quickRepeatNudge(repeat));
   const judge = await headlessJudge(config, state, signal);
-  const verdict = await evaluateStuck(window, prompt?.task, { config: config.stuck, judge: "reason" in judge ? undefined : judge, timeoutMs: config.timeoutMs, signal });
-  if (verdict.source !== "repeat") state.once("stuck", judged(index));
+  // Claim every result the cooldown covers, oldest first: a claim that loses leaves only numbers behind the winner's,
+  // which the winner's own claim already covers, so two hook processes cannot judge this stretch twice.
+  const claim = (): boolean => {
+    for (let at = Math.max(0, index - config.stuck.cooldown + 1); at <= index; at++) if (!state.once("stuck", judged(at))) return false;
+    return true;
+  };
+  const verdict = await evaluateStuck(window, record?.task, { config: config.stuck, judge: "reason" in judge ? undefined : judge, timeoutMs: config.timeoutMs, signal, claim });
   // A stuck verdict on the same result carries its own notice; the quick one would say the same thing twice.
   if (verdict.stuck) return ownerNotice(stuckNudge(verdict));
   const notice = (reason: string, text: string): string | undefined => state.once("notice", `stuck-${reason}`) ? `pi-warden: ${text}` : undefined;

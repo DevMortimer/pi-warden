@@ -103,7 +103,18 @@ function claudeAttempt(event: string, raw: Record<string, unknown>, input: Recor
   return makeAttempt(raw.tool_name === "Write" ? "write" : "edit", view, [{ type: "text", text: failed ? raw.error as string : "" }], failed);
 }
 
-export async function claudeHook(event: string, raw: unknown, signal: AbortSignal): Promise<ClaudeOutput> {
+/** The rules answer and the done-check evidence are the hook's work; a stuck notice is a bonus that must not hold them. */
+const STUCK_RESERVE_MS = 500;
+
+/** The owner's notice, or nothing once `until` has passed: a stuck-check that throws or overruns costs only its notice. */
+async function ownerOnly(work: Promise<OwnerOutput>, until: number): Promise<OwnerOutput> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<OwnerOutput>(done => { timer = setTimeout(() => done({}), Math.max(0, until - Date.now())); });
+  try { return await Promise.race([work.catch(() => ({}) as OwnerOutput), expired]); }
+  finally { clearTimeout(timer); }
+}
+
+export async function claudeHook(event: string, raw: unknown, signal: AbortSignal, deadline: number): Promise<ClaudeOutput> {
   if (!(CLAUDE_EVENTS as readonly string[]).includes(event) || !object(raw) || raw.hook_event_name !== event) return {};
   if (event === "UserPromptSubmit") return promptHook("claude", raw, signal, config => doneActive(config) || stuckActive(config));
   if (event === "Stop") return stopHook("claude", raw, signal);
@@ -121,11 +132,12 @@ export async function claudeHook(event: string, raw: unknown, signal: AbortSigna
   if (!rules && !done && !stuck) return {};
   const state = new HostState("claude", session, config.maxRequests, signal);
   await state.prepare();
-  const identity = JSON.stringify([raw.agent_id ?? null, toolId, raw.tool_name]);
+  const agent = raw.agent_id as string | undefined;
+  const identity = JSON.stringify([agent ?? null, toolId, raw.tool_name]);
   const attempt = stuck && event !== "PreToolUse" ? claudeAttempt(event, raw, input) : undefined;
   // Both may wait for a judgment, so they share the hook's deadline instead of taking turns at it.
   const [notice, output] = await Promise.all([
-    attempt ? stuckCheck(config, state, identity, attempt, signal) : {},
+    attempt ? ownerOnly(stuckCheck(config, state, agent, identity, attempt, signal), deadline - STUCK_RESERVE_MS) : {},
     afterCall(event, raw, input, cwd, config, state, identity, signal),
   ]);
   return { ...output, ...notice };

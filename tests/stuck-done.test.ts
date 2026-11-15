@@ -166,6 +166,27 @@ test("evaluateStuck decides exact repeats in code and asks Jev otherwise", async
   assert.equal(errored.stuck, false);
   assert.equal(errored.source, "error");
   assert.match(errored.error ?? "", /synthetic timeout/);
+
+  // A host that keeps its cool-down in files claims the window before the request leaves, as Pi marks it before asking.
+  let claimed = 0;
+  const skipped = stuckJudge(0.9, 0, 0.1);
+  const lost = await evaluateStuck(varied, "fix tests", { config: stuckConfig, judge: skipped, timeoutMs: 1000, claim: () => { claimed += 1; return false; } });
+  assert.equal(claimed, 1, "the cool-down is claimed before the request");
+  assert.equal(skipped.calls.length, 0, "a claim another process holds sends nothing");
+  assert.equal(lost.stuck, false);
+  assert.deepEqual(lost.reasons, []);
+
+  const won = stuckJudge(0.9, 0, 0.1);
+  const judged = await evaluateStuck(varied, "fix tests", { config: stuckConfig, judge: won, timeoutMs: 1000, claim: () => true });
+  assert.equal(won.calls.length, 1, "a claim that is won asks Jev once");
+  assert.equal(judged.source, "typesafe");
+
+  const repeatsAgain = new AttemptWindow(12);
+  for (let index = 0; index < 3; index++) repeatsAgain.push(makeAttempt("bash", { command: "npm test" }, text("1 failing"), true));
+  let claimedForRepeat = false;
+  const inCode = await evaluateStuck(repeatsAgain, "fix tests", { config: stuckConfig, judge: stuckJudge(0.9, 0, 0.1), timeoutMs: 1000, claim: () => { claimedForRepeat = true; return true; } });
+  assert.equal(inCode.source, "repeat");
+  assert.equal(claimedForRepeat, false, "a repeat decided in code claims no cool-down and sends no request");
 });
 
 test("churnCount detects repeated calls to the same target with changing output", () => {

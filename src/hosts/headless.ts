@@ -19,43 +19,47 @@ export function feedback(notes: string[]): HookOutput {
   return notes.length ? { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: redact(notes.join("\n")).slice(0, 9000) } } : {};
 }
 
-const HOOKS: Record<HostName, () => Promise<(event: string, input: unknown, signal: AbortSignal) => Promise<HookOutput>>> = {
+const HOOKS: Record<HostName, () => Promise<(event: string, input: unknown, signal: AbortSignal, deadline: number) => Promise<HookOutput>>> = {
   claude: async () => (await import("./claude.js")).claudeHook,
   codex: async () => (await import("./codex.js")).codexHook,
 };
 
-/** A child process makes the deadline enforceable during native synchronous SDK reads as well. */
-export async function runHostHook(host: HostName, event: string, input: unknown, signal: AbortSignal): Promise<HookOutput> {
+/**
+ * A child process makes the deadline enforceable during native synchronous SDK reads as well. The answer is the child's
+ * message, so work a hook leaves running — a stuck judgment past the deadline — cannot keep the hook open; the engine is
+ * killed as soon as the answer arrives.
+ */
+export async function runHostHook(host: HostName, event: string, input: unknown, signal: AbortSignal, deadline: number): Promise<HookOutput> {
   signal.throwIfAborted();
   return new Promise((done, reject) => {
     const engine = fork(fileURLToPath(import.meta.url), [], {
       env: { ...process.env, PI_WARDEN_HOOK_CHILD: "1" },
       stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "advanced",
     });
-    let output: HookOutput | undefined;
-    let failed = false;
+    let settled = false;
     let terminate: ReturnType<typeof setTimeout> | undefined;
+    const settle = (error?: Error, output?: HookOutput): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(terminate);
+      signal.removeEventListener("abort", abort);
+      if (engine.pid !== undefined && engine.exitCode === null && engine.signalCode === null) engine.kill("SIGKILL");
+      if (error) reject(error);
+      else done(output as HookOutput);
+    };
     const abort = (): void => {
       if (engine.connected) engine.send("abort", () => undefined);
       // Git is awaited before entering the SDK. Allow its async cancellation and close callback first.
-      terminate = setTimeout(() => {
-        // This native ChildProcess handle still owns an unreaped leader; no numeric group is signalled.
-        if (engine.pid !== undefined && engine.exitCode === null && engine.signalCode === null) engine.kill("SIGKILL");
-      }, 100);
+      terminate = setTimeout(() => settle(new Error("Hook deadline reached.")), 100);
     };
     signal.addEventListener("abort", abort, { once: true });
     engine.on("message", (message: unknown) => {
-      if (object(message) && message.ok === true && object(message.output)) output = message.output as HookOutput;
-      else failed = true;
+      if (object(message) && message.ok === true && object(message.output)) settle(undefined, message.output as HookOutput);
+      else settle(new Error("Hook did not finish within its limits."));
     });
-    engine.on("error", () => { failed = true; });
-    engine.once("close", code => {
-      clearTimeout(terminate);
-      signal.removeEventListener("abort", abort);
-      if (signal.aborted || failed || code !== 0 || output === undefined) reject(new Error("Hook did not finish within its limits."));
-      else done(output);
-    });
-    engine.send({ host, event, input }, error => { if (error) failed = true; });
+    engine.on("error", error => settle(error));
+    engine.once("close", () => settle(new Error("Hook did not finish within its limits.")));
+    engine.send({ host, event, input, deadline }, error => { if (error) settle(new Error("Hook did not finish within its limits.")); });
     if (signal.aborted) abort();
   });
 }
@@ -165,7 +169,7 @@ if (process.env.PI_WARDEN_HOOK_CHILD === "1" && process.send) {
     if (message === "abort") { controller.abort(); return; }
     if (started || !object(message) || typeof message.event !== "string" || (message.host !== "claude" && message.host !== "codex")) return;
     started = true;
-    void HOOKS[message.host]().then(hook => hook(message.event as string, message.input, controller.signal)).then(
+    void HOOKS[message.host]().then(hook => hook(message.event as string, message.input, controller.signal, typeof message.deadline === "number" ? message.deadline : Date.now())).then(
       output => send({ ok: true, output }),
       () => send({ ok: false }),
     );

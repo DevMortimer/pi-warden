@@ -30,6 +30,9 @@ async function readInput(signal: AbortSignal): Promise<unknown> {
 
 const USAGE = "Usage: pi-warden hook <claude|codex> <event> | init <claude|codex> [--project] | uninstall <claude|codex> [--project]";
 
+/** Claude Code cancels a slower hook and discards its output, so this leaves room to print what the hook found. */
+const HOOK_DEADLINE_MS = 8000;
+
 /** The events each host's installer registers; any other event is not implemented. */
 const HOOK_EVENTS: Record<HostName, readonly string[]> = {
   claude: ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop"],
@@ -45,7 +48,8 @@ async function main(): Promise<void> {
     }
     if (command === "hook") {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
+      const deadline = Date.now() + HOOK_DEADLINE_MS;
+      const timer = setTimeout(() => controller.abort(), HOOK_DEADLINE_MS);
       try {
         if ((agent !== "claude" && agent !== "codex") || !event || !HOOK_EVENTS[agent].includes(event) || process.argv.length !== 5) {
           process.stderr.write("pi-warden: unsupported hook; only Claude rules and the stuck-check, Codex apply_patch rules, and the done-check on both are implemented.\n");
@@ -53,7 +57,7 @@ async function main(): Promise<void> {
         }
         const input = await readInput(controller.signal);
         const { runHostHook } = await import("./hosts/headless.js");
-        process.stdout.write(`${JSON.stringify(await runHostHook(agent, event, input, controller.signal))}\n`);
+        process.stdout.write(`${JSON.stringify(await runHostHook(agent, event, input, controller.signal, deadline))}\n`);
       }
       finally { clearTimeout(timer); }
       return;

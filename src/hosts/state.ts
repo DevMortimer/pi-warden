@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { mkdir, opendir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TypeSafeIntegrationError } from "pi-typesafe";
@@ -43,7 +43,7 @@ export type HostName = "claude" | "codex";
 type MarkerKind = "processed" | "sensitive" | "notice" | "evidence" | "done" | "attempt" | "repeat" | "stuck";
 
 /** Each prompt numbers its own results, so a new prompt starts an empty window as in Pi. */
-const attemptFile = (scope: string, index: number): string => `attempt-${digest(scope).slice(0, 16)}-${index}.json`;
+const promptDirectory = (prompt: string): string => digest(prompt).slice(0, 16);
 
 const STRINGS = ["tool", "key", "outputKey", "call", "output", "text"] as const;
 const FLAGS = ["failed", "changes", "readOnly", "poll"] as const;
@@ -144,21 +144,24 @@ export class HostState {
   }
 
   /**
-   * One tool result of the prompt `scope`, numbered like the evidence records so the stuck-check reads the results in
-   * the order their hooks finished. Undefined for a replayed call, or when the prompt has no free number left.
+   * One tool result of one agent's window of the prompt `prompt`, numbered like the evidence records so the stuck-check
+   * reads the results in the order their hooks finished. Undefined for a replayed call, or when the agent has no free
+   * number left. The directory is made here because a hook of the previous prompt may record after the sweep below.
    */
-  recordAttempt(scope: string, identity: string, attempt: Attempt): number | undefined {
+  recordAttempt(prompt: string, agent: string | undefined, identity: string, attempt: Attempt): number | undefined {
     if (!this.once("attempt", identity)) return undefined;
     const text = JSON.stringify({ version: 1, ...attempt });
     if (Buffer.byteLength(text) > ATTEMPT_BYTES) throw new Error("Stuck-check attempt exceeds its byte limit.");
-    return this.append(index => attemptFile(scope, index), text, ATTEMPT_LIMIT);
+    this.signal.throwIfAborted();
+    mkdirSync(this.attemptDirectory(prompt, agent), { recursive: true, mode: 0o700 });
+    return this.append(index => join(this.attemptPath(prompt, agent), `${index}.json`), text, ATTEMPT_LIMIT);
   }
 
-  /** The prompt's results numbered from `first` to `last`, oldest first. One a crashed hook left empty or invalid is skipped. */
-  async attempts(scope: string, first: number, last: number): Promise<Attempt[]> {
+  /** The agent's results of the prompt numbered from `first` to `last`, oldest first. One a crashed hook left empty or invalid is skipped. */
+  async attempts(prompt: string, agent: string | undefined, first: number, last: number): Promise<Attempt[]> {
     const attempts: Attempt[] = [];
     for (let index = Math.max(0, first); index <= last; index++) {
-      const text = await readText(join(this.directory, attemptFile(scope, index)), this.signal, ATTEMPT_BYTES);
+      const text = await readText(join(this.attemptDirectory(prompt, agent), `${index}.json`), this.signal, ATTEMPT_BYTES);
       if (text === undefined) continue;
       let raw: unknown;
       try { raw = JSON.parse(text); }
@@ -189,10 +192,36 @@ export class HostState {
   async recordPrompt(task: string): Promise<void> {
     const path = join(this.directory, "prompt.json");
     const temporary = `${path}.${randomUUID()}.tmp`;
+    const id = randomUUID();
     try {
-      await writeFile(temporary, JSON.stringify({ version: 1, id: randomUUID(), task }), { mode: 0o600, flag: "wx", signal: this.signal });
+      await writeFile(temporary, JSON.stringify({ version: 1, id, task }), { mode: 0o600, flag: "wx", signal: this.signal });
       await rename(temporary, path);
     } finally { await rm(temporary, { force: true }); }
+    await this.dropAttempts(id);
+  }
+
+  /**
+   * Removes the results of every earlier prompt. This is what bounds the session directory: the numbers are never read
+   * again once the window moved on, and a hook of a swept prompt only re-creates its own directory until the next prompt.
+   */
+  private async dropAttempts(keep: string): Promise<void> {
+    const root = join(this.directory, "attempts");
+    const entries = await opendir(root).catch(() => undefined);
+    if (!entries) return;
+    let checked = 0;
+    for await (const entry of entries) {
+      this.signal.throwIfAborted();
+      if (entry.name !== promptDirectory(keep)) await rm(join(root, entry.name), { recursive: true, force: true });
+      if (++checked >= 128) break;
+    }
+  }
+
+  private attemptPath(prompt: string, agent: string | undefined): string {
+    return join("attempts", promptDirectory(prompt), digest(agent ?? "").slice(0, 16));
+  }
+
+  private attemptDirectory(prompt: string, agent: string | undefined): string {
+    return join(this.directory, this.attemptPath(prompt, agent));
   }
 
   async prompt(): Promise<PromptRecord | undefined> {
