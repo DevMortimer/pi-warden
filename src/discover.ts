@@ -9,7 +9,7 @@ export const SKIP_DIRS = new Set([
   ".turbo", ".vercel", ".netlify", ".svelte-kit",
 ]);
 
-export const SOURCE_RE = /\.(ts|tsx|js|jsx|rs|py|go|vue|svelte|rb|php|java|kt|swift|cs|cpp|c|h)$/;
+export const SOURCE_RE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|rs|py|go|vue|svelte|rb|php|java|kt|swift|cs|cpp|c|h|sh|bash|zsh)$/;
 
 /**
  * Recursively walk `dir` and collect source-file paths (relative to `dir`).

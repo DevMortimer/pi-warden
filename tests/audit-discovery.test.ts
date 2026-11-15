@@ -33,6 +33,21 @@ test("discoverSourceFiles: finds files in root-level layout (no src/, lib/, app/
   assert.ok(!files.includes("README.md"), "should not include non-source files");
 });
 
+test("discoverSourceFiles: finds Node ESM modules and shell scripts", async () => {
+  const project = join(temporary, "script-layout");
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "index.mjs"), "export const x = 1;");
+  await writeFile(join(project, "legacy.cjs"), "module.exports = 1;");
+  await writeFile(join(project, "deploy.sh"), "#!/bin/sh\necho deploy");
+  await writeFile(join(project, "notes.md"), "# not source");
+
+  const files = discoverSourceFiles(project);
+  assert.ok(files.includes("index.mjs"), "should find .mjs file");
+  assert.ok(files.includes("legacy.cjs"), "should find .cjs file");
+  assert.ok(files.includes("deploy.sh"), "should find .sh file");
+  assert.ok(!files.includes("notes.md"), "should not include Markdown");
+});
+
 test("discoverSourceFiles: finds files in nested directories like packages/server/", async () => {
   const project = join(temporary, "nested-layout");
   await mkdir(join(project, "packages", "server"), { recursive: true });
@@ -153,7 +168,7 @@ test("findProjects: skips node_modules and dot-directories", async () => {
 // ─── SOURCE_RE ────────────────────────────────────────────────────────────────
 
 test("SOURCE_RE matches expected extensions", () => {
-  const shouldMatch = ["foo.ts", "foo.tsx", "foo.js", "foo.jsx", "foo.rs", "foo.py", "foo.go", "foo.vue", "foo.svelte", "foo.rb", "foo.php", "foo.java", "foo.kt", "foo.swift", "foo.cs", "foo.cpp", "foo.c", "foo.h"];
+  const shouldMatch = ["foo.ts", "foo.tsx", "foo.mts", "foo.cts", "foo.js", "foo.jsx", "foo.mjs", "foo.cjs", "foo.rs", "foo.py", "foo.go", "foo.vue", "foo.svelte", "foo.rb", "foo.php", "foo.java", "foo.kt", "foo.swift", "foo.cs", "foo.cpp", "foo.c", "foo.h", "foo.sh", "foo.bash", "foo.zsh"];
   const shouldNotMatch = ["foo.txt", "foo.md", "foo.json", "foo.yaml", "foo.css", "foo.html", "foo.toml", "foo.lock", "foo.jpg", "foo.png"];
 
   for (const name of shouldMatch) {
