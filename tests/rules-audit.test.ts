@@ -119,6 +119,20 @@ test("collectAuditFiles: gitignored files are not audited", async () => {
   }
 });
 
+test("collectAuditFiles: ESM test files under a paths: tests/** rule are selected", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "pi-warden-rules-audit-esm-"));
+  try {
+    await mkdir(join(repo, "tests"), { recursive: true });
+    await writeFile(join(repo, "pi-warden.md"), "# Tests derive expectations from fixtures\npaths: tests/**\nTests must not read the live site.\n");
+    await writeFile(join(repo, "tests", "page.test.mjs"), "import test from 'node:test';\n");
+    const repoSet = new RuleStore().load(repo, config())!;
+    const plan = collectAuditFiles(repo, ["."], repoSet, config(), 50);
+    assert.deepEqual(plan.files, ["tests/page.test.mjs"]);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Arguments
 

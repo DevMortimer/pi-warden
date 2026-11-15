@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- `/warden rules audit` finds source files in `.mjs`, `.cjs`, `.mts`, `.cts`, `.sh`, `.bash`, and `.zsh` projects (issue #216). Those extensions were missing from discovery, so a rule scoped to `tests/**` in an ESM project selected no files and the audit sent nothing. The same walk feeds `/warden audit`'s source count, so its inventory includes those files too.
 
 ## 2.10.0
 
