@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, openSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { mkdir, opendir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TypeSafeIntegrationError } from "pi-typesafe";
 import { defaultHostDirs } from "../host-dirs.js";
+import type { Attempt } from "../stuck.js";
 import { object, readText } from "./io.js";
 
 export const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
@@ -19,6 +20,12 @@ const CALL_LIMIT = 256;
 /** A clipped call stays under this even when JSON escapes every character. */
 const RECORD_BYTES = 4096;
 export const TASK_LIMIT = 2000;
+/** Results of one prompt the stuck-check numbers; past this it records nothing more for that prompt. */
+const ATTEMPT_LIMIT = 10_000;
+/** Characters of redacted output an attempt keeps for the stuck evidence. */
+export const ATTEMPT_TEXT_LIMIT = 8000;
+/** An attempt with that output and its other clipped fields stays under this even when JSON escapes every character. */
+const ATTEMPT_BYTES = 96 * 1024;
 
 /** Empty exclusive markers are reservations, including when their creating process crashes. */
 function marker(path: string): boolean {
@@ -32,6 +39,29 @@ function marker(path: string): boolean {
 }
 
 export type HostName = "claude" | "codex";
+
+type MarkerKind = "processed" | "sensitive" | "notice" | "evidence" | "done" | "attempt" | "repeat" | "stuck";
+
+/** Each prompt numbers its own results, so a new prompt starts an empty window as in Pi. */
+const promptDirectory = (prompt: string): string => digest(prompt).slice(0, 16);
+
+const STRINGS = ["tool", "key", "outputKey", "call", "output", "text"] as const;
+const FLAGS = ["failed", "changes", "readOnly", "poll"] as const;
+
+function storedAttempt(raw: unknown): Attempt | undefined {
+  if (!object(raw) || raw.version !== 1) return undefined;
+  if (STRINGS.some(field => typeof raw[field] !== "string") || FLAGS.some(field => typeof raw[field] !== "boolean")) return undefined;
+  if ((raw.text as string).length > ATTEMPT_TEXT_LIMIT) return undefined;
+  const change = raw.change;
+  if (change !== undefined && (!object(change) || typeof change.path !== "string" || typeof change.diff !== "string"
+    || !Number.isSafeInteger(change.added) || !Number.isSafeInteger(change.removed))) return undefined;
+  return {
+    tool: raw.tool as string, key: raw.key as string, outputKey: raw.outputKey as string, call: raw.call as string,
+    failed: raw.failed as boolean, output: raw.output as string, changes: raw.changes as boolean, readOnly: raw.readOnly as boolean,
+    poll: raw.poll as boolean, text: raw.text as string,
+    ...(object(change) ? { change: { path: change.path as string, added: change.added as number, removed: change.removed as number, diff: change.diff as string } } : {}),
+  };
+}
 
 /** One directory per host session; every record in it is created exclusively, so parallel hook processes never rewrite a shared file. */
 export class HostState {
@@ -68,9 +98,15 @@ export class HostState {
     if (!object(raw) || raw.version !== 1 || raw.maxRequests !== this.maxRequests) throw new Error("Session budget is incomplete or changed.");
   }
 
-  once(kind: "processed" | "sensitive" | "notice" | "evidence" | "done", identity: string): boolean {
+  once(kind: MarkerKind, identity: string): boolean {
     this.signal.throwIfAborted();
     return marker(join(this.directory, `${kind}-${digest(identity)}.claim`));
+  }
+
+  /** Whether `once` has already claimed this identity, without claiming it. */
+  claimed(kind: MarkerKind, identity: string): boolean {
+    this.signal.throwIfAborted();
+    return existsSync(join(this.directory, `${kind}-${digest(identity)}.claim`));
   }
 
   reserveRequest(): void {
@@ -87,19 +123,53 @@ export class HostState {
    */
   recordEvidence(identity: string, record: EvidenceRecord): void {
     if (!this.once("evidence", identity)) return;
-    const text = JSON.stringify({ version: 1, ...record });
-    for (let index = 0; index < EVIDENCE_LIMIT; index++) {
+    this.append(index => `evidence-${index}.json`, JSON.stringify({ version: 1, ...record }), EVIDENCE_LIMIT);
+  }
+
+  /** Writes `text` to the first numbered file nobody created yet and returns its number; undefined when all are taken. */
+  private append(name: (index: number) => string, text: string, limit: number): number | undefined {
+    for (let index = 0; index < limit; index++) {
       this.signal.throwIfAborted();
       let fd: number;
-      try { fd = openSync(join(this.directory, `evidence-${index}.json`), "wx", 0o600); }
+      try { fd = openSync(join(this.directory, name(index)), "wx", 0o600); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
         throw error;
       }
       try { writeFileSync(fd, text); }
       finally { closeSync(fd); }
-      return;
+      return index;
     }
+    return undefined;
+  }
+
+  /**
+   * One tool result of one agent's window of the prompt `prompt`, numbered like the evidence records so the stuck-check
+   * reads the results in the order their hooks finished. Undefined for a replayed call, or when the agent has no free
+   * number left. The directory is made here because a hook of the previous prompt may record after the sweep below.
+   */
+  recordAttempt(prompt: string, agent: string | undefined, identity: string, attempt: Attempt): number | undefined {
+    if (!this.once("attempt", identity)) return undefined;
+    const text = JSON.stringify({ version: 1, ...attempt });
+    if (Buffer.byteLength(text) > ATTEMPT_BYTES) throw new Error("Stuck-check attempt exceeds its byte limit.");
+    this.signal.throwIfAborted();
+    mkdirSync(this.attemptDirectory(prompt, agent), { recursive: true, mode: 0o700 });
+    return this.append(index => join(this.attemptPath(prompt, agent), `${index}.json`), text, ATTEMPT_LIMIT);
+  }
+
+  /** The agent's results of the prompt numbered from `first` to `last`, oldest first. One a crashed hook left empty or invalid is skipped. */
+  async attempts(prompt: string, agent: string | undefined, first: number, last: number): Promise<Attempt[]> {
+    const attempts: Attempt[] = [];
+    for (let index = Math.max(0, first); index <= last; index++) {
+      const text = await readText(join(this.attemptDirectory(prompt, agent), `${index}.json`), this.signal, ATTEMPT_BYTES);
+      if (text === undefined) continue;
+      let raw: unknown;
+      try { raw = JSON.parse(text); }
+      catch { continue; }
+      const attempt = storedAttempt(raw);
+      if (attempt) attempts.push(attempt);
+    }
+    return attempts;
   }
 
   /** Records in the order they were claimed. A record a crashed hook left empty or invalid is not evidence. */
@@ -122,10 +192,36 @@ export class HostState {
   async recordPrompt(task: string): Promise<void> {
     const path = join(this.directory, "prompt.json");
     const temporary = `${path}.${randomUUID()}.tmp`;
+    const id = randomUUID();
     try {
-      await writeFile(temporary, JSON.stringify({ version: 1, id: randomUUID(), task }), { mode: 0o600, flag: "wx", signal: this.signal });
+      await writeFile(temporary, JSON.stringify({ version: 1, id, task }), { mode: 0o600, flag: "wx", signal: this.signal });
       await rename(temporary, path);
     } finally { await rm(temporary, { force: true }); }
+    await this.dropAttempts(id);
+  }
+
+  /**
+   * Removes the results of every earlier prompt. This is what bounds the session directory: the numbers are never read
+   * again once the window moved on, and a hook of a swept prompt only re-creates its own directory until the next prompt.
+   */
+  private async dropAttempts(keep: string): Promise<void> {
+    const root = join(this.directory, "attempts");
+    const entries = await opendir(root).catch(() => undefined);
+    if (!entries) return;
+    let checked = 0;
+    for await (const entry of entries) {
+      this.signal.throwIfAborted();
+      if (entry.name !== promptDirectory(keep)) await rm(join(root, entry.name), { recursive: true, force: true });
+      if (++checked >= 128) break;
+    }
+  }
+
+  private attemptPath(prompt: string, agent: string | undefined): string {
+    return join("attempts", promptDirectory(prompt), digest(agent ?? "").slice(0, 16));
+  }
+
+  private attemptDirectory(prompt: string, agent: string | undefined): string {
+    return join(this.directory, this.attemptPath(prompt, agent));
   }
 
   async prompt(): Promise<PromptRecord | undefined> {

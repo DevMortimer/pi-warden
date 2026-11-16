@@ -11,10 +11,11 @@ import { createStallWatch, progressCount } from "../eval/stall.mjs";
 const SCRIPT = join(import.meta.dirname, "..", "scripts", "eval-ab.mjs");
 
 /**
- * A boot slower than the 1.8 s stall limit, so the count does not depend on how fast node boots on the machine running
- * the suite. Named without the `PI_` prefix because `tests/setup-env.ts` clears every `PI_*` before this file loads.
+ * A boot slower than the 1.8 s stall limit, so the child a stall kills has written nothing on any machine and the count
+ * rests on the shell wrapper alone. Fixed here and not read from the environment: an arm a runner can leave unset is an
+ * arm that separated nothing in the red run of 15 Nov 2026.
  */
-const BOOT_DELAY_MS = process.env.STALL_TEST_BOOT_DELAY_MS ?? "0";
+const BOOT_DELAY_MS = 2500;
 
 const assistant = { message: { role: "assistant", stopReason: "stop" } };
 const toolResult = { message: { role: "toolResult" } };
@@ -93,11 +94,10 @@ function fixture() {
   writeFileSync(join(bin, "pi"), WRAPPER);
   chmodSync(join(bin, "pi"), 0o755);
   const out = join(root, "report");
-  const go = (args: string[], mode: string) =>
+  const go = (args: string[], mode: string, bootDelayMs = 0) =>
     spawnSync("node", [SCRIPT, "--tasks", "t1-redact", "--model", "fake/model", "--retry-delays", "0,0", "--concurrency", "1", "--repeats", "1", "--stall-min", "0.03", "--timeout-min", "5", "--out", out, ...args], {
       encoding: "utf8",
-      // The delayed boot is the hang case's arm; a delayed "slow" child would itself read as a stall.
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, PI_FAKE_STATE: state, PI_FAKE_PI: join(bin, "fake-pi.js"), PI_FAKE_MODE: mode, PI_FAKE_BOOT_DELAY_MS: mode === "hang" ? BOOT_DELAY_MS : "0" },
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, PI_FAKE_STATE: state, PI_FAKE_PI: join(bin, "fake-pi.js"), PI_FAKE_MODE: mode, PI_FAKE_BOOT_DELAY_MS: String(bootDelayMs) },
     });
   const read = () => JSON.parse(readFileSync(join(out, "runs.json"), "utf8"));
   const starts = () => (existsSync(join(state, "starts.log")) ? readFileSync(join(state, "starts.log"), "utf8").trim().split("\n").length : 0);
@@ -107,7 +107,7 @@ function fixture() {
 test("stall rule: a pi process that stops making progress is killed, re-run twice, then recorded as an infrastructure failure that excludes its block and stops nothing", () => {
   const f = fixture();
   try {
-    const run = f.go([], "hang");
+    const run = f.go([], "hang", BOOT_DELAY_MS);
     assert.equal(run.status, 0, run.stdout + run.stderr);
     const doc = f.read();
     assert.equal(doc.stoppedBy, undefined, "a stalled warden run with a cut-short ledger is not a Jev failure");
@@ -124,6 +124,7 @@ test("stall rule: a pi process that stops making progress is killed, re-run twic
 test("stall rule: a run that keeps adding messages and tool results is not killed, even when it outlasts the stall limit", () => {
   const f = fixture();
   try {
+    // No boot delay here: a slow child that boots late is killed as a stall before its first tick.
     const run = f.go(["--max-runs", "1"], "slow");
     assert.equal(run.status, 0, run.stdout + run.stderr);
     const doc = f.read();

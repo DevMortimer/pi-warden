@@ -43,6 +43,16 @@ promises.open = (async (...args) => {
   return handle;
 }) as typeof promises.open;
 fs.openSync = ((path, flags, mode) => {
+  // A race test holds both hooks of a session at `prepare()`, before either one reads or claims anything.
+  const ready = process.env.CLAUDE_TEST_READY_BARRIER;
+  if (ready && String(path).replaceAll("\\", "/").endsWith("/budget.json")) {
+    fs.writeFileSync(join(ready, String(process.pid)), "ready");
+    const until = Date.now() + 3000;
+    while (fs.readdirSync(ready).length < 2) {
+      if (Date.now() > until) throw new Error("Fixture barrier timed out.");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+    }
+  }
   if (/request-\d+\.claim$/.test(String(path))) {
     if (process.env.CLAUDE_TEST_DENY_CLAIM === "1") throw Object.assign(new Error("Fixture persistence failure."), { code: "EACCES" });
     const barrier = process.env.CLAUDE_TEST_BARRIER;
@@ -70,6 +80,8 @@ globalThis.fetch = async (input, init) => {
   const body = JSON.parse(String(init?.body));
   if (process.env.CLAUDE_TEST_CAPTURE) appendFileSync(process.env.CLAUDE_TEST_CAPTURE, `${JSON.stringify(body)}\n`);
   if (process.env.CLAUDE_TEST_HANG === "ignore") return new Promise<Response>(() => { setInterval(() => undefined, 60_000); });
+  // Only the stuck judge stalls, so the rules request of the same hook still answers.
+  if (process.env.CLAUDE_TEST_HANG_STUCK === "1" && "same_strategy" in (body.questions as Record<string, unknown>)) return new Promise<Response>(() => { setInterval(() => undefined, 60_000); });
   if (process.env.CLAUDE_TEST_AUTH_FIFO === "1") {
     const path = join(process.env.PI_CODING_AGENT_DIR!, "pi-typesafe", "auth-state.json");
     fs.rmSync(path, { force: true });
@@ -88,6 +100,15 @@ globalThis.fetch = async (input, init) => {
   const answers: Record<string, unknown> = {};
   for (const [id, raw] of Object.entries(body.questions)) {
     const question = raw as { type?: string; criteria: Record<string, unknown> };
+    // Stuck-check: the test sets how alike the attempts look; the approach is always a cosmetic change.
+    if (id === "same_strategy" || id === "progress") {
+      answers[id] = { type: "noul", noul: id === "same_strategy" ? Number(process.env.CLAUDE_TEST_SAME_STRATEGY ?? "0.05") : 0.1 };
+      continue;
+    }
+    if (question.type === "score") {
+      answers[id] = { type: "score", score: 1, confidence: 0.9, probabilities: { "0": 0.05, "1": 0.9, "2": 0.05 }, legend: question.criteria };
+      continue;
+    }
     // Done-check: a reply that says "done" claims completion, and one that says tests pass claims verification.
     if (question.type === "noul") {
       const claims = id === "claims_done" ? /\bdone\b/i : id === "claims_verified" ? /\btests? pass/i : /./;

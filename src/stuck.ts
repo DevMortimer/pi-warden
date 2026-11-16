@@ -60,6 +60,7 @@ export interface StuckJudgment {
 
 export interface StuckVerdict {
   stuck: boolean;
+  /** `repeat` is decided in code; a cool-down claim that loses also stops here, before any request leaves. */
   source: "repeat" | "typesafe" | "error";
   failures: number;
   reasons: string[];
@@ -165,8 +166,9 @@ export class AttemptWindow {
     this.quickRepeated.clear();
   }
 
-  markJudged(): void {
-    this.sinceJudgment = 0;
+  /** A host that rebuilds the window for every call passes how many results ago its last judgment was. */
+  markJudged(resultsAgo = 0): void {
+    this.sinceJudgment = resultsAgo;
   }
 
   failures(): number {
@@ -271,6 +273,12 @@ export interface StuckOptions {
   judge?: Judge | undefined;
   timeoutMs: number;
   signal?: AbortSignal | undefined;
+  /**
+   * Called once before the request leaves. False means another process has already claimed this window, so nothing is
+   * sent: a host whose hooks are separate processes keeps the cool-down with it, before the request, as markJudged()
+   * does for the window.
+   */
+  claim?: (() => boolean) | undefined;
 }
 
 /** Exact repeats are decided in code; otherwise one Jev request judges the sequence. */
@@ -289,6 +297,7 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
     return { stuck: true, source: "repeat", failures, reasons: [`the same target was called ${churn} times with changing output`], churn: true };
   }
   if (!options.judge) return { stuck: false, source: "repeat", failures, reasons: [] };
+  if (options.claim && !options.claim()) return { stuck: false, source: "repeat", failures, reasons: [] };
   window.markJudged();
   const result = await ask(options.judge, buildStuckRequest(window.attempts, task, { evidence: options.config.evidence }), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { stuck: false, source: "error", failures, reasons: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
