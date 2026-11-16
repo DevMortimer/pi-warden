@@ -1,9 +1,4 @@
-<div align="center">
-
 # pi-warden
-
-**Your coding agent says "done". It didn't run the tests.**<br>
-**pi-warden catches it, and the agent fixes it without you.**
 
 [![npm](https://img.shields.io/npm/v/pi-warden?color=cb3837&logo=npm)](https://www.npmjs.com/package/pi-warden)
 [![downloads](https://img.shields.io/npm/dm/pi-warden?color=blue)](https://www.npmjs.com/package/pi-warden)
@@ -12,200 +7,296 @@
 [![Pi](https://img.shields.io/badge/Pi-0.85%2B-8a2be2)](https://github.com/earendil-works/pi)
 [![judged by Jev](https://img.shields.io/badge/judged%20by-Jev-orange)](https://typesafe.ai)
 
-</div>
+**Hand real work to a cheaper model.** pi-warden stands between a coding agent and your machine. It stops the moves
+that cannot be undone, gives the model what a careless model lacks (your project's rules, its own failure history,
+the things it promised to do), and tells you what the agent actually did instead of what it said it did.
 
-![pi-warden tells the agent what it got wrong and the agent fixes it: told 255 times that it said done with nothing checked, the agent ran a check next 182 times (71%); of 276 held actions with a known outcome, the agent found a safer way 235 times, you approved 30, you said no 11 times; 613 steers named a project rule; 3,350 real sessions, 2026-09-16 to 2026-10-26](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/hero.png)
+It runs inside [Pi](https://github.com/earendil-works/pi), and as hooks in Claude Code and Codex.
 
-<div align="center">
+![A careless agent makes six moves in a terminal: it tries to wipe uncommitted work, reads a secrets file, repeats a failing command, tries to switch pi-warden off, fakes a fix with a stub, and claims the tests pass. pi-warden holds two of them, masks the secrets, and reports the other three to the owner.](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/assets/demo.gif)
 
-**3,350 sessions · 817 risky actions stopped before they ran · 71% of fake "done"s turned into real test runs**
+## The idea
 
-<sub>Forty-one days of the maintainer's real use across all their projects, not just this one, 2026-09-16 to 2026-10-26. Method and noise: [field report](eval/reports/2026-10-27-field-usage/).</sub>
+A strong model is expensive partly because it is careful. It reads the house rules, notices when it is going in
+circles, hesitates before `git reset --hard`, and runs the tests before it says "done". A cheaper model is fast and
+usually right, and it skips those steps.
 
-</div>
+pi-warden moves that care out of the model. One part is plain code that runs on your machine with no network. The
+other part is [Jev](https://typesafe.ai), a small judgment model that answers typed yes-or-no questions with a
+probability. Neither part depends on the agent being careful, so the same supervision applies to whatever model you
+run.
+
+Every guard acts in one of three ways, and it helps to know which:
+
+| | What happens | Who sees it |
+| --- | --- | --- |
+| **It stops the call** | The command or write is held before it runs. The agent gets the reason as the tool result, with how to re-plan. | The agent and you |
+| **It changes what the model reads** | Tool output is masked, cut down or annotated before the model sees it, and the rules and memory that apply are added to the system prompt. | The agent |
+| **It tells you** | A judgment lands on the status line above the editor, in the trace sidebar, and in a trace file. In Pi it does not enter the conversation. | You |
+
+## A careless move, and what happens to it
+
+| The agent | pi-warden | Works with no key |
+| --- | --- | :---: |
+| runs `git reset --hard` over uncommitted work, force-pushes, drops a table, destroys infrastructure, or deletes a folder outside the project | **holds the call** before it runs | yes |
+| runs something destructive that no pattern names | asks Jev how irreversible it is: 0.9 holds, 0.5 warns | |
+| edits a config, then runs the command that applies it | **holds the second step**, by an arming rule you wrote | yes |
+| writes to pi-warden's own config, the file that could switch a check off | **holds the call** | yes |
+| prints a credential, or reads a file that contains one | **masks the value** as `[redacted]` before the model reads it | yes |
+| reads output that says "ignore your instructions" | marks the output as untrusted data | |
+| prints far more output than the task needs | keeps the lines that matter and saves the rest to a file the agent can search | |
+| reads the same long output twice | replaces the repeat with a pointer | yes |
+| runs the same failing command again with nothing changed | **tells you** on the second run | yes |
+| fails three times with the same strategy | **tells you** it is stuck, and swaps the repeated output for a diff against the last attempt | |
+| polls with `sleep`, pages through one file a few lines at a time, or re-runs a check with a different filter | adds one sentence to the tool result, which costs no extra model call | yes |
+| writes code that breaks one of your project's rules | **tells you** which rule, in which file | |
+| leaves a stub, comments that restate the code, dead code, or hedging | **tells you** which | |
+| writes a hardcoded credential, disables TLS checks, or builds SQL from strings | **tells you** | |
+| does something other than what it just said it would do | **tells you** it is off plan | |
+| says "done" with no test, build or lint run since its last change | **tells you** the claim is unverified | |
+| changes a UI file and offers a unit test as proof | does not count the test: something has to have looked at the screen | |
+| says "the cause is X" and never checked | **tells you** the cause is unchecked | |
+| repeats the same paragraph over and over | **stops the reply** and gives the agent one turn to recover | yes |
+| forgets a correction you gave in earlier sessions | puts the corrections you repeated back in the system prompt | yes |
+| forgets what it promised before the context was compacted | keeps open promises in a file and shows them again | yes |
+
+The right column is the offline half. It is deterministic, it sends nothing, and it works the moment the package is
+installed. Everything else needs Jev.
 
 ## Install
 
-```bash
+```sh
 pi install npm:pi-warden
 ```
 
-Then `/warden enable` (paste a [TypeSafe](https://console.typesafe.ai) key) and `/warden init` (writes a starter `pi-warden.md`). That's it. No key? The offline guards still run.
+That is enough for the offline half. For the judged half, in Pi:
 
-### Claude Code: per-edit rules, the done-check and the stuck-check
-
-```bash
-npm install --global pi-warden
-pi-warden init claude
+```
+/warden enable     consent screen, then your key from console.typesafe.ai
+/warden init       writes a starter pi-warden.md for this project
+/warden status     what is guarded, what is on, and what this session spent
 ```
 
-Launch Claude with `PI_WARDEN_ENABLED=1` and the active backend's key variable (`TYPESAFE_API_KEY` for the default backend). Successful `Write` and `Edit` calls receive advisory feedback from your `pi-warden.md` and the existing rules configuration. When a reply presents changed code as done and no test, build, or lint run passed since the last change, the done-check tells you under the reply; Claude is not told. When Claude keeps retrying the same failing call, or re-runs a call whose output it already has, the stuck-check tells you under that call, also without telling Claude. Claude support covers per-edit rules, the done-check and the stuck-check; the other guards below run inside Pi.
+It needs Pi 0.85.1 or newer and Node 22.19 or newer. It also runs on oh-my-pi.
 
-Use `init claude --project` for this project's `.claude/settings.json`, and `uninstall claude [--project]` to remove the entries installed in that scope. After upgrading from a version without the done-check, run `init claude` again to add its hooks. Shared settings, keys, history and rules files stay in place. [Configuration, limits and uninstall behavior →](docs/claude-code.md)
+`/warden enable` shows exactly what will be sent before anything is sent, and the choice stays until
+`/warden disable`. A headless run has nobody to ask, so it takes consent from the environment instead:
+`PI_WARDEN_ENABLED=1` and `TYPESAFE_API_KEY`.
 
-### Codex: per-edit rules and the done-check
+## Holds
 
-```bash
-npm install --global pi-warden
-pi-warden init codex
+A hold is the only thing pi-warden does that stops work, so it is kept narrow. Three things block a call:
+
+- **A destructive pattern.** The floor reads a command the way the shell runs it: through `sudo`, `bash -c`, pipes into
+  `sh`, command substitution, and the body of a script or `npm run` target the command starts. It skips text that is
+  only data, so a commit message that mentions `git push --force` is not held. The built-in patterns cover force push,
+  hard reset, `git clean`, recursive delete of a dangerous target, SQL `DROP`, `TRUNCATE` and `DELETE FROM`, writes to a
+  block device, `curl | sh`, package publish, infrastructure destroy, and printing a credential.
+- **A rule you wrote.** `deny` blocks outright. `confirm` asks you. A path rule guards a folder by read or by write. An
+  arming rule holds a command only after a matching file was edited, which catches the pair of harmless steps that are
+  destructive together.
+- **Jev's score.** When judgments are on, Jev reads the call, your request, and the plan the agent stated, and scores
+  how irreversible the call is. The patterns become evidence it weighs instead of a verdict.
+
+A held call returns its reason to the agent with two ways forward: reach the goal by something recoverable, or stop
+and ask you. Approval comes only from your next message. The agent's own text can explain a call and can never approve
+one.
+
+`/warden mode` picks what a hold does: `steer` (the default) hands the reason to the agent, `confirm` opens a dialog
+for you, and `advise` never holds and only reports.
+
+The floor errs toward holding. In the maintainer's own use over forty-one days, 632 of 817 holds were an agent deleting
+scratch folders it had just made ([field report](eval/reports/2026-10-27-field-usage/README.md)). Session scratch and
+temp folders are now recognized and let through with a warning.
+
+## Project rules
+
+Rules live in `pi-warden.md` at the project root. Every heading is one rule, and the text under it is what the judge
+reads:
+
+```markdown
+# No console output in library code
+paths: src/**
+Code under `src/` must not call `console.log`. Use the project logger.
+
+# Errors are not swallowed
+A `catch` block must handle the error, log it with context, or rethrow it.
+
+# Public API changes come with a changelog line
+when: turn
+A change to an exported function adds a line under Unreleased.
 ```
 
-Review the new hooks once with `/hooks` in Codex, then launch Codex with `PI_WARDEN_ENABLED=1` and the same key variable. Each file an `apply_patch` call adds or updates is judged against your `pi-warden.md`, and findings come back to the model as advisory feedback. When a reply presents changed code as done and no check passed since the last change, the done-check tells you on the turn; Codex is not told. Codex does not give hooks a command's exit status, so a run counts as a check only when its output shows the result. Use `init codex --project` for this project's `.codex/hooks.json`, and `uninstall codex [--project]` to remove the entries. After upgrading from a version without the done-check, run `init codex` again to add its hooks. [Patch handling, checks, limits and uninstall behavior →](docs/codex.md)
+`paths:` scopes a rule to matching files. `threshold:` sets its own cutoff, `severity:` orders the findings, and
+`when: turn` judges the rule once against the whole diff at the end of a run instead of on every edit. With no
+`pi-warden.md`, the files you list in `rules.files` are used, and after that `AGENTS.md`, `CLAUDE.md` or `README.md` is
+read as one document.
 
-## It reports. It doesn't nag.
+The rules reach the work in three places:
 
-Most guardrails stop and ask you. pi-warden tells **the agent** what it got wrong, and the agent corrects itself. You are pulled in only when something can't be undone. In a replay of 18,075 recorded calls (2026-09-21), **0.27% were held at the old 0.7 threshold and 0.1% at 0.9**, the default since 0.75.0 ([report](eval/reports/2026-09-21-calibration-0.33.3/report.md)).
+1. **At the start of a turn.** Jev picks the rules that apply to what you just asked, and they are added to the
+   agent's system prompt for that run.
+2. **On every write and edit.** The written content is judged against each rule that covers the file. A shell command
+   that writes a file, such as a heredoc, is judged the same way.
+3. **At the end of a run.** `when: turn` rules are judged against the whole diff, with any changed file no earlier
+   check saw.
 
-| Your agent… | pi-warden… |
+Rule findings never hold a call. In Pi they go to you. In Claude Code and Codex they go back to the model.
+
+There are tools for the rules themselves: `/warden rules check` flags rules the judge cannot decide well,
+`/warden rules calibrate` replays your recent commits through the rules to find the ones that fire on everything,
+`/warden rules audit` judges existing files, `/warden report` reads the local log of past judgments, and
+`/warden improve` measures your recent sessions and has the session model propose edits to the rules file.
+
+## Memory the agent can use
+
+pi-warden gives the agent three tools:
+
+| Tool | What it keeps |
 | --- | --- |
-| says "done" with no test, build, or lint behind it | sends it back to prove it |
-| names a likely cause ("probably", "ask the team") with nothing checked that run | sends it back to check it with its own tools, or state plainly that it is unverified |
-| breaks a rule in your `pi-warden.md` or `AGENTS.md` | quotes the exact rule it broke |
-| is about to `git push --force`, `reset --hard`, `rm -rf`, `DROP` | holds it before it runs. A built-in pattern holds the destructive ones with no key at all; with Jev on, a score of 0.9 or more for "cannot be undone" holds too |
-| retries the same failing fix for the third time | asks for a new hypothesis |
-| writes stubs, restating comments, hardcoded secrets | names them on the spot |
-| repeats the same mistake across sessions | counts it, and offers the rule that would have stopped it (`/warden improve`) |
-| floods its context with a huge log | keeps the lines that matter, stores the rest |
-| starts repeating itself forever | stops the reply |
+| `warden_remember` | A standing lesson for this project, for later sessions. |
+| `warden_loops` | Promises made in this session ("after CI passes I will bump the version"). They survive compaction and resume. |
+| `warden_recall` | What was already tried in this session: failed attempts with their error lines, the last passing check, and the paths of saved full outputs. |
 
-[Every guard, with its thresholds and calibration →](docs/guards.md)
+It also reads your own earlier sessions of the project, on your machine, for corrections you typed more than once.
+`/warden prefs` lists them, and the ones repeated in three sessions on two different days are added to the system
+prompt.
 
-## It reads your sessions back
+## Claude Code and Codex
 
-`/warden improve` looks at the last seven days of this project's own sessions, rules log and hold log, and prints what actually cost you: whole-file reads and calls per turn, tool calls the waste detectors flag as repeats, requests typed twice, and the same refusal, rule by rule.
+The same rules and checks run as hooks, without Pi:
 
-Then it hands the judging to the model already running in this session. The model reads the sessions behind those numbers and edits `pi-warden.md`: at most three changes, each with a `Measured` line naming the count it came from and the session file. With nothing supported it changes nothing and says the rules held, with the counts that show it; when no rule was judged in the window it says that instead, because nothing is known about the rules then.
+```sh
+npm install -g pi-warden
+pi-warden init claude      # or: pi-warden init codex
+```
 
-A run writes a timestamped backup before the model's turn, then prints every rule added, changed or removed with the count it cited, and the diff. The counts, the backup and the checks are local: no extra key, no TypeSafe request, and the only cost is that one turn of the session model. `/warden improve 4` reads four days; the range is 1 to 90.
+Add `--project` to install into the project's own settings instead of your user settings. `pi-warden uninstall`
+removes exactly the entries it added.
 
-While the pass runs, the rules judge goes quiet in that one session, so the rewrite is not graded against the rules it is rewriting. The window expires by the clock, another Pi session keeps judging, and the destructive floor stays on.
+| | Claude Code | Codex |
+| --- | :---: | :---: |
+| Project rules on a file change (`Write` and `Edit`, or `apply_patch`) | yes | yes |
+| Done-check when the run stops | yes | yes |
+| Stuck-check on repeated failures | yes | |
+| Holds and the destructive-command floor | | |
 
-## Features
+The hooks run after a tool call, so they never hold one: the floor is a Pi feature. They read your user config only,
+and they take consent from `PI_WARDEN_ENABLED=1` and the key from the environment. See
+[docs/claude-code.md](docs/claude-code.md) and [docs/codex.md](docs/codex.md).
 
-Every guard and feature, its default, and its status. Defaults are `defaultConfig()` in `src/config.ts`; Beta and Experimental are the labels in [the guard docs](docs/guards.md). Guards that ask Jev need a key and `/warden enable`; without one, their offline parts still run.
+## What leaves your machine
 
-| Feature | What it does | Default | Status |
-| --- | --- | --- | --- |
-| Jev judgments | Sends redacted samples to Jev for the judged checks below | Off until `/warden enable` | Stable |
-| [Action guard](docs/guards.md#action-guard) | Checks each command, write, and edit before it runs: offline patterns plus one Jev request | On | Stable |
-| ↳ Offline floor | Holds destructive patterns (force push, `reset --hard`, `rm -rf` on a path outside scratch, `DROP`) with no key and no request. It reads a script that a command runs, one level deep, the way bash runs it (`( )`, `if`, a loop, `bash -c`, a pipe into a shell, a quoted path), and holds a delete spelled `\rm`, `"rm"`, `r''m` or `${x}rm`; delete text the shell never runs — a comment, an `echo` message, a file `grep` only reads — is skipped. With Jev on, a pattern hit goes to Jev as evidence | On | Stable |
-| ↳ Irreversible hold | Jev adds holds: a call scored 0.9 or more as irreversible is held; 0.5 to 0.9 warns | On | Stable |
-| ↳ Scratch deletes | A recursive `rm` of temp scratch the agent made warns instead of holding; data moved in keeps the hold | On | Stable |
-| ↳ Ask gate | Code decides offline when no Jev answer could change what the agent sees, so the call sends no request: 48.9% fewer requests, 327 of the 338 changed outcomes still asked | On. `action.ask` | Stable |
-| ↳ Approval on demand | After a hold, a call held again under your next reply gets one request that reads your reply and the agent's turn; released only when `approved` and `reply_points_at_action` are both 0.7 or more | On | Stable |
-| ↳ Off-task notice | Notes in the trace when a call looks unrelated to your request; never holds and never enters the conversation | On | Stable |
-| ↳ Intent-mismatch notice | Reports on the status line and in the trace when a call differs from its stated plan | On | Stable |
-| ↳ Should-proceed notice | Notes in the trace when the judge would ask you first; never holds a call and never enters the conversation. The 2026-09-30 labels do not support acting on it (2 of 427 calls needed asking) | On | Beta |
-| ↳ Your command, path, and arming rules | Warn, hold, or deny commands and paths you name | On, none set | Stable |
-| ↳ Large-output warning | Tells the agent to filter a command that will print far more than it needs | On | Stable |
-| [Rules](docs/guards.md#rules) | Judges every write and edit against the rules in your `pi-warden.md` | On | Stable |
-| [Rules at turn start](docs/guards.md#rules-at-turn-start) | Names the rules a new request will touch, in the background, and delivers them at the next tool boundary; the prompt never waits | On. `rulesAtTurnStart.enabled` | Stable |
-| ↳ Soft double-check tier | Asks the agent to double-check a score just below a rule's cutoff | Off. `rules.softThreshold` | Stable |
-| [Slop](docs/guards.md#slop) | Names stubs, restating comments, dead code, and padded replies | On | Stable |
-| [Security](docs/guards.md#security) | Flags risky written code and prompt injection in tool output; masks credentials, but leaves code values such as a call or an index alone | On | Stable |
-| [Stuck](docs/guards.md#stuck) | Asks for a new hypothesis when the agent repeats a failing approach | On | Stable |
-| [Done-check](docs/guards.md#done-check) | Sends an unverified "done" back for a check; after a UI change, a visual check | On | Stable |
-| [Cause-check](docs/guards.md#cause-check) | Sends a final reply back to check a stated cause, or to say plainly that it is unverified; the same unchecked cause on a later day gets a stronger steer | On | Stable |
-| [Runaway](docs/guards.md#runaway) | Stops a reply that repeats itself, offline | On | Stable |
-| [Context saver](docs/guards.md#context-saver) | Replaces large or duplicate tool output with an excerpt and a saved full copy | On | Stable |
-| ↳ Repeated user messages | Cuts repeated runs in your own messages too | Off. `context.dedupeMessages` | Stable |
-| ↳ Compaction evidence appendix | After a compaction, lists failed calls, the last passing check, holds, and saved outputs | On | Stable |
-| [Context filter](docs/guards.md#context-filter-beta-off-by-default) | Jev scores chunks of a large output and keeps the ones for the current task | Off. `context.filter.enabled` | Beta |
-| [Relevance compaction](docs/guards.md#relevance-compaction) | Writes the compaction summary instead of Pi's model; not recommended | Off. `compaction.enabled` (user file only) | Experimental |
-| [Call-waste notes](docs/guards.md#call-waste) | One advisory line on polling, paging, repeated searches, and re-filtered checks | On | Stable |
-| ↳ Session tip | Adds one paragraph about call cost to the system prompt | Off. `waste.tip` | Stable |
-| [Open loops and recall](docs/guards.md#open-loops-and-recall) | `warden_loops` keeps the agent's promises; `warden_recall` lists what it already tried | On, no switch | Stable |
-| [Standing lessons](docs/guards.md#open-loops-and-recall) | `warden_remember` keeps one standing instruction for this project, so a later session starts with the correction you already made | On, no switch | Stable |
-| [Improve pass](docs/commands.md) | Reads the last 7 days of this project's sessions and proposes at most three count-backed edits to `pi-warden.md`; nothing supported means nothing written | On, no switch (`/warden improve`) | Stable |
-| ↳ Quiet window | The rules judge and the text guards go quiet in the arming session only, so the rules file can be rewritten; the floor stays on and the window expires by the clock | On. `improve.quietMs` | Stable |
-| [Rules report](docs/commands.md) | Per rule: judged, fired, cleared after a fire, and the flags `never fires`, `fires on everything`, `undecided` | On, local only (`/warden report`) | Stable |
-| [Capability index](docs/configuration.md) | `/warden index` builds a local index of your skills and tools so the conscience ranks candidates on your machine before it sends anything | On, local only | Stable |
-| [Subagent triage](docs/guards.md#subagent-triage) | Wakes the agent only for a subagent report that needs it | On | Stable |
-| [Token Guardian observer](docs/guards.md#token-guardian-observer) | Records Jev's answers to redacted supervision triggers in the trace; never answers Guardian or acts on them | On with Jev consent | Record-only |
-| [Judge cooldown](docs/guards.md#judge-cooldown) | Pauses Jev requests after repeated failures, so a dead backend costs no timeouts | On, no switch | Stable |
-| [Steer follow rates](docs/guards.md#adaptive-steers-per-model) | Counts, per model and notice kind, how often the agent follows or disputes a notice; the counts change nothing | On | Stable |
-| Notices as toasts | Shows each guard notice as a toast besides the status line and the trace; nothing of it enters the conversation | Off. `notices` | Stable |
-| [Desktop notifications](docs/guards.md#desktop-notifications) | Holds, confirm dialogs, and runaway stops reach the desktop or your relay | Off. `notify.enabled` | Stable |
-| [Herdr pane state](docs/guards.md#herdr-pane-state) | In a herdr pane, a waiting confirm dialog shows as blocked in the herdr sidebar instead of working | On, no switch | Stable |
-| [Conscience](docs/guards.md#conscience) | Recommends a skill or tool the agent is missing; ranks candidates on your machine first and sends one request, or none | Off. `conscience.enabled` | Beta |
-| Learning from holds | Keeps each judged call in a local database with its Pi session id and, for a hold, what happened next (`approved`, `declined`, `replanned`, `abandoned`); a call that was not held keeps only the judge data, and is pruned after 90 days (`learning.allowedRetentionDays`; holds after 365). `/warden recommend` suggests threshold changes from it. Nothing is sent | On | Stable |
-| Config surface | A project file can only make the action guard and security stricter, a value that cannot be applied as written is shown once as a warning, and `deny` and `block` mean the same in every rule kind | On, no switch | Stable |
-| Standing preferences | `/warden prefs` finds preferences you repeated across sessions and sends them at session start | On | Stable |
+Nothing, until you run `/warden enable` or set `PI_WARDEN_ENABLED=1`. After that, requests go to `api.typesafe.ai`,
+or to the backend you name in `typesafeBackend` (OpenRouter, Command Code, Liquid AI, SubQ, Nace.AI, or your own
+endpoint). A project file cannot change the backend.
 
-All keys and their values: [configuration](docs/configuration.md). Commands: [commands](docs/commands.md).
+What is sent is a redacted, truncated summary, never the raw session:
+
+- your latest request, and the first request of the thread with up to four earlier ones;
+- for each guarded call, the command or a sample of the written content, and the plan the agent stated;
+- for a rules check, the written content with the lines around each edit, and the rule text;
+- the tails of recent tool calls when the agent keeps failing;
+- the agent's final message, when it claims completion or states a cause;
+- a sample of a large tool output, to decide what to keep.
+
+Credential shapes are stripped from all of it before it is sent. Redaction is best effort, so list secret and
+generated files under `rules.exclude`, which keeps their content on your machine. `rules.enabled: false` keeps your
+rule text there too.
+
+What stays local: saved full outputs (owner-only temp files), the hold log, the rules log, standing preferences,
+open loops, and a SQLite file of redacted hold records. The full list is in
+[docs/data-handling.md](docs/data-handling.md), and it is the same text the consent screen shows.
 
 ## What it costs
 
-Jev requests cost money, so each 1.0 change was measured by what it saves. Each figure is the measured change on recorded sessions of one machine, not a promise for yours.
+The offline half is free. The judged half costs Jev requests on your own key.
 
-| Change | Measured effect | Source |
-| --- | --- | --- |
-| Ask gate and lean request ([#153](https://github.com/DevMortimer/pi-warden/pull/153)) | Action-guard requests 28,036 → 14,326 (−48.9%); input tokens 64.2M → 20.5M (−68.1%); 327 of the 338 calls whose answer changed what the agent saw are still asked (96.7%) | [Ask gate and lean request](docs/guards.md#ask-gate-and-lean-request-2026-09-30) |
-| Conscience ranks locally first ([#155](https://github.com/DevMortimer/pi-warden/pull/155)) | Requests per prompt 2 → 1; input tokens per prompt 14,620 → 10,241 (−30%); 30.9% of 7,614 recorded prompts send none | [Local gate, top k, and tip text](docs/guards.md#local-gate-top-k-and-tip-text-2026-10-01) |
-| Turn-start reminder and conscience in the background ([#152](https://github.com/DevMortimer/pi-warden/pull/152)) | The prompt hold falls from about 255 ms to under 1 ms at p90; the reminder names a rule that applies 68.9% of the time and catches 21.5% of the rules that apply | [Turn-start delivery calibration](docs/guards.md#turn-start-delivery-calibration-2026-10-01-background-delivery) and [Rules at turn start calibration](docs/guards.md#rules-at-turn-start-calibration-2026-09-30-first-measurement) |
-| Approval on demand ([#160](https://github.com/DevMortimer/pi-warden/pull/160), [#161](https://github.com/DevMortimer/pi-warden/pull/161)) | Approval questions per 1,000 judged calls 90.0 → 0.7; wrong releases 45 → 1 in the measured runs | [Approval on demand](docs/guards.md#approval-on-demand-2026-10-01-three-designs-three-sets) |
-| Hold database ([#149](https://github.com/DevMortimer/pi-warden/pull/149)) | A copy of 52,362 rows shrinks from 285.9 MiB to 41.6 MiB | [Data handling](docs/data-handling.md#what-stays-on-this-machine) |
+- A session stops asking after 500 requests (`maxRequests`). `/warden status` shows the count.
+- A gate keeps calls that cannot change anything, such as reads, searches, builds and test runs, from spending a
+  request.
+- If Jev times out or is down, the call is allowed with a warning and the patterns decide alone. After three failures
+  in a row the guards stop asking for a minute.
+- `/warden bench` measures the latency, the input tokens and the estimated cost of one check against your own rule set.
 
-Features that did not earn their cost did not ship: the working-memory pruning, the stale-result stubs, and a hybrid compaction failed their gates, and the off-task and should-proceed notices are reported, never sent to the agent. The numbers are in the [Calibration](docs/guards.md#calibration) section. `/warden report` sends no request at all; `/warden improve` spends one turn of the session model and no TypeSafe request.
+For scale: in this project's benchmark, the judgments for 780 guarded agent runs cost $0.90 in total, through the
+SubQ backend ([report](eval/reports/2026-10-25-thesis-v5-low/README.md)).
 
-## Rules no linter can check
+## What is measured
 
-```markdown
-# A TODO names a ticket
-A bare `TODO` or `FIXME` without a ticket reference is a violation.
+Each claim here has a report in [`eval/reports`](eval/reports/README.md).
 
-# Errors never reach the user raw
-paths: src/api/**/*.ts
-Catch errors at the handler and return a message a user can act on.
+- **Holds.** Over forty-one days of the maintainer's own work, 817 of 184,249 judged actions were held (0.4%). Of the
+  276 holds with a known outcome, the agent took a safer route 235 times, the user approved 30 and declined 11.
+- **Rules.** On 139 labelled cases at the shipped 0.7 cutoff, the rules guard caught 62 of 68 violations, with 2 false
+  alarms in 71 clean cases.
+- **End to end.** A pre-registered A/B run compared the same agent with pi-warden and with the same rules as plain
+  prose. On DeepSeek V4.1 Flash the agent finished tasks as often with pi-warden as without it. The run did not show
+  the halving of rule violations it was designed to detect, and the guarded runs cost 1.3 to 2 times as much in total.
+  An earlier, smaller run did see violations halved on the weaker of its two models. Read it as: pi-warden is
+  measured to stop destructive calls and to catch rule violations when they happen, and it is not yet measured to make
+  a model follow rules more often than a well-written prompt does.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `/warden status` | Guards, mode, thresholds, this session's counts, and the build that is running. |
+| `/warden enable`, `/warden disable` | Consent for judgments. The offline checks stay on either way. |
+| `/warden mode steer\|confirm\|advise` | What a hold does. |
+| `/warden init` | Starter rules for this project, written by the session model. |
+| `/warden rules` | The active rules. Also `rules check`, `rules audit`, `rules calibrate`, `rules tune`. |
+| `/warden report`, `/warden improve` | What the rules did lately, and a pass that proposes better ones. |
+| `/warden trace` | The trace sidebar: every judgment, with its scores and what was said. |
+| `/warden config` | A settings panel, or `config set <key> <value>` and `config get <key>`. |
+| `/warden prefs`, `/warden loops` | Standing preferences and open promises. |
+| `/warden recommend` | Threshold suggestions drawn from how your past holds turned out. |
+| `/warden test` | One synthetic hold, to see what a real one looks like. |
+
+More in [docs/commands.md](docs/commands.md).
+
+## Configuration
+
+Your settings are in `~/.pi/agent/pi-warden/config.json`, and a project can add `.pi/pi-warden.json`. Every guard has
+a switch and a threshold. A project file can tighten a check. The keys that could loosen your protection or redirect
+your data are read from your own file only: deny, exempt, path and arming rules, the mode, and the backend. When a
+project file does loosen something it is allowed to, you are told once, by name.
+
+```json
+{
+  "mode": "steer",
+  "notices": true,
+  "action": {
+    "commandDenyRules": [{ "id": "no-prod-db", "pattern": "psql .*prod", "message": "production database" }]
+  },
+  "rules": { "exclude": ["secrets/**"], "skip": ["tests/**"] }
+}
 ```
 
-Each `#` heading is one rule. Every write and edit is judged against it in about a quarter of a second by [Jev](https://typesafe.ai), a model that returns a probability, not prose. No `pi-warden.md`? Your `AGENTS.md`, `CLAUDE.md`, or `README.md` is used instead.
+Some features are off until you turn them on: desktop notifications when a call waits for you, a relevance-based
+replacement for Pi's compaction summary, a filter that picks the passages of a large output that matter, and a coach
+that suggests a skill or tool before the agent starts. Every key is in
+[docs/configuration.md](docs/configuration.md), and [`examples/`](examples) has files to copy.
 
-Coming from 0.74.1? See [Upgrading](docs/upgrading.md).
+## As a library
 
-## Receipts
+Every guard is a plain function with no dependency on Pi's runtime:
 
-- **Rules:** in 150 paired agent runs (four batches, `eval/reports/2026-09-18T00-*`), the agent without pi-warden broke a project rule in **6** of 150 runs. With it: **0** of 150.
-- **Done-check:** after a nudge, the agent ran a check **182 of 255** times, and sometimes found a failure it had missed.
-- **Holds:** when the agent was stopped, it found a safer way **235 of 276** times; you approved 30. Field data from 2026-09-16 to 2026-10-26, across versions, so it includes holds from before the 0.9 threshold and the `rm` scratch change.
-- **Stability:** 13,952 guard cases over 109 overnight cycles, no score drift.
+```ts
+import { evaluateAction, defaultConfig } from "pi-warden";
+import { createTypeSafe } from "pi-typesafe";
 
-Every number has a script and a raw report in [`eval/reports/`](eval/reports/) or the Calibration section of [the guard docs](docs/guards.md#calibration). They are the maintainer's measurements, not a universal promise, and the reports list what was noise.
-
-## How the defaults are chosen
-
-Thresholds are set on recorded sessions. Where the data allows, a threshold is chosen on one half of the corpus and checked on the other. A feature that measured worse ships off or trace-only. [Calibration →](docs/guards.md#calibration)
-
-- **Irreversible hold at 0.9** (0.75.0). On 15,346 judged calls the judge was wrong on 15% of calls below confidence 0.8 and under 1% above it. A 0.9 cutoff chosen on one half removed about 52 false alarms on the other half and lost no true catch. Scores from 0.5 to 0.9 now warn.
-- **Intent notice in the trace** (0.76.0). The score separates a differing call (AUROC 0.815 on 140 calls labelled blind to the score), but 36 of the 37 notices it would send were for calls the plan or your request had asked for.
-- **Failed gates stay off.** Pruning stale tool results had a safe point in 10 of 1,042 recorded sessions (median saving 0.00%); a hybrid compaction kept 5 of the 34 re-read files where the gate asked for 10; the working-memory gate's best cut dropped 23.5% of candidates and missed 12.8% where the gate allowed 10%; and no slice of the off-task or should-proceed notices reached 0.80 precision. Each is recorded in [Calibration](docs/guards.md#calibration).
-- **Relevance compaction off** (0.78.0). In a replay of 48 recorded compactions its summary was 4.7 times the size of Pi's at the median and kept whole only 1 of the 34 files the agent read again.
-
-## Privacy
-
-Secrets and unshown paths are stripped before anything leaves your machine. The offline guards send nothing. The opt-in features send more when you turn them on: the context filter sends a large output whole, redacted, in chunks; relevance compaction sends an outline of the conversation and a sample of each tool result. [Exactly what is sent →](docs/data-handling.md)
-
-## Credits
-
-- **Confidence bands for the irreversible hold:** Li, Miao, Krishnan, Padman, "JEV-as-a-Judge: Accept When Confident, Escalate When Unsure", [arXiv:2609.26550](https://arxiv.org/abs/2609.26550).
-- **Chunk scoring in the context filter:** GPT Researcher's [context filter](https://docs.gptr.dev/docs/gpt-researcher/gptr/context-filter).
-- **The judge:** [Jev](https://typesafe.ai) by TypeSafe.
-
-## Versioning
-
-From 1.0, pi-warden follows semver for: the documented config keys and their defaults (except `compaction.*`, `context.filter.*`, and `conscience.*`, which are experimental or beta); the `/warden` commands and their arguments; the `warden_remember`, `warden_loops`, and `warden_recall` tools; the documented `PI_WARDEN_*` environment variables; the widget template tokens; and the exports named in [docs/extension-authors.md](docs/extension-authors.md). The trace file format, the files in pi-warden's data folder, session message types, and every other export are internal and may change in any release.
-
-## Docs
-
-[Guards](docs/guards.md) · [Configuration](docs/configuration.md) · [Commands](docs/commands.md) · [FAQ](docs/faq.md) · [Data handling](docs/data-handling.md) · [Examples](docs/examples.md)
-
-## Development
-
-```bash
-npm install
-npm run check        # typecheck + offline tests + build
-npm test             # offline tests only
-npm run dev:pi       # start Pi with this working tree
+const verdict = await evaluateAction(
+  { tool: "bash", input: { command: "git push --force" }, cwd: process.cwd(), task: "push my branch" },
+  { config: defaultConfig().action, judge: createTypeSafe() },
+);
 ```
+
+See [docs/extension-authors.md](docs/extension-authors.md).
+
+## More
+
+[Guards and their calibration](docs/guards.md) · [CI and headless runs](docs/ci-cd.md) ·
+[FAQ](docs/faq.md) · [Upgrading](docs/upgrading.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 
 MIT licensed.
