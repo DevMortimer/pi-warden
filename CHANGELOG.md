@@ -8,7 +8,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Added
 
-- `rules.auditExtensions` adds file extensions to the set `/warden rules audit` and `/warden audit` discover (issue #221). The built-in set always applies; entries may be written `astro`, `.astro`, or `ASTRO`, and a project file's list replaces the user's but still adds to the built-in set. `rules.exclude`, `rules.skip`, and explicit audit paths filter as before.
+- `rules.auditExtensions` adds file extensions to the source set `/warden rules audit` and `/warden audit` use (issue #221). The built-in set always applies; entries may be written `astro`, `.astro`, or `ASTRO`, a project file's list replaces the user's but still adds to the built-in set, and file names match case-insensitively, so `index.MJS` is source. `/warden rules audit` still drops what `rules.exclude` and `rules.skip` name; `/warden audit` uses the list for the per-project source-file count it reports.
 
 ## 2.11.0
 
