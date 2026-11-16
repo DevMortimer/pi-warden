@@ -562,6 +562,8 @@ test("rules.auditExtensions: normalized extras from the user, replaced by a proj
   assert.deepEqual(user.rules.auditExtensions, ["astro", "mjs", "j2"], "a leading dot is dropped, casing is folded, and non-strings are dropped");
   const project = applyProjectOverrides(user, { rules: { auditExtensions: [".ERB"] } });
   assert.deepEqual(project.rules.auditExtensions, ["erb"], "a project file replaces the user list; the built-in set still applies in discovery");
+  const spellings = [".mjs", "mjs", "MJS"].map(extension => applyUserOverrides(defaultConfig(), { rules: { auditExtensions: [extension] } }).rules.auditExtensions);
+  assert.deepEqual(spellings, [["mjs"], ["mjs"], ["mjs"]], "a leading dot, casing, and the bare name all name the same extension");
   assert.deepEqual(loosenedChecks(user, project), [], "which files the audit discovers is not a check");
   assert.deepEqual(applyUserOverrides(defaultConfig(), { rules: { auditExtensions: "astro" } }).rules.auditExtensions, [], "a non-list keeps the default");
 });

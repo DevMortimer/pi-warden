@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { discoverSourceFiles, findProjects, SKIP_DIRS, SOURCE_RE } from "../src/discover.js";
+import { discoverSourceFiles, DISCOVERY_MAX, findProjects, isSourceFile, SKIP_DIRS, SOURCE_RE } from "../src/discover.js";
+import { applyProjectOverrides, applyUserOverrides, defaultConfig } from "../src/config.js";
 import { buildAuditPrompt, snapshotReport, reportOutcome } from "../src/audit.js";
 
 let temporary: string;
@@ -64,6 +65,26 @@ test("discoverSourceFiles: configured extra extensions are added and matched cas
   assert.deepEqual(dotted, bare, "a leading dot and casing normalize to the same extension");
   assert.ok(SOURCE_RE.test("foo.MJS"), "SOURCE_RE matches the built-in set case-insensitively");
   assert.ok(!SOURCE_RE.test("foo.astro"), "a configured extra does not change the built-in regex");
+
+  assert.ok(isSourceFile("page.astro", ["astro"]), "the predicate takes the configured extras");
+  assert.ok(!isSourceFile("page.astro"), "the predicate without extras leaves .astro out");
+  assert.ok(isSourceFile("index.MJS"), "the predicate lowercases the file name");
+  assert.deepEqual(discoverSourceFiles(project, DISCOVERY_MAX, [4 as unknown as string]), discoverSourceFiles(project), "an entry that is not a string names nothing");
+});
+
+test("discoverSourceFiles: a project file's list replaces the user's and the built-in set still applies", async () => {
+  const project = join(temporary, "layered-extensions");
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "index.ts"), "export const x = 1;");
+  await writeFile(join(project, "page.astro"), "<h1>hi</h1>");
+  await writeFile(join(project, "page.erb"), "<h1>hi</h1>");
+
+  const user = applyUserOverrides(defaultConfig(), { rules: { auditExtensions: ["astro"] } });
+  const layered = applyProjectOverrides(user, { rules: { auditExtensions: [".erb"] } });
+  const files = discoverSourceFiles(project, DISCOVERY_MAX, layered.rules.auditExtensions);
+  assert.ok(files.includes("index.ts"), "the built-in set still applies under a project list");
+  assert.ok(files.includes("page.erb"), "the project's extension is selected");
+  assert.ok(!files.includes("page.astro"), "the project list replaces the user's");
 });
 
 test("discoverSourceFiles: finds files in nested directories like packages/server/", async () => {

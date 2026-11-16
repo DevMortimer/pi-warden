@@ -79,6 +79,8 @@ test("a config module whose rules section predates rules.auditExtensions adds no
   assert.deepEqual(result.config.rules.auditExtensions, []);
   const kept = completeConfig({ ...defaultConfig(), rules: { ...defaultConfig().rules, auditExtensions: ["astro"] } } as never);
   assert.deepEqual(kept.config.rules.auditExtensions, ["astro"]);
+  const junk = completeConfig({ ...defaultConfig(), rules: { ...defaultConfig().rules, auditExtensions: ["astro", 4] } } as never);
+  assert.deepEqual(junk.config.rules.auditExtensions, ["astro"], "an entry that is not a string is dropped");
 });
 
 test("a 0.8 config module without the rules section disables the rules guard and renders its default widget line", () => {
