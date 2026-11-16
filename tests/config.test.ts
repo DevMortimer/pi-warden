@@ -721,6 +721,10 @@ test("a project file's rules.exclude and rules.skip add to the user's lists and 
 
   const emptied = applyProjectOverrides(user, { rules: { exclude: [] } });
   assert.deepEqual(emptied.rules.exclude, ["secrets/**"], "an empty project list takes nothing away");
+
+  const notAList = applyProjectOverrides(user, { rules: { exclude: "docs/**" } });
+  assert.deepEqual(notAList.rules.exclude, ["secrets/**"], "a project list that is not an array takes nothing away");
+  assert.deepEqual(notAList.warnings, ["project file: rules.exclude \"docs/**\" is ignored; a path list is an array of globs"], "and says so, where the user file falls back silently");
 });
 
 test("the loosened set is recorded per project: a missing or unreadable record shows the line", async () => {

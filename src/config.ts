@@ -1039,8 +1039,12 @@ function userExtensions(base: string[], raw: Record<string, unknown>, source: "u
  * A project's path list adds to the user's and cannot take an entry out of it: `rules.exclude` keeps a path away from Jev,
  * so a replacing list would let a repository send what the user excluded. An entry the user already has keeps its place.
  */
-function projectPathList(value: unknown, base: string[]): string[] {
-  if (!Array.isArray(value)) return base;
+function projectPathList(key: string, value: unknown, base: string[], warnings: string[]): string[] {
+  if (value === undefined) return base;
+  if (!Array.isArray(value)) {
+    warnings.push(`project file: ${key} ${JSON.stringify(value)} is ignored; a path list is an array of globs`);
+    return base;
+  }
   return [...new Set([...base, ...globList(value, [])])];
 }
 
@@ -1065,8 +1069,8 @@ function applyRules(base: RulesConfig, raw: unknown, source: "user" | "project",
     fallback: boolean(raw.fallback, base.fallback),
     maxChars: Math.max(500, positiveInteger(raw.maxChars, base.maxChars)),
     maxRequests: source === "project" ? projectRequests("rules.maxRequests", raw.maxRequests, base.maxRequests, warnings) : positiveInteger(raw.maxRequests, base.maxRequests),
-    exclude: source === "project" ? projectPathList(raw.exclude, base.exclude) : globList(raw.exclude, base.exclude),
-    skip: source === "project" ? projectPathList(raw.skip, base.skip) : globList(raw.skip, base.skip),
+    exclude: source === "project" ? projectPathList("rules.exclude", raw.exclude, base.exclude, warnings) : globList(raw.exclude, base.exclude),
+    skip: source === "project" ? projectPathList("rules.skip", raw.skip, base.skip, warnings) : globList(raw.skip, base.skip),
     auditExtensions: userExtensions(base.auditExtensions, raw, source, warnings),
     sensitivePaths: notes,
   };

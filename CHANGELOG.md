@@ -8,7 +8,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Fixed
 
-- A project file's `rules.exclude` and `rules.skip` add to the user's lists instead of replacing them (issue #224). A replacing `rules.exclude` dropped the paths the user had kept away from Jev, so a trusted repository could send them, and the session-start line counted the replacement as an exclusion added. An entry the project repeats keeps the user's position once.
+- A project file's `rules.exclude` and `rules.skip` add to the user's lists instead of replacing them (issue #224). A replacing `rules.exclude` dropped the paths the user had kept away from Jev, so a trusted repository could send them, and the session-start line counted the replacement as an exclusion added. An exact repeat keeps the user's entry once; a glob written differently (`./secrets/**`) is kept as its own entry.
 
 ## 2.12.0
 
