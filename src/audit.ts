@@ -11,9 +11,9 @@ export { discoverSourceFiles, findProjects } from "./discover.js";
  * agent-driven audit.  The model reads source, finds Jev opportunities, produces
  * measurable evidence, and writes an HTML report.
  *
- * `projects` comes from {@link findProjects}.  `cwd` is the workspace root.
+ * `projects` comes from {@link findProjects}. `extraExtensions` adds to the built-in source set. `cwd` is the workspace root.
  */
-export function buildAuditPrompt(cwd: string, projects: string[]): string {
+export function buildAuditPrompt(cwd: string, projects: string[], extraExtensions: readonly string[] = []): string {
   const projectName = cwd.split("/").pop() ?? "workspace";
 
   // Collect project summaries so the model knows the workspace shape.
@@ -22,7 +22,7 @@ export function buildAuditPrompt(cwd: string, projects: string[]): string {
     const name = projectPath.split("/").pop() ?? projectPath;
     let files: string[];
     try {
-      files = discoverSourceFiles(projectPath);
+      files = discoverSourceFiles(projectPath, 200, extraExtensions);
     } catch (err) {
       console.warn(`audit: could not discover files in ${redact(projectPath)}: ${err instanceof Error ? err.message : err}`);
       files = [];

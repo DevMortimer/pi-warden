@@ -257,6 +257,8 @@ export interface RulesConfig {
   exclude: string[];
   /** Globs of files the rules do not apply to, for example tests or docs. */
   skip: string[];
+  /** Extensions added to the audit's built-in source set; `.mjs` and `MJS` both name `mjs`. */
+  auditExtensions: string[];
   /** Glob → note. A write or edit under a matching path steers the agent with the note once per path; code only. */
   sensitivePaths: Record<string, string>;
 }
@@ -583,7 +585,7 @@ export function defaultConfig(): WardenConfig {
     cause: { enabled: true, claimsCause: 0.7, nudge: true, windowDays: 7 },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true, shareLinkParams: [] },
-    rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], sensitivePaths: {} },
+    rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} },
     // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
     rulesAtTurnStart: { enabled: true, threshold: 0.3 },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
@@ -1007,6 +1009,15 @@ function globList(value: unknown, fallback: string[]): string[] {
   return Array.isArray(value) ? value.filter((glob): glob is string => typeof glob === "string" && glob.trim().length > 0).map(glob => glob.trim()) : fallback;
 }
 
+/** Extensions as bare, lowercase suffixes: a leading dot is dropped, so `.mjs` and `MJS` both name `mjs`. */
+function extensionList(value: unknown, fallback: string[]): string[] {
+  return Array.isArray(value)
+    ? value.filter((extension): extension is string => typeof extension === "string")
+      .map(extension => extension.trim().replace(/^\./, "").toLowerCase())
+      .filter(extension => extension.length > 0)
+    : fallback;
+}
+
 /** A project request limit may be lowered, never raised above the user's: the requests are spent from the user's budget. */
 function projectRequests(key: string, value: unknown, base: number, warnings: string[]): number {
   const parsed = positiveInteger(value, base);
@@ -1030,6 +1041,7 @@ function applyRules(base: RulesConfig, raw: unknown, source: "user" | "project",
     maxRequests: source === "project" ? projectRequests("rules.maxRequests", raw.maxRequests, base.maxRequests, warnings) : positiveInteger(raw.maxRequests, base.maxRequests),
     exclude: globList(raw.exclude, base.exclude),
     skip: globList(raw.skip, base.skip),
+    auditExtensions: extensionList(raw.auditExtensions, base.auditExtensions),
     sensitivePaths: notes,
   };
 }
@@ -1404,6 +1416,7 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "rules.exclude": { kind: "more", check: "rules-check", label: "excluded paths" },
   "rules.skip": { kind: "more", check: "rules-check", label: "skipped paths" },
   "rules.sensitivePaths": { kind: "fewer", check: "rules-check", label: "sensitive-path notes" },
+  "rules.auditExtensions": { kind: "none", why: "which files the audit discovers, not a check; the confirm dialog names the files" },
 
   "rulesAtTurnStart.enabled": { kind: "none", why: "a project can only switch it on; switching it off is refused at load" },
   "rulesAtTurnStart.threshold": { kind: "none", why: "a project can only lower it, which names more rules" },

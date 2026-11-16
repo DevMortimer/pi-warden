@@ -347,7 +347,7 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
   const missing = [...result.missing];
   if (typeof config.rules !== "object" || config.rules === null || !Array.isArray(config.rules.exclude)) {
     if (!missing.includes("rules")) missing.push("rules");
-    config.rules = { enabled: false, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], sensitivePaths: {} };
+    config.rules = { enabled: false, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} };
   }
   if (typeof config.widget !== "object" || config.widget === null) {
     if (!missing.includes("widget")) missing.push("widget");
@@ -3645,7 +3645,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           if (!ctx.hasUI) { report("Audit needs an interactive session to run.", "warning"); return; }
           if (!await ctx.ui.confirm("Run workspace audit?", `This runs an agent-driven audit of ${redact(ctx.cwd)}. It uses the session model, reads source code, and writes a report. It may take several minutes and use real tokens. Measured comparisons need the agent's TypeSafe tool, which is enabled per session with \`/typesafe enable\`; without it findings will be marked unmeasured.`)) return;
           const projects = findProjects(ctx.cwd);
-          const prompt = buildAuditPrompt(ctx.cwd, projects);
+          const prompt = buildAuditPrompt(ctx.cwd, projects, config.rules.auditExtensions);
           const reportPath = join(ctx.cwd, ".pi-warden", "audit-report.html");
           const preSnapshot = snapshotReport(reportPath);
           auditRunning = true;

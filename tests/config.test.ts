@@ -556,6 +556,16 @@ test("rules.maxRequests: default 1, a positive integer from the user file, and a
   assert.deepEqual(raised.warnings, ["project file: rules.maxRequests 4 is ignored; a project file may lower a request limit, not raise it, so the user value 2 applies"]);
 });
 
+test("rules.auditExtensions: normalized extras from the user, replaced by a project file, and not a loosened check", () => {
+  assert.deepEqual(defaultConfig().rules.auditExtensions, []);
+  const user = applyUserOverrides(defaultConfig(), { rules: { auditExtensions: [".astro", " MJS ", "j2", 4, ""] } });
+  assert.deepEqual(user.rules.auditExtensions, ["astro", "mjs", "j2"], "a leading dot is dropped, casing is folded, and non-strings are dropped");
+  const project = applyProjectOverrides(user, { rules: { auditExtensions: [".ERB"] } });
+  assert.deepEqual(project.rules.auditExtensions, ["erb"], "a project file replaces the user list; the built-in set still applies in discovery");
+  assert.deepEqual(loosenedChecks(user, project), [], "which files the audit discovers is not a check");
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { rules: { auditExtensions: "astro" } }).rules.auditExtensions, [], "a non-list keeps the default");
+});
+
 test("project warnings follow the user file's own warnings", () => {
   const user = applyUserOverrides(defaultConfig(), { action: { commandRules: [{ id: "x", pattern: "x", severity: "nope" }] } });
   const project = applyProjectOverrides(user, { security: { enabled: false } });

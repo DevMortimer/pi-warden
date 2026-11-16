@@ -4,6 +4,12 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## Unreleased
+
+### Added
+
+- `rules.auditExtensions` adds file extensions to the set `/warden rules audit` and `/warden audit` discover (issue #221). The built-in set always applies; entries may be written `astro`, `.astro`, or `ASTRO`, and a project file's list replaces the user's but still adds to the built-in set. `rules.exclude`, `rules.skip`, and explicit audit paths filter as before.
+
 ## 2.11.0
 
 ### Added

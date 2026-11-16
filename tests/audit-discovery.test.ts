@@ -48,6 +48,24 @@ test("discoverSourceFiles: finds Node ESM modules and shell scripts", async () =
   assert.ok(!files.includes("notes.md"), "should not include Markdown");
 });
 
+test("discoverSourceFiles: configured extra extensions are added and matched case-insensitively", async () => {
+  const project = join(temporary, "extra-extensions");
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "page.astro"), "<h1>hi</h1>");
+  await writeFile(join(project, "index.MJS"), "export const x = 1;");
+  await writeFile(join(project, "notes.md"), "# not source");
+
+  const bare = discoverSourceFiles(project, 200, ["astro"]);
+  assert.ok(bare.includes("page.astro"), "a bare configured extension is added");
+  assert.ok(bare.includes("index.MJS"), "default extensions match case-insensitively");
+  assert.ok(!bare.includes("notes.md"), "Markdown stays out");
+
+  const dotted = discoverSourceFiles(project, 200, [".Astro"]);
+  assert.deepEqual(dotted, bare, "a leading dot and casing normalize to the same extension");
+  assert.ok(SOURCE_RE.test("foo.MJS"), "SOURCE_RE matches the built-in set case-insensitively");
+  assert.ok(!SOURCE_RE.test("foo.astro"), "a configured extra does not change the built-in regex");
+});
+
 test("discoverSourceFiles: finds files in nested directories like packages/server/", async () => {
   const project = join(temporary, "nested-layout");
   await mkdir(join(project, "packages", "server"), { recursive: true });
@@ -197,6 +215,15 @@ test("buildAuditPrompt: returns a string containing project names and instructio
   assert.ok(prompt.includes("file:line"), "should ask for file:line citations");
   assert.ok(prompt.includes(".pi-warden/audit-report.html"), "should name the report path");
   assert.ok(prompt.includes("unmeasured"), "should mention unmeasured findings");
+});
+
+test("buildAuditPrompt: a configured extension is counted in the project inventory", async () => {
+  const root = join(temporary, "audit-extra");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "package.json"), "{}");
+  await writeFile(join(root, "page.astro"), "<h1>hi</h1>");
+  assert.match(buildAuditPrompt(root, [root]), /audit-extra \(0 source files/, "the built-in set leaves .astro out");
+  assert.match(buildAuditPrompt(root, [root], ["astro"]), /audit-extra \(1 source files/, "a configured extension reaches the inventory count");
 });
 
 // ─── audit report mtime check ───────────────────────────────────────────────
