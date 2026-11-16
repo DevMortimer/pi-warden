@@ -31,10 +31,10 @@ function extensionSet(extra: readonly string[]): Set<string> {
   return new Set([...DEFAULT_SOURCE_EXTENSIONS, ...extra.filter((value): value is string => typeof value === "string").map(normalizeExtension)].filter(Boolean));
 }
 
-/** Whether `name` ends in one of the walk's extensions. */
+/** Whether `name` ends in one of the walk's extensions. A dotfile such as `.env` has a name and no extension. */
 function hasSourceExtension(name: string, extensions: ReadonlySet<string>): boolean {
   const dot = name.lastIndexOf(".");
-  return dot >= 0 && extensions.has(name.slice(dot + 1).toLowerCase());
+  return dot > 0 && extensions.has(name.slice(dot + 1).toLowerCase());
 }
 
 /** Whether `name` is a source file: a built-in extension or one of `extraExtensions`, either spelling case-insensitive. */

@@ -72,19 +72,21 @@ test("discoverSourceFiles: configured extra extensions are added and matched cas
   assert.deepEqual(discoverSourceFiles(project, DISCOVERY_MAX, [4 as unknown as string]), discoverSourceFiles(project), "an entry that is not a string names nothing");
 });
 
-test("discoverSourceFiles: a project file's list replaces the user's and the built-in set still applies", async () => {
+test("discoverSourceFiles: a project file cannot add extensions, and a dotfile has no extension", async () => {
   const project = join(temporary, "layered-extensions");
   await mkdir(project, { recursive: true });
   await writeFile(join(project, "index.ts"), "export const x = 1;");
   await writeFile(join(project, "page.astro"), "<h1>hi</h1>");
   await writeFile(join(project, "page.erb"), "<h1>hi</h1>");
+  await writeFile(join(project, ".env"), "TOKEN=x");
+  await writeFile(join(project, ".astro"), "cache");
 
   const user = applyUserOverrides(defaultConfig(), { rules: { auditExtensions: ["astro"] } });
-  const layered = applyProjectOverrides(user, { rules: { auditExtensions: [".erb"] } });
+  const layered = applyProjectOverrides(user, { rules: { auditExtensions: [".erb", "env"] } });
   const files = discoverSourceFiles(project, DISCOVERY_MAX, layered.rules.auditExtensions);
-  assert.ok(files.includes("index.ts"), "the built-in set still applies under a project list");
-  assert.ok(files.includes("page.erb"), "the project's extension is selected");
-  assert.ok(!files.includes("page.astro"), "the project list replaces the user's");
+  assert.deepEqual([...files].sort(), ["index.ts", "page.astro"], "the built-in set and the user's list apply; the project's list is ignored");
+  assert.deepEqual(discoverSourceFiles(project, DISCOVERY_MAX, ["env", "astro", "erb"]).sort(), ["index.ts", "page.astro", "page.erb"], "a file named only by a dot and an extension is not source");
+  assert.ok(!isSourceFile(".env", ["env"]) && !isSourceFile(".sh"), "the predicate agrees");
 });
 
 test("discoverSourceFiles: finds files in nested directories like packages/server/", async () => {

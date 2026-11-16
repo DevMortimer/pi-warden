@@ -1010,13 +1010,29 @@ function globList(value: unknown, fallback: string[]): string[] {
   return Array.isArray(value) ? value.filter((glob): glob is string => typeof glob === "string" && glob.trim().length > 0).map(glob => glob.trim()) : fallback;
 }
 
-/** Extensions as bare, lowercase suffixes: a leading dot is dropped, so `.mjs` and `MJS` both name `mjs`. */
-function extensionList(value: unknown, fallback: string[]): string[] {
-  return Array.isArray(value)
-    ? value.filter((extension): extension is string => typeof extension === "string")
-      .map(extension => normalizeExtension(extension))
-      .filter(extension => extension.length > 0)
-    : fallback;
+/**
+ * Extensions as bare, lowercase suffixes: a leading dot is dropped, so `.mjs` and `MJS` both name `mjs`. A file's
+ * extension is what follows its last dot, so an entry that still holds a dot or a path separator can match no file;
+ * it is dropped with a warning instead of being kept as a setting that does nothing.
+ */
+function extensionList(key: string, value: unknown, fallback: string[], warnings: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const kept: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const extension = normalizeExtension(entry);
+    if (!extension) continue;
+    if (/[./\\]/.test(extension)) warnings.push(`${key} ${JSON.stringify(entry)} is ignored; an extension is the part after a file name's last dot, such as "astro"`);
+    else if (!kept.includes(extension)) kept.push(extension);
+  }
+  return kept;
+}
+
+/** The audit sends a sample of every file it discovers, so which files count as source is the user's choice alone. */
+function userExtensions(base: string[], raw: Record<string, unknown>, source: "user" | "project", warnings: string[]): string[] {
+  if (source === "user") return extensionList("rules.auditExtensions", raw.auditExtensions, base, warnings);
+  if (raw.auditExtensions !== undefined) warnings.push("project file: rules.auditExtensions is ignored; the audit sends a sample of each file it discovers, so only the user file names extra extensions");
+  return base;
 }
 
 /** A project request limit may be lowered, never raised above the user's: the requests are spent from the user's budget. */
@@ -1042,7 +1058,7 @@ function applyRules(base: RulesConfig, raw: unknown, source: "user" | "project",
     maxRequests: source === "project" ? projectRequests("rules.maxRequests", raw.maxRequests, base.maxRequests, warnings) : positiveInteger(raw.maxRequests, base.maxRequests),
     exclude: globList(raw.exclude, base.exclude),
     skip: globList(raw.skip, base.skip),
-    auditExtensions: extensionList(raw.auditExtensions, base.auditExtensions),
+    auditExtensions: userExtensions(base.auditExtensions, raw, source, warnings),
     sensitivePaths: notes,
   };
 }
@@ -1417,7 +1433,7 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "rules.exclude": { kind: "more", check: "rules-check", label: "excluded paths" },
   "rules.skip": { kind: "more", check: "rules-check", label: "skipped paths" },
   "rules.sensitivePaths": { kind: "fewer", check: "rules-check", label: "sensitive-path notes" },
-  "rules.auditExtensions": { kind: "none", why: "which files the audit discovers, not a check; the confirm dialog names the files" },
+  "rules.auditExtensions": { kind: "none", why: "user file only: it widens which files the audit sends" },
 
   "rulesAtTurnStart.enabled": { kind: "none", why: "a project can only switch it on; switching it off is refused at load" },
   "rulesAtTurnStart.threshold": { kind: "none", why: "a project can only lower it, which names more rules" },
