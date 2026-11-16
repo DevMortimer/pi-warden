@@ -9,14 +9,46 @@ export const SKIP_DIRS = new Set([
   ".turbo", ".vercel", ".netlify", ".svelte-kit",
 ]);
 
-export const SOURCE_RE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|rs|py|go|vue|svelte|rb|php|java|kt|swift|cs|cpp|c|h|sh|bash|zsh)$/;
+/** Source-file extensions the audit discovers unless config adds more. */
+export const DEFAULT_SOURCE_EXTENSIONS: readonly string[] = [
+  "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "rs", "py", "go", "vue", "svelte",
+  "rb", "php", "java", "kt", "swift", "cs", "cpp", "c", "h", "sh", "bash", "zsh",
+];
+
+/** The default extensions as a case-insensitive regex; configured extras go through the walk's set. */
+export const SOURCE_RE = new RegExp(`\\.(${DEFAULT_SOURCE_EXTENSIONS.join("|")})$`, "i");
+
+/** Default cap on the files one walk returns. */
+export const DISCOVERY_MAX = 200;
+
+/** A configured extension as the bare, lowercase suffix it names (`.MJS` → `mjs`). */
+export function normalizeExtension(value: string): string {
+  return value.trim().replace(/^\./, "").toLowerCase();
+}
+
+/** The extensions one walk accepts: the defaults plus the configured extras. An entry that is not a string names nothing. */
+function extensionSet(extra: readonly string[]): Set<string> {
+  return new Set([...DEFAULT_SOURCE_EXTENSIONS, ...extra.filter((value): value is string => typeof value === "string").map(normalizeExtension)].filter(Boolean));
+}
+
+/** Whether `name` ends in one of the walk's extensions. A dotfile such as `.env` has a name and no extension. */
+function hasSourceExtension(name: string, extensions: ReadonlySet<string>): boolean {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && extensions.has(name.slice(dot + 1).toLowerCase());
+}
+
+/** Whether `name` is a source file: a built-in extension or one of `extraExtensions`, either spelling case-insensitive. */
+export function isSourceFile(name: string, extraExtensions: readonly string[] = []): boolean {
+  return hasSourceExtension(name, extensionSet(extraExtensions));
+}
 
 /**
  * Recursively walk `dir` and collect source-file paths (relative to `dir`).
  * Skips directories in SKIP_DIRS and stops after `max` files.
  */
-export function discoverSourceFiles(dir: string, max = 200): string[] {
+export function discoverSourceFiles(dir: string, max = DISCOVERY_MAX, extraExtensions: readonly string[] = []): string[] {
   const files: string[] = [];
+  const extensions = extensionSet(extraExtensions);
   function walk(current: string) {
     if (files.length >= max) return;
     let entries: import("node:fs").Dirent[];
@@ -28,7 +60,7 @@ export function discoverSourceFiles(dir: string, max = 200): string[] {
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
         walk(fullPath);
-      } else if (entry.isFile() && SOURCE_RE.test(entry.name)) {
+      } else if (entry.isFile() && hasSourceExtension(entry.name, extensions)) {
         files.push(fullPath.slice(dir.length + 1)); // relative path
       }
     }

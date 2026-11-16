@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { redact } from "./redact.js";
-import { discoverSourceFiles, findProjects } from "./discover.js";
+import { DISCOVERY_MAX, discoverSourceFiles, findProjects } from "./discover.js";
 export { discoverSourceFiles, findProjects } from "./discover.js";
 
 // ─── Prompt builder ─────────────────────────────────────────────────────────
@@ -12,8 +12,9 @@ export { discoverSourceFiles, findProjects } from "./discover.js";
  * measurable evidence, and writes an HTML report.
  *
  * `projects` comes from {@link findProjects}.  `cwd` is the workspace root.
+ * `extraExtensions` adds configured extensions to the built-in source set.
  */
-export function buildAuditPrompt(cwd: string, projects: string[]): string {
+export function buildAuditPrompt(cwd: string, projects: string[], extraExtensions: readonly string[] = []): string {
   const projectName = cwd.split("/").pop() ?? "workspace";
 
   // Collect project summaries so the model knows the workspace shape.
@@ -22,7 +23,7 @@ export function buildAuditPrompt(cwd: string, projects: string[]): string {
     const name = projectPath.split("/").pop() ?? projectPath;
     let files: string[];
     try {
-      files = discoverSourceFiles(projectPath);
+      files = discoverSourceFiles(projectPath, DISCOVERY_MAX, extraExtensions);
     } catch (err) {
       console.warn(`audit: could not discover files in ${redact(projectPath)}: ${err instanceof Error ? err.message : err}`);
       files = [];

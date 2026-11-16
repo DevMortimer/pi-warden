@@ -133,6 +133,21 @@ test("collectAuditFiles: ESM test files under a paths: tests/** rule are selecte
   }
 });
 
+test("collectAuditFiles: rules.auditExtensions adds a configured extension to the walk", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "pi-warden-rules-audit-ext-"));
+  try {
+    await mkdir(join(repo, "tests"), { recursive: true });
+    await writeFile(join(repo, "pi-warden.md"), "# Tests derive expectations from fixtures\npaths: tests/**\nTests must not read the live site.\n");
+    await writeFile(join(repo, "tests", "page.test.astro"), "---\n---\n<h1>hi</h1>\n");
+    const repoSet = new RuleStore().load(repo, config())!;
+    assert.deepEqual(collectAuditFiles(repo, ["."], repoSet, config(), 50).files, [], "the built-in set leaves .astro out");
+    const plan = collectAuditFiles(repo, ["."], repoSet, config({ auditExtensions: [".Astro"] }), 50);
+    assert.deepEqual(plan.files, ["tests/page.test.astro"]);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Arguments
 

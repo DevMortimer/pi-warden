@@ -108,7 +108,7 @@ export function collectAuditFiles(cwd: string, paths: readonly string[], set: Ru
     // The project root is the one path `projectPath` rejects: it is not inside itself.
     if (!stat || rel === undefined || rel.startsWith("..") || isAbsolute(rel)) { missing.push(raw); continue; }
     const found = stat.isDirectory()
-      ? discoverSourceFiles(abs, AUDIT_DISCOVERY_MAX).map(name => projectPath(join(abs, name), cwd)).filter((path): path is string => path !== undefined)
+      ? discoverSourceFiles(abs, AUDIT_DISCOVERY_MAX, config.auditExtensions).map(name => projectPath(join(abs, name), cwd)).filter((path): path is string => path !== undefined)
       : rel ? [rel] : [];
     if (!stat.isDirectory() && !stat.isFile()) missing.push(raw);
     for (const candidate of found) {

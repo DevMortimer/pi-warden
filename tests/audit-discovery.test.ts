@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { discoverSourceFiles, findProjects, SKIP_DIRS, SOURCE_RE } from "../src/discover.js";
+import { discoverSourceFiles, DISCOVERY_MAX, findProjects, isSourceFile, SKIP_DIRS, SOURCE_RE } from "../src/discover.js";
+import { applyProjectOverrides, applyUserOverrides, defaultConfig } from "../src/config.js";
 import { buildAuditPrompt, snapshotReport, reportOutcome } from "../src/audit.js";
 
 let temporary: string;
@@ -46,6 +47,46 @@ test("discoverSourceFiles: finds Node ESM modules and shell scripts", async () =
   assert.ok(files.includes("legacy.cjs"), "should find .cjs file");
   assert.ok(files.includes("deploy.sh"), "should find .sh file");
   assert.ok(!files.includes("notes.md"), "should not include Markdown");
+});
+
+test("discoverSourceFiles: configured extra extensions are added and matched case-insensitively", async () => {
+  const project = join(temporary, "extra-extensions");
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "page.astro"), "<h1>hi</h1>");
+  await writeFile(join(project, "index.MJS"), "export const x = 1;");
+  await writeFile(join(project, "notes.md"), "# not source");
+
+  const bare = discoverSourceFiles(project, 200, ["astro"]);
+  assert.ok(bare.includes("page.astro"), "a bare configured extension is added");
+  assert.ok(bare.includes("index.MJS"), "default extensions match case-insensitively");
+  assert.ok(!bare.includes("notes.md"), "Markdown stays out");
+
+  const dotted = discoverSourceFiles(project, 200, [".Astro"]);
+  assert.deepEqual(dotted, bare, "a leading dot and casing normalize to the same extension");
+  assert.ok(SOURCE_RE.test("foo.MJS"), "SOURCE_RE matches the built-in set case-insensitively");
+  assert.ok(!SOURCE_RE.test("foo.astro"), "a configured extra does not change the built-in regex");
+
+  assert.ok(isSourceFile("page.astro", ["astro"]), "the predicate takes the configured extras");
+  assert.ok(!isSourceFile("page.astro"), "the predicate without extras leaves .astro out");
+  assert.ok(isSourceFile("index.MJS"), "the predicate lowercases the file name");
+  assert.deepEqual(discoverSourceFiles(project, DISCOVERY_MAX, [4 as unknown as string]), discoverSourceFiles(project), "an entry that is not a string names nothing");
+});
+
+test("discoverSourceFiles: a project file cannot add extensions, and a dotfile has no extension", async () => {
+  const project = join(temporary, "layered-extensions");
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "index.ts"), "export const x = 1;");
+  await writeFile(join(project, "page.astro"), "<h1>hi</h1>");
+  await writeFile(join(project, "page.erb"), "<h1>hi</h1>");
+  await writeFile(join(project, ".env"), "TOKEN=x");
+  await writeFile(join(project, ".astro"), "cache");
+
+  const user = applyUserOverrides(defaultConfig(), { rules: { auditExtensions: ["astro"] } });
+  const layered = applyProjectOverrides(user, { rules: { auditExtensions: [".erb", "env"] } });
+  const files = discoverSourceFiles(project, DISCOVERY_MAX, layered.rules.auditExtensions);
+  assert.deepEqual([...files].sort(), ["index.ts", "page.astro"], "the built-in set and the user's list apply; the project's list is ignored");
+  assert.deepEqual(discoverSourceFiles(project, DISCOVERY_MAX, ["env", "astro", "erb"]).sort(), ["index.ts", "page.astro", "page.erb"], "a file named only by a dot and an extension is not source");
+  assert.ok(!isSourceFile(".env", ["env"]) && !isSourceFile(".sh"), "the predicate agrees");
 });
 
 test("discoverSourceFiles: finds files in nested directories like packages/server/", async () => {
@@ -197,6 +238,15 @@ test("buildAuditPrompt: returns a string containing project names and instructio
   assert.ok(prompt.includes("file:line"), "should ask for file:line citations");
   assert.ok(prompt.includes(".pi-warden/audit-report.html"), "should name the report path");
   assert.ok(prompt.includes("unmeasured"), "should mention unmeasured findings");
+});
+
+test("buildAuditPrompt: a configured extension is counted in the project inventory", async () => {
+  const root = join(temporary, "audit-extra");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "package.json"), "{}");
+  await writeFile(join(root, "page.astro"), "<h1>hi</h1>");
+  assert.match(buildAuditPrompt(root, [root]), /audit-extra \(0 source files/, "the built-in set leaves .astro out");
+  assert.match(buildAuditPrompt(root, [root], ["astro"]), /audit-extra \(1 source files/, "a configured extension reaches the inventory count");
 });
 
 // ─── audit report mtime check ───────────────────────────────────────────────

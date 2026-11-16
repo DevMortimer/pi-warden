@@ -4,6 +4,12 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## 2.12.0
+
+### Added
+
+- `rules.auditExtensions` adds file extensions to the source set `/warden rules audit` and `/warden audit` use (issue #221). The built-in set always applies; entries may be written `astro`, `.astro`, or `ASTRO`, and file names match case-insensitively, so `index.MJS` is source. The key is read from the user file only: the rules audit sends a sample of each file it discovers, so a project file that names it is ignored with a warning. An entry that can match no file (`"d.ts"`) is dropped with a warning, and a dotfile such as `.env` has no extension. `/warden rules audit` still drops what `rules.exclude` and `rules.skip` name; `/warden audit` uses the list for the per-project source-file count it reports.
+
 ## 2.11.0
 
 ### Added

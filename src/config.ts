@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { writeFileAtomicSync } from "./atomic.js";
 import type { JudgmentBackend } from "./backend.js";
 import { resolveJudgmentBackend } from "./backend.js";
+import { normalizeExtension } from "./discover.js";
 import { defaultHostDirs } from "./host-dirs.js";
 import type { HostDirs } from "./host-dirs.js";
 import { COMMAND_TOOLS } from "./tools.js";
@@ -257,6 +258,8 @@ export interface RulesConfig {
   exclude: string[];
   /** Globs of files the rules do not apply to, for example tests or docs. */
   skip: string[];
+  /** Extensions added to the audit's built-in source set; `.mjs` and `MJS` both name `mjs`. */
+  auditExtensions: string[];
   /** Glob → note. A write or edit under a matching path steers the agent with the note once per path; code only. */
   sensitivePaths: Record<string, string>;
 }
@@ -583,7 +586,7 @@ export function defaultConfig(): WardenConfig {
     cause: { enabled: true, claimsCause: 0.7, nudge: true, windowDays: 7 },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true, shareLinkParams: [] },
-    rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], sensitivePaths: {} },
+    rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} },
     // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
     rulesAtTurnStart: { enabled: true, threshold: 0.3 },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
@@ -1007,6 +1010,31 @@ function globList(value: unknown, fallback: string[]): string[] {
   return Array.isArray(value) ? value.filter((glob): glob is string => typeof glob === "string" && glob.trim().length > 0).map(glob => glob.trim()) : fallback;
 }
 
+/**
+ * Extensions as bare, lowercase suffixes: a leading dot is dropped, so `.mjs` and `MJS` both name `mjs`. A file's
+ * extension is what follows its last dot, so an entry that still holds a dot or a path separator can match no file;
+ * it is dropped with a warning instead of being kept as a setting that does nothing.
+ */
+function extensionList(key: string, value: unknown, fallback: string[], warnings: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const kept: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const extension = normalizeExtension(entry);
+    if (!extension) continue;
+    if (/[./\\]/.test(extension)) warnings.push(`${key} ${JSON.stringify(entry)} is ignored; an extension is the part after a file name's last dot, such as "astro"`);
+    else if (!kept.includes(extension)) kept.push(extension);
+  }
+  return kept;
+}
+
+/** The audit sends a sample of every file it discovers, so which files count as source is the user's choice alone. */
+function userExtensions(base: string[], raw: Record<string, unknown>, source: "user" | "project", warnings: string[]): string[] {
+  if (source === "user") return extensionList("rules.auditExtensions", raw.auditExtensions, base, warnings);
+  if (raw.auditExtensions !== undefined) warnings.push("project file: rules.auditExtensions is ignored; the audit sends a sample of each file it discovers, so only the user file names extra extensions");
+  return base;
+}
+
 /** A project request limit may be lowered, never raised above the user's: the requests are spent from the user's budget. */
 function projectRequests(key: string, value: unknown, base: number, warnings: string[]): number {
   const parsed = positiveInteger(value, base);
@@ -1030,6 +1058,7 @@ function applyRules(base: RulesConfig, raw: unknown, source: "user" | "project",
     maxRequests: source === "project" ? projectRequests("rules.maxRequests", raw.maxRequests, base.maxRequests, warnings) : positiveInteger(raw.maxRequests, base.maxRequests),
     exclude: globList(raw.exclude, base.exclude),
     skip: globList(raw.skip, base.skip),
+    auditExtensions: userExtensions(base.auditExtensions, raw, source, warnings),
     sensitivePaths: notes,
   };
 }
@@ -1404,6 +1433,7 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "rules.exclude": { kind: "more", check: "rules-check", label: "excluded paths" },
   "rules.skip": { kind: "more", check: "rules-check", label: "skipped paths" },
   "rules.sensitivePaths": { kind: "fewer", check: "rules-check", label: "sensitive-path notes" },
+  "rules.auditExtensions": { kind: "none", why: "user file only: it widens which files the audit sends" },
 
   "rulesAtTurnStart.enabled": { kind: "none", why: "a project can only switch it on; switching it off is refused at load" },
   "rulesAtTurnStart.threshold": { kind: "none", why: "a project can only lower it, which names more rules" },

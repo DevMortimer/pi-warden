@@ -556,6 +556,26 @@ test("rules.maxRequests: default 1, a positive integer from the user file, and a
   assert.deepEqual(raised.warnings, ["project file: rules.maxRequests 4 is ignored; a project file may lower a request limit, not raise it, so the user value 2 applies"]);
 });
 
+test("rules.auditExtensions: normalized extras from the user, and a project file cannot set it", () => {
+  assert.deepEqual(defaultConfig().rules.auditExtensions, []);
+  const user = applyUserOverrides(defaultConfig(), { rules: { auditExtensions: [".astro", " MJS ", "j2", 4, ""] } });
+  assert.deepEqual(user.rules.auditExtensions, ["astro", "mjs", "j2"], "a leading dot is dropped, casing is folded, and non-strings are dropped");
+  assert.deepEqual(user.warnings, []);
+  const project = applyProjectOverrides(user, { rules: { auditExtensions: [".ERB", "env"] } });
+  assert.deepEqual(project.rules.auditExtensions, ["astro", "mjs", "j2"], "a project file cannot widen what the audit sends; the user's list stands");
+  assert.equal(project.warnings.length, 1);
+  assert.match(project.warnings[0]!, /^project file: rules\.auditExtensions is ignored/);
+  assert.deepEqual(applyProjectOverrides(user, { rules: { skip: ["docs/**"] } }).warnings, [], "a project file that does not name the key gets no warning");
+  const odd = applyUserOverrides(defaultConfig(), { rules: { auditExtensions: ["d.ts", "astro", "ASTRO", "a/b"] } });
+  assert.deepEqual(odd.rules.auditExtensions, ["astro"], "an entry that can match no file is dropped, and a repeat is kept once");
+  assert.equal(odd.warnings.length, 2);
+  assert.match(odd.warnings[0]!, /^rules\.auditExtensions "d\.ts" is ignored/);
+  const spellings = [".mjs", "mjs", "MJS"].map(extension => applyUserOverrides(defaultConfig(), { rules: { auditExtensions: [extension] } }).rules.auditExtensions);
+  assert.deepEqual(spellings, [["mjs"], ["mjs"], ["mjs"]], "a leading dot, casing, and the bare name all name the same extension");
+  assert.deepEqual(loosenedChecks(user, project), [], "the key is not a check a project can loosen");
+  assert.deepEqual(applyUserOverrides(defaultConfig(), { rules: { auditExtensions: "astro" } }).rules.auditExtensions, [], "a non-list keeps the default");
+});
+
 test("project warnings follow the user file's own warnings", () => {
   const user = applyUserOverrides(defaultConfig(), { action: { commandRules: [{ id: "x", pattern: "x", severity: "nope" }] } });
   const project = applyProjectOverrides(user, { security: { enabled: false } });
