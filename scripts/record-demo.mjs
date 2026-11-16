@@ -370,8 +370,11 @@ async function main() {
     recording = false;
     await capture;
   } finally {
-    // The private server and the Pi inside it, by socket: no process is ever killed by name.
+    // The private server and the Pi inside it, by socket: no process is ever killed by name. tmux leaves the socket
+    // file behind after kill-server, so it is removed by the path the server reported.
+    const socket = tmux("display-message", "-p", "-t", "demo", "#{socket_path}").stdout?.trim();
     tmux("kill-server");
+    if (socket) rmSync(socket, { force: true });
     await judge.close();
   }
   if (frames.length < 10) fail("the recording is empty");
