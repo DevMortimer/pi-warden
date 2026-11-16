@@ -706,6 +706,23 @@ test("loosenedChecks names every check a project file takes away, and nothing wh
   ]);
 });
 
+test("a project file's rules.exclude and rules.skip add to the user's lists and cannot take an entry out", () => {
+  const user = applyUserOverrides(defaultConfig(), { rules: { exclude: ["secrets/**"], skip: ["fixtures/**"] } });
+  const layered = applyProjectOverrides(user, { rules: { exclude: ["docs/**"], skip: ["tests/**"] } });
+  assert.deepEqual(layered.rules.exclude, ["secrets/**", "docs/**"], "a project path list adds to the user's, so a path the user excluded stays excluded");
+  assert.deepEqual(layered.rules.skip, ["fixtures/**", "tests/**"], "skip adds the same way");
+  assert.deepEqual(loosenedChecks(user, layered), [
+    { name: "rules-check", detail: "excluded paths added: docs/**" },
+    { name: "rules-check", detail: "skipped paths added: tests/**" },
+  ], "the session-start line still names only what the project added");
+
+  const repeated = applyProjectOverrides(user, { rules: { exclude: ["docs/**", "secrets/**", "docs/**"] } });
+  assert.deepEqual(repeated.rules.exclude, ["secrets/**", "docs/**"], "an entry the user already has keeps its place once, and a repeated entry lands once");
+
+  const emptied = applyProjectOverrides(user, { rules: { exclude: [] } });
+  assert.deepEqual(emptied.rules.exclude, ["secrets/**"], "an empty project list takes nothing away");
+});
+
 test("the loosened set is recorded per project: a missing or unreadable record shows the line", async () => {
   const other = join(temporary, "other-project");
   await mkdir(other, { recursive: true });
