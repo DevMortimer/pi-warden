@@ -132,8 +132,9 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.rules.softThreshold !== "number") config.rules = { ...config.rules, softThreshold: 0 };
   // The request limit was added inside the rules section later too; an older config module gets the one request it always sent.
   if (typeof config.rules.maxRequests !== "number") config.rules = { ...config.rules, maxRequests: 1 };
-  // The audit's extra extensions were added inside the rules section later; an older config module adds none to the built-in set.
+  // The audit's extra extensions were added inside the rules section later; an older config module adds none to the built-in set, and an entry that is not a string names nothing.
   if (!Array.isArray(config.rules.auditExtensions)) config.rules = { ...config.rules, auditExtensions: [] };
+  else if (config.rules.auditExtensions.some(extension => typeof extension !== "string")) config.rules = { ...config.rules, auditExtensions: config.rules.auditExtensions.filter((extension): extension is string => typeof extension === "string") };
   // The turn-start reminder was added after the rules section; an older config module leaves it undefined and the reminder stays off.
   if (typeof config.rulesAtTurnStart?.threshold !== "number") config.rulesAtTurnStart = { ...off, threshold: 1 };
   if (typeof config.rulesAtTurnStart.enabled !== "boolean") config.rulesAtTurnStart = { ...config.rulesAtTurnStart, enabled: false };

@@ -18,14 +18,17 @@ export const DEFAULT_SOURCE_EXTENSIONS: readonly string[] = [
 /** The default extensions as a case-insensitive regex; configured extras go through the walk's set. */
 export const SOURCE_RE = new RegExp(`\\.(${DEFAULT_SOURCE_EXTENSIONS.join("|")})$`, "i");
 
+/** Default cap on the files one walk returns. */
+export const DISCOVERY_MAX = 200;
+
 /** A configured extension as the bare, lowercase suffix it names (`.MJS` → `mjs`). */
-function normalizeExtension(value: string): string {
+export function normalizeExtension(value: string): string {
   return value.trim().replace(/^\./, "").toLowerCase();
 }
 
-/** The extensions one walk accepts: the defaults plus the configured extras. */
+/** The extensions one walk accepts: the defaults plus the configured extras. An entry that is not a string names nothing. */
 function extensionSet(extra: readonly string[]): Set<string> {
-  return new Set([...DEFAULT_SOURCE_EXTENSIONS, ...extra.map(normalizeExtension)].filter(Boolean));
+  return new Set([...DEFAULT_SOURCE_EXTENSIONS, ...extra.filter((value): value is string => typeof value === "string").map(normalizeExtension)].filter(Boolean));
 }
 
 /** Whether `name` ends in one of the walk's extensions. */
@@ -34,11 +37,16 @@ function hasSourceExtension(name: string, extensions: ReadonlySet<string>): bool
   return dot >= 0 && extensions.has(name.slice(dot + 1).toLowerCase());
 }
 
+/** Whether `name` is a source file: a built-in extension or one of `extraExtensions`, either spelling case-insensitive. */
+export function isSourceFile(name: string, extraExtensions: readonly string[] = []): boolean {
+  return hasSourceExtension(name, extensionSet(extraExtensions));
+}
+
 /**
  * Recursively walk `dir` and collect source-file paths (relative to `dir`).
  * Skips directories in SKIP_DIRS and stops after `max` files.
  */
-export function discoverSourceFiles(dir: string, max = 200, extraExtensions: readonly string[] = []): string[] {
+export function discoverSourceFiles(dir: string, max = DISCOVERY_MAX, extraExtensions: readonly string[] = []): string[] {
   const files: string[] = [];
   const extensions = extensionSet(extraExtensions);
   function walk(current: string) {

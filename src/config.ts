@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { writeFileAtomicSync } from "./atomic.js";
 import type { JudgmentBackend } from "./backend.js";
 import { resolveJudgmentBackend } from "./backend.js";
+import { normalizeExtension } from "./discover.js";
 import { defaultHostDirs } from "./host-dirs.js";
 import type { HostDirs } from "./host-dirs.js";
 import { COMMAND_TOOLS } from "./tools.js";
@@ -1013,7 +1014,7 @@ function globList(value: unknown, fallback: string[]): string[] {
 function extensionList(value: unknown, fallback: string[]): string[] {
   return Array.isArray(value)
     ? value.filter((extension): extension is string => typeof extension === "string")
-      .map(extension => extension.trim().replace(/^\./, "").toLowerCase())
+      .map(extension => normalizeExtension(extension))
       .filter(extension => extension.length > 0)
     : fallback;
 }
