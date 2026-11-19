@@ -320,6 +320,30 @@ test("buildStuckRequest sends numbered attempts with outcomes and a task", () =>
   assert.deepEqual(Object.keys(request.questions).sort(), ["approach_change", "progress", "same_strategy"]);
 });
 
+test("an attempt whose host reported no exit status is neither a failure nor called a success", async () => {
+  const unknown = makeAttempt("bash", { command: "node build.js" }, text("TypeError: x is not a function"), undefined);
+  assert.equal(unknown.failed, false);
+  assert.equal(unknown.unreported, true);
+  assert.equal(makeAttempt("bash", { command: "node build.js" }, text("built"), false).unreported, undefined, "a reported status stays as it was");
+  assert.equal(unknown.key, makeAttempt("bash", { command: "node build.js" }, [], true).key, "the call key does not depend on the status");
+
+  const window = new AttemptWindow(12);
+  window.push(unknown);
+  window.push(makeAttempt("bash", { command: "npm test" }, text("built, maybe"), undefined));
+  window.push(makeAttempt("bash", { command: "npm test" }, text("ℹ fail 1"), true));
+  assert.equal(window.failures(), 1, "an unknown outcome is not counted as a failure");
+  const request = buildStuckRequest(window.attempts, "fix it");
+  assert.deepEqual(request.state.attempts.map(attempt => attempt.outcome), ["unknown", "unknown", "failed"]);
+  assert.deepEqual(request.state.evidence?.runs.map(run => [run.n, run.outcome]), [[2, "unknown"], [3, "failed"]], "a check run that showed no result is not a passing run");
+
+  const repeating = new AttemptWindow(12);
+  for (let index = 0; index < 3; index++) repeating.push(makeAttempt("bash", { command: "node build.js" }, text("TypeError: x is not a function"), undefined));
+  assert.equal(repeating.quickRepeat(), undefined, "a call not known to have failed, and not read-only, gets no quick repeat");
+  const verdict = await evaluateStuck(repeating, "fix it", { config: stuckConfig, timeoutMs: 1000 });
+  assert.deepEqual([verdict.stuck, verdict.successRepeat], [true, true]);
+  assert.match(stuckNudge(verdict), /^pi-warden: the same call ran 3 times with the same output\. Stop re-running it/);
+});
+
 test("classifyToolResult: a write or edit outside the project root is not a code change, one inside is", () => {
   const cwd = join(tmpdir(), "project");
   assert.equal(classifyToolResult("write", { path: join(tmpdir(), "notes.md"), content: "" }, false, undefined, cwd), "unknown");

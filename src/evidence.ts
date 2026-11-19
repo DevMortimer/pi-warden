@@ -327,10 +327,18 @@ export function editDiff(tool: string, input: Record<string, unknown>): EditDiff
   return { path, added: addedLines.length, removed: removedLines.length, removedLines, addedLines, diff: text.length > DIFF_CAP ? `${text.slice(0, DIFF_CAP)}… [diff capped]` : text };
 }
 
-/** One run in the evidence: a failed call, or a call that ran a test, build or lint command and passed. */
+/** How an attempt ended, as the judge reads it: a call whose host reported no exit status is not called a success. */
+export function attemptOutcome(attempt: Attempt): "failed" | "ok" | "unknown" {
+  return attempt.failed ? "failed" : attempt.unreported ? "unknown" : "ok";
+}
+
+/**
+ * One run in the evidence: a failed call, or a call that ran a test, build or lint command and passed, or ended in a
+ * way its host did not report.
+ */
 export type EvidenceRun = {
   n: number;
-  outcome: "failed" | "ok";
+  outcome: "failed" | "ok" | "unknown";
   parser?: string;
   failing_tests?: string[];
   failing_tests_more?: number;
@@ -434,7 +442,7 @@ export function buildStuckEvidence(attempts: readonly Attempt[], limit: number =
     }
     const command = normaliseFailureText(attempt.call);
     const seen = firstCommandRun.get(command);
-    const run: PendingRun = { view: { n, outcome: attempt.failed ? "failed" : "ok" }, repeatCommand: seen !== undefined };
+    const run: PendingRun = { view: { n, outcome: attemptOutcome(attempt) }, repeatCommand: seen !== undefined };
     if (seen === undefined) firstCommandRun.set(command, n);
     if (attempt.failed) {
       const parsed = parseFailure(attempt.text);
