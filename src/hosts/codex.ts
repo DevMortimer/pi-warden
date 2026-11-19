@@ -1,15 +1,19 @@
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { WardenConfig } from "../config.js";
 import { redact } from "../redact.js";
 import { describeTarget, EDIT_TEXT_LIMIT, MAX_EDITS, projectPath } from "../rules.js";
 import type { EditView, RulesTarget } from "../rules.js";
+import { makeAttempt } from "../stuck.js";
+import type { Attempt } from "../stuck.js";
 import { parsePatch } from "./apply-patch.js";
 import type { PatchHunk } from "./apply-patch.js";
-import { checkRecord, promptHook, sessionOf, stopHook } from "./done-check.js";
+import { checkRecord, doneActive, promptHook, sessionOf, stopHook } from "./done-check.js";
 import type { OwnerOutput } from "./done-check.js";
 import { feedback, globalConfig, RulesRun } from "./headless.js";
 import type { HookOutput } from "./headless.js";
 import { HostState } from "./state.js";
+import { stuckActive, stuckNotice } from "./stuck-check.js";
 import { object } from "./io.js";
 
 /** Codex's hook result: context for the model after a call, or the owner-facing message the model never sees. */
@@ -45,9 +49,24 @@ async function hunkTarget(hunk: PatchHunk, cwd: string, project: string): Promis
 const changesProject = (hunk: PatchHunk, cwd: string): boolean =>
   [hunk.path, hunk.kind === "update" ? hunk.movePath : undefined].some(path => path !== undefined && projectPath(path, cwd) !== undefined);
 
-export async function codexHook(event: string, raw: unknown, signal: AbortSignal): Promise<CodexOutput> {
+/**
+ * A successful patch in the shape of Pi's own file tools, so the stuck guard keys and diffs it as in Pi: a patch that
+ * only adds one file is a `write` of it, any other an `edit` with one entry per added file and per `@@` chunk, under the
+ * paths it touched. Codex runs the hook only after the patch applied, so there is no output worth comparing.
+ */
+function patchAttempt(hunks: readonly PatchHunk[]): Attempt {
+  const [only] = hunks;
+  if (hunks.length === 1 && only?.kind === "add") return makeAttempt("write", { path: only.path, content: only.contents }, [], false);
+  const path = hunks.map(hunk => hunk.kind === "update" ? hunk.movePath ?? hunk.path : hunk.path).join(", ");
+  const edits = hunks.flatMap(hunk => hunk.kind === "add" ? [{ oldText: "", newText: hunk.contents }]
+    : hunk.kind === "update" ? hunk.chunks.map(chunk => ({ oldText: chunk.oldLines.join("\n"), newText: chunk.newLines.join("\n") }))
+    : []);
+  return makeAttempt("edit", { path, edits }, [], false);
+}
+
+export async function codexHook(event: string, raw: unknown, signal: AbortSignal, deadline: number): Promise<CodexOutput> {
   if (!(CODEX_EVENTS as readonly string[]).includes(event) || !object(raw) || raw.hook_event_name !== event) return {};
-  if (event === "UserPromptSubmit") return promptHook("codex", raw, signal);
+  if (event === "UserPromptSubmit") return promptHook("codex", raw, signal, config => doneActive(config) || stuckActive(config));
   if (event === "Stop") return stopHook("codex", raw, signal);
   if ((raw.tool_name !== "apply_patch" && raw.tool_name !== "Bash") || !object(raw.tool_input)) return {};
   const { cwd, session } = sessionOf(raw);
@@ -58,20 +77,36 @@ export async function codexHook(event: string, raw: unknown, signal: AbortSignal
   if (typeof command !== "string") throw new Error(`Invalid Codex ${raw.tool_name} input.`);
   const config = await globalConfig(signal);
   const rules = config.enabled && config.rules.enabled && raw.tool_name === "apply_patch";
-  const done = config.enabled && config.done.enabled && config.done.nudge;
-  if (!rules && !done) return {};
+  const done = doneActive(config);
+  const stuck = stuckActive(config);
+  if (!rules && !done && !stuck) return {};
   const state = new HostState("codex", session, config.maxRequests, signal);
   await state.prepare();
-  const identity = JSON.stringify([raw.agent_id ?? null, toolId]);
+  const agent = raw.agent_id as string | undefined;
+  const identity = JSON.stringify([agent ?? null, toolId]);
   if (raw.tool_name === "Bash") {
+    if (typeof raw.tool_response !== "string") return {};
     // Codex sends a finished command's output and no exit status, so only the output can make the run a check.
-    const record = typeof raw.tool_response === "string" ? checkRecord({ command }, undefined, raw.tool_response, cwd) : undefined;
-    if (record) state.recordEvidence(identity, record);
-    return {};
+    const record = checkRecord({ command }, undefined, raw.tool_response, cwd);
+    if (done && record) state.recordEvidence(identity, record);
+    if (!stuck) return {};
+    // A check's own output shows whether it failed; any other run's outcome is unknown, not a success.
+    const attempt = makeAttempt("bash", { command }, [{ type: "text", text: raw.tool_response }], record ? record.outcome === "check-fail" : undefined);
+    return stuckNotice(config, state, agent, identity, attempt, signal, deadline);
   }
   const hunks = parsePatch(command);
   if (done && hunks.some(hunk => changesProject(hunk, cwd))) state.recordEvidence(identity, { outcome: "mutation" });
-  if (!rules || !state.once("processed", identity)) return {};
+  // Both may wait for a judgment, so they share the hook's deadline instead of taking turns at it.
+  const [notice, output] = await Promise.all([
+    stuck ? stuckNotice(config, state, agent, identity, patchAttempt(hunks), signal, deadline) : {},
+    rules ? patchRules(hunks, cwd, config, state, identity, signal) : {},
+  ]);
+  return { ...output, ...notice };
+}
+
+/** The rules judgment of the files one patch wrote; the stuck-check runs beside it. */
+async function patchRules(hunks: readonly PatchHunk[], cwd: string, config: WardenConfig, state: HostState, identity: string, signal: AbortSignal): Promise<HookOutput> {
+  if (!state.once("processed", identity)) return {};
   const project = await realpath(cwd);
   const targets: RulesTarget[] = [];
   for (const hunk of hunks) {

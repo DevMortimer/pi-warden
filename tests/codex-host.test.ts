@@ -417,7 +417,8 @@ test("the done-check runs with rules off, needs consent, and records nothing whe
     for (const done of [{ enabled: false }, { nudge: false }]) {
       const off = await fixture();
       try {
-        const offEnv = await judgeProject(off, { done, rules: { enabled: false } });
+        // The stuck-check also records the prompt and every result, so it is off here too.
+        const offEnv = await judgeProject(off, { done, rules: { enabled: false }, stuck: { enabled: false } });
         await changedProject(off, offEnv);
         await cli(off, ["hook", "codex", "PostToolUse"], bash(off, "npm test", PASSING, "bash-1"), offEnv);
         assert.equal((await cli(off, ["hook", "codex", "Stop"], stop(off, "Done."), offEnv)).stdout.trim(), "{}");
@@ -437,5 +438,197 @@ test("a replayed patch or shell result is one piece of evidence", async () => {
     await Promise.all(Array.from({ length: 2 }, () => cli(fx, ["hook", "codex", "PostToolUse"], bash(fx, "npm test", "\u2139 tests 3\n\u2139 pass 2\n\u2139 fail 1\n", "bash-1"), env)));
     await cli(fx, ["hook", "codex", "Stop"], stop(fx, "Done."), env);
     assert.deepEqual((await doneRequests(env))[0]!.state.run, { file_changes: 1, checks_run: ["npm test \u2192 failed"] });
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+/** The stuck-check requests sent so far; rules and done-check requests are left out. */
+async function stuckRequests(env: NodeJS.ProcessEnv): Promise<Array<{ state: Record<string, unknown> }>> {
+  const text = await readFile(env.CLAUDE_TEST_CAPTURE!, "utf8").catch(() => "");
+  return text.trim() ? text.trim().split("\n").map(line => JSON.parse(line)).filter(request => "same_strategy" in request.questions) : [];
+}
+
+const sessionDirectory = (fx: Fixture): string => join(fx.agent, "pi-warden", "state", "codex", createHash("sha256").update("session-1").digest("hex"));
+
+/** Every result the stuck-check stored for the session. */
+async function storedAttempts(fx: Fixture): Promise<string[]> {
+  const entries = await readdir(join(sessionDirectory(fx), "attempts"), { recursive: true, withFileTypes: true }).catch(() => []);
+  return entries.filter(entry => entry.isFile()).map(entry => join(entry.parentPath, entry.name));
+}
+
+/** The same payload as Codex reports a subagent's call: `agent_id` is present only inside a subagent. */
+const withAgent = (payloadText: string, agent: string | undefined): string => agent === undefined ? payloadText : JSON.stringify({ ...JSON.parse(payloadText), agent_id: agent });
+
+const prompt = async (fx: Fixture, env: NodeJS.ProcessEnv, text: string): Promise<void> => {
+  assert.equal((await cli(fx, ["hook", "codex", "UserPromptSubmit"], eventPayload(fx, "UserPromptSubmit", { prompt: text }), env)).code, 0);
+};
+
+/** One shell result through the real CLI, and the owner notice it returned; the model is never told. */
+async function bashRun(fx: Fixture, env: NodeJS.ProcessEnv, command: string, output: string, id: string, agent?: string): Promise<string | undefined> {
+  const run = await cli(fx, ["hook", "codex", "PostToolUse"], withAgent(bash(fx, command, output, id), agent), env);
+  assert.equal(run.code, 0, run.stderr);
+  const result = JSON.parse(run.stdout || "{}");
+  assert.equal(result.hookSpecificOutput, undefined, "the stuck-check never tells the model");
+  assert.equal(result.decision, undefined);
+  return result.systemMessage;
+}
+
+const FAILING = "not ok 1 - parses dates\n\u2139 tests 3\n\u2139 pass 2\n\u2139 fail 1\n";
+const tscError = (n: number): string => `src/a.ts(${n},1): error TS2304: Cannot find name 'x${n}'.`;
+
+test("the same failing check tells the owner on the 2nd run and reports a loop on the 3rd, offline", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await prompt(fx, env, "Fix the failing test");
+    assert.equal(await bashRun(fx, env, "npm test", FAILING, "bash-1"), undefined);
+    assert.match(await bashRun(fx, env, "npm test", FAILING, "bash-2") ?? "", /^pi-warden: you already ran `npm test`; it failed the same way: .*fail.*\. Change something before running it again\.$/);
+    assert.match(await bashRun(fx, env, "npm test", FAILING, "bash-3") ?? "", /^pi-warden: the same call failed 3 times with the same output\. Stop retrying\./);
+    assert.equal(await bashRun(fx, env, "npm test", FAILING, "bash-3"), undefined, "a replayed result is one attempt");
+    assert.deepEqual(await stuckRequests(env), [], "an exact repeat is decided without Jev");
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("changing check failures are judged once per cooldown with the patches between them, and a new prompt starts over", async () => {
+  const fx = await fixture();
+  try {
+    const env: NodeJS.ProcessEnv = { ...await judgeProject(fx, { rules: { enabled: false } }), CLAUDE_TEST_SAME_STRATEGY: "0.93" };
+    await prompt(fx, env, "Make the build pass, token sk-fixture1234567890SECRET");
+    assert.equal(await bashRun(fx, env, "node build.js", "built 3 files, key sk-fixture1234567890SECRET", "bash-0"), undefined);
+    assert.equal(await bashRun(fx, env, "npx tsc", `${tscError(1)} key sk-fixture1234567890SECRET`, "bash-1"), undefined);
+    await writeFile(join(fx.project, "a.ts"), "export const x2 = 2;\n");
+    const patched = await cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, patchOf("*** Update File: a.ts", "@@", "-export const x1 = 1;", "+export const x2 = 2;"), "patch-1"), env);
+    assert.equal(JSON.parse(patched.stdout || "{}").systemMessage, undefined);
+    assert.equal(await bashRun(fx, env, "npx tsc --noEmit", tscError(2), "bash-2"), undefined);
+    assert.equal((await stuckRequests(env)).length, 0, "Jev is asked only from the 3rd failure on");
+    assert.match(await bashRun(fx, env, "npx tsc -p .", tscError(3), "bash-3") ?? "", /^pi-warden: 3 failures with the same strategy \(0\.93\), approach change 1\.0\/2, progress 0\.10\. Stop retrying\./);
+    const [sent] = await stuckRequests(env);
+    const state = sent!.state as { task: string; attempts: Array<{ tool: string; call: string; outcome: string }>; evidence: { runs: Array<{ outcome: string }>; edits: Array<{ path: string; diff: string }> } };
+    assert.deepEqual(state.attempts.map(attempt => [attempt.tool, attempt.call, attempt.outcome]), [
+      ["bash", "node build.js", "unknown"], ["bash", "npx tsc", "failed"], ["edit", "edit a.ts", "ok"], ["bash", "npx tsc --noEmit", "failed"], ["bash", "npx tsc -p .", "failed"],
+    ], "a command whose output shows no result is not called a success");
+    assert.match(state.task, /^Make the build pass, token /);
+    assert.deepEqual(state.evidence.runs.map(run => run.outcome), ["failed", "failed", "failed"]);
+    assert.deepEqual(state.evidence.edits.map(edit => [edit.path, edit.diff]), [["a.ts", "-export const x1 = 1;\n+export const x2 = 2;"]], "the patch is an edit with its diff");
+    assert.equal(await bashRun(fx, env, "npx tsc -b", tscError(4), "bash-4"), undefined, "the cooldown holds the next result");
+    assert.equal(await bashRun(fx, env, "npx tsc -w", tscError(5), "bash-5"), undefined);
+    assert.match(await bashRun(fx, env, "npx tsc --pretty", tscError(6), "bash-6") ?? "", /6 failures with the same strategy/);
+    assert.equal((await stuckRequests(env)).length, 2);
+    await prompt(fx, env, "Now the lint");
+    for (const n of [7, 8]) assert.equal(await bashRun(fx, env, `npx tsc --p${n}`, tscError(n), `bash-${n}`), undefined);
+    assert.equal((await stuckRequests(env)).length, 2, "the new prompt's two failures are not enough");
+    assert.doesNotMatch(await readFile(env.CLAUDE_TEST_CAPTURE!, "utf8"), /sk-fixture1234567890SECRET/);
+    const stored = await storedAttempts(fx);
+    assert.equal(stored.length, 2, "only the current prompt's results are kept");
+    for (const path of stored) assert.doesNotMatch(await readFile(path, "utf8"), /sk-fixture1234567890SECRET/, path);
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a command whose outcome Codex does not report is no failure, and its repeat is not called a success", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await prompt(fx, env, "Run the build");
+    const crash = "TypeError: build is not a function\n    at main (build.js:3:1)";
+    assert.equal(await bashRun(fx, env, "node build.js", crash, "bash-1"), undefined);
+    assert.equal(await bashRun(fx, env, "node build.js", crash, "bash-2"), undefined, "no failed-call quick repeat for a run not known to have failed");
+    assert.match(await bashRun(fx, env, "node build.js", crash, "bash-3") ?? "", /^pi-warden: the same call ran 3 times with the same output\. Stop re-running it: the answer is already in the last output\./);
+    assert.deepEqual(await stuckRequests(env), [], "a repeat is decided in code");
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a quick repeat needs nothing changed between the two calls, and a patch is such a change", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx, { rules: { enabled: false } });
+    await prompt(fx, env, "Look at the sources");
+    assert.equal(await bashRun(fx, env, "ls src", "a.ts\nb.ts\n", "bash-1"), undefined);
+    assert.match(await bashRun(fx, env, "ls src", "a.ts\nb.ts\n", "bash-2") ?? "", /^pi-warden: you already have this output from `ls src` \(1 call ago\); nothing changed since\./);
+    assert.equal(await bashRun(fx, env, "npm test", FAILING, "bash-3"), undefined);
+    await writeFile(join(fx.project, "a.ts"), "export const a = 1;\n");
+    await cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, patchOf("*** Add File: a.ts", "+export const a = 1;"), "patch-1"), env);
+    assert.equal(await bashRun(fx, env, "npm test", FAILING, "bash-4"), undefined, "the patch between the runs may have changed the result");
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a patch keeps its rules feedback and its stuck notice when both arrive in time", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await prompt(fx, env, "Add the module");
+    await writeFile(join(fx.project, "a.ts"), "BAD\n");
+    const outputs: Array<{ rules?: string; notice?: string }> = [];
+    for (const id of ["patch-1", "patch-2", "patch-3"]) {
+      const result = await cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, patchOf("*** Add File: a.ts", "+BAD"), id), env);
+      assert.equal(result.code, 0, result.stderr);
+      const output = JSON.parse(result.stdout || "{}");
+      outputs.push({ rules: output.hookSpecificOutput?.additionalContext, notice: output.systemMessage });
+    }
+    assert.match(outputs[0]!.rules ?? "", /No BAD marker/);
+    assert.equal(outputs[0]!.notice, undefined);
+    assert.match(outputs[2]!.rules ?? "", /No BAD marker/, "the rules feedback still reaches the model");
+    assert.match(outputs[2]!.notice ?? "", /^pi-warden: the same call succeeded 3 times with the same output/, "an applied patch did succeed");
+    assert.deepEqual(await stuckRequests(env), []);
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("each agent of a prompt has its own stuck window", async () => {
+  const fx = await fixture();
+  try {
+    const env: NodeJS.ProcessEnv = { ...await judgeProject(fx), CLAUDE_TEST_SAME_STRATEGY: "0.93" };
+    await prompt(fx, env, "Fix the build");
+    for (const [n, agent] of [[1, "agent-a"], [2, "agent-b"], [3, undefined]] as const) {
+      assert.equal(await bashRun(fx, env, `npx tsc --p${n}`, tscError(n), `bash-${n}`, agent), undefined, `${agent ?? "the main agent"} has one failure`);
+    }
+    assert.deepEqual(await stuckRequests(env), [], "three agents' single failures are not a loop");
+    assert.equal(await bashRun(fx, env, "npx tsc --p4", tscError(4), "bash-4", "agent-a"), undefined);
+    assert.match(await bashRun(fx, env, "npx tsc --p5", tscError(5), "bash-5", "agent-a") ?? "", /^pi-warden: 3 failures with the same strategy/, "agent-a is judged on its own three failures");
+    assert.equal((await stuckRequests(env)).length, 1);
+    assert.equal(await bashRun(fx, env, "npx tsc --p6", tscError(6), "bash-6", "agent-b"), undefined, "agent-b has two failures of its own");
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("the stuck-check without consent still catches exact repeats and names what is off once", async () => {
+  const fx = await fixture();
+  try {
+    const env: NodeJS.ProcessEnv = { ...await judgeProject(fx), PI_WARDEN_ENABLED: "" };
+    await prompt(fx, env, "Fix it");
+    for (const n of [1, 2]) assert.equal(await bashRun(fx, env, `npx tsc --p${n}`, tscError(n), `bash-${n}`), undefined);
+    assert.match(await bashRun(fx, env, "npx tsc --p3", tscError(3), "bash-3") ?? "", /^pi-warden: stuck-check judgments are off; set PI_WARDEN_ENABLED=1 for this headless host\. Exact repeats are still caught\.$/);
+    for (const n of [4, 5, 6]) assert.equal(await bashRun(fx, env, `npx tsc --p${n}`, tscError(n), `bash-${n}`), undefined, "the owner hears it once per session");
+    for (const n of [7, 8]) await bashRun(fx, env, "npm test", FAILING, `bash-${n}`);
+    assert.match(await bashRun(fx, env, "npm test", FAILING, "bash-9") ?? "", /the same call failed 3 times/);
+    assert.deepEqual(await requests(env), []);
+  } finally { await rm(fx.root, { recursive: true, force: true }); }
+});
+
+test("a stuck-check that is off records nothing and keeps the rules feedback", async () => {
+  for (const stuck of [{ enabled: false }, { nudge: false }]) {
+    const fx = await fixture();
+    try {
+      const env = await judgeProject(fx, { stuck, done: { enabled: false } });
+      await prompt(fx, env, "Fix it");
+      for (const n of [1, 2, 3]) assert.equal(await bashRun(fx, env, "npm test", FAILING, `bash-${n}`), undefined);
+      await writeFile(join(fx.project, "a.ts"), "BAD\n");
+      const patched = await cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, patchOf("*** Add File: a.ts", "+BAD"), "patch-1"), env);
+      assert.match(context(patched), /No BAD marker/);
+      assert.ok(!(await readdir(sessionDirectory(fx))).some(name => name === "attempts" || name === "prompt.json"), JSON.stringify(stuck));
+      assert.deepEqual(await stuckRequests(env), []);
+    } finally { await rm(fx.root, { recursive: true, force: true }); }
+  }
+});
+
+test("a stuck-check that throws keeps the rules feedback and the done-check evidence of the same patch", async () => {
+  const fx = await fixture();
+  try {
+    const env = await judgeProject(fx);
+    await prompt(fx, env, "Add the module");
+    // The stuck-check reads the prompt record and throws on it; the rules judgment of the same patch reads nothing of it.
+    await writeFile(join(sessionDirectory(fx), "prompt.json"), "{}");
+    await writeFile(join(fx.project, "a.ts"), "BAD\n");
+    const patched = await cli(fx, ["hook", "codex", "PostToolUse"], payload(fx, patchOf("*** Add File: a.ts", "+BAD"), "patch-1"), env);
+    assert.equal(patched.code, 0, patched.stderr);
+    assert.match(context(patched), /No BAD marker/);
+    assert.equal(JSON.parse(patched.stdout).systemMessage, undefined);
+    assert.ok((await readdir(sessionDirectory(fx))).some(name => name.startsWith("evidence-")), "the done-check keeps the evidence of the same patch");
   } finally { await rm(fx.root, { recursive: true, force: true }); }
 });
