@@ -6,7 +6,7 @@ import { attemptOutcome, buildStuckEvidence, editDiff } from "./evidence.js";
 import type { StuckEvidence } from "./evidence.js";
 import { redact } from "./redact.js";
 import { isReadOnlyCommand } from "./guard.js";
-import { commandOf, outputReportsFailure } from "./tools.js";
+import { COMMAND_TOOLS, commandOf, outputReportsFailure } from "./tools.js";
 import { DEFAULT_TEMPLATES, renderTemplate, stuckTokens } from "./widget.js";
 
 /** One remembered tool result. `key` identifies the exact call; `call` is the redacted view that may leave the machine. */
@@ -114,10 +114,20 @@ function normaliseOutput(text: string): string {
 /** Pi's built-in tools that only read files. */
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 
-const POLL_COMMAND = /\b(?:sleep|watch|wait)\b|\bgh\s+(?:run|pr)\s+(?:watch|checks|view|list)\b|\bgit\s+status\b|\btail\s+-[fF]\b|\b(?:ps|pgrep)\b/;
+const POLL_COMMAND = /\b(?:sleep|watch|wait)\b|\bjob\s+(?:wait|show|status)\b|\bgh\s+(?:run|pr)\s+(?:watch|checks|view|list)\b|\bgit\s+status\b|\btail\s+-[fF]\b|\b(?:ps|pgrep)\b/;
+
+/** Bounded wait/status commands may repeat across timeout slices (exit 0, 124, or unreported) without being a loop. */
+const BOUNDED_WAIT_COMMAND = /\bjob\s+(?:wait|show|status)\b|\bgh\s+run\s+watch\b|\bgh\s+pr\s+checks\b[^\n]*--watch\b|\bkubectl\s+wait\b/;
+
+const SHELL_TOOLS: ReadonlySet<string> = new Set(COMMAND_TOOLS);
 
 /** The stuck tools that change a file, and the tools whose change the evidence reports. */
 const EDIT_TOOLS = new Set(["edit", "write"]);
+
+/** Derived from `attempt.call` rather than stored on `Attempt` so persisted host state keeps its schema. */
+function isBoundedWait(attempt: Attempt): boolean {
+  return SHELL_TOOLS.has(attempt.tool) && BOUNDED_WAIT_COMMAND.test(attempt.call);
+}
 
 /** The redacted path and capped diff of an `edit`/`write`, ready to be kept on the attempt. */
 function redactedChange(tool: string, input: Record<string, unknown>): AttemptChange {
@@ -179,13 +189,13 @@ export class AttemptWindow {
   }
 
   failures(): number {
-    return this.attempts.filter(attempt => attempt.failed).length;
+    return this.attempts.filter(attempt => attempt.failed && !isBoundedWait(attempt)).length;
   }
 
   /** How many failed attempts repeat the latest attempt's exact call with the same output. A changed error is progress, not a repeat. */
   exactRepeats(): number {
     const latest = this.attempts.at(-1);
-    if (!latest?.failed) return 0;
+    if (!latest?.failed || isBoundedWait(latest)) return 0;
     return this.attempts.filter(attempt => attempt.failed && attempt.key === latest.key && attempt.outputKey === latest.outputKey).length;
   }
 
@@ -193,7 +203,7 @@ export class AttemptWindow {
    * prints the answer it already printed carries no new information: the model is re-running instead of reading. */
   successRepeats(): number {
     const latest = this.attempts.at(-1);
-    if (!latest || latest.failed) return 0;
+    if (!latest || latest.failed || isBoundedWait(latest)) return 0;
     return this.attempts.filter(attempt => !attempt.failed && attempt.key === latest.key && attempt.outputKey === latest.outputKey).length;
   }
 
@@ -202,7 +212,7 @@ export class AttemptWindow {
    * polling or cycling through slight variations of the same command. */
   churnCount(): number {
     const latest = this.attempts.at(-1);
-    if (!latest) return 0;
+    if (!latest || isBoundedWait(latest)) return 0;
     return this.attempts.filter(attempt => attempt.key === latest.key).length;
   }
 
@@ -229,7 +239,7 @@ export class AttemptWindow {
    * target, and the cool-down has passed. */
   shouldJudge(config: StuckGuardConfig): boolean {
     const latest = this.attempts.at(-1);
-    if (!latest) return false;
+    if (!latest || isBoundedWait(latest)) return false;
     if (latest.failed) return this.failures() >= config.minFailures && this.sinceJudgment >= config.cooldown;
     if (this.successRepeats() >= config.minFailures) return this.sinceJudgment >= config.cooldown;
     if (this.churnCount() >= config.churnThreshold) return this.sinceJudgment >= config.cooldown;
@@ -291,6 +301,10 @@ export interface StuckOptions {
 /** Exact repeats are decided in code; otherwise one Jev request judges the sequence. */
 export async function evaluateStuck(window: AttemptWindow, task: string | undefined, options: StuckOptions): Promise<StuckVerdict> {
   const failures = window.failures();
+  const latest = window.attempts.at(-1);
+  if (latest && isBoundedWait(latest)) {
+    return { stuck: false, source: "repeat", failures, reasons: [] };
+  }
   const repeats = window.exactRepeats();
   if (repeats >= options.config.minFailures) {
     return { stuck: true, source: "repeat", failures, reasons: [`the same call failed ${repeats} times with the same output`] };
@@ -298,14 +312,14 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   const successRepeats = window.successRepeats();
   if (successRepeats >= options.config.minFailures) {
     // Without an exit status the repeat is still the same output again, but nobody knows it succeeded.
-    const ran = window.attempts.at(-1)?.unreported ? "ran" : "succeeded";
+    const ran = latest?.unreported ? "ran" : "succeeded";
     return { stuck: true, source: "repeat", failures, reasons: [`the same call ${ran} ${successRepeats} times with the same output`], successRepeat: true };
   }
   const churn = window.churnCount();
   if (churn >= options.config.churnThreshold) {
     return { stuck: true, source: "repeat", failures, reasons: [`the same target was called ${churn} times with changing output`], churn: true };
   }
-  if (!options.judge) return { stuck: false, source: "repeat", failures, reasons: [] };
+  if (!options.judge || failures < options.config.minFailures) return { stuck: false, source: "repeat", failures, reasons: [] };
   if (options.claim && !options.claim()) return { stuck: false, source: "repeat", failures, reasons: [] };
   window.markJudged();
   const result = await ask(options.judge, buildStuckRequest(window.attempts, task, { evidence: options.config.evidence }), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
