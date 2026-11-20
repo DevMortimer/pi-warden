@@ -192,7 +192,7 @@ Codex asks you to review new hooks once, with `/hooks`.
 | --- | :---: | :---: |
 | Project rules on a file change (`Write` and `Edit`, or `apply_patch`) | yes | yes |
 | Done-check when the run stops | yes | yes |
-| Stuck-check on repeated failures | yes | |
+| Stuck-check on repeated failures | yes | yes |
 | Holds and the destructive-command floor | | |
 
 The hooks run after a tool call, so they never hold one: the floor is a Pi feature. They read your user config only,

@@ -21,13 +21,24 @@ function storedText(text: string): string {
   return redacted.length <= ATTEMPT_TEXT_LIMIT ? redacted : `${redacted.slice(0, HEAD)}${GAP}${redacted.slice(-(ATTEMPT_TEXT_LIMIT - HEAD - GAP.length))}`;
 }
 
+/** The rules answer and the done-check evidence are the hook's work; a stuck notice is a bonus that must not hold them. */
+const STUCK_RESERVE_MS = 500;
+
+/** The owner's notice, or nothing once `until` has passed: a stuck-check that throws or overruns costs only its notice. */
+async function ownerOnly(work: Promise<OwnerOutput>, until: number): Promise<OwnerOutput> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<OwnerOutput>(done => { timer = setTimeout(() => done({}), Math.max(0, until - Date.now())); });
+  try { return await Promise.race([work.catch(() => ({}) as OwnerOutput), expired]); }
+  finally { clearTimeout(timer); }
+}
+
 /**
  * Pi's stuck guard for one tool result of a host whose hooks run in separate processes. Each agent of a prompt has its
  * own numbered results, so the window is rebuilt from the latest `stuck.window` of that agent's; a marker per judged
  * result carries the cooldown, and a marker per call key keeps the quick repeat to once per call per prompt. A stuck
  * verdict, else a quick repeat, goes to the owner only, as Pi reports both on the status line and never to the agent.
  */
-export async function stuckCheck(config: WardenConfig, state: HostState, agent: string | undefined, identity: string, attempt: Attempt, signal: AbortSignal): Promise<OwnerOutput> {
+async function stuckCheck(config: WardenConfig, state: HostState, agent: string | undefined, identity: string, attempt: Attempt, signal: AbortSignal): Promise<OwnerOutput> {
   const record = await state.prompt();
   const prompt = record?.id ?? "no prompt recorded";
   const scope = JSON.stringify([prompt, agent ?? null]);
@@ -60,4 +71,9 @@ export async function stuckCheck(config: WardenConfig, state: HostState, agent: 
     : verdict.errorCode === "budget" ? notice("budget", "stuck-check request budget reached or unavailable; no further request was submitted.")
     : notice("judge-error", "stuck-check judgment failed; this call continues.");
   return ownerNotice([repeat && quickRepeatNudge(repeat), problem].filter(Boolean).join("\n") || undefined);
+}
+
+/** The stuck-check of one result, given what is left of the hook's `deadline`, so it can run beside the hook's other work. */
+export function stuckNotice(config: WardenConfig, state: HostState, agent: string | undefined, identity: string, attempt: Attempt, signal: AbortSignal, deadline: number): Promise<OwnerOutput> {
+  return ownerOnly(stuckCheck(config, state, agent, identity, attempt, signal), deadline - STUCK_RESERVE_MS);
 }

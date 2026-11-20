@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { ask, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { StuckGuardConfig } from "./config.js";
-import { buildStuckEvidence, editDiff } from "./evidence.js";
+import { attemptOutcome, buildStuckEvidence, editDiff } from "./evidence.js";
 import type { StuckEvidence } from "./evidence.js";
 import { redact } from "./redact.js";
 import { isReadOnlyCommand } from "./guard.js";
@@ -17,6 +17,11 @@ export interface Attempt {
   outputKey: string;
   call: string;
   failed: boolean;
+  /**
+   * The host reported no exit status and the output did not show how the call ended (Codex sends a shell command's
+   * output only): `failed` is false because no failure is known, not because the call succeeded.
+   */
+  unreported?: true;
   /** Tail of the tool output, redacted, where the error usually is. */
   output: string;
   /** The call may have changed files or state: every call that is not provably read-only, failed or not. */
@@ -64,7 +69,7 @@ export interface StuckVerdict {
   source: "repeat" | "typesafe" | "error";
   failures: number;
   reasons: string[];
-  /** True when the repeat that fired was a successful call printing the same output, not a failure loop. */
+  /** True when the repeat that fired was a call that did not fail printing the same output, not a failure loop. */
   successRepeat?: boolean;
   /** True when the repeat that fired was repeated calls to the same target with changing output. */
   churn?: boolean;
@@ -120,7 +125,8 @@ function redactedChange(tool: string, input: Record<string, unknown>): AttemptCh
   return { path: redact(diff.path), added: diff.added, removed: diff.removed, diff: redact(diff.diff) };
 }
 
-export function makeAttempt(tool: string, input: Record<string, unknown>, content: ReadonlyArray<{ type: string; text?: string }>, failed: boolean): Attempt {
+/** `failed` is undefined when the host did not say whether the call failed; the attempt is then `unreported`. */
+export function makeAttempt(tool: string, input: Record<string, unknown>, content: ReadonlyArray<{ type: string; text?: string }>, failed: boolean | undefined): Attempt {
   const view = commandOf(tool, input);
   const command = view?.command;
   const readOnlyCommand = view !== undefined && view.shell && isReadOnlyCommand(view.command);
@@ -134,7 +140,8 @@ export function makeAttempt(tool: string, input: Record<string, unknown>, conten
     key: createHash("sha1").update(tool).update("\0").update(JSON.stringify(input)).digest("hex"),
     outputKey: createHash("sha1").update(normaliseOutput(text)).digest("hex"),
     call: redact(head(call, CALL_LIMIT)),
-    failed,
+    failed: failed === true,
+    ...(failed === undefined ? { unreported: true as const } : {}),
     text,
     ...(change ? { change } : {}),
     output: redact(tail(text, OUTPUT_LIMIT)),
@@ -262,7 +269,7 @@ export type StuckRequestOptions = {
 export function buildStuckRequest(attempts: readonly Attempt[], task: string | undefined, options: StuckRequestOptions = {}) {
   const state: StuckRequestState = {
     task: task?.trim() ? head(task.trim(), 1500) : "(no user request recorded in this session)",
-    attempts: attempts.map((attempt, index) => ({ n: index + 1, tool: attempt.tool, call: attempt.call, outcome: attempt.failed ? "failed" : "ok", output: attempt.output })),
+    attempts: attempts.map((attempt, index) => ({ n: index + 1, tool: attempt.tool, call: attempt.call, outcome: attemptOutcome(attempt), output: attempt.output })),
   };
   if (options.evidence !== false) state.evidence = buildStuckEvidence(attempts);
   return { state, questions: stuckQuestions };
@@ -290,7 +297,9 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   }
   const successRepeats = window.successRepeats();
   if (successRepeats >= options.config.minFailures) {
-    return { stuck: true, source: "repeat", failures, reasons: [`the same call succeeded ${successRepeats} times with the same output`], successRepeat: true };
+    // Without an exit status the repeat is still the same output again, but nobody knows it succeeded.
+    const ran = window.attempts.at(-1)?.unreported ? "ran" : "succeeded";
+    return { stuck: true, source: "repeat", failures, reasons: [`the same call ${ran} ${successRepeats} times with the same output`], successRepeat: true };
   }
   const churn = window.churnCount();
   if (churn >= options.config.churnThreshold) {

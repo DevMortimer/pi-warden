@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   const [command, agent, event] = process.argv.slice(2);
   try {
     if (command === "--help" || command === "-h") {
-      process.stdout.write(`${USAGE}\nClaude Write/Edit rules, the done-check and the stuck-check; Codex apply_patch rules and the done-check.\n`);
+      process.stdout.write(`${USAGE}\nClaude Write/Edit rules and Codex apply_patch rules; the done-check and the stuck-check on both.\n`);
       return;
     }
     if (command === "hook") {
@@ -52,7 +52,7 @@ async function main(): Promise<void> {
       const timer = setTimeout(() => controller.abort(), HOOK_DEADLINE_MS);
       try {
         if ((agent !== "claude" && agent !== "codex") || !event || !HOOK_EVENTS[agent].includes(event) || process.argv.length !== 5) {
-          process.stderr.write("pi-warden: unsupported hook; only Claude rules and the stuck-check, Codex apply_patch rules, and the done-check on both are implemented.\n");
+          process.stderr.write("pi-warden: unsupported hook; only Claude rules, Codex apply_patch rules, and the done-check and the stuck-check on both are implemented.\n");
           return;
         }
         const input = await readInput(controller.signal);

@@ -4,6 +4,13 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## 2.13.0
+
+### Added
+
+- The stuck-check runs in Codex (issue #127). It needs no new hooks: the `apply_patch` and `Bash` results the installed `PostToolUse` hooks already receive go into Pi's stuck guard, with a new window for each prompt and each agent, as in Claude Code. Exact repeats, a call that keeps printing the same output, and churn on one target are caught in code with no request; otherwise the sequence is judged at most once per `stuck.cooldown` results of that agent, and the quick repeat fires on the 2nd identical call when nothing that can change state ran between the two. Codex gives hooks a command's output but not its exit status, so a `Bash` result is read the way the done-check reads it: a test, build or lint run whose output shows it failed (a runner's failure summary, a failure line such as npm's, a non-zero exit code the command prints for it) is a failure, one whose output shows it passed is a success, and any other run is neither, and the judge reads its outcome as `unknown`. A successful `apply_patch` is a change, as an `edit` or `write` is in Pi, with its paths and a capped diff. A verdict becomes a `systemMessage` for the owner; Codex is not told and the call is never held. The stuck-check runs beside the rules judgment of the same patch, and one that throws or is still waiting before the hook's deadline costs only its notice. `stuck.enabled`, `stuck.nudge` and the other `stuck.*` settings apply; with either switch off nothing is recorded. ([Codex hooks](docs/codex.md#stuck-check-behavior))
+- `makeAttempt()` accepts `undefined` for `failed` when the host reports no exit status. The attempt is then `unreported`: it is not counted as a failure, its outcome goes to the judge as `unknown` in the attempts and the evidence runs, and a repeat of the same output is reported as "ran N times" rather than "succeeded N times". A boolean is read as before.
+
 ## 2.12.1
 
 ### Fixed

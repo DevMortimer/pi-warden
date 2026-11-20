@@ -51,14 +51,14 @@ const FLAGS = ["failed", "changes", "readOnly", "poll"] as const;
 function storedAttempt(raw: unknown): Attempt | undefined {
   if (!object(raw) || raw.version !== 1) return undefined;
   if (STRINGS.some(field => typeof raw[field] !== "string") || FLAGS.some(field => typeof raw[field] !== "boolean")) return undefined;
-  if ((raw.text as string).length > ATTEMPT_TEXT_LIMIT) return undefined;
+  if ((raw.text as string).length > ATTEMPT_TEXT_LIMIT || (raw.unreported !== undefined && raw.unreported !== true)) return undefined;
   const change = raw.change;
   if (change !== undefined && (!object(change) || typeof change.path !== "string" || typeof change.diff !== "string"
     || !Number.isSafeInteger(change.added) || !Number.isSafeInteger(change.removed))) return undefined;
   return {
     tool: raw.tool as string, key: raw.key as string, outputKey: raw.outputKey as string, call: raw.call as string,
     failed: raw.failed as boolean, output: raw.output as string, changes: raw.changes as boolean, readOnly: raw.readOnly as boolean,
-    poll: raw.poll as boolean, text: raw.text as string,
+    poll: raw.poll as boolean, text: raw.text as string, ...(raw.unreported === true ? { unreported: true as const } : {}),
     ...(object(change) ? { change: { path: change.path as string, added: change.added as number, removed: change.removed as number, diff: change.diff as string } } : {}),
   };
 }
