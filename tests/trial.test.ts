@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -90,8 +91,12 @@ test("a project file cannot turn the trial on", () => {
 
 // This part loads pi-warden exactly as Pi does (`package.json` → `pi.extensions` → `extensions/index.js` → `dist/extension.js`)
 // and runs a real session with a scripted model. The TypeSafe transport is a fetch stub: no key leaves the process.
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const wardenEntry = fileURLToPath(new URL("../extensions/index.js", import.meta.url));
 const distEntry = fileURLToPath(new URL("../dist/extension.js", import.meta.url));
+if (!existsSync(distEntry)) {
+  execFileSync(process.execPath, [join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.build.json"], { cwd: repoRoot, stdio: "pipe" });
+}
 assert.ok(existsSync(distEntry), "run npm run build first");
 
 const agentRoot = fileURLToPath(new URL("..", import.meta.resolve("@earendil-works/pi-coding-agent")));
