@@ -279,8 +279,9 @@ after(async () => {
   if (saved.agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = saved.agentDir;
   if (saved.db === undefined) delete process.env.PI_WARDEN_DB; else process.env.PI_WARDEN_DB = saved.db;
   delete process.env.PI_WARDEN_TRACE_DIR;
-  if (root) await rm(root, { recursive: true, force: true });
-  for (const dir of dirs) await rm(dir, { recursive: true, force: true });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  if (root) await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  for (const dir of dirs) await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 test("a silent session records the arm and withholds the done-check steer", async () => {
