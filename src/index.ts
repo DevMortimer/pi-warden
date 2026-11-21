@@ -40,7 +40,7 @@ export type { CallOutcome, CallRecord, CallScores, HoldSnapshot, OutcomeVia } fr
 export type { ContextLedgerSnapshot, MaskedCounts, RecallKind } from "./saver.js";
 export type { ShapeResult } from "./shape.js";
 export { CONFIG_SCHEMA, defaultConfig, loadConfig, applyUserOverrides, applyProjectOverrides, isMode, isRecallTool, userConfigPath, projectConfigPath, readUserConfig, writeUserConfig, setUserSetting, setNestedValue, getNestedValue, parseConfigValue, PACKAGE_NAME } from "./config.js";
-export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardConfig, CauseGuardConfig, VisualToolsConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, ContextMaskConfig, LargeOutputConfig, RunawayConfig, NotifyConfig, SubagentConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions, CompactionConfig } from "./config.js";
+export type { ActionGuardConfig, OffTaskThreshold, StuckGuardConfig, DoneGuardConfig, CauseGuardConfig, VisualToolsConfig, SlopGuardConfig, ProseConfig, SecurityConfig, RulesConfig, ContextConfig, ContextMaskConfig, LargeOutputConfig, RunawayConfig, NotifyConfig, SubagentConfig, RecallTool, Threshold, WardenConfig, WardenMode, LoadOptions, CompactionConfig, TaintConfig } from "./config.js";
 export { defaultHostDirs } from "./host-dirs.js";
 export type { HostDirs } from "./host-dirs.js";
 export { commandOf, outputReportsFailure, COMMAND_TOOLS } from "./tools.js";
@@ -75,3 +75,5 @@ export { buildAuditPrompt, snapshotReport, reportOutcome } from "./audit.js";
 export type { ReportSnapshot } from "./audit.js";
 export { parseRulesAuditArgs, parseBenchArgs, collectAuditFiles, runRulesAudit, ruleAuditRows, flaggedAuditFiles, formatRulesAuditRows, formatRulesAuditFiles, formatRulesAudit, rulesAuditMarkdown, writeRulesAuditReport, runBench, formatBench, percentile, BENCH_SAMPLE, AUDIT_DEFAULT_MAX, AUDIT_CONCURRENCY, AUDIT_REPORT_FILE, RULES_AUDIT_USAGE, BENCH_USAGE } from "./rules-audit.js";
 export type { RulesAuditArgs, BenchArgs, AuditFilePlan, RulesAuditFileResult, RulesAuditRow, RulesAuditOutcome, RulesAuditResult, RulesAuditOptions, RulesAuditFlag, RulesAuditFileFlags, BenchUsage, BenchOptions, BenchResult } from "./rules-audit.js";
+export { TaintMonitor, classifyTaintSink, classifyTaintSource, detectOfflineInjection, formatTaintStatus, isJevDeclassifiableSink } from "./taint.js";
+export type { TaintCheckOptions, TaintCheckResult, TaintObservationResult, TaintRuleId, TaintSinkClassification, TaintSinkInput, TaintSinkKind, TaintSnapshot, TaintSourceClassification, TaintSourceEvent, TaintSourceInput, TaintSourceKind } from "./taint.js";

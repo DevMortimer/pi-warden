@@ -6,7 +6,15 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- APPA-style recoverable source-to-sink taint firewall (`src/taint.ts`, `TaintMonitor`, `taint.*`, enabled by default) wired into `pi.on("tool_call")` (Gate 1 prospective sink dispatch, including mutating MCP tools) and `pi.on("tool_result")` (Gate 2 realized-output admission). Tracks a partial in-memory session lattice (`untrusted`, `secret`, `injectionSuspected`), deterministically holds Lethal Trifecta (`taint-lethal-trifecta`), direct secret egress (`taint-secret-egress`), and offline/online prompt-injection egress (`taint-injection-egress`) with zero Jev calls offline, keeps local project edits, `action.ephemeralRoots`, loopback/`allowHosts` traffic, and routine `untrusted`-only `git push` unblocked, supports single-use call-scoped post-taint user recovery rulings (APPA Theorem 6) without taint laundering, and reports `Taint:` activity in `/warden status`.
+- Optional Jev-assisted semantic declassification (`taint.jevDeclassify`, default `true`, user-file only): when TypeSafe/Jev is enabled, `taint-lethal-trifecta` on routine developer collaboration sinks (`git-push`, `gh-mutate`, `mcp-write`) escalates to Jev (overriding frugal skip) and downgrades confident clean verdicts (`>= 0.85`) to a trace-recorded `risky` warning instead of holding, while `taint-injection-egress`, `taint-secret-egress`, `http-exfil`, `pkg-publish`, and `external-write` stay fail-closed.
+- Config schema `19` shape guarding (`CONFIG_SCHEMA`, `EXPECTED_SCHEMA`, `completeConfig()`, `guardCurrentSections()`, and `PROJECT_KEYS` user-only enforcement preventing `.pi/pi-warden.json` from disabling taint enforcement or setting `taint.allowHosts`).
+
+### Docs
+
+- Overhauled `README.md` for everyday users and researchers: zero-API-key `$0` install value proposition, plain-English Q&A backed by 30-day multi-repo field metrics (`167,210` tool calls, `2,101` sessions, `46` repos), offline foundation vs. optional Jev semantic toppings synergy, updated `2.14.0`–`2.17.0` tables, and a `## Research foundations` section citing verified primary papers across all five architecture pillars; documented `taint.*` in `docs/configuration.md`, `docs/guards.md`, and `docs/data-handling.md`.
 
 ## 2.16.0
 

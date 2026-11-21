@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 18;
+export const EXPECTED_SCHEMA = 19;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -18,6 +18,7 @@ const off = { enabled: false };
 const coreTools = () => ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const proseOff = () => ({ ...off, audience: "technical", threshold: 1, trend: 3, minChars: 1 });
 const maskOff = () => ({ ...off, epochTurns: 8, keepRecentTurns: 6, minSweepBytes: 32768, minObsChars: 2000, images: false, supersededReads: false, resolvedChecks: false });
+const taintOff = () => ({ ...off, holdTrifecta: false, holdSecretEgress: false, holdInjectionEgress: false, jevDeclassify: false, warnUntrustedHttpWrite: false, allowHosts: [] as string[] });
 // A stale config module hands back either its own resolution or a raw value; both end up resolved here.
 const resolveSetting = (source: Partial<WardenConfig>) => source.backendRefusal !== undefined
   ? { typesafeBackend: source.typesafeBackend, backendRefusal: source.backendRefusal }
@@ -73,6 +74,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     trial: section("trial", { silentHalf: false }),
     // A missing section keeps Pi's own compaction summary, as before the section existed.
     compaction: section("compaction", { ...off, keepThreshold: 1, maxSummaryTokens: 1000, timeoutMs: 1, maxRequests: 1, skipProviders: [] }),
+    // A missing section disables taint holds until Pi restarts on the matching config module.
+    taint: section("taint", taintOff()),
     // An older config module collects no warnings.
     warnings: Array.isArray(source.warnings) ? source.warnings : [],
     conscience: section("conscience", { enabled: false, skills: { mode: "recommend", exclude: [] }, tools: { enabled: true, exclude: [] }, skipTools: coreTools(), timeoutMs: 3000, maxAssessments: 3, maxNudges: 2, maxSkillBytes: 32768, maxLoadedBytes: 65536, recommendThreshold: 0.80, advanceThreshold: 0.70, localTopK: 31, localFloor: 0.5 }),
@@ -169,6 +172,14 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.subagent.observer !== "boolean") config.subagent = { ...config.subagent, observer: false };
   if (typeof config.widget.subagent !== "string") config.widget = { ...config.widget, subagent: DEFAULT_TEMPLATES.subagent };
   if (typeof config.widget.cause !== "string") config.widget = { ...config.widget, cause: DEFAULT_TEMPLATES.cause };
+  if (typeof config.taint.enabled !== "boolean") config.taint = { ...config.taint, enabled: false };
+  if (typeof config.taint.holdTrifecta !== "boolean") config.taint = { ...config.taint, holdTrifecta: false };
+  if (typeof config.taint.holdSecretEgress !== "boolean") config.taint = { ...config.taint, holdSecretEgress: false };
+  if (typeof config.taint.holdInjectionEgress !== "boolean") config.taint = { ...config.taint, holdInjectionEgress: false };
+  if (typeof config.taint.jevDeclassify !== "boolean") config.taint = { ...config.taint, jevDeclassify: false };
+  if (typeof config.taint.warnUntrustedHttpWrite !== "boolean") config.taint = { ...config.taint, warnUntrustedHttpWrite: false };
+  if (!Array.isArray(config.taint.allowHosts)) config.taint = { ...config.taint, allowHosts: [] };
+  else if (config.taint.allowHosts.some(host => typeof host !== "string")) config.taint = { ...config.taint, allowHosts: config.taint.allowHosts.filter((host): host is string => typeof host === "string") };
   return { config, missing };
 }
 

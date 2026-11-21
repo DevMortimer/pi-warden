@@ -262,15 +262,16 @@ test("completeConfig fills Wave 2 cadence, inline feedback, autonomous gate, dup
   assert.equal(config.action.traceSample, 0);
 });
 
-test("schema 18 and missing context.mask / Wave 4 fields fill safe defaults in both completeConfig and guardCurrentSections", async () => {
+test("schema 19 and missing context.mask / taint / Wave 4 fields fill safe defaults in both completeConfig and guardCurrentSections", async () => {
   const { guardCurrentSections } = await import("../src/extension.js");
-  assert.equal(CONFIG_SCHEMA, 18);
-  assert.equal(EXPECTED_SCHEMA, 18);
+  assert.equal(CONFIG_SCHEMA, 19);
+  assert.equal(EXPECTED_SCHEMA, 19);
 
   const stale = defaultConfig() as unknown as Record<string, Record<string, unknown>>;
   const ctxSection = { ...stale.context };
   delete ctxSection.mask;
   stale.context = ctxSection;
+  delete stale.taint;
   const rulesSection = { ...stale.rules };
   delete rulesSection.system0;
   stale.rules = rulesSection;
@@ -281,7 +282,16 @@ test("schema 18 and missing context.mask / Wave 4 fields fill safe defaults in b
   stale.stuck = stuckSection;
 
   const completed = completeConfig(stale as never);
-  assert.deepEqual(completed.missing, ["context.mask"]);
+  assert.deepEqual(completed.missing.sort(), ["context.mask", "taint"]);
+  assert.deepEqual(completed.config.taint, {
+    enabled: false,
+    holdTrifecta: false,
+    holdSecretEgress: false,
+    holdInjectionEgress: false,
+    jevDeclassify: false,
+    warnUntrustedHttpWrite: false,
+    allowHosts: [],
+  });
   assert.equal(completed.config.rules.system0, true);
   assert.equal(completed.config.stuck.editRevert, true);
   assert.equal(completed.config.stuck.fileThrashThreshold, 6);
@@ -301,6 +311,7 @@ test("schema 18 and missing context.mask / Wave 4 fields fill safe defaults in b
   const ctxSection2 = { ...staleForExt.context };
   delete ctxSection2.mask;
   staleForExt.context = ctxSection2;
+  delete staleForExt.taint;
   const rulesSection2 = { ...staleForExt.rules };
   delete rulesSection2.system0;
   staleForExt.rules = rulesSection2;
@@ -310,9 +321,18 @@ test("schema 18 and missing context.mask / Wave 4 fields fill safe defaults in b
   delete stuckSection2.longCycleThreshold;
   staleForExt.stuck = stuckSection2;
   const guarded = guardCurrentSections({ config: staleForExt as never, missing: [] });
-  assert.deepEqual(guarded.missing, ["context.mask"]);
+  assert.deepEqual(guarded.missing.sort(), ["context.mask", "taint"]);
   assert.equal(guarded.config.context.mask.enabled, false);
   assert.equal(guarded.config.context.mask.images, false);
+  assert.deepEqual(guarded.config.taint, {
+    enabled: false,
+    holdTrifecta: false,
+    holdSecretEgress: false,
+    holdInjectionEgress: false,
+    jevDeclassify: false,
+    warnUntrustedHttpWrite: false,
+    allowHosts: [],
+  });
   assert.equal(guarded.config.rules.system0, true);
   assert.equal(guarded.config.stuck.editRevert, true);
   assert.equal(guarded.config.stuck.fileThrashThreshold, 6);
