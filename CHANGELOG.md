@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 2.16.0
+
 ### Added
 
 - Deterministic System-0 rule compiler and precondition router (`src/rule-compiler.ts`, `rules.system0`, default `true`) wired into `evaluateRulesTarget` and `evaluateTurnRun` (`source: "code"`). Supports explicit deterministic rule headers (`forbid:`, `forbid-token:`, `require-token:`, `extensions:`) plus built-in mechanical evaluators for tool/AI attribution lines, explicit parenthesized forbidden-term lists, empty/comment-only JS/TS `catch` and bare Python `except: pass` blocks, explicit `console.log`/`debugger`/`print` rules, and SQL migration / language preconditions — enforcing mechanical rules offline at zero cost when TypeSafe is off and stripping locally-settled rules from Jev requests when TypeSafe is on while preserving `"TypeSafe judgments are off"` skip semantics for purely semantic rule sets.
