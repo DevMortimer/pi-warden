@@ -7082,3 +7082,39 @@ test("deterministic trajectory oscillations attach inline tool_result steers wit
   assert.match(cycleRes.content[0]!.text, /same failure recurred 4 times across this run/);
   assert.equal(requests.length, 0, "0 Jev requests sent across all three oscillation detections");
 });
+
+test("end-of-run turn-rules skip records in trace without clobbering live status bar warnings", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "pi-warden-no-rules-"));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" });
+  try {
+    git("init");
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Test");
+    await writeFile(join(repo, "file.txt"), "one\n");
+    git("add", "-A");
+    git("commit", "-m", "init");
+
+    await writeConfig(JSON.stringify({
+      typesafe: false,
+      notices: false,
+      rules: { enabled: true, cadence: "turn", fallback: false },
+      slop: { enabled: false },
+      done: { enabled: false },
+      widget: { enabled: true, barMode: "live" },
+    }));
+    const ctx = context({ cwd: repo });
+    await sessionStart(ctx);
+    await newPrompt("delete file", ctx);
+    await toolCall("bash", { command: "rm -rf victim" }, ctx);
+    const widgetBeforeEnd = widgets.at(-1);
+    assert.ok(widgetBeforeEnd?.some(line => /^WARN\s+action/.test(line)), "precondition: live status bar shows WARN action");
+    await writeFile(join(repo, "file.txt"), "two\n");
+    reportBaseline = (await recordedSince()).length;
+    await agentEnd("Done.", ctx);
+    assert.deepEqual(widgets.at(-1), widgetBeforeEnd, "live status line keeps the action warning instead of being overwritten by a skipped rules line");
+    const entries = (await recordedSince()).slice(reportBaseline);
+    assert.ok(entries.some(e => e.guard === "rules" && /end-of-run pass skipped: no rules file/.test(e.line)), "trace still records the end-of-run skip");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});

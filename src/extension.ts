@@ -3130,7 +3130,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           evaluateTarget: (target, tool, shownPath, opts) => rulesGuard.evaluateTarget(target, tool, shownPath, opts),
         });
         if (turnRun.skipped) {
-          record(ctx, config, "rules", `warden · rules · end-of-run pass skipped: ${turnRun.skipped}`, ["trigger: agent_end"]);
+          // Trace only: `record()` would overwrite an actionable live status line (e.g. `WARN action`) with a diagnostic skip.
+          trace.push({ at: Date.now(), guard: "rules", line: `warden · rules · end-of-run pass skipped: ${turnRun.skipped}`, details: ["trigger: agent_end"] });
         }
         // The git-brought filter failed or was cut at its probe limit: one line says so, even when no verdict follows.
         if (turnRun.notes.length) record(ctx, config, "rules", `warden · rules · ${turnRun.notes[0]}`, ["trigger: agent_end", ...turnRun.notes]);
