@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 2.17.1
+
 ### Changed
 
 - Updated `pi-typesafe` dependency from `^0.14.0` to `^0.15.1`, removing `ERESOLVE` peer-dependency warnings on Pi 1.x installs and adopting per-backend `auth-state.json` isolation, degraded-key callout re-arming, and explicit auth, budget, error, and batch state machines.
