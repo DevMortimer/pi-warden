@@ -7108,7 +7108,7 @@ test("end-of-run turn-rules skip records in trace without clobbering live status
     await toolCall("bash", { command: "rm -rf victim" }, ctx);
     const widgetBeforeEnd = widgets.at(-1);
     assert.ok(widgetBeforeEnd?.some(line => /^WARN\s+action/.test(line)), "precondition: live status bar shows WARN action");
-    await writeFile(join(repo, "file.txt"), "two\n");
+    await writeFile(join(repo, "file.txt"), "two — updated content with distinct length\n");
     reportBaseline = (await recordedSince()).length;
     await agentEnd("Done.", ctx);
     assert.deepEqual(widgets.at(-1), widgetBeforeEnd, "live status line keeps the action warning instead of being overwritten by a skipped rules line");
