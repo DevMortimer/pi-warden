@@ -261,3 +261,37 @@ test("completeConfig fills Wave 2 cadence, inline feedback, autonomous gate, dup
   assert.equal(config.context.duplicateNote, false);
   assert.equal(config.action.traceSample, 0);
 });
+
+test("schema 17 and missing context.mask disable epoch masking cleanly in both completeConfig and guardCurrentSections", async () => {
+  const { guardCurrentSections } = await import("../src/extension.js");
+  assert.equal(CONFIG_SCHEMA, 17);
+  assert.equal(EXPECTED_SCHEMA, 17);
+
+  const stale = defaultConfig() as unknown as Record<string, Record<string, unknown>>;
+  const ctxSection = { ...stale.context };
+  delete ctxSection.mask;
+  stale.context = ctxSection;
+
+  const completed = completeConfig(stale as never);
+  assert.deepEqual(completed.missing, ["context.mask"]);
+  assert.deepEqual(completed.config.context.mask, {
+    enabled: false,
+    epochTurns: 8,
+    keepRecentTurns: 6,
+    minSweepBytes: 32768,
+    minObsChars: 2000,
+    images: false,
+    supersededReads: false,
+    resolvedChecks: false,
+  });
+
+  const staleForExt = defaultConfig() as unknown as Record<string, Record<string, unknown>>;
+  const ctxSection2 = { ...staleForExt.context };
+  delete ctxSection2.mask;
+  staleForExt.context = ctxSection2;
+  const guarded = guardCurrentSections({ config: staleForExt as never, missing: [] });
+  assert.deepEqual(guarded.missing, ["context.mask"]);
+  assert.equal(guarded.config.context.mask.enabled, false);
+  assert.equal(guarded.config.context.mask.images, false);
+  assert.doesNotThrow(() => guarded.config.context.mask.enabled && guarded.config.context.mask.epochTurns > 0);
+});

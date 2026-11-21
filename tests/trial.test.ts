@@ -382,3 +382,71 @@ test("a silent session withholds tool-output compression and records it", async 
   assert.ok(suppressed.some(entry => entry.kind === "context-compression"), "the compression is recorded");
   assert.ok(seenAfterRead.includes("UNIQUE-MIDDLE-MARKER-42"), "the silent arm keeps the tool result whole");
 });
+
+test("epoch context masking runs in the live arm without mutating branch entries, and records suppression in the silent arm", async () => {
+  const bigImage = "Q".repeat(6000);
+  const imageTool: InlineExtension = ((pi: ExtensionAPI) => {
+    pi.registerTool({
+      name: "snap", label: "snap", description: "Returns an image.",
+      parameters: Type.Object({ tag: Type.String() }),
+      async execute(_id, params) {
+        void params;
+        return { content: [{ type: "image", data: bigImage, mimeType: "image/png" }], details: undefined };
+      },
+    });
+  }) as unknown as InlineExtension;
+
+  const runArm = async (arm: TrialArm) => {
+    const dir = await mkdtemp(join(tmpdir(), `pi-warden-trial-mask-${arm}-`));
+    dirs.push(dir);
+    await writeFile(join(agentDir, "pi-warden", "config.json"), JSON.stringify(configFor(true, {
+      typesafe: false,
+      stuck: { enabled: false },
+      done: { enabled: false },
+      waste: { enabled: false },
+      context: { enabled: true, mask: { enabled: true, epochTurns: 8, keepRecentTurns: 6, minSweepBytes: 1024 } },
+    })));
+    const provider = faux.fauxProvider();
+    const modelRuntime = await ModelRuntime.create({ authPath: join(dir, "auth.json"), modelsPath: null, refreshOnCreate: false });
+    modelRuntime.registerNativeProvider(provider.provider);
+    await modelRuntime.setRuntimeApiKey(provider.provider.id, "offline");
+    toolCwd = dir;
+    const record: Recorded = { bashRan: false, readCalls: 0 };
+    const loader = new DefaultResourceLoader({
+      cwd: dir, agentDir, settingsManager: SettingsManager.inMemory(),
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      additionalExtensionPaths: [wardenEntry],
+      extensionFactories: [recordingTools(record), imageTool],
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({ cwd: dir, agentDir, modelRuntime, model: provider.getModel(), resourceLoader: loader, sessionManager: SessionManager.inMemory(dir, { id: idFor(arm) }), settingsManager: SettingsManager.inMemory(), noTools: "builtin" });
+    await session.bindExtensions({ mode: "print" });
+
+    const seenByCall: string[] = [];
+    const script: ScriptedReply[] = [
+      (context: { messages: unknown[] }) => { seenByCall.push(JSON.stringify(context.messages)); return faux.fauxAssistantMessage(faux.fauxToolCall("snap", { tag: "t1" })); },
+      ...Array.from({ length: 8 }, (_, idx) => (context: { messages: unknown[] }) => {
+        seenByCall.push(JSON.stringify(context.messages));
+        return faux.fauxAssistantMessage(faux.fauxToolCall("bash", { command: `echo step-${idx + 2}` }));
+      }),
+      (context: { messages: unknown[] }) => { seenByCall.push(JSON.stringify(context.messages)); return faux.fauxAssistantMessage("All done."); },
+    ];
+    provider.setResponses(script);
+    await session.prompt("capture and check");
+    return { session, seenByCall };
+  };
+
+  const live = await runArm("live");
+  // On call 9 (index 8, 8 assistant turns in history), epoch 1 sweeps and masks the stale tool screenshot.
+  assert.match(live.seenByCall[8]!, /earlier tool image/, "live arm masks stale screenshot at epoch boundary");
+  assert.equal(live.seenByCall[8]!.includes(bigImage), false, "live arm removes raw base64 from model context");
+  // Persistent session branch keeps the original image untouched.
+  const liveBranchJson = JSON.stringify(live.session.sessionManager.getBranch());
+  assert.ok(liveBranchJson.includes(bigImage), "on-disk/in-memory session branch retains original image");
+
+  const silent = await runArm("silent");
+  assert.ok(silent.seenByCall[8]!.includes(bigImage), "silent arm sends unmodified messages to the model");
+  assert.equal(silent.seenByCall[8]!.includes("earlier tool image"), false);
+  const suppressed = trialEntries(silent.session).filter((entry): entry is Extract<TrialRecord, { record: "suppressed" }> => entry.record === "suppressed");
+  assert.equal(suppressed.filter(entry => entry.kind === "context-compression").length, 1, "silent arm records one context-compression suppression for the epoch");
+});

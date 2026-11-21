@@ -23,6 +23,17 @@ export interface ContextLedgerSnapshot {
   /** Head/diagnostic/tail excerpts and context-filter outputs, kept apart so the filter trial can be judged against the excerpt. */
   excerpt: CompressionCounts;
   filter: CompressionCounts & FilterCounts;
+  /** Epoch context masking sweeps committed in memory during Pi's `context` hook. */
+  masked: MaskedCounts;
+}
+
+export interface MaskedCounts {
+  items: number;
+  images: number;
+  reads: number;
+  checks: number;
+  sweeps: number;
+  bytesSaved: number;
 }
 
 export interface CompressionCounts {
@@ -64,6 +75,7 @@ export class ContextLedger {
   private recallsFull = 0;
   private excerpt: CompressionCounts = { count: 0, recalls: 0, recallsFull: 0 };
   private filter: CompressionCounts & FilterCounts = { count: 0, recalls: 0, recallsFull: 0, keptChars: 0, requests: 0, ms: 0, fallbacks: {} };
+  private masked: MaskedCounts = { items: 0, images: 0, reads: 0, checks: 0, sweeps: 0, bytesSaved: 0 };
   private readonly stored = new Map<string, { recalled: boolean; restored: boolean; saved: number; tool: string | undefined; bytes: number | undefined; kind?: CompressionKind | undefined }>();
   /** Every sizeable text result seen this session, by content key, with the tool that produced it and its stored copy if any. */
   private readonly seen = new Map<string, { tool: string; path?: string }>();
@@ -114,6 +126,18 @@ export class ContextLedger {
     this.stored.set(path, { recalled: false, restored: false, saved: bytesSaved, tool: source.tool, bytes: source.bytes });
   }
 
+  /** One epoch context-mask sweep committed: add reclaimed bytes so subsequent turns accrue token-turns automatically. */
+  maskSweep(sweep: { items: number; images: number; reads: number; checks: number; bytesSaved: number }): void {
+    this.masked.items += sweep.items;
+    this.masked.images += sweep.images;
+    this.masked.reads += sweep.reads;
+    this.masked.checks += sweep.checks;
+    this.masked.sweeps++;
+    this.masked.bytesSaved += sweep.bytesSaved;
+    this.bytesSaved += sweep.bytesSaved;
+    this.bytesAbsent += sweep.bytesSaved;
+  }
+
   /** One LLM turn finished: everything removed so far was absent from this turn's prompt. */
   turnEnd(): void {
     this.turns++;
@@ -146,7 +170,7 @@ export class ContextLedger {
   }
 
   snapshot(): ContextLedgerSnapshot {
-    return { large: this.large, compressed: this.compressed, duplicates: this.duplicates, repeats: this.repeats, bytesSaved: this.bytesSaved, turns: this.turns, tokenTurnsSaved: this.tokenTurnsSaved, recalls: this.recalls, recallsFull: this.recallsFull, excerpt: { ...this.excerpt }, filter: { ...this.filter, fallbacks: { ...this.filter.fallbacks } } };
+    return { large: this.large, compressed: this.compressed, duplicates: this.duplicates, repeats: this.repeats, bytesSaved: this.bytesSaved, turns: this.turns, tokenTurnsSaved: this.tokenTurnsSaved, recalls: this.recalls, recallsFull: this.recallsFull, excerpt: { ...this.excerpt }, filter: { ...this.filter, fallbacks: { ...this.filter.fallbacks } }, masked: { ...this.masked } };
   }
 
   /** Paths to temp files for cleanup at session start. Internal only — paths never leave the machine. */
@@ -163,6 +187,7 @@ export class ContextLedger {
     this.large = 0; this.compressed = 0; this.duplicates = 0; this.repeats = 0; this.bytesSaved = 0; this.bytesAbsent = 0; this.turns = 0; this.tokenTurnsSaved = 0; this.recalls = 0; this.recallsFull = 0;
     this.excerpt = { count: 0, recalls: 0, recallsFull: 0 };
     this.filter = { count: 0, recalls: 0, recallsFull: 0, keptChars: 0, requests: 0, ms: 0, fallbacks: {} };
+    this.masked = { items: 0, images: 0, reads: 0, checks: 0, sweeps: 0, bytesSaved: 0 };
     this.stored.clear();
     this.seen.clear();
   }
@@ -170,12 +195,19 @@ export class ContextLedger {
 
 /** One line for /warden status. Says when there is nothing to report instead of printing zeros. */
 export function formatLedger(snapshot: ContextLedgerSnapshot): string {
-  if (snapshot.large === 0 && snapshot.duplicates === 0 && snapshot.repeats === 0) return "Context saver: no tool output large enough to consider this session.";
+  if (snapshot.large === 0 && snapshot.duplicates === 0 && snapshot.repeats === 0 && snapshot.masked.items === 0) return "Context saver: no tool output large enough to consider this session.";
   const kb = (snapshot.bytesSaved / 1024).toFixed(1);
   const stored = snapshot.compressed + snapshot.repeats;
   const recallRate = stored ? Math.round((snapshot.recalls / stored) * 100) : 0;
   const scoped = snapshot.recalls - snapshot.recallsFull;
-  return `Context saver: ${snapshot.large} large outputs, ${snapshot.compressed} compressed, ${snapshot.duplicates} duplicate${snapshot.duplicates === 1 ? "" : "s"} dropped, ${snapshot.repeats ? `${snapshot.repeats} repeat${snapshot.repeats === 1 ? "" : "s"} cut, ` : ""}${kb} KB removed (~${Math.round(snapshot.bytesSaved / 4)} tokens), ~${snapshot.tokenTurnsSaved} token-turns spared over ${snapshot.turns} turns, ${snapshot.recalls} recall${snapshot.recalls === 1 ? "" : "s"} of the full output (${recallRate}%; ${snapshot.recallsFull} whole-file, ${scoped} scoped).`;
+  const maskedParts: string[] = [];
+  if (snapshot.masked.images > 0) maskedParts.push(`${snapshot.masked.images} image${snapshot.masked.images === 1 ? "" : "s"}`);
+  if (snapshot.masked.reads > 0) maskedParts.push(`${snapshot.masked.reads} read${snapshot.masked.reads === 1 ? "" : "s"}`);
+  if (snapshot.masked.checks > 0) maskedParts.push(`${snapshot.masked.checks} check${snapshot.masked.checks === 1 ? "" : "s"}`);
+  const maskedClause = snapshot.masked.items > 0
+    ? `${snapshot.masked.items} masked${maskedParts.length ? ` (${maskedParts.join(", ")})` : ""}, `
+    : "";
+  return `Context saver: ${snapshot.large} large outputs, ${snapshot.compressed} compressed, ${snapshot.duplicates} duplicate${snapshot.duplicates === 1 ? "" : "s"} dropped, ${snapshot.repeats ? `${snapshot.repeats} repeat${snapshot.repeats === 1 ? "" : "s"} cut, ` : ""}${maskedClause}${kb} KB removed (~${Math.round(snapshot.bytesSaved / 4)} tokens), ~${snapshot.tokenTurnsSaved} token-turns spared over ${snapshot.turns} turns, ${snapshot.recalls} recall${snapshot.recalls === 1 ? "" : "s"} of the full output (${recallRate}%; ${snapshot.recallsFull} whole-file, ${scoped} scoped).`;
 }
 
 /** One line for /warden status while the context filter is on or has run: filtered outputs beside excerpt outputs, for the trial. */

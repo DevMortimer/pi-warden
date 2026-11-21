@@ -6943,3 +6943,45 @@ test("holds.runEnded settles headless steer holds, unsampled allow calls skip ho
   const traceEntries = (await recordedSince()).slice(reportBaseline);
   assert.ok(traceEntries.some(entry => entry.guard === "notice" && /billing failure/i.test(entry.line) && /HTTP 402/i.test(entry.line)), "HTTP 402 records a headless billing cooldown notice");
 });
+
+test("pi.on('context') masks stale observations at epoch boundaries, reports in status, and stays inert when disabled or short", async () => {
+  await writeConfig(JSON.stringify({
+    typesafe: false,
+    context: { enabled: true, mask: { enabled: true, epochTurns: 8, keepRecentTurns: 6, minSweepBytes: 1024 } },
+    ...STACK_BAR,
+  }));
+  await sessionStart();
+
+  const imgData = "I".repeat(5000);
+  const shortMessages = [
+    { role: "user", content: "inspect" },
+    { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "shot.png" } }] },
+    { role: "toolResult", toolCallId: "c1", toolName: "read", isError: false, content: [{ type: "image", data: imgData, mimeType: "image/png" }] },
+  ];
+  assert.equal(await fire("context", { messages: shortMessages }), undefined, "short session returns undefined");
+
+  const eightTurnMessages: Array<Record<string, unknown>> = [...shortMessages];
+  for (let i = 2; i <= 8; i++) {
+    eightTurnMessages.push(
+      { role: "assistant", content: [{ type: "toolCall", id: `c${i}`, name: "bash", arguments: { command: `echo ${i}` } }] },
+      { role: "toolResult", toolCallId: `c${i}`, toolName: "bash", isError: false, content: [{ type: "text", text: `${i}` }] },
+    );
+  }
+  const swept = await fire("context", { messages: eightTurnMessages }) as { messages?: Array<{ content?: Array<{ type: string; text?: string }> }> } | undefined;
+  assert.ok(swept?.messages, "epoch boundary returns masked messages");
+  assert.equal(swept!.messages![2]!.content![0]!.type, "text");
+  assert.match(swept!.messages![2]!.content![0]!.text ?? "", /earlier tool image/);
+
+  await fire("turn_end", { turnIndex: 8, message: {}, toolResults: [] });
+  await runCommand("status");
+  assert.match(notices.at(-1)!.text, /1 masked \(1 image\)/);
+
+  // Disabled context.mask.enabled returns undefined even on long history.
+  await writeConfig(JSON.stringify({
+    typesafe: false,
+    context: { enabled: true, mask: { enabled: false } },
+    ...STACK_BAR,
+  }));
+  await sessionStart();
+  assert.equal(await fire("context", { messages: eightTurnMessages }), undefined, "disabled mask returns undefined");
+});

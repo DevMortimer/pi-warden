@@ -310,6 +310,26 @@ export interface ContextConfig {
   largeOutput: LargeOutputConfig;
   /** Beta, off by default: Jev picks the passages of a large output that matter for the current task instead of the head/diagnostic/tail excerpt. */
   filter: FilterConfig;
+  /** Cache-aware epoch context masking in Pi's `context` hook: reclaims stale tool screenshots, superseded reads, and resolved check logs between epochs. */
+  mask: ContextMaskConfig;
+}
+
+export interface ContextMaskConfig {
+  enabled: boolean;
+  /** Assistant turns between mask frontier advances so KV prompt-cache prefixes stay byte-identical between sweeps. */
+  epochTurns: number;
+  /** Newest assistant turns left untouched in the active working window; 0 masks up to the end. */
+  keepRecentTurns: number;
+  /** Minimum newly reclaimable bytes before advancing the mask frontier at an epoch boundary; 0 sweeps on every epoch. */
+  minSweepBytes: number;
+  /** Minimum character length for superseded `read` or resolved `bash` check outputs to be masked. */
+  minObsChars: number;
+  /** Mask stale `toolResult` images outside the recent window (user and custom images are never touched). */
+  images: boolean;
+  /** Mask earlier `read` outputs superseded by a later covering `read` or `write` of the same resolved path. */
+  supersededReads: boolean;
+  /** Mask the middle of earlier `bash` check outputs once a later check in the same command family passes. */
+  resolvedChecks: boolean;
 }
 
 export interface FilterConfig {
@@ -564,7 +584,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 16;
+export const CONFIG_SCHEMA = 17;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -607,7 +627,7 @@ export function defaultConfig(): WardenConfig {
     rules: { enabled: true, cadence: "turn", inlineFeedback: true, autonomousGate: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} },
     // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
     rulesAtTurnStart: { enabled: false, threshold: 0.3 },
-    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, duplicateNote: false, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
+    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, duplicateNote: false, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 }, mask: { enabled: true, epochTurns: 8, keepRecentTurns: 6, minSweepBytes: 32768, minObsChars: 2000, images: true, supersededReads: true, resolvedChecks: true } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
     judge: { cooldownMs: 60000, failuresBeforeCooldown: 3 },
@@ -688,6 +708,10 @@ function boolean(value: unknown, fallback: boolean): boolean {
 
 function positiveInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
 export function isMode(value: unknown): value is WardenMode {
@@ -1193,6 +1217,16 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
         maxKeptChars: positiveInteger(raw.context.filter.maxKeptChars, base.context.filter.maxKeptChars),
         timeoutMs: positiveInteger(raw.context.filter.timeoutMs, base.context.filter.timeoutMs),
       } : base.context.filter,
+      mask: isObject(raw.context.mask) ? {
+        enabled: boolean(raw.context.mask.enabled, base.context.mask.enabled),
+        epochTurns: positiveInteger(raw.context.mask.epochTurns, base.context.mask.epochTurns),
+        keepRecentTurns: nonNegativeInteger(raw.context.mask.keepRecentTurns, base.context.mask.keepRecentTurns),
+        minSweepBytes: nonNegativeInteger(raw.context.mask.minSweepBytes, base.context.mask.minSweepBytes),
+        minObsChars: positiveInteger(raw.context.mask.minObsChars, base.context.mask.minObsChars),
+        images: boolean(raw.context.mask.images, base.context.mask.images),
+        supersededReads: boolean(raw.context.mask.supersededReads, base.context.mask.supersededReads),
+        resolvedChecks: boolean(raw.context.mask.resolvedChecks, base.context.mask.resolvedChecks),
+      } : base.context.mask,
     } : base.context,
   };
 }
@@ -1539,6 +1573,14 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "context.filter.minScore": { kind: "none", why: "how a filtered chunk is scored" },
   "context.filter.maxKeptChars": { kind: "none", why: "how much of a filtered output is kept" },
   "context.filter.timeoutMs": { kind: "none", why: "the filter's own deadline" },
+  "context.mask.enabled": { kind: "off", check: "context epoch mask" },
+  "context.mask.epochTurns": { kind: "none", why: "how often the epoch mask frontier advances" },
+  "context.mask.keepRecentTurns": { kind: "none", why: "how many recent turns stay untouched by epoch masking" },
+  "context.mask.minSweepBytes": { kind: "none", why: "minimum reclaimable bytes before an epoch sweep runs" },
+  "context.mask.minObsChars": { kind: "none", why: "minimum observation length eligible for epoch masking" },
+  "context.mask.images": { kind: "none", why: "whether epoch masking replaces aged tool images" },
+  "context.mask.supersededReads": { kind: "none", why: "whether epoch masking replaces superseded file reads" },
+  "context.mask.resolvedChecks": { kind: "none", why: "whether epoch masking trims resolved check logs" },
 
   "runaway.enabled": { kind: "off", check: "runaway stop" },
   "runaway.repeats": { kind: "high", check: "runaway stop", label: "text repeats" },

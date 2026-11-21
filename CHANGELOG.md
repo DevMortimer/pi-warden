@@ -6,7 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- Cache-aware epoch context masking (`src/mask.ts`, `EpochMasker`, `maskContext`, `context.mask.*`, enabled by default) wired into Pi's `context` hook to reclaim stale `toolResult` images, superseded `read` outputs, and resolved `bash` check logs strictly in memory with zero TypeSafe requests and zero temp files. Committed replacements freeze in a session map keyed by `toolCallId` and advance only at discrete epoch boundaries (`epochTurns: 8`) when reclaimable bytes clear `minSweepBytes: 32768`, leaving the newest `keepRecentTurns: 6` assistant turns untouched, never modifying `user` or `custom` images, and preserving byte-identical prompt prefixes between sweeps for KV prompt-cache reuse.
+- `ContextLedger.maskSweep()` accounting and `/warden status` reporting (`X masked (Y images, Z reads, W checks)`) with automatic `tokenTurnsSaved` accrual across subsequent turns, plus config schema `17` shape guarding for missing `context.mask` sections.
 
 ## 2.14.0
 
