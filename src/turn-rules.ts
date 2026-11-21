@@ -398,9 +398,9 @@ export async function evaluateTurnRun(options: TurnRunOptions): Promise<TurnRunR
   // With no turn rules and no change the per-edit guard missed, the run is judged exactly as it was before.
   if (!turnRules.length && !files.length) return { verdicts: [], cuts: diff.cuts, notes: diff.notes, skips: [] };
   if (!set) return { verdicts: [], cuts: diff.cuts, notes: diff.notes, skips: [], skipped: "no rules file" };
-  if (!judge) return { verdicts: [], cuts: diff.cuts, notes: diff.notes, skips: [], skipped: "TypeSafe judgments are off" };
+  if (!judge && !config.system0) return { verdicts: [], cuts: diff.cuts, notes: diff.notes, skips: [], skipped: "TypeSafe judgments are off" };
   const verdicts: RulesVerdict[] = [];
-  if (turnRules.length) {
+  if (turnRules.length && judge) {
     verdicts.push(await evaluateTurnRules(task ?? "", diff.text, turnRules, { judge, config, timeoutMs, ...(signal ? { signal } : {}), sources: set.sources }));
   }
   // The same cap the per-edit path puts on the files one command writes: the first files in diff order are judged,
@@ -415,6 +415,18 @@ export async function evaluateTurnRun(options: TurnRunOptions): Promise<TurnRunR
     const target = { tool: "edit" as const, path: file.path, edits: [{ id: "diff", newText: redact(clip(file.diff, config.maxChars)) }] };
     const evaluate = options.evaluateTarget ?? evaluateRulesTarget;
     verdicts.push(await evaluate(target, "edit", file.path, { cwd, config, set, judge, timeoutMs, ...(signal ? { signal } : {}) }));
+  }
+  if (!judge) {
+    const codeVerdicts = verdicts.filter(verdict => verdict.source === "code");
+    if (!codeVerdicts.length) {
+      return { verdicts: [], cuts: diff.cuts, notes: diff.notes, skips: [], skipped: "TypeSafe judgments are off" };
+    }
+    return {
+      verdicts: verdicts.filter(verdict => !(verdict.source === "skipped" && verdict.skippedReason === "TypeSafe judgments are off")),
+      cuts: diff.cuts,
+      notes: diff.notes,
+      skips,
+    };
   }
   return { verdicts, cuts: diff.cuts, notes: diff.notes, skips };
 }

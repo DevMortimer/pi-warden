@@ -2,12 +2,34 @@ import { createHash } from "node:crypto";
 import { ask, noul, score } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { StuckGuardConfig } from "./config.js";
+import { classifyToolResult } from "./done.js";
 import { attemptOutcome, buildStuckEvidence, editDiff } from "./evidence.js";
 import type { StuckEvidence } from "./evidence.js";
 import { redact } from "./redact.js";
 import { isReadOnlyCommand } from "./guard.js";
+import { projectPath } from "./rules.js";
 import { COMMAND_TOOLS, commandOf, outputReportsFailure } from "./tools.js";
 import { DEFAULT_TEMPLATES, renderTemplate, stuckTokens } from "./widget.js";
+
+/** Hashed old/new pair for an `edit` operation; keeps raw source text off persisted attempts. */
+export interface EditPairHash {
+  oldHash: string;
+  newHash: string;
+}
+
+/** Optional file-state context passed to `makeAttempt` when disk content hashes are available. */
+export interface MakeAttemptOptions {
+  cwd?: string | undefined;
+  /** SHA-1 hash of the file content after a successful `edit` or `write`. */
+  fileHash?: string | undefined;
+  /** SHA-1 hash of the file content immediately before an `edit` or `write`. */
+  prevFileHash?: string | undefined;
+  /** Explicit target path override for `edit` or `write`. */
+  targetPath?: string | undefined;
+}
+
+/** Deterministic trajectory oscillation kind detected without calling Jev. */
+export type StuckOscillation = "revert" | "thrash" | "cycle";
 
 /** One remembered tool result. `key` identifies the exact call; `call` is the redacted view that may leave the machine. */
 export interface Attempt {
@@ -37,6 +59,16 @@ export interface Attempt {
   text: string;
   /** For an `edit` or `write`: the path and the capped diff of the change, both redacted. */
   change?: AttemptChange;
+  /** Normalised path targeted by an `edit` or `write`. */
+  targetPath?: string | undefined;
+  /** SHA-1 hash of the file content after an `edit` or `write`, when known. */
+  fileHash?: string | undefined;
+  /** SHA-1 hash of the file content before an `edit` or `write`, when known. */
+  prevFileHash?: string | undefined;
+  /** Hashed `oldText -> newText` pairs from an `edit`, enabling disk-free A -> B -> A detection. */
+  editPairHashes?: EditPairHash[] | undefined;
+  /** True when the attempt was a passing verification check (resets unverified file-edit streaks). */
+  checkPassed?: true | undefined;
 }
 
 /** The change an `edit` or `write` made, as the stuck evidence reports it. */
@@ -73,6 +105,8 @@ export interface StuckVerdict {
   successRepeat?: boolean;
   /** True when the repeat that fired was repeated calls to the same target with changing output. */
   churn?: boolean;
+  /** Deterministic trajectory oscillation detected without Jev: exact revert, unverified file thrash, or long-horizon failure cycle. */
+  oscillation?: StuckOscillation | undefined;
   judgment?: StuckJudgment;
   error?: string;
   errorCode?: IntegrationErrorCode;
@@ -135,8 +169,41 @@ function redactedChange(tool: string, input: Record<string, unknown>): AttemptCh
   return { path: redact(diff.path), added: diff.added, removed: diff.removed, diff: redact(diff.diff) };
 }
 
+function sha1(text: string): string {
+  return createHash("sha1").update(text).digest("hex");
+}
+
+function normaliseTargetPath(raw: string, cwd?: string): string {
+  const trimmed = raw.trim();
+  if (cwd) {
+    const rel = projectPath(trimmed, cwd);
+    if (rel) return rel;
+  }
+  return trimmed.replace(/^\.\//, "").replace(/\\/g, "/");
+}
+
+function extractEditPairHashes(input: Record<string, unknown>): EditPairHash[] | undefined {
+  if (Array.isArray(input.edits)) {
+    const pairs: EditPairHash[] = [];
+    for (const raw of input.edits) {
+      const item = (raw ?? {}) as { oldText?: unknown; newText?: unknown };
+      if (typeof item.oldText === "string" && typeof item.newText === "string") {
+        pairs.push({ oldHash: sha1(item.oldText), newHash: sha1(item.newText) });
+      }
+    }
+    return pairs.length ? pairs : undefined;
+  }
+  if (typeof input.oldText === "string" && typeof input.newText === "string") {
+    return [{ oldHash: sha1(input.oldText), newHash: sha1(input.newText) }];
+  }
+  if (typeof input.old_string === "string" && typeof input.new_string === "string") {
+    return [{ oldHash: sha1(input.old_string), newHash: sha1(input.new_string) }];
+  }
+  return undefined;
+}
+
 /** `failed` is undefined when the host did not say whether the call failed; the attempt is then `unreported`. */
-export function makeAttempt(tool: string, input: Record<string, unknown>, content: ReadonlyArray<{ type: string; text?: string }>, failed: boolean | undefined): Attempt {
+export function makeAttempt(tool: string, input: Record<string, unknown>, content: ReadonlyArray<{ type: string; text?: string }>, failed: boolean | undefined, options?: MakeAttemptOptions): Attempt {
   const view = commandOf(tool, input);
   const command = view?.command;
   const readOnlyCommand = view !== undefined && view.shell && isReadOnlyCommand(view.command);
@@ -145,6 +212,12 @@ export function makeAttempt(tool: string, input: Record<string, unknown>, conten
     : JSON.stringify(input);
   const text = resultText(content).trim();
   const change = EDIT_TOOLS.has(tool) ? redactedChange(tool, input) : undefined;
+  const rawTarget = options?.targetPath ?? (EDIT_TOOLS.has(tool) && typeof input.path === "string" ? input.path : undefined);
+  const targetPath = rawTarget && rawTarget.trim() ? normaliseTargetPath(rawTarget, options?.cwd) : undefined;
+  const fileHash = options?.fileHash ?? (tool === "write" && typeof input.content === "string" ? sha1(input.content) : undefined);
+  const prevFileHash = options?.prevFileHash;
+  const editPairHashes = tool === "edit" ? extractEditPairHashes(input) : undefined;
+  const checkPassed = failed === false && classifyToolResult(tool, input, false, text, options?.cwd) === "check-pass" ? true : undefined;
   return {
     tool,
     key: createHash("sha1").update(tool).update("\0").update(JSON.stringify(input)).digest("hex"),
@@ -154,6 +227,11 @@ export function makeAttempt(tool: string, input: Record<string, unknown>, conten
     ...(failed === undefined ? { unreported: true as const } : {}),
     text,
     ...(change ? { change } : {}),
+    ...(targetPath ? { targetPath } : {}),
+    ...(fileHash ? { fileHash } : {}),
+    ...(prevFileHash ? { prevFileHash } : {}),
+    ...(editPairHashes ? { editPairHashes } : {}),
+    ...(checkPassed ? { checkPassed: true as const } : {}),
     output: redact(tail(text, OUTPUT_LIMIT)),
     // MCP tools, scripts, and unknown tools can change state that the next call reads.
     changes: !READ_TOOLS.has(tool) && !readOnlyCommand,
@@ -162,25 +240,205 @@ export function makeAttempt(tool: string, input: Record<string, unknown>, conten
   };
 }
 
+/** Bounds on session-wide oscillation tracking maps so long runs stay O(1) memory. */
+const MAX_TRACKED_PATHS = 256;
+const MAX_STATE_HISTORY = 64;
+const MAX_FAILURE_SIGNATURES = 256;
+
+interface FileStateHistory {
+  hashes: string[];
+  current?: string;
+  virtualHistory: Set<string>;
+  virtualCurrent?: string;
+  transitions: EditPairHash[];
+}
+
+export interface PendingOscillation {
+  kind: StuckOscillation;
+  reason: string;
+  commit: () => void;
+}
+
 /** Rolling memory of tool results for the current user prompt. */
 export class AttemptWindow {
   readonly attempts: Attempt[] = [];
   private sinceJudgment = Number.MAX_SAFE_INTEGER;
   /** Call keys that already got a quick-repeat steer in this window. */
   private readonly quickRepeated = new Set<string>();
+  /** Per-file content-hash and edit-pair histories for A -> B -> A revert detection. */
+  private readonly fileStates = new Map<string, FileStateHistory>();
+  /** `(path, stateHash)` pairs already nudged for revert in this run. */
+  private readonly revertedNudged = new Set<string>();
+  /** Set only when the most recent `push()` reverted a file to an earlier state. */
+  private latestRevert: { path: string; stateHash: string; tool: string } | undefined;
+  /** Consecutive unverified edit/write counts per path since start or last passing check. */
+  private readonly fileEditStreaks = new Map<string, { count: number; nudgedAt: number }>();
+  /** Session-wide normalized failure signature counts that outlive the sliding window eviction. */
+  private readonly failureSignatures = new Map<string, { count: number; call: string; nudgedAt: number }>();
 
   constructor(private readonly limit: number) {}
 
+  /** Resets unverified single-file edit streaks once a test/build/lint check passes. */
+  notePassingCheck(): void {
+    this.fileEditStreaks.clear();
+  }
+
   push(attempt: Attempt): void {
+    this.latestRevert = undefined;
     this.attempts.push(attempt);
     if (this.attempts.length > this.limit) this.attempts.splice(0, this.attempts.length - this.limit);
     if (this.sinceJudgment !== Number.MAX_SAFE_INTEGER) this.sinceJudgment++;
+
+    if (
+      attempt.checkPassed
+      || (!attempt.failed && !attempt.unreported && SHELL_TOOLS.has(attempt.tool) && classifyToolResult(attempt.tool, { command: attempt.call }, false, attempt.text) === "check-pass")
+    ) {
+      this.notePassingCheck();
+    }
+
+    if (attempt.failed && !isBoundedWait(attempt)) {
+      const signature = `${attempt.tool}\0${attempt.key}\0${attempt.outputKey}`;
+      const existing = this.failureSignatures.get(signature);
+      if (existing) {
+        this.failureSignatures.delete(signature);
+        this.failureSignatures.set(signature, { count: existing.count + 1, call: attempt.call, nudgedAt: existing.nudgedAt });
+      } else {
+        if (this.failureSignatures.size >= MAX_FAILURE_SIGNATURES) {
+          const oldest = this.failureSignatures.keys().next().value;
+          if (oldest !== undefined) this.failureSignatures.delete(oldest);
+        }
+        this.failureSignatures.set(signature, { count: 1, call: attempt.call, nudgedAt: 0 });
+      }
+    }
+
+    if (!attempt.failed && EDIT_TOOLS.has(attempt.tool)) {
+      const targetPath = attempt.targetPath ?? attempt.change?.path;
+      if (targetPath) {
+        this.recordFileEdit(targetPath, attempt);
+      }
+    }
+  }
+
+  private recordFileEdit(targetPath: string, attempt: Attempt): void {
+    const streak = this.fileEditStreaks.get(targetPath);
+    if (streak) {
+      streak.count++;
+    } else {
+      if (this.fileEditStreaks.size >= MAX_TRACKED_PATHS) {
+        const oldest = this.fileEditStreaks.keys().next().value;
+        if (oldest !== undefined) this.fileEditStreaks.delete(oldest);
+      }
+      this.fileEditStreaks.set(targetPath, { count: 1, nudgedAt: 0 });
+    }
+
+    let state = this.fileStates.get(targetPath);
+    if (!state) {
+      if (this.fileStates.size >= MAX_TRACKED_PATHS) {
+        const oldest = this.fileStates.keys().next().value;
+        if (oldest !== undefined) this.fileStates.delete(oldest);
+      }
+      state = { hashes: [], virtualHistory: new Set(), transitions: [] };
+      this.fileStates.set(targetPath, state);
+    }
+
+    if (attempt.fileHash) {
+      if (state.hashes.length === 0 && attempt.prevFileHash && attempt.prevFileHash !== attempt.fileHash) {
+        state.hashes.push(attempt.prevFileHash);
+        state.current = attempt.prevFileHash;
+      }
+      if (state.current !== undefined && state.current !== attempt.fileHash && state.hashes.includes(attempt.fileHash)) {
+        this.latestRevert = { path: targetPath, stateHash: attempt.fileHash, tool: attempt.tool };
+      }
+      if (state.current !== attempt.fileHash) {
+        state.hashes.push(attempt.fileHash);
+        if (state.hashes.length > MAX_STATE_HISTORY) state.hashes.splice(0, state.hashes.length - MAX_STATE_HISTORY);
+        state.current = attempt.fileHash;
+      }
+      return;
+    }
+
+    if (attempt.editPairHashes?.length) {
+      for (const pair of attempt.editPairHashes) {
+        if (pair.oldHash === pair.newHash) continue;
+        const inverted = state.transitions.some(prev => prev.oldHash === pair.newHash && prev.newHash === pair.oldHash);
+        const revisited = state.virtualCurrent !== undefined && state.virtualCurrent !== pair.newHash && state.virtualHistory.has(pair.newHash);
+        if (inverted || revisited) {
+          this.latestRevert = { path: targetPath, stateHash: pair.newHash, tool: attempt.tool };
+        }
+        if (state.virtualHistory.size >= MAX_STATE_HISTORY) {
+          const oldest = state.virtualHistory.values().next().value;
+          if (oldest !== undefined) state.virtualHistory.delete(oldest);
+        }
+        state.virtualHistory.add(pair.oldHash);
+        state.virtualHistory.add(pair.newHash);
+        state.virtualCurrent = pair.newHash;
+        state.transitions.push(pair);
+        if (state.transitions.length > MAX_STATE_HISTORY) state.transitions.splice(0, state.transitions.length - MAX_STATE_HISTORY);
+      }
+    }
+  }
+
+  /** Pure peek for any deterministic trajectory oscillation triggered by the latest attempt. */
+  pendingOscillation(config: StuckGuardConfig): PendingOscillation | undefined {
+    const latest = this.attempts.at(-1);
+    if (!latest || isBoundedWait(latest)) return undefined;
+
+    if (config.editRevert && this.latestRevert) {
+      const revert = this.latestRevert;
+      const key = `${revert.path}\0${revert.stateHash}`;
+      if (!this.revertedNudged.has(key)) {
+        return {
+          kind: "revert",
+          reason: `\`${revert.tool}\` on ${redact(revert.path)} reverted the file to an earlier state from this run (A → B → A oscillation)`,
+          commit: () => {
+            if (this.revertedNudged.size >= MAX_TRACKED_PATHS) {
+              const oldest = this.revertedNudged.values().next().value;
+              if (oldest !== undefined) this.revertedNudged.delete(oldest);
+            }
+            this.revertedNudged.add(key);
+          },
+        };
+      }
+    }
+
+    if (config.fileThrashThreshold > 0 && !latest.failed && EDIT_TOOLS.has(latest.tool)) {
+      const targetPath = latest.targetPath ?? latest.change?.path;
+      if (targetPath) {
+        const streak = this.fileEditStreaks.get(targetPath);
+        if (streak && streak.count >= config.fileThrashThreshold && (streak.count - streak.nudgedAt) >= config.fileThrashThreshold) {
+          return {
+            kind: "thrash",
+            reason: `${streak.count} edits to ${redact(targetPath)} without a passing check`,
+            commit: () => { streak.nudgedAt = streak.count; },
+          };
+        }
+      }
+    }
+
+    if (config.longCycleThreshold > 0 && latest.failed && this.exactRepeats() < config.minFailures) {
+      const signature = `${latest.tool}\0${latest.key}\0${latest.outputKey}`;
+      const entry = this.failureSignatures.get(signature);
+      if (entry && entry.count >= config.longCycleThreshold && (entry.count - entry.nudgedAt) >= config.longCycleThreshold) {
+        return {
+          kind: "cycle",
+          reason: `the same failure recurred ${entry.count} times across this run`,
+          commit: () => { entry.nudgedAt = entry.count; },
+        };
+      }
+    }
+
+    return undefined;
   }
 
   reset(): void {
     this.attempts.length = 0;
     this.sinceJudgment = Number.MAX_SAFE_INTEGER;
     this.quickRepeated.clear();
+    this.fileStates.clear();
+    this.revertedNudged.clear();
+    this.latestRevert = undefined;
+    this.fileEditStreaks.clear();
+    this.failureSignatures.clear();
   }
 
   /** A host that rebuilds the window for every call passes how many results ago its last judgment was. */
@@ -240,6 +498,7 @@ export class AttemptWindow {
   shouldJudge(config: StuckGuardConfig): boolean {
     const latest = this.attempts.at(-1);
     if (!latest || isBoundedWait(latest)) return false;
+    if (this.pendingOscillation(config) !== undefined) return true;
     if (latest.failed) return this.failures() >= config.minFailures && this.sinceJudgment >= config.cooldown;
     if (this.successRepeats() >= config.minFailures) return this.sinceJudgment >= config.cooldown;
     if (this.churnCount() >= config.churnThreshold) return this.sinceJudgment >= config.cooldown;
@@ -309,6 +568,11 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   if (repeats >= options.config.minFailures) {
     return { stuck: true, source: "repeat", failures, reasons: [`the same call failed ${repeats} times with the same output`] };
   }
+  const oscillation = window.pendingOscillation(options.config);
+  if (oscillation) {
+    oscillation.commit();
+    return { stuck: true, source: "repeat", failures, reasons: [oscillation.reason], oscillation: oscillation.kind };
+  }
   const successRepeats = window.successRepeats();
   if (successRepeats >= options.config.minFailures) {
     // Without an exit status the repeat is still the same output again, but nobody knows it succeeded.
@@ -341,6 +605,15 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
 /** Steering text for the agent. Names the pattern and asks for a change of method, not another retry. A successful
  * repeat is a different disease than a failure loop: the model already has the answer, so it should use it. */
 export function stuckNudge(verdict: StuckVerdict): string {
+  if (verdict.oscillation === "revert") {
+    return `pi-warden: ${verdict.reasons.join("; ")}. Stop toggling between two edits. Inspect why both states failed and form a new hypothesis before editing this file again.`;
+  }
+  if (verdict.oscillation === "thrash") {
+    return `pi-warden: ${verdict.reasons.join("; ")}. Stop making unverified edits to this file. Run a test/build check or read the whole function carefully before editing again.`;
+  }
+  if (verdict.oscillation === "cycle") {
+    return `pi-warden: ${verdict.reasons.join("; ")}. The same failure keeps returning across a long loop. Stop retrying, change your hypothesis, and inspect the root cause before running it again.`;
+  }
   if (verdict.successRepeat) {
     return `pi-warden: ${verdict.reasons.join("; ")}. Stop re-running it: the answer is already in the last output. Act on that result, move to the next step, or tell the user why the same call has to run again.`;
   }

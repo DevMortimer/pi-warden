@@ -155,6 +155,12 @@ export interface StuckGuardConfig {
   tailLimit: number;
   /** Append repeat and stuck nudges inline onto the triggering tool_result without starting an extra turn. */
   inlineFeedback: boolean;
+  /** Detect exact A -> B -> A file state reverts within the same prompt without calling Jev. */
+  editRevert: boolean;
+  /** Unverified edits to a single file before single-file thrash detection fires; 0 disables it. */
+  fileThrashThreshold: number;
+  /** Identical failure recurrences across a run (even past the sliding window) before cycle detection fires; 0 disables it. */
+  longCycleThreshold: number;
 }
 
 export interface DoneGuardConfig {
@@ -253,6 +259,8 @@ export interface RulesConfig {
   inlineFeedback: boolean;
   /** In headless runs, request one pre-stop continuation via `agent_before_settle` when end-of-run rules find violations. */
   autonomousGate: boolean;
+  /** Compile mechanical rules and file/language preconditions into deterministic System-0 checks before calling Jev (also runs offline when TypeSafe is off). */
+  system0: boolean;
   /** P(violation) at or above this names the rule to the agent. */
   threshold: number;
   /** A score from here up to the rule's cutoff becomes a soft "please double-check" steer; `0` turns the tier off. */
@@ -584,7 +592,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 17;
+export const CONFIG_SCHEMA = 18;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -619,12 +627,12 @@ export function defaultConfig(): WardenConfig {
       escalationThreshold: 0.85,
       floor: "evidence",
     },
-    stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true, repeatSteer: true, evidence: true, diffLimit: 3000, tailLimit: 1000, inlineFeedback: true },
+    stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true, repeatSteer: true, evidence: true, diffLimit: 3000, tailLimit: 1000, inlineFeedback: true, editRevert: true, fileThrashThreshold: 6, longCycleThreshold: 4 },
     done: { enabled: true, claimsDone: 0.7, nudge: true, autonomousGate: true, uiProof: true, uiFiles: [...DEFAULT_UI_FILES], visualTools: defaultVisualTools() },
     cause: { enabled: false, claimsCause: 0.7, nudge: true, windowDays: 7 },
     slop: { enabled: true, threshold: 0.7, prose: { enabled: false, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true, shareLinkParams: [] },
-    rules: { enabled: true, cadence: "turn", inlineFeedback: true, autonomousGate: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} },
+    rules: { enabled: true, cadence: "turn", inlineFeedback: true, autonomousGate: true, system0: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} },
     // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
     rulesAtTurnStart: { enabled: false, threshold: 0.3 },
     context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, duplicateNote: false, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 }, mask: { enabled: true, epochTurns: 8, keepRecentTurns: 6, minSweepBytes: 32768, minObsChars: 2000, images: true, supersededReads: true, resolvedChecks: true } },
@@ -981,6 +989,9 @@ function applyStuck(base: StuckGuardConfig, raw: unknown): StuckGuardConfig {
     diffLimit: positiveInteger(raw.diffLimit, base.diffLimit),
     tailLimit: positiveInteger(raw.tailLimit, base.tailLimit),
     inlineFeedback: boolean(raw.inlineFeedback, base.inlineFeedback),
+    editRevert: boolean(raw.editRevert, base.editRevert),
+    fileThrashThreshold: nonNegativeInteger(raw.fileThrashThreshold, base.fileThrashThreshold),
+    longCycleThreshold: nonNegativeInteger(raw.longCycleThreshold, base.longCycleThreshold),
   };
 }
 
@@ -1125,6 +1136,7 @@ function applyRules(base: RulesConfig, raw: unknown, source: "user" | "project",
     cadence: isOption(raw.cadence, RULES_CADENCES) ? raw.cadence : base.cadence,
     inlineFeedback: boolean(raw.inlineFeedback, base.inlineFeedback),
     autonomousGate: boolean(raw.autonomousGate, base.autonomousGate),
+    system0: boolean(raw.system0, base.system0),
     threshold: probability(raw.threshold, base.threshold),
     softThreshold: probability(raw.softThreshold, base.softThreshold),
     files: globList(raw.files, base.files),
@@ -1485,6 +1497,9 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "stuck.diffLimit": { kind: "low", check: "stuck-check", label: "diff limit" },
   "stuck.tailLimit": { kind: "low", check: "stuck-check", label: "tail limit" },
   "stuck.inlineFeedback": { kind: "off", check: "stuck-check", label: "inline feedback" },
+  "stuck.editRevert": { kind: "off", check: "stuck edit-revert check" },
+  "stuck.fileThrashThreshold": { kind: "high", check: "stuck file-thrash check", label: "edits before thrash" },
+  "stuck.longCycleThreshold": { kind: "high", check: "stuck long-cycle check", label: "failures before cycle" },
   "stuck.window": { kind: "none", why: "a cap on minFailures, which decides on its own" },
 
   "done.enabled": { kind: "off", check: "done-check" },
@@ -1515,6 +1530,7 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "rules.cadence": { kind: "none", why: "when in the turn rules are checked, not whether they apply" },
   "rules.inlineFeedback": { kind: "off", check: "rules-check", label: "inline feedback" },
   "rules.autonomousGate": { kind: "off", check: "rules-check", label: "autonomous gate" },
+  "rules.system0": { kind: "off", check: "rules System-0 check" },
   "rules.threshold": { kind: "high", check: "rules-check", label: "threshold" },
   "rules.softThreshold": { kind: "high", check: "rules-check", label: "soft threshold" },
   "rules.fallback": { kind: "off", check: "rules-check", label: "fallback" },

@@ -6,7 +6,7 @@ export type { Conversation, InspectOptions, ToolCallRef } from "./action-guard.j
 export { evaluateProse, buildProseRequest, proseQuestions, proseNudge, describeAudience, ProseTrend, PROSE_SYMPTOMS, PROSE_LABELS } from "./prose.js";
 export type { ProseSymptom, ProseVerdict, ProseOptions } from "./prose.js";
 export { AttemptWindow, makeAttempt, resultFailed, resultText, evaluateStuck, buildStuckRequest, stuckQuestions, stuckNudge, formatStuck } from "./stuck.js";
-export type { Attempt, AttemptChange, StuckJudgment, StuckVerdict, StuckOptions, StuckRequestOptions, StuckRequestState } from "./stuck.js";
+export type { Attempt, AttemptChange, EditPairHash, MakeAttemptOptions, PendingOscillation, StuckJudgment, StuckOscillation, StuckVerdict, StuckOptions, StuckRequestOptions, StuckRequestState } from "./stuck.js";
 export { parseFailure, failureSignature, normaliseFailureText, editPairs, lineDelta, editDiff, buildStuckEvidence, EVIDENCE_LIMIT } from "./evidence.js";
 export type { ParsedFailure, EditDiff, EvidenceRun, EvidenceEdit, EvidenceDigest, StuckEvidence } from "./evidence.js";
 export { classifyToolResult, recordOutcome, recordUi, isUiFile, isVisualCheck, emptyEvidence, freshChecks, needsDoneCheck, finalAssistantText, evaluateDone, buildDoneRequest, doneQuestions, doneNudge, formatDone } from "./done.js";
@@ -53,6 +53,8 @@ export { Trace, actionDetails, stuckDetails, doneDetails, causeDetails, proseDet
 export type { TraceEntry, GuardName } from "./trace.js";
 export { parseRules, condense, isRuleShaped, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, describeRuleSet, formatRuleSetDetails, describeTarget, buildRulesRequest, ruleQuestion, scoreRuleAnswers, evaluateRules, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, ruleCap, MAX_EDITS, EDIT_TEXT_LIMIT, EDIT_CONTEXT_LINES, AGGREGATE_QUESTION, LOCATOR_QUESTION, editRulesFor, turnRulesFor, evaluateRulesTarget, scoreAnswers } from "./rules.js";
 export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RuleAnswer, RuleScoring, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef, RulesTier, RulesSourceConfig, RuleWhen, RuleScoreEntry } from "./rules.js";
+export { compileRule, evaluateSystem0, extractAddedText } from "./rule-compiler.js";
+export type { CompiledRule, System0Evaluation, System0Kind, System0RuleResult } from "./rule-compiler.js";
 export { snapshotTree, diffSince, unjudgedFiles, evaluateTurnRules, evaluateTurnRun, buildTurnRequest, turnRuleQuestion, turnSteer, TURN_PATH, TURN_QUESTION_PREFIX } from "./turn-rules.js";
 export type { SnapshotResult, TurnDiff, TurnFileDiff, TurnRunOptions, TurnRunResult, TurnRulesOptions } from "./turn-rules.js";
 export { checkRules, formatRulesCheck, formatRuleCheck, checkReasons, buildRulesCheckRequest, ruleCheckView, judgeableQuestion, mechanicalQuestion, MECHANICAL_CUTOFF, CHECK_ABOUT, JUDGEABILITY_REASONS, JUDGEABLE_PREFIX, MECHANICAL_PREFIX } from "./rules-lint.js";

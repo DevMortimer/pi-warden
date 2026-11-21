@@ -375,8 +375,14 @@ export function actionTokens(verdict: Verdict, at = Date.now()): Tokens {
 }
 
 export function stuckTokens(verdict: StuckVerdict, at = Date.now()): Tokens {
+  const repeatFlag = verdict.oscillation === "revert" ? "edit revert"
+    : verdict.oscillation === "thrash" ? "file thrash"
+    : verdict.oscillation === "cycle" ? "failure cycle"
+    : verdict.successRepeat ? "successful repeat"
+    : verdict.churn ? "churn"
+    : "exact repeat";
   const flags = [
-    verdict.source === "repeat" && verdict.stuck ? (verdict.successRepeat ? "successful repeat" : verdict.churn ? "churn" : "exact repeat") : undefined,
+    verdict.source === "repeat" && verdict.stuck ? repeatFlag : undefined,
     verdict.source === "error" ? "typesafe error" : undefined,
   ].filter(Boolean).join(", ");
   return {
@@ -471,7 +477,7 @@ export function rulesTokens(verdict: RulesVerdict, at = Date.now()): Tokens {
     reasons: verdict.skippedReason ?? (verdict.findings.length ? verdict.findings.map(finding => finding.name).join("; ") : undefined),
     model: verdict.model,
     ms: verdict.elapsedMs === undefined ? undefined : String(verdict.elapsedMs),
-    flags: verdict.error ? "typesafe error" : undefined,
+    flags: verdict.error ? "typesafe error" : verdict.source === "code" ? "system-0" : undefined,
   };
 }
 

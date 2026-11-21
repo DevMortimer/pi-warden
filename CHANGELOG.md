@@ -8,6 +8,18 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 2.16.0
+
+### Added
+
+- Deterministic System-0 rule compiler and precondition router (`src/rule-compiler.ts`, `rules.system0`, default `true`) wired into `evaluateRulesTarget` and `evaluateTurnRun` (`source: "code"`). Supports explicit deterministic rule headers (`forbid:`, `forbid-token:`, `require-token:`, `extensions:`) plus built-in mechanical evaluators for tool/AI attribution lines, explicit parenthesized forbidden-term lists, empty/comment-only JS/TS `catch` and bare Python `except: pass` blocks, explicit `console.log`/`debugger`/`print` rules, and SQL migration / language preconditions — enforcing mechanical rules offline at zero cost when TypeSafe is off and stripping locally-settled rules from Jev requests when TypeSafe is on while preserving `"TypeSafe judgments are off"` skip semantics for purely semantic rule sets.
+- Deterministic trajectory oscillation monitoring in `AttemptWindow` / `evaluateStuck` (`stuck.editRevert`, `stuck.fileThrashThreshold`, `stuck.longCycleThreshold`, `StuckVerdict.oscillation`) detecting exact `A → B → A` file reverts, unverified single-file edit thrash (default `6` edits without a passing check), and long-horizon failure-signature cycles across `>12` calls (default `4` recurrences in a bounded 256-key session map, keeping bounded waits exempt) with tailored `stuckNudge` guidance and zero Jev requests.
+- Config schema `18` shape guarding (`CONFIG_SCHEMA`, `EXPECTED_SCHEMA`, `completeConfig()`, `guardCurrentSections()`, and `PROJECT_KEYS` loosening classifications) for `rules.system0`, `stuck.editRevert`, `stuck.fileThrashThreshold`, and `stuck.longCycleThreshold`.
+
+### Fixed
+
+- `turnSnapshot` fast-write race in `pi.on("tool_call")`: mutating `write`, `edit`, and non-read-only command calls now await an in-flight `snapshotTree(ctx.cwd)` before returning so fast turn-1 mutations land after `startTree` and are captured by end-of-run `diffSince`.
+
 ## 2.15.0
 
 ### Added

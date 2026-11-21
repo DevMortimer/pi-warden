@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { join, resolve as pathResolve, relative as pathRelative } from "node:path";
@@ -29,7 +30,7 @@ import { checkSkipReason, classifyToolResult, doneNudge, doneNoteLine, DONE_NOTE
 import type { DoneNote, RunEvidence } from "./done.js";
 import { causeNudge, causePreFilter, emptyCauseActivity, evaluateCause, formatCause, recordCauseActivity } from "./cause.js";
 import type { CauseActivity, CauseStore } from "./cause.js";
-import { CONFIG_HOLD_ID, configWriteTargets, createdScratch, describeAsked, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, largeOutputNotice, movedInTargets, offTaskSteer, pruneScratch, scratchCandidates, SCRATCH_PATHS_ENV, scratchPaths, scoreFreeReason, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
+import { CONFIG_HOLD_ID, configWriteTargets, createdScratch, describeAsked, evaluateAction, formatVerdictTokens, higher, inertPathRules, intentSteer, isReadOnlyCommand, largeOutputNotice, movedInTargets, offTaskSteer, pruneScratch, scratchCandidates, SCRATCH_PATHS_ENV, scratchPaths, scoreFreeReason, shouldProceedMessage, SLOP_LABELS, SteerRepeatWindow, steerReason, stripDataText, unknownExemptIds, wardenHostPaths, writeSinkTargets, isVisibleCommand } from "./guard.js";
 import type { Level, PatternHit, PreviousAction, ScratchIdentity, SlopSymptom, TaskMessage, Verdict } from "./guard.js";
 import { commandOf } from "./tools.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
@@ -348,12 +349,16 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
   const missing = [...result.missing];
   if (typeof config.rules !== "object" || config.rules === null || !Array.isArray(config.rules.exclude)) {
     if (!missing.includes("rules")) missing.push("rules");
-    config.rules = { enabled: false, cadence: "turn", inlineFeedback: true, autonomousGate: true, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} };
+    config.rules = { enabled: false, cadence: "turn", inlineFeedback: true, autonomousGate: true, system0: true, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} };
   }
   if (config.rules.cadence !== "turn" && config.rules.cadence !== "edit") config.rules = { ...config.rules, cadence: "turn" };
   if (typeof config.rules.inlineFeedback !== "boolean") config.rules = { ...config.rules, inlineFeedback: true };
   if (typeof config.rules.autonomousGate !== "boolean") config.rules = { ...config.rules, autonomousGate: true };
+  if (typeof config.rules.system0 !== "boolean") config.rules = { ...config.rules, system0: true };
   if (config.stuck && typeof config.stuck.inlineFeedback !== "boolean") config.stuck = { ...config.stuck, inlineFeedback: true };
+  if (config.stuck && typeof config.stuck.editRevert !== "boolean") config.stuck = { ...config.stuck, editRevert: true };
+  if (config.stuck && typeof config.stuck.fileThrashThreshold !== "number") config.stuck = { ...config.stuck, fileThrashThreshold: 6 };
+  if (config.stuck && typeof config.stuck.longCycleThreshold !== "number") config.stuck = { ...config.stuck, longCycleThreshold: 4 };
   if (config.done && typeof config.done.autonomousGate !== "boolean") config.done = { ...config.done, autonomousGate: true };
   if (config.context && typeof config.context.duplicateNote !== "boolean") config.context = { ...config.context, duplicateNote: false };
   if (config.context && (typeof config.context.mask !== "object" || config.context.mask === null)) {
@@ -625,6 +630,18 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let turnDeferredPaths = new Set<string>();
   // Inline tool_result feedback queued by tool_call (rules/slop/sensitive-path) and popped in tool_result.
   const pendingInlineNotes = new Map<string, { text: string; kinds: SteerKind[]; subject: SteerSubject }>();
+  // Pre-edit content hashes captured before `edit`/`write` runs so `AttemptWindow` detects A -> B -> A reverts on disk.
+  const preEditHashes = new Map<string, string>();
+  const MAX_REVERT_HASH_BYTES = 2 * 1024 * 1024;
+  const hashFileForRevert = (absPath: string): string | undefined => {
+    try {
+      const stat = statSync(absPath);
+      if (!stat.isFile() || stat.size > MAX_REVERT_HASH_BYTES) return undefined;
+      return createHash("sha1").update(readFileSync(absPath)).digest("hex");
+    } catch {
+      return undefined;
+    }
+  };
   // Pre-stop autonomous gate state: at most one continuation per prompt in headless runs.
   let autonomousGatedThisPrompt = false;
   let pendingAutonomousGate: { text: string; kinds: SteerKind[] } | undefined;
@@ -1402,6 +1419,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     autonomousGatedThisPrompt = false;
     pendingAutonomousGate = undefined;
     pendingInlineNotes.clear();
+    preEditHashes.clear();
     turnDeferredPaths = new Set();
     prose.reset();
     // Clean up temp output dirs from the previous session.
@@ -1904,6 +1922,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // no change.
     turnJudged = new Set();
     turnDeferredPaths = new Set();
+    preEditHashes.clear();
     pendingAutonomousGate = undefined;
     turnSnapshot = undefined;
     const turnConfig = configFor(ctx);
@@ -1918,6 +1937,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     actionGuard.turnEnd();
     rulesGuard.turnEnd();
     pendingInlineNotes.clear();
+    preEditHashes.clear();
     // ── Conscience: re-assess on unconsumed triggers ──
     const config = configFor(ctx);
     if (config.enabled && config.conscience.enabled && selectedCapability && needsReassessment && assessmentsThisPrompt < config.conscience.maxAssessments) {
@@ -1951,6 +1971,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     const config = configFor(ctx);
     if (!config.enabled) return;
+    const cmdView = commandOf(event.toolName, event.input as Record<string, unknown>);
+    const mutatesWorkingTree = event.toolName === "write" || event.toolName === "edit"
+      || (cmdView !== undefined && (!cmdView.shell || !isReadOnlyCommand(cmdView.command)));
+    if (config.stuck.enabled && config.stuck.editRevert && (event.toolName === "write" || event.toolName === "edit")) {
+      const rawPath = typeof (event.input as Record<string, unknown>).path === "string" ? (event.input as Record<string, unknown>).path as string : "";
+      if (rawPath.trim()) {
+        const preHash = hashFileForRevert(pathResolve(ctx.cwd, rawPath));
+        if (preHash) preEditHashes.set(event.toolCallId, preHash);
+      }
+    }
+    const callOutcome = await (async (): Promise<{ block: true; reason: string } | undefined> => {
     if (event.toolName === "bash" || event.toolName === "write") scratchPending.set(event.toolCallId, { started: Date.now(), candidates: scratchCandidates(event.toolName, event.input as Record<string, unknown>, ctx.cwd), moved: event.toolName === "bash" ? movedInTargets(event.toolName, event.input as Record<string, unknown>, ctx.cwd, sessionScratchPaths) : [] });
     // ── Conscience: track tool attempts on the selected capability ──
     if (config.conscience.enabled && selectedCapability && !triggerConsumed) {
@@ -2048,9 +2079,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // The quiet window silences the rules judge for the session that armed it; the action guard and its floor are untouched.
     const quietNow = quiet.active(sessionIdFor(ctx));
     const rulesLive = config.rules.enabled && perEditRules && !quietNow;
-    const rulesChecks: Array<{ check: Promise<RulesVerdict>; shellWrite?: ShellWrite }> = !rulesLive ? []
-      : event.toolName === "write" || event.toolName === "edit" ? [{ check: rulesGuard.inspect(call, siblings, rulesOptions) }]
-      : shellFiles.slice(0, SHELL_RULES_CHECKS).map((shellWrite, index) => ({ shellWrite, check: rulesGuard.inspect({ id: `${event.toolCallId}#write${index}`, tool: "write", input: { path: shellWrite.path, content: shellWrite.content } }, siblings, rulesOptions) }));
+    const rulesSystem0Live = config.rules.enabled && !perEditRules && config.rules.system0 && !quietNow;
+    const system0Options = { cwd: ctx.cwd, config: config.rules, judge: undefined, timeoutMs: config.timeoutMs, signal: ctx.signal };
+    const rulesChecks: Array<{ check: Promise<RulesVerdict>; shellWrite?: ShellWrite; findingsOnly?: boolean }> = rulesLive
+      ? (event.toolName === "write" || event.toolName === "edit"
+        ? [{ check: rulesGuard.inspect(call, siblings, rulesOptions) }]
+        : shellFiles.slice(0, SHELL_RULES_CHECKS).map((shellWrite, index) => ({ shellWrite, check: rulesGuard.inspect({ id: `${event.toolCallId}#write${index}`, tool: "write", input: { path: shellWrite.path, content: shellWrite.content } }, siblings, rulesOptions) })))
+      : rulesSystem0Live
+        ? (event.toolName === "write" || event.toolName === "edit"
+          ? [{ check: rulesGuard.inspect(call, [], system0Options), findingsOnly: true }]
+          : shellFiles.slice(0, SHELL_RULES_CHECKS).map((shellWrite, index) => ({ shellWrite, check: rulesGuard.inspect({ id: `${event.toolCallId}#write${index}`, tool: "write", input: { path: shellWrite.path, content: shellWrite.content } }, [], system0Options), findingsOnly: true })))
+        : [];
     for (const { check } of rulesChecks) check.catch(() => undefined);
     const verdict = await actionGuard.inspect(
       call,
@@ -2223,8 +2262,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
         return { guard: "action", kind: "slop", text: slopSteer(where, symptoms, slopCounts) };
       });
     }
-    for (const { check, shellWrite } of rulesChecks) {
+    for (const { check, shellWrite, findingsOnly } of rulesChecks) {
       const rules = await check;
+      if (findingsOnly && (rules.source !== "code" || !rules.findings.length)) continue;
       // The trace names the shell form, and an append as an append: only the appended text was judged.
       const shellNote = shellWrite ? [`from bash: ${shellWrite.via} ${shellWrite.append ? "appended to (only the appended text is judged)" : "written to"} ${rules.path}`] : [];
       const rulesLine = shellWrite ? renderTemplate(config.widget.rules, { ...rulesTokens(rules), tool: `bash ${shellWrite.append ? "append" : "write"}` }) : formatRules(rules, config.widget.rules);
@@ -2234,9 +2274,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
         // Only a shown notice uses up the once-per-session flag.
         const capNotice = config.notices && liveUi(ctx) ? rulesGuard.capNotice(rules) : undefined;
         if (capNotice) liveUi(ctx)?.notify(capNotice, "warning");
-        holds.recordRules({ source: rules.source, path: rules.path, findings: rules.findings.map(f => ({ name: f.name, violation: f.violation })), ...(rules.error ? { error: rules.error } : {}) });
+        holds.recordRules({ source: rules.source === "code" ? "pattern" : rules.source, path: rules.path, findings: rules.findings.map(f => ({ name: f.name, violation: f.violation })), ...(rules.error ? { error: rules.error } : {}) });
         // A later judgment below the threshold clears an earlier finding of the same rule on this path: one trace line, no steer.
-        if (rules.source === "typesafe") {
+        if (rules.source === "typesafe" || rules.source === "code") {
           for (const observation of rulesLog?.record(rules, config.rules.threshold, Date.now(), config.rules.softThreshold) ?? []) {
             if (observation.cleared) record(ctx, config, "rules", `rules: ${observation.name} now clear on ${rules.path}`, [`clear: a later ${rules.tool} on this path scored ${observation.violation.toFixed(2)}, below the ${config.rules.threshold} threshold`]);
           }
@@ -2393,6 +2433,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (config.notices) liveUi(ctx)?.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
     notifyDesktop(ctx, config, `Held ${event.toolName}: ${reasons}. The agent will re-plan or ask you in chat.`);
     return { block: true, reason: told ?? steerReason(deliveryVerdict, { canApprove: judge !== undefined }) };
+    })();
+    // Ensure `snapshotTree(ctx.cwd)` finishes hashing `startTree` before any fast mutating tool writes to disk.
+    if (!callOutcome && mutatesWorkingTree && turnSnapshot) await turnSnapshot;
+    return callOutcome;
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -2443,9 +2487,16 @@ export default function wardenExtension(host: ExtensionAPI): void {
       }
     }
     let quickRepeat: QuickRepeat | undefined;
+    const prevFileHash = preEditHashes.get(event.toolCallId);
+    preEditHashes.delete(event.toolCallId);
     const stuckCheck = (() => {
       if (!config.stuck.enabled) return undefined;
-      attempts.push(makeAttempt(event.toolName, event.input, event.content, failed));
+      let fileHash: string | undefined;
+      if (!failed && (event.toolName === "edit" || event.toolName === "write")) {
+        const rawPath = typeof (event.input as Record<string, unknown>).path === "string" ? (event.input as Record<string, unknown>).path as string : "";
+        if (rawPath.trim()) fileHash = hashFileForRevert(pathResolve(ctx.cwd, rawPath));
+      }
+      attempts.push(makeAttempt(event.toolName, event.input, event.content, failed, { cwd: ctx.cwd, ...(fileHash ? { fileHash } : {}), ...(prevFileHash ? { prevFileHash } : {}) }));
       if (config.stuck.nudge && config.stuck.repeatSteer) quickRepeat = attempts.quickRepeat();
       if (!attempts.shouldJudge(config.stuck)) return undefined;
       stats.stuckChecks++;
@@ -2730,7 +2781,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (config.done.enabled) {
       const outcome = classifyToolResult(event.toolName, event.input, failed, text, ctx.cwd);
       const call = recordDoneOutcome(evidence, outcome, event.input, event.toolName);
-      if (outcome === "check-pass" && call !== undefined) lastPassedCheck = { call, cwd: ctx.cwd };
+      if (outcome === "check-pass") {
+        attempts.notePassingCheck();
+        if (call !== undefined) lastPassedCheck = { call, cwd: ctx.cwd };
+      }
       // Each run that names a check runner but does not count gets one trace detail with the reason.
       const skip = checkSkipReason(event.toolName, event.input, failed, text, ctx.cwd);
       // Trace only: `record()` would put the line in the widget too, and the reasons name patterns, never commands.
@@ -3076,7 +3130,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           evaluateTarget: (target, tool, shownPath, opts) => rulesGuard.evaluateTarget(target, tool, shownPath, opts),
         });
         if (turnRun.skipped) {
-          record(ctx, config, "rules", `warden · rules · end-of-run pass skipped: ${turnRun.skipped}`, ["trigger: agent_end"]);
+          // Trace only: `record()` would overwrite an actionable live status line (e.g. `WARN action`) with a diagnostic skip.
+          trace.push({ at: Date.now(), guard: "rules", line: `warden · rules · end-of-run pass skipped: ${turnRun.skipped}`, details: ["trigger: agent_end"] });
         }
         // The git-brought filter failed or was cut at its probe limit: one line says so, even when no verdict follows.
         if (turnRun.notes.length) record(ctx, config, "rules", `warden · rules · ${turnRun.notes[0]}`, ["trigger: agent_end", ...turnRun.notes]);
@@ -3101,7 +3156,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           if (verdict.source !== "skipped") {
             stats.ruleChecks++;
             if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
-            if (verdict.source === "typesafe") {
+            if (verdict.source === "typesafe" || verdict.source === "code") {
               for (const observation of rulesLog?.record(verdict, config.rules.threshold, Date.now(), config.rules.softThreshold) ?? []) {
                 if (observation.cleared) record(ctx, config, "rules", `rules: ${observation.name} now clear on ${verdict.path}`, [`clear: a later judgment on this path scored ${observation.violation.toFixed(2)}, below the ${config.rules.threshold} threshold`]);
               }

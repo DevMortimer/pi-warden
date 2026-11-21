@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { LEVEL_COLOR, parseVerdictLine, pickSentenceTemplate, renderTemplate, SENTENCE_TEMPLATES } from "../src/widget.js";
+import { LEVEL_COLOR, parseVerdictLine, pickSentenceTemplate, renderTemplate, rulesTokens, SENTENCE_TEMPLATES, stuckTokens } from "../src/widget.js";
 import { widgetLines } from "../src/widget-render.js";
 import type { ThemeLike } from "../src/widget.js";
 
@@ -115,4 +115,29 @@ test("a deny verdict renders a chip, so a blocked call is visible in the status 
   assert.deepEqual(parseVerdictLine(denyLine.line, "action"), { status: "deny", body: ["bash", "never-reset"] }, "the deny chip is taken, not lost");
   const lines = widgetLines([denyLine], theme);
   assert.match(lines[0]!, /DENY/, "the deny verdict leads the status line as a chip");
+});
+
+test("rulesTokens formats source code verdicts and stuckTokens formats oscillation flags", () => {
+  const codeHit = rulesTokens({
+    source: "code",
+    tool: "write",
+    path: "src/app.ts",
+    sources: ["pi-warden.md"],
+    asked: 1,
+    aggregate: false,
+    scores: [{ id: "errors-are-not-swallowed", name: "Errors are not swallowed", outcome: "violation", violation: 1 }],
+    findings: [{ id: "errors-are-not-swallowed", name: "Errors are not swallowed", outcome: "violation", violation: 1, body: "No empty catch." }],
+    elapsedMs: 0,
+  });
+  assert.equal(codeHit.status, "violation");
+  assert.equal(codeHit.source, "code");
+  assert.equal(codeHit.flags, "system-0");
+  assert.equal(codeHit.asked, "1");
+
+  const revert = stuckTokens({ stuck: true, source: "repeat", failures: 0, reasons: ["reverted"], oscillation: "revert" });
+  const thrash = stuckTokens({ stuck: true, source: "repeat", failures: 0, reasons: ["thrash"], oscillation: "thrash" });
+  const cycle = stuckTokens({ stuck: true, source: "repeat", failures: 1, reasons: ["cycle"], oscillation: "cycle" });
+  assert.equal(revert.flags, "edit revert");
+  assert.equal(thrash.flags, "file thrash");
+  assert.equal(cycle.flags, "failure cycle");
 });
