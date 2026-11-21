@@ -33,7 +33,7 @@ const ENV_ASSIGN = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
 const SHELL_C = /^(?:bash|sh|zsh|dash|ksh|fish)\s+-[a-zA-Z]*c\s+(?:'([\s\S]*)'|"([\s\S]*)")\s*$/;
 
 /** The runner's own report that nothing ran: a run of zero tests proves nothing about the change. */
-const ZERO_TESTS = /Tests:\s+0 total\b|No tests found|\[no tests to run\]|running 0 tests\b|\u2139 tests 0\b|no tests ran/i;
+const ZERO_TESTS = /Tests:\s+0 total\b|No tests found|\[no tests to run\]|running 0 tests\b|\u2139 tests 0\b|no tests ran|\bDid 0 checks\./i;
 
 /**
  * Whether the summary reports zero tests with no sign of a real run: `cargo test` prints `running 0 tests` for the
@@ -41,7 +41,7 @@ const ZERO_TESTS = /Tests:\s+0 total\b|No tests found|\[no tests to run\]|runnin
  */
 function ranNoTests(output: string): boolean {
   if (!ZERO_TESTS.test(output.slice(-6000))) return false;
-  return !output.split("\n").some(line => /^\s*running [1-9]\d* tests?\b/.test(line) || (/^\s*ok\s/.test(line) && !line.includes("[no tests to run]")));
+  return !output.split("\n").some(line => /^\s*running [1-9]\d* tests?\b/.test(line) || /\bDid [1-9]\d* checks\./.test(line) || (/^\s*ok\s/.test(line) && !line.includes("[no tests to run]")));
 }
 
 /** Runners that print nothing when they pass, so an empty result behind a pass-through pipe is the whole report. */
@@ -325,6 +325,12 @@ function summaryFailure(tail: string, command: string): boolean {
   const deno = /\b(?:ok|FAILED)\s*\|[^\n]*?(\d+) passed\s*\|\s*(\d+) failed/.exec(tail);
   if (deno && Number(deno[2]) > 0) return true;
   if (/error: could not compile/m.test(tail)) return true;
+  // FiveAM (Common Lisp): `Did N checks.` followed by `Fail: M` with M > 0.
+  if (/\bDid \d+ checks\.[\s\S]{0,400}\bFail:\s*[1-9]\d*\b/.test(tail)) return true;
+  // Rove / Parachute (Common Lisp): `× N of M tests failed`.
+  if (/\u00d7\s+[1-9]\d*\s+of\s+\d+\s+tests?\s+failed\b/.test(tail)) return true;
+  // TAP / prove: `Failed N/M test programs.` or `Bail out!`.
+  if (/\bFailed\s+[1-9]\d*\/\d+\s+test programs?\./.test(tail) || /^\s*Bail out!/m.test(tail)) return true;
   return false;
 }
 
@@ -352,6 +358,12 @@ function summaryPass(tail: string, command: string): boolean {
   if (deno && Number(deno[2]) === 0) return true;
   // The `Finished` line proves a cargo build, check or clippy compiled; it never proves `cargo test` or a command without a runner.
   if (/^\s*Finished\b.*\btargets?\b.*\bin \d+(?:\.\d+)?s\b/m.test(tail) && commandPieces(command).some(piece => startsCargoBuild(piece.text))) return true;
+  // FiveAM (Common Lisp): non-zero checks with 100% pass and zero failures.
+  if (/\bDid [1-9]\d* checks\.[\s\S]{0,400}\bPass:\s*[1-9]\d*\s*\(\s*100%\s*\)[\s\S]{0,200}\bFail:\s*0\b/.test(tail)) return true;
+  // Rove / Parachute (Common Lisp): `✓ N tests completed` with N >= 1.
+  if (/\u2713\s+[1-9]\d*\s+tests?\s+completed\b/.test(tail)) return true;
+  // TAP / prove: `All tests successful.` followed by `Files=..., Tests=N` with N >= 1.
+  if (/\bAll tests successful\.[\s\S]{0,300}\bFiles=\d+,\s*Tests=[1-9]\d*\b/.test(tail)) return true;
   return false;
 }
 

@@ -366,6 +366,8 @@ export interface TurnRunOptions {
   start?: RunStart | undefined;
   /** Project-relative paths a `write`, `edit`, or literal shell write already judged during this run. */
   alreadyJudged: ReadonlySet<string>;
+  /** Optional memoized evaluator (e.g. `RulesGuard.evaluateTarget`); defaults to `evaluateRulesTarget`. */
+  evaluateTarget?: typeof evaluateRulesTarget | undefined;
 }
 
 export interface TurnRunResult {
@@ -411,7 +413,8 @@ export async function evaluateTurnRun(options: TurnRunOptions): Promise<TurnRunR
     }
     // The file's diff stands as the edit: the same question and scoring a `write` or `edit` of this file would get.
     const target = { tool: "edit" as const, path: file.path, edits: [{ id: "diff", newText: redact(clip(file.diff, config.maxChars)) }] };
-    verdicts.push(await evaluateRulesTarget(target, "edit", file.path, { cwd, config, set, judge, timeoutMs, ...(signal ? { signal } : {}) }));
+    const evaluate = options.evaluateTarget ?? evaluateRulesTarget;
+    verdicts.push(await evaluate(target, "edit", file.path, { cwd, config, set, judge, timeoutMs, ...(signal ? { signal } : {}) }));
   }
   return { verdicts, cuts: diff.cuts, notes: diff.notes, skips };
 }
@@ -419,8 +422,13 @@ export async function evaluateTurnRun(options: TurnRunOptions): Promise<TurnRunR
 // ---------------------------------------------------------------------------
 // What the agent is told: one steer for the whole run.
 
+export interface TurnSteerOptions {
+  /** Project-relative paths whose per-edit check was deferred to run end under `rules.cadence: "turn"`. */
+  deferredPaths?: ReadonlySet<string> | undefined;
+}
+
 /** Names each violated rule like the per-edit steer; one message covers the turn verdict and the missed files. */
-export function turnSteer(verdicts: readonly RulesVerdict[], counts: ReadonlyMap<string, number>): string | undefined {
+export function turnSteer(verdicts: readonly RulesVerdict[], counts: ReadonlyMap<string, number>, options?: TurnSteerOptions): string | undefined {
   const parts: string[] = [];
   let standing = false;
   for (const verdict of verdicts) {
@@ -432,7 +440,11 @@ export function turnSteer(verdicts: readonly RulesVerdict[], counts: ReadonlyMap
       const body = finding.body ? `: ${clip(finding.body.replace(/\s+/g, " ").trim(), STEER_BODY_LIMIT).replace(/[.;:,]+$/, "")}` : "";
       return `"${finding.name}" (${finding.violation.toFixed(2)}${repeat})${body}`;
     }).join("; ");
-    const where = verdict.tool === "turn" ? "the changes this run made" : `the change to ${verdict.path} (made by a command, not an edit)`;
+    const where = verdict.tool === "turn"
+      ? "the changes this run made"
+      : options?.deferredPaths?.has(verdict.path)
+        ? `the change to ${verdict.path}`
+        : `the change to ${verdict.path} (made by a command, not an edit)`;
     const what = `${verdict.tool === "turn" ? "violate" : "violates"} ${verdict.findings.length === 1 ? "a project rule" : "project rules"}`;
     parts.push(`${where} ${what}: ${named}`);
   }

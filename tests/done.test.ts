@@ -359,3 +359,32 @@ test("a passing check in an earlier turn still covers a change no later one touc
   done.recordOutcome(evidence, "check-pass", { command: "npm test" }, "bash");
   assert.equal(done.needsDoneCheck(evidence), false);
 });
+
+test("checkSummary and classifyToolResult recognize FiveAM, Rove, and TAP piped summaries", () => {
+  // FiveAM passing (single-line and multi-line)
+  assert.equal(done.checkSummary("Did 12 checks. Pass: 12 (100%) Fail: 0"), "pass");
+  assert.equal(done.checkSummary("Did 12 checks.\n   Pass: 12 (100%)\n   Skip: 0 ( 0%)\n   Fail: 0 ( 0%)\n"), "pass");
+  assert.equal(verdict("sbcl --non-interactive --eval '(fiveam:run!)' | tail -20", "Did 12 checks.\n   Pass: 12 (100%)\n   Fail: 0 ( 0%)\n"), "check-pass");
+  // FiveAM failing and zero checks
+  assert.equal(done.checkSummary("Did 12 checks.\n   Pass: 10 (83%)\n   Fail: 2 (16%)\n"), "fail");
+  assert.equal(verdict("sbcl --non-interactive --eval '(fiveam:run!)' | tail -20", "Did 12 checks. Pass: 10 (83%) Fail: 2"), "check-fail");
+  assert.equal(done.checkSummary("Did 0 checks."), undefined);
+  assert.equal(verdict("make test | tail -20", "Did 0 checks.\n"), "unknown");
+
+  // Rove / Parachute
+  assert.equal(done.checkSummary("\u2713 8 tests completed"), "pass");
+  assert.equal(verdict("rove tests.asd | tail -10", "\u2713 8 tests completed\n"), "check-pass");
+  assert.equal(done.checkSummary("\u00d7 2 of 8 tests failed"), "fail");
+  assert.equal(verdict("rove tests.asd | tail -10", "\u00d7 2 of 8 tests failed\n"), "check-fail");
+  assert.equal(done.checkSummary("\u2713 0 tests completed"), undefined);
+
+  // TAP / prove
+  assert.equal(done.checkSummary("All tests successful.\nFiles=3, Tests=19, 1 wallclock secs"), "pass");
+  assert.equal(verdict("prove -r t/ | tail -10", "All tests successful.\nFiles=3, Tests=19, 1 wallclock secs\n"), "check-pass");
+  assert.equal(done.checkSummary("Failed 1/3 test programs. 2/19 subtests failed."), "fail");
+  assert.equal(verdict("prove -r t/ | tail -10", "Failed 1/3 test programs.\n"), "check-fail");
+  assert.equal(done.checkSummary("Bail out! Database unavailable"), "fail");
+  assert.equal(verdict("prove -r t/ | tail -10", "Bail out! Database unavailable\n"), "check-fail");
+  // Hidden exit code without summary stays unknown.
+  assert.equal(verdict("make test | tail -20", "finished running\n"), "unknown");
+});

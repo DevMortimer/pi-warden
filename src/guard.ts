@@ -833,7 +833,7 @@ const cwdPath = (cwd: string | undefined): DirPath => (cwd === undefined ? { kin
 const unquoteWord = (word: string): string => word.replace(/^["']|["']$/g, "");
 
 /** Whether `child` is `parent` or lies under it. */
-function underPath(child: string, parent: string): boolean {
+export function underPath(child: string, parent: string): boolean {
   return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 }
 
@@ -1234,10 +1234,13 @@ function safeIndexDir(env: NodeJS.ProcessEnv, dirs?: HostDirs): string | undefin
 }
 
 /** Whether a target lies in a host path, after `..` and symlinks are resolved. An unresolvable target is not in one. */
-function inHostPath(target: string, roots: readonly string[]): boolean {
+export function inHostPath(target: string, roots: readonly string[]): boolean {
   if (!roots.length) return false;
   const real = realTarget(target);
-  return real !== undefined && roots.some(root => real === root || real.startsWith(root + sep));
+  return real !== undefined && roots.some(root => {
+    const canonical = realTarget(root) ?? root;
+    return real === canonical || real.startsWith(canonical + sep);
+  });
 }
 
 const FORBIDDEN_CREDENTIAL_DIRS = [".ssh", ".aws", ".gnupg"];
@@ -1246,7 +1249,7 @@ const FORBIDDEN_CONFIG_SUFFIXES = [
   join("pi-typesafe", "auth.json"),
 ];
 
-function resolveActionPath(target: string, cwd: string, home: string = homedir()): string {
+export function resolveActionPath(target: string, cwd: string, home: string = homedir()): string {
   if (target === "~") return home;
   if (target.startsWith("~/")) return resolve(home, target.slice(2));
   return resolve(cwd, target);
@@ -1312,7 +1315,7 @@ function isForbiddenEphemeralPath(targetPath: string, cwd: string | undefined, h
 }
 
 /** True only when `targetPath` lies strictly inside an ephemeral root subtree and passes forbid-before-allow checks. */
-function inEphemeralRoot(targetPath: string, roots: readonly string[], cwd: string | undefined): boolean {
+export function inEphemeralRoot(targetPath: string, roots: readonly string[], cwd: string | undefined): boolean {
   if (!roots.length) return false;
   if (isForbiddenEphemeralPath(targetPath, cwd)) return false;
   const real = realTarget(targetPath);
@@ -3510,9 +3513,12 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   };
 
   // Ask gate: a call that cannot change anything the agent sees is decided by the pattern pass and the floor alone.
+  // Deferred sensitive hits on read-only shell commands still skip Jev so applyFloor() populates their reasons offline,
+  // while non-deferred hits (e.g. write/edit on .env or user pathRules) still reach Jev.
   if (config.ask?.enabled !== false) {
-    const decision = actionAskGate(action.tool, action.input, shellText, action.cwd, scriptBodies);
-    if (!decision.ask && !bodyHit) {
+    const decision = actionAskGate(action.tool, action.input, shellText, action.cwd, scriptBodies, { ephemeralRoots: config.ephemeralRoots, hostPaths: options.hostPaths });
+    const nonDeferredPattern = activePatterns.some(hit => !deferredSensitiveHits.includes(hit));
+    if (!decision.ask && !bodyHit && !nonDeferredPattern && !hasOutsideProject && !(summary.location === "outside_project" && !inHost)) {
       applyFloor();
       return withPlan({ level, source: "pattern", summary, patterns, reasons, notAsked: decision.why });
     }

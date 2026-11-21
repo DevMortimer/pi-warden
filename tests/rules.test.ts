@@ -781,3 +781,54 @@ test("formatRuleSetDetails: dropped count is always visible", () => {
   };
   assert.match(formatRuleSetDetails(set, "root"), /\(1 rule, 7 dropped\)/);
 });
+
+test("RulesGuard: content and rule-set hash cache avoids repeat Jev requests across turns, invalidates on rule or threshold change, and never caches errors", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-rules-cache-"));
+  try {
+    const rulesPath = join(dir, "pi-warden.md");
+    await writeFile(rulesPath, "# No console statements\nCode must not contain `console.log`.\n");
+    const guard = new RulesGuard();
+    const judge = stubJudge({ "no-console-statements": 0.9 });
+    const config = rulesConfig();
+
+    const first = await guard.inspect({ id: "c1", tool: "write", input: { path: "src/a.ts", content: "console.log(1)\n" } }, [], { cwd: dir, config, judge, timeoutMs: 1000 });
+    assert.equal(first.source, "typesafe");
+    assert.equal(judge.requests.length, 1);
+
+    guard.turnEnd();
+    const cached = await guard.inspect({ id: "c2", tool: "write", input: { path: "src/a.ts", content: "console.log(1)\n" } }, [], { cwd: dir, config, judge, timeoutMs: 1000 });
+    assert.equal(cached.source, "typesafe");
+    assert.equal(cached.findings.length, 1);
+    assert.equal(judge.requests.length, 1, "identical content and rules hit the cache across turns");
+
+    // Threshold change invalidates the cache key.
+    await guard.inspect({ id: "c3", tool: "write", input: { path: "src/a.ts", content: "console.log(1)\n" } }, [], { cwd: dir, config: rulesConfig({ threshold: 0.95 }), judge, timeoutMs: 1000 });
+    assert.equal(judge.requests.length, 2, "threshold change misses the cache");
+
+    // Rule file change invalidates the cache key.
+    await writeFile(rulesPath, "# No console statements\nCode must never contain `console.log` or `console.debug`.\n");
+    await guard.inspect({ id: "c4", tool: "write", input: { path: "src/a.ts", content: "console.log(1)\n" } }, [], { cwd: dir, config, judge, timeoutMs: 1000 });
+    assert.equal(judge.requests.length, 3, "rule set change misses the cache");
+
+    // Reset clears the cache.
+    guard.reset();
+    await guard.inspect({ id: "c5", tool: "write", input: { path: "src/a.ts", content: "console.log(1)\n" } }, [], { cwd: dir, config, judge, timeoutMs: 1000 });
+    assert.equal(judge.requests.length, 4, "reset clears the cache");
+
+    // Error verdicts are never cached.
+    let errorCalls = 0;
+    const failingJudge: Judge = {
+      async evaluate() {
+        errorCalls++;
+        throw new Error("temporary judge error");
+      },
+    };
+    const err1 = await guard.inspect({ id: "e1", tool: "write", input: { path: "src/err.ts", content: "const x = 1;\n" } }, [], { cwd: dir, config, judge: failingJudge, timeoutMs: 1000 });
+    const err2 = await guard.inspect({ id: "e2", tool: "write", input: { path: "src/err.ts", content: "const x = 1;\n" } }, [], { cwd: dir, config, judge: failingJudge, timeoutMs: 1000 });
+    assert.equal(err1.source, "error");
+    assert.equal(err2.source, "error");
+    assert.equal(errorCalls, 2, "error verdicts are not cached");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

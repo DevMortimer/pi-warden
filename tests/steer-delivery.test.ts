@@ -70,12 +70,13 @@ async function runWithWarden(): Promise<{ requests: unknown[][]; trace: string; 
   }
 }
 
-test("with pi-warden loaded, no model request carries a pi-warden message and no notice starts a turn", async () => {
-  const { requests, trace, calls } = await runWithWarden();
+test("with pi-warden loaded, repeat feedback rides tool_result inline with no custom message and no extra turn", async () => {
+  const { requests, calls } = await runWithWarden();
   for (const messages of requests) {
     const ours = messages.filter(message => String((message as { customType?: unknown }).customType ?? "").startsWith("pi-warden-"));
     assert.deepEqual(ours, [], "no request the model saw carries a pi-warden custom message");
   }
-  assert.equal(calls, 3, "the notice starts no turn of its own");
-
+  const lastToolResult = (requests.at(-1) ?? []).filter(message => (message as { role?: string }).role === "toolResult").at(-1);
+  assert.match(JSON.stringify(lastToolResult ?? {}), /pi-warden: you already ran `\{\}`; it failed the same way: probe failed identically/, "repeat feedback rides tool_result inline");
+  assert.equal(calls, 3, "the inline notice starts no turn of its own");
 });

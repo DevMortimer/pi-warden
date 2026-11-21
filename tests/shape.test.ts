@@ -242,3 +242,22 @@ test("goal and history leave redacted; the raw task is bounded by the request pa
   assert.ok(!spine?.goal.includes("supersecretvalue1"));
   assert.equal(spine?.task, "go");
 });
+
+test("completeConfig fills Wave 2 cadence, inline feedback, autonomous gate, duplicateNote, and traceSample defaults", () => {
+  const partial = defaultConfig() as unknown as Record<string, Record<string, unknown>>;
+  delete partial.rules!.cadence;
+  delete partial.rules!.inlineFeedback;
+  delete partial.rules!.autonomousGate;
+  delete partial.stuck!.inlineFeedback;
+  delete partial.done!.autonomousGate;
+  delete partial.context!.duplicateNote;
+  delete partial.action!.traceSample;
+  const { config } = completeConfig(partial as never);
+  assert.equal(config.rules.cadence, "turn");
+  assert.equal(config.rules.inlineFeedback, true);
+  assert.equal(config.rules.autonomousGate, true);
+  assert.equal(config.stuck.inlineFeedback, true);
+  assert.equal(config.done.autonomousGate, true);
+  assert.equal(config.context.duplicateNote, false);
+  assert.equal(config.action.traceSample, 0);
+});

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -882,12 +883,67 @@ export interface RulesCallRef {
  * together with the action guard's), prejudges sibling writes so their requests overlap, and counts hits per rule so a repeat
  * becomes a standing rule.
  */
+/** Bounded session cache for identical target content and rule-set fingerprints. */
+const VERDICT_CACHE_MAX = 256;
+
+function rulesVerdictCacheKey(target: RulesTarget, set: RuleSet, config: RulesConfig): string {
+  const payload = JSON.stringify({
+    path: target.path,
+    tool: target.tool,
+    content: target.content,
+    edits: target.edits,
+    moreEdits: target.moreEdits,
+    set: {
+      sources: set.sources,
+      aggregate: set.aggregate,
+      rules: set.rules.map(rule => ({
+        id: rule.id,
+        name: rule.name,
+        body: rule.body,
+        paths: rule.paths,
+        threshold: rule.threshold,
+        severity: rule.severity,
+        when: rule.when,
+      })),
+    },
+    threshold: config.threshold,
+    softThreshold: config.softThreshold,
+    maxRequests: config.maxRequests,
+  });
+  return createHash("sha1").update(payload).digest("hex");
+}
+
 export class RulesGuard {
   readonly store = new RuleStore();
   private readonly prejudged = new Map<string, Prejudged>();
+  private readonly verdictCache = new Map<string, RulesVerdict>();
   private readonly counts = new Map<string, number>();
   private readonly noted = new Set<string>();
   private capNoted = false;
+
+  /** Evaluates a prepared target with session-scoped content + rule-set memoization; error verdicts are never cached. */
+  async evaluateTarget(target: RulesTarget | undefined, tool: string, shownPath: string, options: RulesOptions): Promise<RulesVerdict> {
+    const reason = skipReason(target, options.set, options.config);
+    if (reason || !target || !options.set || !options.judge) {
+      return evaluateRulesTarget(target, tool, shownPath, options);
+    }
+    const key = rulesVerdictCacheKey(target, options.set, options.config);
+    const cached = this.verdictCache.get(key);
+    if (cached) {
+      this.verdictCache.delete(key);
+      this.verdictCache.set(key, cached);
+      return { ...cached };
+    }
+    const verdict = await evaluateRulesTarget(target, tool, shownPath, options);
+    if (verdict.source === "typesafe") {
+      if (this.verdictCache.size >= VERDICT_CACHE_MAX) {
+        const oldest = this.verdictCache.keys().next().value;
+        if (oldest !== undefined) this.verdictCache.delete(oldest);
+      }
+      this.verdictCache.set(key, verdict);
+    }
+    return verdict;
+  }
 
   inspect(call: RulesCallRef, siblings: readonly RulesCallRef[], options: Omit<RulesOptions, "set">): Promise<RulesVerdict> {
     const set = this.store.load(options.cwd, options.config);
@@ -903,7 +959,10 @@ export class RulesGuard {
         }
       }
     }
-    const judgeCall = (tool: string, input: Record<string, unknown>) => evaluateRules(tool, input, { ...options, set });
+    const judgeCall = (tool: string, input: Record<string, unknown>) => {
+      const target = describeTarget(tool, input, options.cwd);
+      return this.evaluateTarget(target, tool, typeof input.path === "string" ? input.path : tool, { ...options, set });
+    };
     if (options.judge) {
       for (const sibling of siblings) {
         if (sibling.id === call.id || this.prejudged.has(sibling.id) || (sibling.tool !== "write" && sibling.tool !== "edit")) continue;
@@ -959,6 +1018,7 @@ export class RulesGuard {
 
   reset(): void {
     this.prejudged.clear();
+    this.verdictCache.clear();
     this.counts.clear();
     this.noted.clear();
     this.capNoted = false;

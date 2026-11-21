@@ -215,23 +215,26 @@ test("the shipped pi-warden holds a destructive bash call: the tool never runs a
   assert.match(seenAfterHold, /pi-warden held this bash call before it ran/, "the tool result the model reads carries the hold text");
 });
 
-test("the shipped pi-warden records an unverified done claim in the trace and keeps it out of the model's context", async () => {
+test("the shipped pi-warden records an unverified done claim in the trace and triggers one headless pre-stop gate", async () => {
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0, claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.95, outcome: "complete" };
   const record: Recorded = { bashRan: false, bashCommand: undefined, readCalls: 0, written: [] };
-  let seenAfterNudge = "";
+  let seenBeforeGate = "";
+  let seenAfterGate = "";
   const { session } = await runSession([
     faux.fauxAssistantMessage(faux.fauxToolCall("write", { path: "note.txt", content: "hello" })),
-    (context: { messages: unknown[] }) => { seenAfterNudge = JSON.stringify(context.messages); return faux.fauxAssistantMessage("Done."); },
+    (context: { messages: unknown[] }) => { seenBeforeGate = JSON.stringify(context.messages); return faux.fauxAssistantMessage("Done."); },
+    (context: { messages: unknown[] }) => { seenAfterGate = JSON.stringify(context.messages); return faux.fauxAssistantMessage("Noted, no tests exist."); },
   ], record);
   await session.prompt("add a note");
   assert.equal(record.written.length, 1, "the edit ran once");
   assert.ok(record.written[0]!.endsWith("note.txt"), "the edit ran");
-  assert.doesNotMatch(seenAfterNudge, /no test, build, or lint run/, "the done-check notice never enters the model's context");
+  assert.doesNotMatch(seenBeforeGate, /no test, build, or lint run/, "the done-check notice has not fired yet before Done.");
+  assert.match(seenAfterGate, /no test, build, or lint run/, "the headless autonomous gate runs one continuation turn");
   assert.match(await waitForTrace(session, /no test, build, or lint run/, "the done-check notice"), /warden · done-check/, "the trace file holds the notice");
-  assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "the session records no warden custom message");
+  assert.match(customMessages(session), /no test, build, or lint run/, "the session records the single pi-warden-gate custom message");
 });
 
-test("the shipped pi-warden records the repeat note in the trace after the same failing read twice", async () => {
+test("the shipped pi-warden delivers the repeat note inline on tool_result after the same failing read twice", async () => {
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0 };
   const record: Recorded = { bashRan: false, bashCommand: undefined, readCalls: 0, written: [] };
   let seenAfterRepeat = "";
@@ -242,7 +245,7 @@ test("the shipped pi-warden records the repeat note in the trace after the same 
   ], record);
   await session.prompt("read the missing file");
   assert.equal(record.readCalls, 2, "the same failing read ran twice");
-  assert.doesNotMatch(seenAfterRepeat, /you already ran/, "the repeat note never enters the model's context");
+  assert.match(seenAfterRepeat, /you already ran/, "the repeat note rides tool_result inline");
   assert.match(await waitForTrace(session, /you already ran/, "the repeat note"), /warden/, "the trace file holds the repeat notice");
   assert.doesNotMatch(customMessages(session), /you already ran/, "the session records no warden custom message");
 });
@@ -309,7 +312,7 @@ test("with the silent-half setting on, one arm records the arm and withholds the
       } else {
         assert.deepEqual(suppressed, [], "the live arm suppresses nothing");
         assert.match(await waitForTrace(session, /"guards: done"/, "the live arm's done-check notice"), /warden · done-check/, "the live arm reports the done-check notice on the trace");
-        assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "no arm puts the notice in a custom message");
+        assert.match(customMessages(session), /no test, build, or lint run/, "the live headless arm triggers one autonomous gate continuation");
       }
     }
   } finally {

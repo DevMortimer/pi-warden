@@ -47,15 +47,15 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     maxRequests: source.maxRequests ?? 500,
     notices: source.notices ?? false,
     action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, traceSample: 0, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1 }, intentMismatch: 1, visibleMismatch: 1, shouldProceed: { threshold: 0.6 }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], ephemeralRoots: [], escalationThreshold: 0.85, floor: "evidence" }),
-    stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000 }),
-    done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
+    stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000, inlineFeedback: true }),
+    done: section("done", { ...off, claimsDone: 1, nudge: false, autonomousGate: true, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     cause: section("cause", { ...off, claimsCause: 1, nudge: false, windowDays: 7 }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false, shareLinkParams: [] }),
-    rules: section("rules", { ...off, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} }),
+    rules: section("rules", { ...off, cadence: "turn", inlineFeedback: true, autonomousGate: true, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} }),
     // A missing section turns the turn-start reminder off: it is new, so nothing it says was expected.
     rulesAtTurnStart: section("rulesAtTurnStart", { ...off, threshold: 1 }),
-    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } }),
+    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, duplicateNote: false, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
     // A stale config module leaves the judge trusted: never pausing is today's behaviour, not a new failure mode.
@@ -102,6 +102,9 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   // The stuck evidence section was added inside the stuck section later than the section itself; an older config
   // module leaves it undefined, and the shipped default (on) applies.
   if (typeof config.stuck.evidence !== "boolean") config.stuck = { ...config.stuck, evidence: true };
+  if (typeof config.stuck.inlineFeedback !== "boolean") config.stuck = { ...config.stuck, inlineFeedback: true };
+  if (typeof config.done.autonomousGate !== "boolean") config.done = { ...config.done, autonomousGate: true };
+  if (typeof config.context.duplicateNote !== "boolean") config.context = { ...config.context, duplicateNote: false };
   // The large-output question was added inside the context section later than the section itself; an older config module leaves it undefined and the question is not asked.
   if (typeof config.context.largeOutput !== "object" || config.context.largeOutput === null) config.context = { ...config.context, largeOutput: { ...off, threshold: 1 } };
   // Run deduplication was added inside the context section later than the section itself; an older config module leaves it undefined and nothing is cut.
@@ -114,8 +117,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };
   // The ask gate was added inside the action section later than the section itself; an older config module leaves it undefined and the gate stays on.
   if (typeof config.action.ask !== "object" || config.action.ask === null || typeof config.action.ask.enabled !== "boolean") config.action = { ...config.action, ask: { enabled: true } };
-  // The trace-only sample was added inside the action section later than the section itself; an older config module leaves it undefined and one call in twenty is sampled.
-  if (typeof config.action.traceSample !== "number") config.action = { ...config.action, traceSample: 0.05 };
+  // The trace-only sample defaults to 0 (off); an older config module leaves it undefined and keeps sampling off.
+  if (typeof config.action.traceSample !== "number") config.action = { ...config.action, traceSample: 0 };
   // The allowed-call retention was added inside the learning section later than the section itself; an older config module leaves it undefined and the 90-day default applies.
   if (typeof config.learning.allowedRetentionDays !== "number") config.learning = { ...config.learning, allowedRetentionDays: 90 };
   if (typeof config.action.intentMismatch !== "number") config.action = { ...config.action, intentMismatch: 0.9 };
@@ -128,6 +131,9 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   }
   if (typeof config.action.escalationThreshold !== "number") config.action = { ...config.action, escalationThreshold: 0.85 };
   if (config.action.floor !== "level" && config.action.floor !== "evidence") config.action = { ...config.action, floor: "evidence" };
+  if (config.rules.cadence !== "turn" && config.rules.cadence !== "edit") config.rules = { ...config.rules, cadence: "turn" };
+  if (typeof config.rules.inlineFeedback !== "boolean") config.rules = { ...config.rules, inlineFeedback: true };
+  if (typeof config.rules.autonomousGate !== "boolean") config.rules = { ...config.rules, autonomousGate: true };
   // The soft rules tier was added inside the rules section later than the section itself; an older config module leaves it undefined and the tier stays off.
   if (typeof config.rules.softThreshold !== "number") config.rules = { ...config.rules, softThreshold: 0 };
   // The request limit was added inside the rules section later too; an older config module gets the one request it always sent.

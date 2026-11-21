@@ -34,7 +34,17 @@ test("defaults: guards on, steer mode, TypeSafe consent off, nudges on", () => {
   assert.equal(config.stuck.nudge, true);
   assert.equal(config.done.nudge, true);
   assert.equal(config.slop.enabled, true);
-  assert.equal(config.slop.prose.enabled, true);
+  assert.equal(config.slop.prose.enabled, false);
+  assert.equal(config.action.traceSample, 0);
+  assert.equal(config.rules.cadence, "turn");
+  assert.equal(config.rules.inlineFeedback, true);
+  assert.equal(config.rules.autonomousGate, true);
+  assert.equal(config.rulesAtTurnStart.enabled, false);
+  assert.equal(config.stuck.inlineFeedback, true);
+  assert.equal(config.done.autonomousGate, true);
+  assert.equal(config.cause.enabled, false);
+  assert.equal(config.context.duplicateNote, false);
+  assert.equal(config.context.dedupeRuns, true);
   assert.equal(config.notices, false, "per-call warning notices are hidden from the transcript by default");
   assert.equal(config.timeoutMs, config.action.timeoutMs);
 });
@@ -684,7 +694,7 @@ test("a session reads its project file once: a later edit waits for the next ses
 });
 
 test("loosenedChecks names every check a project file takes away, and nothing when it takes none", () => {
-  const user = defaultConfig();
+  const user = applyUserOverrides(defaultConfig(), { cause: { enabled: true } });
   const layered = (raw: unknown) => applyProjectOverrides(user, raw);
   assert.deepEqual(loosenedChecks(user, layered({})), [], "an empty project file loosens nothing");
   assert.deepEqual(loosenedChecks(user, layered({ done: { enabled: true } })), [], "a stricter value loosens nothing");
@@ -750,16 +760,22 @@ test("the notice names every real loosening: switches, thresholds, lists and vis
   const of = (raw: unknown) => loosenedChecks(user, applyProjectOverrides(user, raw));
   const named = (raw: unknown) => of(raw).map(check => check.name);
   for (const [raw, name] of [
-    [{ slop: { prose: { enabled: false } } }, "slop-check"],
+    [{ slop: { enabled: false } }, "slop-check"],
     [{ rules: { fallback: false } }, "rules-check"],
+    [{ rules: { inlineFeedback: false } }, "rules-check"],
+    [{ rules: { autonomousGate: false } }, "rules-check"],
     [{ rules: { maxChars: 500 } }, "rules-check"],
     [{ stuck: { minFailures: 9 } }, "stuck-check"],
+    [{ stuck: { inlineFeedback: false } }, "stuck-check"],
     [{ waste: { enabled: false } }, "waste note"],
     [{ context: { largeOutput: { enabled: false } } }, "large-output notice"],
     [{ cause: { windowDays: 1 } }, "cause-check"],
     [{ done: { claimsDone: 0.95 } }, "done-check"],
     [{ done: { uiProof: false } }, "done-check"],
+    [{ done: { autonomousGate: false } }, "done-check"],
   ] as const) assert.ok(named(raw).includes(name), JSON.stringify(raw));
+  const proseOn = applyUserOverrides(user, { slop: { prose: { enabled: true } } });
+  assert.ok(loosenedChecks(proseOn, applyProjectOverrides(proseOn, { slop: { prose: { enabled: false } } })).some(check => check.name === "slop-check"), "prose off loosens slop-check when user turned prose on");
   // A project file can switch notifications off only from an on user value.
   const notifyOn = applyUserOverrides(user, { notify: { enabled: true } });
   assert.ok(loosenedChecks(notifyOn, applyProjectOverrides(notifyOn, { notify: { enabled: false } })).some(check => check.name === "notify"), "notify");

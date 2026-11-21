@@ -475,3 +475,21 @@ test("diffSince: with the HEAD reflog off the commit-date rule decides and the n
     assert.match(diff!.notes[0]!, /^git-brought filter used the commit-date rule because the HEAD reflog is off or cannot be read/);
   } finally { await s.cleanup(); }
 });
+
+test("turnSteer: deferred write/edit paths omit the command-only suffix while unseen command changes keep it", () => {
+  const verdict = {
+    source: "typesafe" as const,
+    tool: "edit" as const,
+    path: "src/a.ts",
+    sources: ["pi-warden.md"],
+    asked: 1,
+    aggregate: false,
+    findings: [{ id: "no-console", name: "No console statements", body: "Use logger.", outcome: "violation" as const, violation: 0.92 }],
+  };
+  const counts = new Map([["no-console", 1]]);
+  const unseen = turnSteer([verdict], counts);
+  assert.match(unseen ?? "", /the change to src\/a\.ts \(made by a command, not an edit\) violates a project rule/);
+  const deferred = turnSteer([verdict], counts, { deferredPaths: new Set(["src/a.ts"]) } as never);
+  assert.match(deferred ?? "", /the change to src\/a\.ts violates a project rule/);
+  assert.doesNotMatch(deferred ?? "", /\(made by a command, not an edit\)/);
+});

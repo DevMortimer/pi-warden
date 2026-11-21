@@ -16,6 +16,7 @@
  */
 import { commandOf } from "./tools.js";
 import { scriptSources, type ScriptSource } from "./script-bodies.js";
+import { inEphemeralRoot, inHostPath, realTarget, resolveActionPath, resolveEphemeralRoots, underPath } from "./guard.js";
 
 export interface AskDecision {
   /** True when the call goes to Jev; false when the offline pass decides it alone. */
@@ -24,8 +25,12 @@ export interface AskDecision {
   why: string;
 }
 
-/** Tools that always reach Jev: what a write or an edit leaves on disk is what every question is about. */
-const ALWAYS_ASK = new Set(["write", "edit"]);
+export interface ActionAskGateOptions {
+  /** User-configured disposable scratch roots (`action.ephemeralRoots`). */
+  ephemeralRoots?: readonly string[] | undefined;
+  /** Host-declared allowed output roots (`PI_WARDEN_HOST_PATHS`). */
+  hostPaths?: readonly string[] | undefined;
+}
 
 /** Heads that change version control or remote state, publish, deploy, or drive infrastructure. */
 const EXTERNAL_HEADS = new Set([
@@ -181,6 +186,17 @@ function gitAsks(segment: string): boolean {
     if (sub === "reflog" && /\s(?:delete|expire)\b/.test(segment)) return true;
     return false;
   }
+  // Reversible local index/fetch/branch-creation plumbing skips Jev; remote pushes, commits, resets, and worktree discards still ask.
+  if (sub === "add") return false;
+  if (sub === "rm") return !/\s--cached\b/.test(segment);
+  if (sub === "fetch") return /\s--(?:prune|force)\b|\s-(?!-)[a-zA-Z]*[pf]|\s\+[^\s]+/.test(segment);
+  if (sub === "switch") return /\s--(?:force|force-create|discard-changes)\b|\s-(?!-)[a-zA-Z]*[fC]/.test(segment);
+  if (sub === "checkout") return !/\s-b\s+\S+/.test(segment) || /\s--force\b|\s-(?!-)[a-zA-Z]*[Bf]|(?:^|\s)--(?:\s|$)/.test(segment);
+  if (sub === "restore") {
+    const staged = /\s--staged\b|\s-(?!-)[a-zA-Z]*S/.test(segment);
+    const worktree = /\s--worktree\b|\s-(?!-)[a-zA-Z]*W/.test(segment);
+    return !staged || worktree;
+  }
   return true;
 }
 
@@ -238,8 +254,18 @@ function ghAsks(sub: string | undefined, segment: string): boolean {
  * Whether this call needs a Jev request, and the short reason when it does not.
  * `text` is the command with data text blanked (`stripDataText`), so a commit message that mentions a push is not a push.
  */
-export function actionAskGate(tool: string, input: Record<string, unknown>, text: string | undefined, cwd?: string, scripts?: readonly ScriptSource[]): AskDecision {
-  if (ALWAYS_ASK.has(tool)) return { ask: true, why: tool };
+export function actionAskGate(tool: string, input: Record<string, unknown>, text: string | undefined, cwd?: string, scripts?: readonly ScriptSource[], options?: ActionAskGateOptions): AskDecision {
+  if (tool === "write" || tool === "edit") {
+    if (cwd === undefined || typeof input.path !== "string" || !input.path.trim()) return { ask: true, why: tool };
+    const absolute = resolveActionPath(input.path, cwd);
+    const real = realTarget(absolute);
+    const realCwd = realTarget(cwd);
+    const insideProject = real !== undefined && realCwd !== undefined && real !== realCwd && underPath(real, realCwd);
+    const inHost = inHostPath(absolute, options?.hostPaths ?? []);
+    const inEphemeral = inEphemeralRoot(absolute, resolveEphemeralRoots(options?.ephemeralRoots), cwd);
+    if (insideProject || inHost || inEphemeral) return { ask: false, why: "reversible project or scratch edit" };
+    return { ask: true, why: "outside-project write or edit" };
+  }
   const view = commandOf(tool, input);
   const command = view?.command ?? text;
   if (command === undefined) {
@@ -274,6 +300,8 @@ function gateText(scanned: string, raw: string = scanned): AskDecision {
     if (anySegmentWith(text, ["git"], segment => gitAsks(segment))) return { ask: true, why: "git history or remote write" };
     for (const rule of ANYWHERE) {
       if (!rule.test.test(text)) continue;
+      // `git rm --cached` already cleared `gitAsks`; avoid matching its `rm` subcommand as a standalone filesystem delete.
+      if (rule.why === "deletes, moves, or overwrites" && !rule.test.test(text.replace(/\bgit(?:\s+(?:-[Cc]\s+\S+|-\S+))*\s+rm\b/g, "git_rm"))) continue;
       // The pattern only proves a `gh`-shaped word; the subcommand decides, as it does at the head of a segment.
       if (rule.why === "gh write" && !anySegmentWith(text, ["gh", "glab"], (segment, head) => ghAsks(subcommandOf(segment, head), segment))) continue;
       // A read-only sibling of a risky head does not ask: `helm list`, `docker ps`, `npm view`.
