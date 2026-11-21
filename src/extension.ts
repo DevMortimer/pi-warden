@@ -98,9 +98,10 @@ import type { SuppressedKind, TrialArm, TrialDeliveryKind, TrialRecord } from ".
 import type { PrefItem, PrefsScan } from "./prefs.js";
 import { formatWake, newReports, reportLabel, triageReport, WakePolicy } from "./subagent.js";
 import type { PanelController, PanelUi } from "./panel.js";
-import { actionDetails, causeDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails, Trace } from "./trace.js";
+import { Trace, actionDetails, causeDetails, doneDetails, proseDetails, rulesDetails, runawayDetails, stuckDetails } from "./trace.js";
 import type { GuardName, TraceEntry } from "./trace.js";
 import { TraceFile, judgmentsState, traceDir, traceFilePath } from "./trace-file.js";
+import { formatTaintStatus, TaintMonitor } from "./taint.js";
 import { actionTokens, DEFAULT_TEMPLATES, LEVEL_COLOR, pickSentenceTemplate, proseTokens, renderTemplate, rulesTokens, SENTENCE_TEMPLATES, TOKEN_NAMES } from "./widget.js";
 import { statusWidget } from "./widget-render.js";
 import { createSupervisionHandler } from "./supervision-handler.js";
@@ -379,6 +380,17 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
   if (typeof config.widget.subagent !== "string") config.widget = { ...config.widget, subagent: DEFAULT_TEMPLATES.subagent };
   // The trial section is new and off by default: a stale shape module hands the config over without it, and no delivery changes.
   if (typeof config.trial !== "object" || config.trial === null || typeof config.trial.silentHalf !== "boolean") config.trial = { silentHalf: false };
+  // A stale shape module lacks the taint section: default it off until Pi restarts on matching modules.
+  if (typeof config.taint !== "object" || config.taint === null || typeof config.taint.enabled !== "boolean") {
+    if (!missing.includes("taint")) missing.push("taint");
+    config.taint = { enabled: false, holdTrifecta: false, holdSecretEgress: false, holdInjectionEgress: false, jevDeclassify: false, warnUntrustedHttpWrite: false, allowHosts: [] };
+  }
+  if (typeof config.taint.holdTrifecta !== "boolean") config.taint = { ...config.taint, holdTrifecta: false };
+  if (typeof config.taint.holdSecretEgress !== "boolean") config.taint = { ...config.taint, holdSecretEgress: false };
+  if (typeof config.taint.holdInjectionEgress !== "boolean") config.taint = { ...config.taint, holdInjectionEgress: false };
+  if (typeof config.taint.jevDeclassify !== "boolean") config.taint = { ...config.taint, jevDeclassify: false };
+  if (typeof config.taint.warnUntrustedHttpWrite !== "boolean") config.taint = { ...config.taint, warnUntrustedHttpWrite: false };
+  if (!Array.isArray(config.taint.allowHosts)) config.taint = { ...config.taint, allowHosts: [] };
   return { config, missing };
 }
 
@@ -704,6 +716,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
   const epochMasker = new EpochMasker();
+  const taintMonitor = new TaintMonitor();
   /** The turn-start rules reminder's requests, rules named, and latency, for /warden status. */
   const curator = new CuratorLedger();
   /** Relevance compactions this session, for /warden status. */
@@ -1360,6 +1373,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     actionGuard.reset();
     rulesGuard.reset();
     holds.reset();
+    taintMonitor.reset();
     regretCandidates = [];
     const sessionId = typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid);
     activeSessionId = sessionId;
@@ -1628,6 +1642,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
     doneNoted = false;
     causeNudged = false;
     if (typeof (event as { prompt?: unknown }).prompt === "string") autonomousGatedThisPrompt = false;
+    const rawUserPrompt = (event as { prompt?: unknown }).prompt;
+    // Only genuine operator prompts advance the APPA ruling turn; command-injected runs never authorize tainted sinks.
+    if (typeof rawUserPrompt === "string" && rawUserPrompt.trim() && !(injectedRun && rawUserPrompt === injectedRun.prompt)) {
+      taintMonitor.noteUserPrompt(rawUserPrompt);
+    }
     finals.reset();
     runaway.reset();
     runawayStops = 0;
@@ -2008,7 +2027,19 @@ export default function wardenExtension(host: ExtensionAPI): void {
         record(ctx, config, "context", renderTemplate(config.widget.context, { tool: event.toolName, retention: `full output recalled (${kind})` }), [`the agent went back to ${recalled} (${kind === "full" ? "whole-file read" : "scoped access"})`, formatLedger(ledger.snapshot())]);
       }
     }
-    if (!config.action.enabled || !config.action.tools.includes(event.toolName)) return;
+    const taintCheck = config.taint.enabled
+      ? taintMonitor.checkSink({
+          tool: event.toolName,
+          input: event.input as Record<string, unknown>,
+          cwd: ctx.cwd,
+          config: config.taint,
+          ephemeralRoots: config.action.ephemeralRoots,
+          hostPaths: sessionHostPaths,
+          exemptRules: config.action.exemptRules,
+        })
+      : undefined;
+    const taintActive = taintCheck !== undefined && (taintCheck.decision === "hold" || taintCheck.decision === "warn");
+    if ((!config.action.enabled || !config.action.tools.includes(event.toolName)) && !taintActive) return;
     stats.inspected++;
     // First-run warning: no project rules file resolved, one time per session.
     if (!warnedMissingRules && config.rules.enabled) {
@@ -2091,12 +2122,71 @@ export default function wardenExtension(host: ExtensionAPI): void {
           : shellFiles.slice(0, SHELL_RULES_CHECKS).map((shellWrite, index) => ({ shellWrite, check: rulesGuard.inspect({ id: `${event.toolCallId}#write${index}`, tool: "write", input: { path: shellWrite.path, content: shellWrite.content } }, [], system0Options), findingsOnly: true })))
         : [];
     for (const { check } of rulesChecks) check.catch(() => undefined);
+    const taintCanDeclassify = taintCheck?.decision === "hold"
+      && taintCheck.id === "taint-lethal-trifecta"
+      && taintCheck.jevDeclassifiable === true
+      && config.taint.jevDeclassify
+      && config.action.enabled
+      && judge !== undefined;
+    // Deterministic taint holds skip spending an Action Jev call unless Jev semantic declassification is eligible.
+    const actionJudge = taintCheck?.decision === "hold" && !taintCanDeclassify ? undefined : judge;
+    const actionConfig = taintCanDeclassify
+      ? {
+          ...config.action,
+          tools: config.action.tools.includes(event.toolName) ? config.action.tools : [...config.action.tools, event.toolName],
+          ask: { enabled: false },
+        }
+      : config.action;
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx, isVisibleAction(event.toolName, event.input as Record<string, unknown>)), spine: taskSpine(ctx.sessionManager.getBranch()), asked: askedBeforeReply(ctx) },
-      { config: config.action, cwd: ctx.cwd, judge, signal: ctx.signal, slop: { ...config.slop, enabled: config.slop.enabled && !quietNow }, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch, scratchPaths: sessionScratchPaths, movedIn: sessionMovedIn.size ? [...sessionMovedIn] : undefined, hostPaths: sessionHostPaths },
+      { config: actionConfig, cwd: ctx.cwd, judge: actionJudge, signal: ctx.signal, slop: { ...config.slop, enabled: config.slop.enabled && !quietNow }, security: config.security, largeOutput: config.context.largeOutput, rules: config.rules, previousActions: regretCandidates.length ? regretCandidates : undefined, scratch: sessionScratch, scratchPaths: sessionScratchPaths, movedIn: sessionMovedIn.size ? [...sessionMovedIn] : undefined, hostPaths: sessionHostPaths },
     );
-    if (verdict.source === "skipped") return;
+    if (verdict.source === "skipped" && !taintActive) return;
+    if (taintCheck && taintActive) {
+      if (taintCheck.decision === "hold") {
+        const hasHardPattern = verdict.patterns.some(hit => hit.severity === "destructive" || hit.severity === "deny");
+        const jevConfidence = verdict.judgment ? 1 - verdict.judgment.irreversible : 0;
+        const declassified = taintCanDeclassify
+          && verdict.source === "typesafe"
+          && verdict.level === "allow"
+          && !verdict.intentMismatch
+          && !verdict.offTaskSteer
+          && !hasHardPattern
+          && jevConfidence >= 0.85 - 1e-9;
+        if (declassified) {
+          verdict.patterns.push({
+            id: taintCheck.id!,
+            severity: "risky",
+            label: `${taintCheck.label ?? taintCheck.id} (declassified by Jev)`,
+          });
+          verdict.level = higher(verdict.level, "warn");
+          verdict.reasons.push(`${taintCheck.id}: declassified by Jev (${jevConfidence.toFixed(2)} confidence)`);
+          taintMonitor.noteDeclassified();
+        } else {
+          verdict.patterns.push({
+            id: taintCheck.id!,
+            severity: "destructive",
+            action: "hold",
+            label: taintCheck.label ?? taintCheck.id!,
+          });
+          verdict.level = higher(verdict.level, "confirm");
+          verdict.reasons.push(taintCheck.reason!);
+          if (verdict.source === "read-only" || verdict.source === "skipped") verdict.source = "pattern";
+          taintMonitor.noteHeld();
+        }
+      } else if (taintCheck.decision === "warn") {
+        verdict.patterns.push({
+          id: taintCheck.id!,
+          severity: "risky",
+          label: taintCheck.label ?? taintCheck.id!,
+        });
+        verdict.level = higher(verdict.level, "warn");
+        verdict.reasons.push(taintCheck.reason!);
+        if (verdict.source === "read-only" || verdict.source === "skipped") verdict.source = "pattern";
+        taintMonitor.noteWarned();
+      }
+    }
     // Arming check: if any armed rule's command regex matches this call, inject a hit into the verdict.
     // The hit is deterministic — it fires regardless of Jev. But to avoid spending a judge request on a call whose
     // outcome is already decided by the armed hit, the armed check runs before the action guard when armed rules
@@ -2532,6 +2622,25 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
     if (ctx.signal?.aborted) return;
     if (output.error) noteError(ctx, output.error, output.errorCode);
+    if (config.taint.enabled) {
+      const observation = taintMonitor.observeResult({
+        tool: event.toolName,
+        input: event.input as Record<string, unknown>,
+        cwd: ctx.cwd,
+        failed,
+        outputText: rawTexts.join("\n"),
+        outputSecret: output.secret,
+        outputSuspicious: output.suspicious,
+        allowHosts: config.taint.allowHosts,
+      });
+      if (observation.injectionArmed) {
+        record(ctx, config, "security", `taint · prompt injection armed (${event.toolName})`, [
+          `source: ${observation.injectionSource ?? event.toolName}`,
+          ...(observation.injectionPattern ? [`pattern: ${observation.injectionPattern}`] : []),
+          "egress sinks will be held until the user explicitly confirms",
+        ]);
+      }
+    }
     let content = maskedContent;
     // A credential-shaped value the agent has already been warned about this session is traced, not announced again.
     // Per value, not per set: masking one value or a changed subset must not re-announce the rest.
@@ -3379,7 +3488,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const auth = config.backendRefusal !== undefined || backend === undefined ? undefined : describeAuth(authState({ backend }));
           const source = consentSource(config);
           const usage = client?.getUsage();
-          const guards = [config.action.enabled && "action", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.cause.enabled && "cause-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.rules.enabled && "rules", config.context.enabled && "context", config.runaway.enabled && "runaway", config.subagent.enabled && "subagent triage", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
+          const guards = [config.action.enabled && "action", config.taint.enabled && "taint", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.cause.enabled && "cause-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.rules.enabled && "rules", config.context.enabled && "context", config.runaway.enabled && "runaway", config.subagent.enabled && "subagent triage", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
           const ls = await holdStats(ctx.cwd, dirs);
           const lifetimeLine = ls.labeled === 0
             ? `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, not yet measurable (${ls.allowed} allowed).`
@@ -3401,6 +3510,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
             lifetimeLine,
             `Rules: ${config.rules.enabled ? `${rulesGuard.describe(ctx.cwd, config.rules)}${Object.keys(config.rules.sensitivePaths).length ? `; ${Object.keys(config.rules.sensitivePaths).length} sensitive path${Object.keys(config.rules.sensitivePaths).length === 1 ? "" : "s"}` : ""}` : "off"}.`,
             ...(config.action.armingRules.length > 0 ? [`Arming: ${arming.statusLine() || "no rules armed"}.`] : []),
+            ...(config.taint.enabled && taintMonitor.hasActivity() ? [formatTaintStatus(taintMonitor.snapshot())] : []),
             ...(quiet.statusLine(sessionIdFor(ctx)) ? [`Quiet: ${quiet.statusLine(sessionIdFor(ctx))}.`] : []),
             `Desktop notifications: ${config.notify.enabled ? `on (${config.notify.command.length ? `command ${config.notify.command[0]}` : (await (notifier ??= detectNotifier())) ?? "no notifier found on this machine"}; cooldown ${config.notify.cooldownMs} ms)` : "off (\"notify\": { \"enabled\": true } in the config turns them on)"}.`,
             `Config: ${userConfigPath(dirs)}${ctx.isProjectTrusted() ? ` and ${projectConfigPath(ctx.cwd, dirs)}` : ""}.`,

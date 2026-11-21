@@ -533,6 +533,24 @@ export interface ConscienceConfig {
 }
 
 
+export interface TaintConfig {
+  /** Master switch for the APPA source-to-sink taint firewall (user file only). */
+  enabled: boolean;
+  /** Hold Lethal Trifecta flows (untrusted + secret -> outbound/mutation sink) (user file only). */
+  holdTrifecta: boolean;
+  /** Hold direct secret egress (secret -> http-exfil, pkg-publish, or external-write) (user file only). */
+  holdSecretEgress: boolean;
+  /** Hold prompt-injection egress (suspicious untrusted output -> any egress sink) (user file only). */
+  holdInjectionEgress: boolean;
+  /** Allow Jev to downgrade routine developer collaboration sinks (git-push, gh-mutate, mcp-write) under taint-lethal-trifecta when confident clean >= 0.85 (user file only). Never applies to prompt-injection or direct secret/HTTP egress. */
+  jevDeclassify: boolean;
+  /** Warn (never hold) when untrusted-only external input reaches an external HTTP write sink. */
+  warnUntrustedHttpWrite: boolean;
+  /** Trusted hostnames or `.domain` suffixes exempted from untrusted/exfil checks alongside loopback hosts (user file only). */
+  allowHosts: string[];
+}
+
+
 export interface WardenConfig {
   /** Master switch. false disables every guard, including offline pattern checks. */
   enabled: boolean;
@@ -586,13 +604,15 @@ export interface WardenConfig {
   waste: WasteConfig;
   /** Relevance compaction in place of Pi's compaction summary. Off by default. */
   compaction: CompactionConfig;
+  /** APPA recoverable source-to-sink taint firewall. */
+  taint: TaintConfig;
   /** Config values that were not applied as written, one message each; shown once per session and in `/warden status`. */
   warnings: string[];
 }
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 18;
+export const CONFIG_SCHEMA = 19;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -665,6 +685,15 @@ export function defaultConfig(): WardenConfig {
     waste: { enabled: true, tip: false, every: 20, sleep: true, paging: true, search: true, recheck: true },
     // pi-claude-bridge compacts its own models and cancels on failure; its summary must not be replaced.
     compaction: { enabled: false, keepThreshold: 0.5, maxSummaryTokens: 20000, timeoutMs: 20000, maxRequests: 12, skipProviders: ["claude-bridge"] },
+    taint: {
+      enabled: true,
+      holdTrifecta: true,
+      holdSecretEgress: true,
+      holdInjectionEgress: true,
+      jevDeclassify: true,
+      warnUntrustedHttpWrite: true,
+      allowHosts: [],
+    },
     warnings: [],
   };
 }
@@ -1182,9 +1211,49 @@ function applyShared(base: WardenConfig, raw: Json): Pick<WardenConfig, "timeout
   };
 }
 
-function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "cause" | "slop" | "security" | "rules" | "rulesAtTurnStart" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction"> {
+function parseAllowHosts(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const normalized = item.trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+/** Security-critical taint enforcement keys and allowHosts are user-file only so cloned repos cannot disable exfiltration holds. */
+function applyTaint(base: TaintConfig, raw: unknown, source: "user" | "project", warnings: string[]): TaintConfig {
+  if (!isObject(raw)) return base;
+  const project = source === "project";
+  const userBool = (key: string, value: unknown, fallback: boolean): boolean => {
+    if (!project) return boolean(value, fallback);
+    if (value !== undefined) warnings.push(`project file: taint.${key} is ignored; only the user file may change taint enforcement`);
+    return fallback;
+  };
+  const allowHosts = (() => {
+    if (!project) return parseAllowHosts(raw.allowHosts, base.allowHosts);
+    if (raw.allowHosts !== undefined) warnings.push("project file: taint.allowHosts is ignored; only the user file may allowlist taint egress hosts");
+    return base.allowHosts;
+  })();
+  return {
+    enabled: userBool("enabled", raw.enabled, base.enabled),
+    holdTrifecta: userBool("holdTrifecta", raw.holdTrifecta, base.holdTrifecta),
+    holdSecretEgress: userBool("holdSecretEgress", raw.holdSecretEgress, base.holdSecretEgress),
+    holdInjectionEgress: userBool("holdInjectionEgress", raw.holdInjectionEgress, base.holdInjectionEgress),
+    jevDeclassify: userBool("jevDeclassify", raw.jevDeclassify, base.jevDeclassify),
+    warnUntrustedHttpWrite: boolean(raw.warnUntrustedHttpWrite, base.warnUntrustedHttpWrite),
+    allowHosts,
+  };
+}
+
+function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "user" | "project", warnings: string[]): Pick<WardenConfig, "action" | "stuck" | "done" | "cause" | "slop" | "security" | "rules" | "rulesAtTurnStart" | "context" | "runaway" | "notify" | "judge" | "subagent" | "waste" | "compaction" | "taint"> {
   return {
     compaction: applyCompaction(base.compaction, raw.compaction, source),
+    taint: applyTaint(base.taint, raw.taint, source, warnings),
     waste: applyWaste(base.waste, raw.waste),
     rules: applyRules(base.rules, raw.rules, source, warnings),
     rulesAtTurnStart: applyRulesAtTurnStart(base.rulesAtTurnStart, raw.rulesAtTurnStart, source, warnings),
@@ -1631,6 +1700,14 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "compaction.timeoutMs": { kind: "none", why: "the compaction deadline" },
   "compaction.maxRequests": { kind: "none", why: "the compaction budget" },
   "compaction.skipProviders": { kind: "none", why: "which providers keep their own summary" },
+
+  "taint.enabled": { kind: "none", why: "user file only: a project must not disable taint enforcement" },
+  "taint.holdTrifecta": { kind: "none", why: "user file only: a project must not disable lethal-trifecta holds" },
+  "taint.holdSecretEgress": { kind: "none", why: "user file only: a project must not disable secret-egress holds" },
+  "taint.holdInjectionEgress": { kind: "none", why: "user file only: a project must not disable prompt-injection egress holds" },
+  "taint.jevDeclassify": { kind: "none", why: "user file only: a project must not change Jev declassification policy" },
+  "taint.warnUntrustedHttpWrite": { kind: "off", check: "taint untrusted HTTP write warning" },
+  "taint.allowHosts": { kind: "none", why: "user file only: a project must not allowlist external exfiltration hosts" },
 
   "prefs.enabled": { kind: "none", why: "standing preferences are context, not a check" },
   "prefs.inject": { kind: "none", why: "standing preferences are context, not a check" },

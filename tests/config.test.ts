@@ -798,7 +798,7 @@ test("every key a project file can set is classified as loosening a check or not
   };
   walk(defaultConfig(), "");
   // The top-level keys applyProjectOverrides can replace, or set for a project.
-  const projectSections = new Set(["enabled", "action", "stuck", "done", "cause", "slop", "security", "rules", "rulesAtTurnStart", "context", "runaway", "notify", "judge", "subagent", "waste", "compaction", "prefs"]);
+  const projectSections = new Set(["enabled", "action", "stuck", "done", "cause", "slop", "security", "rules", "rulesAtTurnStart", "context", "runaway", "notify", "judge", "subagent", "waste", "compaction", "taint", "prefs"]);
   const unclassified = leaves.filter(path => projectSections.has(path.split(".")[0]!) && table![path] === undefined);
   assert.deepEqual(unclassified, []);
   const stale = Object.keys(table!).filter(path => !leaves.includes(path));
@@ -948,5 +948,52 @@ test("Wave 4 defaults: rules.system0 and stuck oscillation keys, zero disable ov
   assert.deepEqual(
     loosenedChecks(defaults, projectLoosened).map(check => check.name).sort(),
     ["rules System-0 check", "stuck edit-revert check", "stuck file-thrash check", "stuck long-cycle check"],
+  );
+});
+
+test("taint defaults, user overrides, project tamper resistance, and warnUntrustedHttpWrite loosening", () => {
+  const defaults = defaultConfig();
+  assert.deepEqual(defaults.taint, {
+    enabled: true,
+    holdTrifecta: true,
+    holdSecretEgress: true,
+    holdInjectionEgress: true,
+    jevDeclassify: true,
+    warnUntrustedHttpWrite: true,
+    allowHosts: [],
+  });
+
+  const user = applyUserOverrides(defaults, {
+    taint: {
+      jevDeclassify: false,
+      allowHosts: ["API.Trusted.Internal", ".corp.example", "api.trusted.internal", ""],
+    },
+  });
+  assert.equal(user.taint.jevDeclassify, false);
+  assert.deepEqual(user.taint.allowHosts, ["api.trusted.internal", ".corp.example"]);
+
+  const projectTamper = applyProjectOverrides(defaults, {
+    taint: {
+      enabled: false,
+      holdTrifecta: false,
+      holdSecretEgress: false,
+      holdInjectionEgress: false,
+      jevDeclassify: false,
+      allowHosts: ["evil.example"],
+      warnUntrustedHttpWrite: false,
+    },
+  });
+  assert.equal(projectTamper.taint.enabled, true, "project config cannot disable taint.enabled");
+  assert.equal(projectTamper.taint.holdTrifecta, true, "project config cannot disable taint.holdTrifecta");
+  assert.equal(projectTamper.taint.holdSecretEgress, true, "project config cannot disable taint.holdSecretEgress");
+  assert.equal(projectTamper.taint.holdInjectionEgress, true, "project config cannot disable taint.holdInjectionEgress");
+  assert.equal(projectTamper.taint.jevDeclassify, true, "project config cannot modify taint.jevDeclassify");
+  assert.deepEqual(projectTamper.taint.allowHosts, [], "project config cannot set taint.allowHosts");
+  assert.equal(projectTamper.taint.warnUntrustedHttpWrite, false, "project config may disable untrusted HTTP write warnings");
+  assert.ok(projectTamper.warnings.some(w => w.includes("taint.enabled")));
+  assert.ok(projectTamper.warnings.some(w => w.includes("taint.allowHosts")));
+  assert.deepEqual(
+    loosenedChecks(defaults, projectTamper).map(check => check.name),
+    ["taint untrusted HTTP write warning"],
   );
 });
