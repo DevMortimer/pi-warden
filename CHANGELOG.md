@@ -8,6 +8,13 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 2.17.1
+
+### Changed
+
+- Updated `pi-typesafe` dependency from `^0.14.0` to `^0.15.1`, removing `ERESOLVE` peer-dependency warnings on Pi 1.x installs and adopting per-backend `auth-state.json` isolation, degraded-key callout re-arming, and explicit auth, budget, error, and batch state machines.
+- Updated `eval/jev-stop.mjs` to read `pi-typesafe` 0.15+ per-backend `auth-state.json` records (selecting the newest failure across `backends` and preferring `backends.typesafe` on timestamp ties or unparseable timestamps), while keeping legacy top-level `lastFailure` fallback.
+
 ## 2.17.0
 
 ### Added

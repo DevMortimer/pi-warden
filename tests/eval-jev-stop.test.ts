@@ -194,3 +194,79 @@ test("jevFailure without run times keeps the old behavior for a failed request",
     assert.match(jevFailure(d) ?? "", /1 Jev request\(s\) failed/);
   } finally { rmSync(d.root, { recursive: true, force: true }); }
 });
+
+/** A run dir whose auth-state.json uses an arbitrary persisted payload (e.g. pi-typesafe 0.15+ per-backend map). */
+function sampledAuthStateRun(ledger: Record<string, number>, authState: object, trace: object[]) {
+  const d = runDirs(ledger, trace);
+  writeFileSync(join(d.agentDir, "pi-typesafe", "auth-state.json"), JSON.stringify(authState));
+  return d;
+}
+
+test("per-backend auth-state.json (pi-typesafe 0.15+) recognizes a cancelled trace sample under backends.typesafe", () => {
+  const d = sampledAuthStateRun(
+    T12,
+    { version: 1, backends: { typesafe: { lastFailure: aborted } } },
+    [SESSION, ...answered(2), jevEntry(false, 0), jevEntry(true, 22_000)],
+  );
+  assert.deepEqual(check(d), CANCELLED);
+});
+
+test("per-backend auth-state.json selects the newest lastFailure across multiple backends", () => {
+  const olderTimeout = { code: "timeout", message: "OpenRouter timed out", at: "2026-10-01T10:05:00.000Z" };
+  const newerAbortedOnSubq = sampledAuthStateRun(
+    T12,
+    { version: 1, backends: { openrouter: { lastFailure: olderTimeout }, subq: { lastFailure: aborted } } },
+    [SESSION, ...answered(2), jevEntry(false, 0)],
+  );
+  assert.deepEqual(check(newerAbortedOnSubq), CANCELLED);
+
+  const newerTimeoutOnSubq = sampledAuthStateRun(
+    T12,
+    {
+      version: 1,
+      backends: {
+        typesafe: { lastFailure: aborted },
+        subq: { lastFailure: { code: "timeout", message: "SubQ timed out", at: new Date(FAILED_AT + 5_000).toISOString() } },
+      },
+    },
+    [SESSION, ...answered(2), jevEntry(false, 0)],
+  );
+  assert.deepEqual(check(newerTimeoutOnSubq), STOPPED);
+
+  // On a timestamp tie, prefer backends.typesafe regardless of key order.
+  const tied = sampledAuthStateRun(
+    T12,
+    {
+      version: 1,
+      backends: {
+        subq: { lastFailure: { code: "timeout", message: "SubQ timed out", at: aborted.at } },
+        typesafe: { lastFailure: aborted },
+      },
+    },
+    [SESSION, ...answered(2), jevEntry(false, 0)],
+  );
+  assert.deepEqual(check(tied), CANCELLED);
+
+  // An unparseable timestamp on another backend never shadows a valid timestamp.
+  const badDate = sampledAuthStateRun(
+    T12,
+    {
+      version: 1,
+      backends: {
+        openrouter: { lastFailure: { code: "timeout", message: "bad clock", at: "not-a-timestamp" } },
+        subq: { lastFailure: aborted },
+      },
+    },
+    [SESSION, ...answered(2), jevEntry(false, 0)],
+  );
+  assert.deepEqual(check(badDate), CANCELLED);
+});
+
+test("auth-state.json falls back to top-level lastFailure when backends has none", () => {
+  const d = sampledAuthStateRun(
+    T12,
+    { version: 1, backends: { typesafe: { verifiedAt: "2026-10-01T10:01:00.000Z" } }, lastFailure: aborted },
+    [SESSION, ...answered(2), jevEntry(false, 0)],
+  );
+  assert.deepEqual(check(d), CANCELLED);
+});
