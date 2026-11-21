@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 2.14.0
+
 ### Added
 
 - User-only `action.ephemeralRoots` config (default `["~/scratch", "/tmp"]`) so writes inside disposable scratch subtrees skip outside-project holds and recursive `rm` on those subtrees warns instead of holding, with forbid-before-allow containment blocking roots, `$HOME`, `cwd`, credential directories, and warden/typesafe config files.
