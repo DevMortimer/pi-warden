@@ -79,6 +79,7 @@ import { openConfigPanel, openTracePanel } from "./panel.js";
 import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatFilterLedger, formatLedger } from "./saver.js";
+import { EpochMasker } from "./mask.js";
 import { buildCuratorRequest, curatedRuleList, curatedRules, CURATOR_TIMEOUT_MS, CuratorLedger, formatCuratedRules, formatCurator, ruleScores } from "./curator.js";
 import { SeenText, collapseRuns, savedResultIn, seenItems } from "./dedupe.js";
 import { buildCompactSnapshot, compactAppendix, recallText } from "./compact.js";
@@ -355,6 +356,10 @@ export function guardCurrentSections(result: ShapeResult): ShapeResult {
   if (config.stuck && typeof config.stuck.inlineFeedback !== "boolean") config.stuck = { ...config.stuck, inlineFeedback: true };
   if (config.done && typeof config.done.autonomousGate !== "boolean") config.done = { ...config.done, autonomousGate: true };
   if (config.context && typeof config.context.duplicateNote !== "boolean") config.context = { ...config.context, duplicateNote: false };
+  if (config.context && (typeof config.context.mask !== "object" || config.context.mask === null)) {
+    if (!missing.includes("context.mask")) missing.push("context.mask");
+    config.context = { ...config.context, mask: { enabled: false, epochTurns: 8, keepRecentTurns: 6, minSweepBytes: 32768, minObsChars: 2000, images: false, supersededReads: false, resolvedChecks: false } };
+  }
   if (typeof config.widget !== "object" || config.widget === null) {
     if (!missing.includes("widget")) missing.push("widget");
     config.widget = { ...defaultConfig().widget, enabled: false };
@@ -681,6 +686,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
   const prose = new ProseTrend();
   const slopCounts: Record<SlopSymptom, number> = { stub: 0, comments: 0, dead: 0, hedging: 0 };
   const ledger = new ContextLedger();
+  const epochMasker = new EpochMasker();
   /** The turn-start rules reminder's requests, rules named, and latency, for /warden status. */
   const curator = new CuratorLedger();
   /** Relevance compactions this session, for /warden status. */
@@ -1403,6 +1409,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       try { await rm(dir, { recursive: true, force: true }); } catch (err) { console.warn("pi-warden: temp cleanup failed:", err); }
     }
     ledger.reset();
+    epochMasker.reset();
     curator.reset();
     compactions.runs = 0; compactions.replaced = 0; compactions.fallbacks = {}; compactions.last = undefined;
     seenText.clear();
@@ -2766,6 +2773,38 @@ export default function wardenExtension(host: ExtensionAPI): void {
       if (applied.attached) watchSteer(ctx, config, ["stuck"], { call: { name: event.toolName, input: event.input as Record<string, unknown> } });
     }
     return withWaste(inlinePatch);
+  });
+
+  // Cache-aware epoch masking: transforms in-memory model context at discrete epoch boundaries without mutating session entries on disk.
+  pi.on("context", async (event, ctx) => {
+    const config = configFor(ctx);
+    if (!config.enabled || !config.context.enabled || !config.context.mask.enabled) return undefined;
+    if (!Array.isArray(event.messages) || event.messages.length === 0) return undefined;
+    const result = epochMasker.apply(event.messages, {
+      config: config.context.mask,
+      cwd: ctx.cwd,
+      silentTrial: summary => trialHolds("context-compression", "context", summary),
+    });
+    if (result.swept) {
+      const { items, images, reads, checks, newBytesSaved, totalTurns, totalFrozen } = result.stats;
+      ledger.maskSweep({ items, images, reads, checks, bytesSaved: newBytesSaved });
+      const parts: string[] = [];
+      if (images > 0) parts.push(`${images} image${images === 1 ? "" : "s"}`);
+      if (reads > 0) parts.push(`${reads} read${reads === 1 ? "" : "s"}`);
+      if (checks > 0) parts.push(`${checks} check${checks === 1 ? "" : "s"}`);
+      const detail = parts.length ? `${items} masked (${parts.join(", ")})` : `${items} masked`;
+      savingEntry = record(
+        ctx,
+        config,
+        "context",
+        renderTemplate(config.widget.context, { tool: "epoch-mask", retention: `${detail}, saved ${newBytesSaved} bytes` }),
+        [
+          `epoch mask sweep at turn ${totalTurns}: ${detail}, ${(newBytesSaved / 1024).toFixed(1)} KB reclaimed (${totalFrozen} frozen in prefix)`,
+          formatLedger(ledger.snapshot()),
+        ],
+      );
+    }
+    return result.changed ? { messages: result.messages } : undefined;
   });
 
   // Opt-in: a relayed report that pastes earlier turns again keeps only its new part. Pi persists the replaced message.

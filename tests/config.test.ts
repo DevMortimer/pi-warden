@@ -871,3 +871,50 @@ test("action.ephemeralRoots defaults to ~/scratch and /tmp, is user-file only, a
   const completed = completeConfig(stale as never);
   assert.deepEqual(completed.config.action.ephemeralRoots, [], "stale config without ephemeralRoots falls back to []");
 });
+
+test("context.mask defaults, non-negative zero overrides, and PROJECT_KEYS loosening classification", () => {
+  const defaults = defaultConfig();
+  assert.deepEqual(defaults.context.mask, {
+    enabled: true,
+    epochTurns: 8,
+    keepRecentTurns: 6,
+    minSweepBytes: 32768,
+    minObsChars: 2000,
+    images: true,
+    supersededReads: true,
+    resolvedChecks: true,
+  });
+
+  const user = applyUserOverrides(defaults, {
+    context: {
+      mask: {
+        enabled: true,
+        epochTurns: 4,
+        keepRecentTurns: 0,
+        minSweepBytes: 0,
+        minObsChars: 1000,
+        images: false,
+        supersededReads: true,
+        resolvedChecks: false,
+      },
+    },
+  });
+  assert.equal(user.context.mask.epochTurns, 4);
+  assert.equal(user.context.mask.keepRecentTurns, 0, "0 is valid for keepRecentTurns");
+  assert.equal(user.context.mask.minSweepBytes, 0, "0 is valid for minSweepBytes");
+  assert.equal(user.context.mask.minObsChars, 1000);
+  assert.equal(user.context.mask.images, false);
+  assert.equal(user.context.mask.resolvedChecks, false);
+
+  const invalid = applyUserOverrides(defaults, {
+    context: { mask: { epochTurns: 0, keepRecentTurns: -1, minSweepBytes: -5, minObsChars: 0 } },
+  });
+  assert.deepEqual(invalid.context.mask, defaults.context.mask, "invalid numbers fall back to defaults");
+
+  const projectOff = applyProjectOverrides(defaults, { context: { mask: { enabled: false } } });
+  assert.equal(projectOff.context.mask.enabled, false);
+  assert.deepEqual(loosenedChecks(defaults, projectOff).map(check => check.name), ["context epoch mask"]);
+
+  const projectTuned = applyProjectOverrides(defaults, { context: { mask: { epochTurns: 12, keepRecentTurns: 10, minSweepBytes: 65536 } } });
+  assert.deepEqual(loosenedChecks(defaults, projectTuned), [], "tuning parameters are not flagged as loosened checks");
+});

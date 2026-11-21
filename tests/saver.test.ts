@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ContextLedger, formatFilterLedger, formatLedger } from "../src/saver.js";
 
-const noSplit = { excerpt: { count: 0, recalls: 0, recallsFull: 0 }, filter: { count: 0, recalls: 0, recallsFull: 0, keptChars: 0, requests: 0, ms: 0, fallbacks: {} } };
+const noSplit = { excerpt: { count: 0, recalls: 0, recallsFull: 0 }, filter: { count: 0, recalls: 0, recallsFull: 0, keptChars: 0, requests: 0, ms: 0, fallbacks: {} }, masked: { items: 0, images: 0, reads: 0, checks: 0, sweeps: 0, bytesSaved: 0 } };
 
 test("the ledger counts candidates, compressions, token-turns, and first recalls only", () => {
   const ledger = new ContextLedger();
@@ -102,4 +102,20 @@ test("filtered and excerpt outputs are counted apart: count, recalls by kind, ke
   assert.equal(formatFilterLedger(snapshot), "Context filter (beta): 1 filtered (5200 characters kept), 1 recalled (100%; 0 whole-file, 1 scoped); 2 excerpts, 1 recalled (50%; 1 whole-file, 0 scoped); 3 requests, 4850 ms; fallbacks: timeout 1, no_consent 1.");
   ledger.reset();
   assert.deepEqual(ledger.snapshot().filter.fallbacks, {});
+});
+
+test("epoch mask sweeps accrue bytesSaved, tokenTurnsSaved, and formatLedger reporting", () => {
+  const ledger = new ContextLedger();
+  ledger.maskSweep({ items: 3, images: 1, reads: 1, checks: 1, bytesSaved: 40_000 });
+  ledger.turnEnd();
+  ledger.turnEnd();
+  const snapshot = ledger.snapshot();
+  assert.deepEqual(snapshot.masked, { items: 3, images: 1, reads: 1, checks: 1, sweeps: 1, bytesSaved: 40_000 });
+  assert.equal(snapshot.bytesSaved, 40_000);
+  assert.equal(snapshot.tokenTurnsSaved, 20_000);
+  const line = formatLedger(snapshot);
+  assert.equal(line.includes("no tool output large enough"), false);
+  assert.match(line, /3 masked \(1 image, 1 read, 1 check\)/);
+  ledger.reset();
+  assert.deepEqual(ledger.snapshot().masked, { items: 0, images: 0, reads: 0, checks: 0, sweeps: 0, bytesSaved: 0 });
 });

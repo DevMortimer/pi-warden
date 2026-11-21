@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 16;
+export const EXPECTED_SCHEMA = 17;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -17,6 +17,7 @@ const off = { enabled: false };
 // Duplicated from defaultConfig(): this file must work when the config module is stale and lacks the key.
 const coreTools = () => ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const proseOff = () => ({ ...off, audience: "technical", threshold: 1, trend: 3, minChars: 1 });
+const maskOff = () => ({ ...off, epochTurns: 8, keepRecentTurns: 6, minSweepBytes: 32768, minObsChars: 2000, images: false, supersededReads: false, resolvedChecks: false });
 // A stale config module hands back either its own resolution or a raw value; both end up resolved here.
 const resolveSetting = (source: Partial<WardenConfig>) => source.backendRefusal !== undefined
   ? { typesafeBackend: source.typesafeBackend, backendRefusal: source.backendRefusal }
@@ -55,7 +56,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     rules: section("rules", { ...off, cadence: "turn", inlineFeedback: true, autonomousGate: true, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} }),
     // A missing section turns the turn-start reminder off: it is new, so nothing it says was expected.
     rulesAtTurnStart: section("rulesAtTurnStart", { ...off, threshold: 1 }),
-    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, duplicateNote: false, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } }),
+    context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, duplicateNote: false, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 }, mask: maskOff() }),
     runaway: section("runaway", { ...off, repeats: Number.MAX_SAFE_INTEGER, thinkingRepeats: Number.MAX_SAFE_INTEGER, minChars: Number.MAX_SAFE_INTEGER, recover: false }),
     notify: section("notify", { ...off, cooldownMs: 0, command: [] }),
     // A stale config module leaves the judge trusted: never pausing is today's behaviour, not a new failure mode.
@@ -112,6 +113,10 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.context.dedupeMessages !== "boolean") config.context = { ...config.context, dedupeMessages: false };
   // The context filter was added inside the context section later than the section itself; an older config module leaves it undefined and the filter stays off.
   if (typeof config.context.filter !== "object" || config.context.filter === null) config.context = { ...config.context, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } };
+  if (typeof config.context.mask !== "object" || config.context.mask === null) {
+    missing.push("context.mask");
+    config.context = { ...config.context, mask: maskOff() };
+  }
   if (typeof config.widget.panelWidth !== "string" && typeof config.widget.panelWidth !== "number") config.widget = { ...config.widget, panelWidth: "40%" };
   // The feedback log flag was added inside the action section later than the section itself; an older config module leaves it undefined and the log stays on.
   if (typeof config.action.feedbackLog !== "boolean") config.action = { ...config.action, feedbackLog: true };
