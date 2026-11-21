@@ -46,7 +46,8 @@ async function stuckCheck(config: WardenConfig, state: HostState, agent: string 
   const index = state.recordAttempt(prompt, agent, identity, stored);
   if (index === undefined) return {};
   const window = new AttemptWindow(config.stuck.window);
-  for (const earlier of await state.attempts(prompt, agent, index - config.stuck.window + 1, index - 1)) window.push(earlier);
+  const lookback = Math.max(config.stuck.window, config.stuck.longCycleThreshold > 0 || config.stuck.fileThrashThreshold > 0 ? 64 : config.stuck.window);
+  for (const earlier of await state.attempts(prompt, agent, index - lookback + 1, index - 1)) window.push(earlier);
   window.push(stored);
   const judged = (at: number): string => JSON.stringify([scope, at]);
   for (let ago = 1; ago < config.stuck.cooldown && ago <= index; ago++) {
@@ -55,6 +56,14 @@ async function stuckCheck(config: WardenConfig, state: HostState, agent: string 
   const candidate = config.stuck.repeatSteer ? window.quickRepeat() : undefined;
   const repeat = candidate && state.once("repeat", JSON.stringify([scope, candidate.attempt.key])) ? candidate : undefined;
   if (!window.shouldJudge(config.stuck)) return ownerNotice(repeat && quickRepeatNudge(repeat));
+  const pendingOsc = window.pendingOscillation(config.stuck);
+  if (pendingOsc) {
+    const verdict = await evaluateStuck(window, record?.task, { config: config.stuck, timeoutMs: config.timeoutMs, signal });
+    if (verdict.stuck && verdict.oscillation && state.once("repeat", JSON.stringify([scope, "oscillation", verdict.oscillation, verdict.reasons[0]]))) {
+      return ownerNotice(stuckNudge(verdict));
+    }
+    return ownerNotice(repeat && quickRepeatNudge(repeat));
+  }
   const judge = await headlessJudge(config, state, signal);
   // Claim every result the cooldown covers, oldest first: a claim that loses leaves only numbers behind the winner's,
   // which the winner's own claim already covers, so two hook processes cannot judge this stretch twice.

@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 17;
+export const EXPECTED_SCHEMA = 18;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -48,12 +48,12 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     maxRequests: source.maxRequests ?? 500,
     notices: source.notices ?? false,
     action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, traceSample: 0, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1 }, intentMismatch: 1, visibleMismatch: 1, shouldProceed: { threshold: 0.6 }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], ephemeralRoots: [], escalationThreshold: 0.85, floor: "evidence" }),
-    stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000, inlineFeedback: true }),
+    stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000, inlineFeedback: true, editRevert: false, fileThrashThreshold: 0, longCycleThreshold: 0 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false, autonomousGate: true, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     cause: section("cause", { ...off, claimsCause: 1, nudge: false, windowDays: 7 }),
     slop: section("slop", { ...off, threshold: 1, prose: proseOff() }),
     security: section("security", { ...off, threshold: 1, maskOutput: false, shareLinkParams: [] }),
-    rules: section("rules", { ...off, cadence: "turn", inlineFeedback: true, autonomousGate: true, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} }),
+    rules: section("rules", { ...off, cadence: "turn", inlineFeedback: true, autonomousGate: true, system0: true, threshold: 1, softThreshold: 0, files: [], fallback: false, maxChars: 500, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} }),
     // A missing section turns the turn-start reminder off: it is new, so nothing it says was expected.
     rulesAtTurnStart: section("rulesAtTurnStart", { ...off, threshold: 1 }),
     context: section("context", { ...off, tailMinChars: 1, confidence: 1, duplicateMinChars: Number.MAX_SAFE_INTEGER, duplicateNote: false, recallTool: "none", formatConfidence: 1, compactAppendix: true, dedupeRuns: false, dedupeMessages: false, largeOutput: { ...off, threshold: 1 }, filter: { ...off, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 }, mask: maskOff() }),
@@ -104,6 +104,9 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   // module leaves it undefined, and the shipped default (on) applies.
   if (typeof config.stuck.evidence !== "boolean") config.stuck = { ...config.stuck, evidence: true };
   if (typeof config.stuck.inlineFeedback !== "boolean") config.stuck = { ...config.stuck, inlineFeedback: true };
+  if (typeof config.stuck.editRevert !== "boolean") config.stuck = { ...config.stuck, editRevert: true };
+  if (typeof config.stuck.fileThrashThreshold !== "number") config.stuck = { ...config.stuck, fileThrashThreshold: 6 };
+  if (typeof config.stuck.longCycleThreshold !== "number") config.stuck = { ...config.stuck, longCycleThreshold: 4 };
   if (typeof config.done.autonomousGate !== "boolean") config.done = { ...config.done, autonomousGate: true };
   if (typeof config.context.duplicateNote !== "boolean") config.context = { ...config.context, duplicateNote: false };
   // The large-output question was added inside the context section later than the section itself; an older config module leaves it undefined and the question is not asked.
@@ -139,6 +142,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (config.rules.cadence !== "turn" && config.rules.cadence !== "edit") config.rules = { ...config.rules, cadence: "turn" };
   if (typeof config.rules.inlineFeedback !== "boolean") config.rules = { ...config.rules, inlineFeedback: true };
   if (typeof config.rules.autonomousGate !== "boolean") config.rules = { ...config.rules, autonomousGate: true };
+  if (typeof config.rules.system0 !== "boolean") config.rules = { ...config.rules, system0: true };
   // The soft rules tier was added inside the rules section later than the section itself; an older config module leaves it undefined and the tier stays off.
   if (typeof config.rules.softThreshold !== "number") config.rules = { ...config.rules, softThreshold: 0 };
   // The request limit was added inside the rules section later too; an older config module gets the one request it always sent.

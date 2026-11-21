@@ -6985,3 +6985,100 @@ test("pi.on('context') masks stale observations at epoch boundaries, reports in 
   await sessionStart();
   assert.equal(await fire("context", { messages: eightTurnMessages }), undefined, "disabled mask returns undefined");
 });
+
+test("turnSnapshot fast-write race: mutating tool_call waits for snapshotTree before returning so agent_end diffSince captures the write", async () => {
+  const repo = await turnRepo("# Errors are not swallowed\nAn empty catch block is a violation.\n");
+  await writeConfig(JSON.stringify({
+    typesafe: false,
+    notices: false,
+    rules: { enabled: true, cadence: "turn", system0: true, inlineFeedback: true },
+    slop: { enabled: false },
+    done: { enabled: false },
+    ...STACK_BAR,
+  }));
+  await sessionStart(context({ cwd: repo }));
+  const guard = await snapshotGuard(true);
+  try {
+    await fire("agent_start", {}, context({ cwd: repo }));
+    await afterBaseline(guard);
+
+    let toolCallFinished = false;
+    const pendingCall = toolCall("write", { path: "app.ts", content: "export function f() { try { go(); } catch (e) {} }\n" }, context({ cwd: repo }))
+      .then(result => { toolCallFinished = true; return result; });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(toolCallFinished, false, "mutating tool_call must wait while turnSnapshot is still hashing startTree");
+
+    await writeFile(guard.marker("released"), "");
+    const outcome = await pendingCall;
+    assert.equal(outcome, undefined);
+    assert.equal(toolCallFinished, true);
+
+    // Simulate Pi executing the write right after tool_call returned, then delivering tool_result and agent_end.
+    await writeFile(join(repo, "app.ts"), "export function f() { try { go(); } catch (e) {} }\n");
+    const res = await toolResult("write", { path: "app.ts", content: "export function f() { try { go(); } catch (e) {} }\n" }, "wrote app.ts", false, context({ cwd: repo })) as { content: Array<{ type: string; text: string }> } | undefined;
+    assert.ok(res, "System-0 catches the empty catch inline even with typesafe: false and cadence: turn");
+    assert.match(res.content[0]!.text, /Errors are not swallowed/);
+
+    reportBaseline = (await recordedSince()).length;
+    await agentEnd("Done.", context({ cwd: repo }));
+    const entries = (await recordedSince()).slice(reportBaseline);
+    assert.ok(entries.some(entry => entry.guard === "rules" && /Errors are not swallowed/.test(entry.line)), "agent_end diffSince captured app.ts written after turnSnapshot settled");
+  } finally {
+    guard.restore();
+  }
+});
+
+test("deterministic trajectory oscillations attach inline tool_result steers with typesafe: false (0 Jev calls)", async () => {
+  const repo = await turnRepo("# Functions do one thing\nKeep functions focused.\n");
+  await writeConfig(JSON.stringify({
+    typesafe: false,
+    notices: false,
+    rules: { enabled: false },
+    stuck: { enabled: true, nudge: true, inlineFeedback: true, editRevert: true, fileThrashThreshold: 6, longCycleThreshold: 4 },
+    slop: { enabled: false },
+    done: { enabled: false },
+    ...STACK_BAR,
+  }));
+  await sessionStart(context({ cwd: repo }));
+  await newPrompt("fix module", context({ cwd: repo }));
+  requests.length = 0;
+
+  // 1. Exact A -> B -> A disk edit revert.
+  const target = join(repo, "osc.ts");
+  await writeFile(target, "export const x = 1;\n");
+  await toolCall("edit", { path: "osc.ts", edits: [{ oldText: "export const x = 1;", newText: "export const x = 2;" }] }, context({ cwd: repo }));
+  await writeFile(target, "export const x = 2;\n");
+  await toolResult("edit", { path: "osc.ts", edits: [{ oldText: "export const x = 1;", newText: "export const x = 2;" }] }, "edited osc.ts", false, context({ cwd: repo }));
+
+  await toolCall("edit", { path: "osc.ts", edits: [{ oldText: "export const x = 2;", newText: "export const x = 1;" }] }, context({ cwd: repo }));
+  await writeFile(target, "export const x = 1;\n");
+  const revertRes = await toolResult("edit", { path: "osc.ts", edits: [{ oldText: "export const x = 2;", newText: "export const x = 1;" }] }, "edited osc.ts", false, context({ cwd: repo })) as { content: Array<{ type: string; text: string }> } | undefined;
+  assert.ok(revertRes, "A -> B -> A revert attaches inline note");
+  assert.match(revertRes.content[0]!.text, /reverted the file to an earlier state.*A → B → A/);
+
+  // 2. Single-file thrash (6 unverified edits on thrash.ts).
+  const thrashFile = join(repo, "thrash.ts");
+  await writeFile(thrashFile, "export const n = 0;\n");
+  let thrashRes: { content: Array<{ type: string; text: string }> } | undefined;
+  for (let i = 1; i <= 6; i++) {
+    await toolCall("edit", { path: "thrash.ts", edits: [{ oldText: `export const n = ${i - 1};`, newText: `export const n = ${i};` }] }, context({ cwd: repo }));
+    await writeFile(thrashFile, `export const n = ${i};\n`);
+    thrashRes = await toolResult("edit", { path: "thrash.ts", edits: [{ oldText: `export const n = ${i - 1};`, newText: `export const n = ${i};` }] }, `edited ${i}`, false, context({ cwd: repo })) as { content: Array<{ type: string; text: string }> } | undefined;
+  }
+  assert.ok(thrashRes, "6th unverified edit attaches inline thrash note");
+  assert.match(thrashRes.content[0]!.text, /6 edits to thrash\.ts without a passing check/);
+
+  // 3. Long-horizon (>12 calls) failure-signature cycle.
+  let cycleRes: { content: Array<{ type: string; text: string }> } | undefined;
+  for (let round = 1; round <= 4; round++) {
+    cycleRes = await toolResult("bash", { command: "npm test" }, "AssertionError: 1 !== 2", true, context({ cwd: repo })) as { content: Array<{ type: string; text: string }> } | undefined;
+    if (round < 4) {
+      for (let i = 0; i < 14; i++) {
+        await toolResult("read", { path: `src/r-${round}-${i}.ts` }, `body ${round}-${i}`, false, context({ cwd: repo }));
+      }
+    }
+  }
+  assert.ok(cycleRes, "4th failure spaced >12 calls apart attaches inline cycle note");
+  assert.match(cycleRes.content[0]!.text, /same failure recurred 4 times across this run/);
+  assert.equal(requests.length, 0, "0 Jev requests sent across all three oscillation detections");
+});

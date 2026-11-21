@@ -6,6 +6,8 @@ import { ask, choice, chunkEvaluationRequest, DEFAULT_BACKEND_LIMITS } from "pi-
 import type { AskOptions, BackendLimits, IntegrationErrorCode, Judge, Questions, SystemOneRequest, TypeSafe } from "pi-typesafe";
 import type { RulesConfig } from "./config.js";
 import { redact } from "./redact.js";
+import { evaluateSystem0 } from "./rule-compiler.js";
+import type { System0RuleResult } from "./rule-compiler.js";
 import { DEFAULT_TEMPLATES, renderTemplate, rulesTokens } from "./widget.js";
 
 /**
@@ -43,6 +45,14 @@ export interface Rule {
   sourceRef?: { file: string; line: number };
   /** `turn` rules are judged once per run against the whole diff, never per edit; absent means `edit`. */
   when?: RuleWhen;
+  /** Explicit regex literals forbidden in newly added lines (`forbid: /pattern/flags`). */
+  forbid?: string[];
+  /** Explicit literal tokens forbidden in newly added lines (`forbid-token: a, b`). */
+  forbidTokens?: string[];
+  /** Explicit literal tokens required in newly added lines (`require-token: a, b`). */
+  requireTokens?: string[];
+  /** Bare lowercase file extensions without leading dots (`extensions: ts, tsx`). */
+  extensions?: string[];
   /** Header lines that carried a bad value, reported by `/warden rules`; the line is dropped either way. */
   headerWarnings?: string[];
   /** Project-relative source file when the rule came from a resolved RuleSet. */
@@ -133,6 +143,10 @@ const THRESHOLD_LINE = /^\s*threshold\s*:\s*(.+?)\s*$/i;
 const SEVERITY_LINE = /^\s*severity\s*:\s*(.+?)\s*$/i;
 const SOURCE_REF_LINE = /^\s*source\s*:\s*(.+?)\s*$/i;
 const WHEN_LINE = /^\s*when\s*:\s*(.+?)\s*$/i;
+const FORBID_LINE = /^\s*forbid\s*:\s*(.+?)\s*$/i;
+const FORBID_TOKEN_LINE = /^\s*forbid-token\s*:\s*(.+?)\s*$/i;
+const REQUIRE_TOKEN_LINE = /^\s*require-token\s*:\s*(.+?)\s*$/i;
+const EXTENSIONS_LINE = /^\s*extensions?\s*:\s*(.+?)\s*$/i;
 const SEVERITIES: readonly RuleSeverity[] = ["high", "normal", "low"];
 const WHENS: readonly RuleWhen[] = ["edit", "turn"];
 
@@ -209,12 +223,17 @@ export function parseRules(markdown: string): Rule[] {
     let severity: RuleSeverity | undefined;
     let sourceRef: { file: string; line: number } | undefined;
     let when: RuleWhen | undefined;
+    const forbid: string[] = [];
+    const forbidTokens: string[] = [];
+    const requireTokens: string[] = [];
+    let extensions: string[] = [];
     const headerWarnings: string[] = [];
     let seenPaths = false;
     let seenThreshold = false;
     let seenSeverity = false;
     let seenSource = false;
     let seenWhen = false;
+    let seenExtensions = false;
     // Header lines may sit in any order and at most once. A bad value is dropped with a warning; the line never stays in the body.
     for (;;) {
       const first = lines.findIndex(text => text.trim());
@@ -268,6 +287,57 @@ export function parseRules(markdown: string): Rule[] {
         else { when = raw; seenWhen = true; }
         continue;
       }
+      const forbidden = FORBID_LINE.exec(line);
+      if (forbidden) {
+        lines.splice(first, 1);
+        const raw = forbidden[1]!.replace(/^`|`$/g, "").trim();
+        const parsed = /^\/(.+)\/([dgimsuvy]*)$/.exec(raw);
+        if (!parsed) {
+          headerWarnings.push(`forbid: ${raw || "(empty)"} is not a /pattern/flags regex; ignored`);
+        } else {
+          try {
+            new RegExp(parsed[1]!, parsed[2]!.replace(/[gy]/g, ""));
+            forbid.push(raw);
+          } catch {
+            headerWarnings.push(`forbid: ${raw} is not a valid regex; ignored`);
+          }
+        }
+        continue;
+      }
+      const forbiddenTokens = FORBID_TOKEN_LINE.exec(line);
+      if (forbiddenTokens) {
+        lines.splice(first, 1);
+        const items = forbiddenTokens[1]!.split(",").map(item => item.trim().replace(/^["'`]|["'`]$/g, "").trim()).filter(Boolean);
+        if (!items.length) headerWarnings.push("forbid-token: (empty) has no tokens; ignored");
+        else forbidTokens.push(...items);
+        continue;
+      }
+      const requiredTokens = REQUIRE_TOKEN_LINE.exec(line);
+      if (requiredTokens) {
+        lines.splice(first, 1);
+        const items = requiredTokens[1]!.split(",").map(item => item.trim().replace(/^["'`]|["'`]$/g, "").trim()).filter(Boolean);
+        if (!items.length) headerWarnings.push("require-token: (empty) has no tokens; ignored");
+        else requireTokens.push(...items);
+        continue;
+      }
+      const extHeader = EXTENSIONS_LINE.exec(line);
+      if (extHeader) {
+        lines.splice(first, 1);
+        if (seenExtensions) {
+          headerWarnings.push("extensions: appears more than once; the first is kept");
+        } else {
+          seenExtensions = true;
+          const items = extHeader[1]!.split(/[,\s]+/).map(item => item.replace(/^`|`$/g, "").trim().replace(/^\./, "").toLowerCase()).filter(Boolean);
+          const valid: string[] = [];
+          for (const item of items) {
+            if (/[./\\]/.test(item)) headerWarnings.push(`extensions: ${item} is not a bare extension; ignored`);
+            else if (!valid.includes(item)) valid.push(item);
+          }
+          if (!valid.length) headerWarnings.push("extensions: (empty) has no valid extensions; ignored");
+          else extensions = valid;
+        }
+        continue;
+      }
       break;
     }
     return {
@@ -276,6 +346,10 @@ export function parseRules(markdown: string): Rule[] {
       ...(severity === undefined ? {} : { severity }),
       ...(sourceRef === undefined ? {} : { sourceRef }),
       ...(when === undefined ? {} : { when }),
+      ...(forbid.length ? { forbid } : {}),
+      ...(forbidTokens.length ? { forbidTokens } : {}),
+      ...(requireTokens.length ? { requireTokens } : {}),
+      ...(extensions.length ? { extensions } : {}),
       ...(headerWarnings.length ? { headerWarnings } : {}),
     };
   });
@@ -450,6 +524,10 @@ export function formatRuleSetDetails(set: RuleSet | undefined, tier: RulesTier, 
       ...(rule.severity === undefined ? [] : [`severity: ${rule.severity}`]),
       ...(rule.sourceRef === undefined ? [] : [`source: ${rule.sourceRef.file}:${rule.sourceRef.line}`]),
       ...(rule.when === undefined || rule.when === "edit" ? [] : [`when: ${rule.when}`]),
+      ...(rule.extensions?.length ? [`extensions: ${rule.extensions.join(", ")}`] : []),
+      ...(rule.forbid?.length ? [`forbid: ${rule.forbid.join(", ")}`] : []),
+      ...(rule.forbidTokens?.length ? [`forbid-token: ${rule.forbidTokens.join(", ")}`] : []),
+      ...(rule.requireTokens?.length ? [`require-token: ${rule.requireTokens.join(", ")}`] : []),
     ].join(", ");
     lines.push(`${index + 1}. ${rule.id}${from} ${settings}`);
     if (rule.headerWarnings?.length) lines.push(`   ${rule.headerWarnings.join("; ")}`);
@@ -561,15 +639,14 @@ export function ruleQuestion(rule: Rule) {
   return choice(`${FRAME}\nRule: ${rule.name}\n${rule.body ? clip(rule.body, RULE_BODY_LIMIT) : "(no further detail beyond the heading)"}`, OUTCOMES);
 }
 
-/**
- * The rules asked about for a write: scoped to its path first, `when: turn` rules excluded, then cut to `maxRules`
- * (`ruleCap(config)`) in file order. `requests` splits the questions to `maxQuestions` per request, each carrying the
- * whole state, so rules past one request's worth go in the next request of the same judgment.
- */
-export function buildRulesRequest(target: RulesTarget, set: RuleSet, maxQuestions: number = DEFAULT_BACKEND_LIMITS.maxQuestions, maxRules: number = MAX_RULES) {
-  const scoped = editRulesFor(set, target.path);
-  const applicable = scoped.slice(0, maxRules);
-  const dropped = scoped.length - applicable.length;
+function buildRulesRequestFor(
+  target: RulesTarget,
+  set: RuleSet,
+  applicable: readonly Rule[],
+  maxQuestions: number,
+  dropped: number,
+  firstDropped: string | undefined,
+) {
   const questions: Record<string, ReturnType<typeof choice>> = {};
   for (const rule of applicable) questions[`rule_${rule.id}`] = ruleQuestion(rule);
   if (set.aggregate !== undefined && !set.rules.length) {
@@ -602,10 +679,22 @@ export function buildRulesRequest(target: RulesTarget, set: RuleSet, maxQuestion
     // The locator rides in one chunk only: its answer does not depend on the rules beside it, and a copy per chunk would
     // make a 32-question judgment take three requests on a 16-question backend instead of two.
     requests: chunkEvaluationRequest({ state, questions }, { maxQuestions }),
-    applicable,
+    applicable: [...applicable],
     dropped,
-    ...(dropped ? { firstDropped: scoped[maxRules]!.id } : {}),
+    ...(firstDropped ? { firstDropped } : {}),
   };
+}
+
+/**
+ * The rules asked about for a write: scoped to its path first, `when: turn` rules excluded, then cut to `maxRules`
+ * (`ruleCap(config)`) in file order. `requests` splits the questions to `maxQuestions` per request, each carrying the
+ * whole state, so rules past one request's worth go in the next request of the same judgment.
+ */
+export function buildRulesRequest(target: RulesTarget, set: RuleSet, maxQuestions: number = DEFAULT_BACKEND_LIMITS.maxQuestions, maxRules: number = MAX_RULES) {
+  const scoped = editRulesFor(set, target.path);
+  const applicable = scoped.slice(0, maxRules);
+  const dropped = scoped.length - applicable.length;
+  return buildRulesRequestFor(target, set, applicable, maxQuestions, dropped, dropped ? scoped[maxRules]!.id : undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -657,7 +746,7 @@ export function scoreRuleAnswers(
 }
 
 export interface RulesVerdict {
-  source: "skipped" | "typesafe" | "error";
+  source: "skipped" | "code" | "typesafe" | "error";
   path: string;
   tool: "write" | "edit" | "turn";
   sources: string[];
@@ -782,17 +871,137 @@ export async function evaluateRules(tool: string, input: Record<string, unknown>
   return evaluateRulesTarget(target, tool, typeof input.path === "string" ? input.path : tool, options);
 }
 
+function scoreSystem0(results: readonly System0RuleResult[], config: RulesConfig): RuleScoring {
+  const scores: RuleScore[] = [];
+  const findings: RuleFinding[] = [];
+  const softFindings: RuleFinding[] = [];
+  const softThreshold = config.softThreshold ?? 0;
+  for (const item of results) {
+    const { rule, outcome, violation } = item;
+    const score: RuleScore = {
+      id: rule.id,
+      name: rule.name,
+      outcome,
+      violation,
+      ...(rule.threshold === undefined ? {} : { threshold: rule.threshold }),
+      ...(rule.severity === undefined ? {} : { severity: rule.severity }),
+      ...(rule.sourceRef === undefined ? {} : { sourceRef: rule.sourceRef }),
+    };
+    const cutoff = rule.threshold ?? config.threshold;
+    scores.push(score);
+    if (violation >= cutoff) findings.push({ ...score, body: rule.body });
+    else if (softThreshold > 0 && violation >= softThreshold) softFindings.push({ ...score, body: rule.body });
+  }
+  findings.sort(bySeverityThenScore);
+  softFindings.sort(bySeverityThenScore);
+  return { scores, findings, softFindings };
+}
+
 /**
- * The judgment half of `evaluateRules` for a prepared target: skip reasons, one request, scores, findings. A caller that
- * builds its own target (the end-of-run pass judges a file's diff as one edit) gets the same question and scoring.
+ * The judgment half of `evaluateRules` for a prepared target: skip reasons, System-0 deterministic evaluation and
+ * precondition routing, then one Jev request for remaining semantic rules.
  */
 export async function evaluateRulesTarget(target: RulesTarget | undefined, tool: string, shownPath: string, options: RulesOptions): Promise<RulesVerdict> {
   const { set } = options;
   const reason = skipReason(target, set, options.config);
   if (reason || !target || !set) return skipped(target, tool, shownPath, set, reason ?? "nothing to judge");
+  const aggregate = set.aggregate !== undefined && !set.rules.length;
+  const useSystem0 = options.config.system0 !== false && !aggregate;
+
+  if (useSystem0) {
+    const scoped = editRulesFor(set, target.path);
+    const maxRules = ruleCap(options.config);
+    const applicable = scoped.slice(0, maxRules);
+    const dropped = scoped.length - applicable.length;
+    const firstDropped = dropped ? scoped[maxRules]!.id : undefined;
+    const sys0 = evaluateSystem0(target, applicable);
+
+    if (!options.judge) {
+      const local = [...sys0.decisive, ...sys0.offlineCompliant];
+      if (!local.length) return skipped(target, tool, shownPath, set, "TypeSafe judgments are off");
+      const scored = scoreSystem0(local, options.config);
+      return {
+        source: "code",
+        tool: target.tool,
+        path: target.path,
+        sources: set.sources,
+        asked: scored.scores.length,
+        aggregate: false,
+        ...(firstDropped ? { dropped, firstDropped } : {}),
+        scores: scored.scores,
+        findings: scored.findings,
+        ...(scored.softFindings.length ? { softFindings: scored.softFindings } : {}),
+        elapsedMs: 0,
+      };
+    }
+
+    const localScored = scoreSystem0(sys0.decisive, options.config);
+    if (!sys0.semantic.length) {
+      return {
+        source: "code",
+        tool: target.tool,
+        path: target.path,
+        sources: set.sources,
+        asked: 0,
+        aggregate: false,
+        ...(firstDropped ? { dropped, firstDropped } : {}),
+        scores: localScored.scores,
+        findings: localScored.findings,
+        ...(localScored.softFindings.length ? { softFindings: localScored.softFindings } : {}),
+        elapsedMs: 0,
+      };
+    }
+
+    const request = buildRulesRequestFor(target, set, sys0.semantic, questionLimit(options.judge), dropped, firstDropped);
+    const base = {
+      tool: target.tool,
+      path: target.path,
+      sources: set.sources,
+      asked: sys0.semantic.length,
+      aggregate: false,
+      ...(firstDropped ? { dropped, firstDropped } : {}),
+    };
+    const result = await askChunks(options.judge, request.requests, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
+    if (!result.ok) {
+      return {
+        source: "error",
+        ...base,
+        ...(localScored.scores.length ? { scores: localScored.scores } : {}),
+        findings: localScored.findings,
+        error: result.error,
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+      };
+    }
+    const answers = result.answers as Record<string, RuleAnswer>;
+    const jevScored = scoreRuleAnswers(sys0.semantic, answers, options.config);
+    const scoreById = new Map<string, RuleScore>();
+    for (const s of localScored.scores) scoreById.set(s.id, s);
+    for (const s of jevScored.scores) scoreById.set(s.id, s);
+    const scores = applicable.map(rule => scoreById.get(rule.id)).filter((s): s is RuleScore => s !== undefined);
+    const findings = [...localScored.findings, ...jevScored.findings].sort(bySeverityThenScore);
+    const softFindings = [...localScored.softFindings, ...jevScored.softFindings].sort(bySeverityThenScore);
+    const verdict: RulesVerdict = {
+      source: "typesafe",
+      ...base,
+      scores,
+      findings,
+      ...(softFindings.length ? { softFindings } : {}),
+      model: result.model,
+      elapsedMs: result.elapsedMs,
+    };
+    const locator = answers[LOCATOR_QUESTION];
+    if (findings.length && typeof locator?.choice === "string") {
+      const edit = target.edits?.find(item => item.id === locator.choice);
+      if (edit) {
+        verdict.editId = edit.id;
+        verdict.editPreview = edit.newText.trim().split("\n")[0]!.slice(0, 60);
+      }
+    }
+    return verdict;
+  }
+
   if (!options.judge) return skipped(target, tool, shownPath, set, "TypeSafe judgments are off");
   const request = buildRulesRequest(target, set, questionLimit(options.judge), ruleCap(options.config));
-  const aggregate = set.aggregate !== undefined && !set.rules.length;
   const base = { tool: target.tool, path: target.path, sources: set.sources, asked: aggregate ? 1 : request.applicable.length, aggregate, ...(request.firstDropped ? { dropped: request.dropped, firstDropped: request.firstDropped } : {}) };
   const result = await askChunks(options.judge, request.requests, { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) return { source: "error", ...base, findings: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
@@ -904,8 +1113,13 @@ function rulesVerdictCacheKey(target: RulesTarget, set: RuleSet, config: RulesCo
         threshold: rule.threshold,
         severity: rule.severity,
         when: rule.when,
+        forbid: rule.forbid,
+        forbidTokens: rule.forbidTokens,
+        requireTokens: rule.requireTokens,
+        extensions: rule.extensions,
       })),
     },
+    system0: config.system0,
     threshold: config.threshold,
     softThreshold: config.softThreshold,
     maxRequests: config.maxRequests,

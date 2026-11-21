@@ -918,3 +918,35 @@ test("context.mask defaults, non-negative zero overrides, and PROJECT_KEYS loose
   const projectTuned = applyProjectOverrides(defaults, { context: { mask: { epochTurns: 12, keepRecentTurns: 10, minSweepBytes: 65536 } } });
   assert.deepEqual(loosenedChecks(defaults, projectTuned), [], "tuning parameters are not flagged as loosened checks");
 });
+
+test("Wave 4 defaults: rules.system0 and stuck oscillation keys, zero disable overrides, and PROJECT_KEYS loosening", () => {
+  const defaults = defaultConfig();
+  assert.equal(defaults.rules.system0, true);
+  assert.equal(defaults.stuck.editRevert, true);
+  assert.equal(defaults.stuck.fileThrashThreshold, 6);
+  assert.equal(defaults.stuck.longCycleThreshold, 4);
+
+  const zeroDisabled = applyUserOverrides(defaults, {
+    rules: { system0: false },
+    stuck: { editRevert: false, fileThrashThreshold: 0, longCycleThreshold: 0 },
+  });
+  assert.equal(zeroDisabled.rules.system0, false);
+  assert.equal(zeroDisabled.stuck.editRevert, false);
+  assert.equal(zeroDisabled.stuck.fileThrashThreshold, 0);
+  assert.equal(zeroDisabled.stuck.longCycleThreshold, 0);
+
+  const invalid = applyUserOverrides(defaults, {
+    stuck: { fileThrashThreshold: -2, longCycleThreshold: 1.5 },
+  });
+  assert.equal(invalid.stuck.fileThrashThreshold, 6);
+  assert.equal(invalid.stuck.longCycleThreshold, 4);
+
+  const projectLoosened = applyProjectOverrides(defaults, {
+    rules: { system0: false },
+    stuck: { editRevert: false, fileThrashThreshold: 10, longCycleThreshold: 8 },
+  });
+  assert.deepEqual(
+    loosenedChecks(defaults, projectLoosened).map(check => check.name).sort(),
+    ["rules System-0 check", "stuck edit-revert check", "stuck file-thrash check", "stuck long-cycle check"],
+  );
+});

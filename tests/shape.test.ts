@@ -262,18 +262,30 @@ test("completeConfig fills Wave 2 cadence, inline feedback, autonomous gate, dup
   assert.equal(config.action.traceSample, 0);
 });
 
-test("schema 17 and missing context.mask disable epoch masking cleanly in both completeConfig and guardCurrentSections", async () => {
+test("schema 18 and missing context.mask / Wave 4 fields fill safe defaults in both completeConfig and guardCurrentSections", async () => {
   const { guardCurrentSections } = await import("../src/extension.js");
-  assert.equal(CONFIG_SCHEMA, 17);
-  assert.equal(EXPECTED_SCHEMA, 17);
+  assert.equal(CONFIG_SCHEMA, 18);
+  assert.equal(EXPECTED_SCHEMA, 18);
 
   const stale = defaultConfig() as unknown as Record<string, Record<string, unknown>>;
   const ctxSection = { ...stale.context };
   delete ctxSection.mask;
   stale.context = ctxSection;
+  const rulesSection = { ...stale.rules };
+  delete rulesSection.system0;
+  stale.rules = rulesSection;
+  const stuckSection = { ...stale.stuck };
+  delete stuckSection.editRevert;
+  delete stuckSection.fileThrashThreshold;
+  delete stuckSection.longCycleThreshold;
+  stale.stuck = stuckSection;
 
   const completed = completeConfig(stale as never);
   assert.deepEqual(completed.missing, ["context.mask"]);
+  assert.equal(completed.config.rules.system0, true);
+  assert.equal(completed.config.stuck.editRevert, true);
+  assert.equal(completed.config.stuck.fileThrashThreshold, 6);
+  assert.equal(completed.config.stuck.longCycleThreshold, 4);
   assert.deepEqual(completed.config.context.mask, {
     enabled: false,
     epochTurns: 8,
@@ -289,9 +301,21 @@ test("schema 17 and missing context.mask disable epoch masking cleanly in both c
   const ctxSection2 = { ...staleForExt.context };
   delete ctxSection2.mask;
   staleForExt.context = ctxSection2;
+  const rulesSection2 = { ...staleForExt.rules };
+  delete rulesSection2.system0;
+  staleForExt.rules = rulesSection2;
+  const stuckSection2 = { ...staleForExt.stuck };
+  delete stuckSection2.editRevert;
+  delete stuckSection2.fileThrashThreshold;
+  delete stuckSection2.longCycleThreshold;
+  staleForExt.stuck = stuckSection2;
   const guarded = guardCurrentSections({ config: staleForExt as never, missing: [] });
   assert.deepEqual(guarded.missing, ["context.mask"]);
   assert.equal(guarded.config.context.mask.enabled, false);
   assert.equal(guarded.config.context.mask.images, false);
+  assert.equal(guarded.config.rules.system0, true);
+  assert.equal(guarded.config.stuck.editRevert, true);
+  assert.equal(guarded.config.stuck.fileThrashThreshold, 6);
+  assert.equal(guarded.config.stuck.longCycleThreshold, 4);
   assert.doesNotThrow(() => guarded.config.context.mask.enabled && guarded.config.context.mask.epochTurns > 0);
 });
