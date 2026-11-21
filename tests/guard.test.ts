@@ -1033,7 +1033,7 @@ test("evaluateAction fails open by default and fails closed when configured", as
 });
 
 test("evaluateAction warns on writes outside the project and confirms overwrites there", async () => {
-  const config = judgedAction();
+  const config = judgedAction({ ephemeralRoots: [] });
   const fresh = await evaluateAction({ tool: "write", input: { path: join(tmpdir(), "pi-warden-does-not-exist-" + process.pid, "x.txt"), content: "x" }, cwd, task: "write a scratch file" }, { config });
   assert.equal(fresh.level, "warn");
   const overwrite = await evaluateAction({ tool: "write", input: { path: join(cwd, "..", "pi-warden-guard-overwrite-target"), content: "x" }, cwd: join(cwd, "inner-does-not-matter"), task: "x" }, { config });
@@ -1059,7 +1059,7 @@ test("hostPaths reads PI_WARDEN_HOST_PATHS and ignores relative entries, empty e
 });
 
 test("evaluateAction: an overwrite in a host path is not held by the outside-project rule; outside every host path it still is", async () => {
-  const config = judgedAction();
+  const config = judgedAction({ ephemeralRoots: [] });
   const host = await mkdtemp(join(tmpdir(), "pi-warden-host-"));
   const other = await mkdtemp(join(tmpdir(), "pi-warden-other-"));
   try {
@@ -1087,7 +1087,7 @@ test("evaluateAction: an overwrite in a host path is not held by the outside-pro
 });
 
 test("evaluateAction: an overwrite of a /warden index file is not held; the rest of the agent directory still is", async () => {
-  const config = judgedAction();
+  const config = judgedAction({ ephemeralRoots: [] });
   const agent = await mkdtemp(join(tmpdir(), "pi-warden-agent-"));
   try {
     await mkdir(join(agent, "pi-warden", "index", "projects"), { recursive: true });
@@ -1114,7 +1114,7 @@ test("evaluateAction: an overwrite of a /warden index file is not held; the rest
 });
 
 test("wardenHostPaths: a symlinked index directory is not a host path", async () => {
-  const config = judgedAction();
+  const config = judgedAction({ ephemeralRoots: [] });
   const root = await mkdtemp(join(tmpdir(), "pi-warden-index-link-"));
   try {
     const home = join(root, "home");

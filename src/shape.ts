@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 15;
+export const EXPECTED_SCHEMA = 16;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -46,7 +46,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     timeoutMs: source.timeoutMs ?? 5000,
     maxRequests: source.maxRequests ?? 500,
     notices: source.notices ?? false,
-    action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, traceSample: 0, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1 }, intentMismatch: 1, visibleMismatch: 1, shouldProceed: { threshold: 0.6 }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], escalationThreshold: 0.85, floor: "evidence" }),
+    action: section("action", { ...off, tools: [], failOpen: true, ask: { enabled: false }, traceSample: 0, timeoutMs: 5000, irreversible: { warn: 1, confirm: 1 }, offTask: { warn: 1 }, intentMismatch: 1, visibleMismatch: 1, shouldProceed: { threshold: 0.6 }, feedbackLog: false, commandRules: [], commandDenyRules: [], exemptRules: [], pathRules: [], armingRules: [], ephemeralRoots: [], escalationThreshold: 0.85, floor: "evidence" }),
     stuck: section("stuck", { ...off, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 1, churnThreshold: 5, nudge: false, repeatSteer: false, evidence: false, diffLimit: 3000, tailLimit: 1000 }),
     done: section("done", { ...off, claimsDone: 1, nudge: false, uiProof: false, uiFiles: [], visualTools: { commands: [], commandWords: [], tools: [], images: [] } }),
     cause: section("cause", { ...off, claimsCause: 1, nudge: false, windowDays: 7 }),
@@ -144,6 +144,8 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (!Array.isArray(config.action.exemptRules)) config.action = { ...config.action, exemptRules: [] };
   if (!Array.isArray(config.action.pathRules)) config.action = { ...config.action, pathRules: [] };
   if (!Array.isArray(config.action.armingRules)) config.action = { ...config.action, armingRules: [] };
+  if (!Array.isArray(config.action.ephemeralRoots)) config.action = { ...config.action, ephemeralRoots: [] };
+  else if (config.action.ephemeralRoots.some(root => typeof root !== "string")) config.action = { ...config.action, ephemeralRoots: config.action.ephemeralRoots.filter((root): root is string => typeof root === "string") };
   // 0.12 renamed offTask.confirm, then the second off-task threshold went with the steer it fed; an older config module still delivers one.
   if (typeof config.action.offTask?.warn !== "number") config.action = { ...config.action, offTask: { warn: 1 } };
   // The runaway guard added its template later than the other sections; an older widget section renders the default line.

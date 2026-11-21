@@ -263,3 +263,27 @@ test("a parameter name from the config is matched literally, so regex characters
   const other = `https://x.test/o?shXare_token=${opaque}`;
   assert.deepEqual(partitionSecrets(findSecrets(other), other, ["sh.are_token"]).real, [opaque]);
 });
+
+test("metric key=number pairs after token labels are not secrets; real token assignments still are", () => {
+  for (const metric of [
+    "tokenTurns: total=20260.8M",
+    "tokens: count=1500k",
+    "tokenStats: p95=12.4ms",
+  ]) {
+    assert.deepEqual(findSecrets(metric), [], `${metric} should not be flagged as a secret`);
+    assert.deepEqual(maskSecrets(metric), { text: metric, masked: 0 }, `${metric} should not be masked`);
+  }
+  assert.equal(looksLikeSecretValue("total=20260.8M"), false);
+  assert.equal(looksLikeSecretValue("count=1500k"), false);
+  assert.equal(looksLikeSecretValue("p95=12.4ms"), false);
+
+  for (const real of [
+    "token: abc123DEF456",
+    "api_key=Pa9ss(9xyz",
+    'password="s3cr3tVal!"',
+    "token=total_Ab9SecretKey",
+  ]) {
+    assert.ok(findSecrets(real).length >= 1, `${real} must still be detected as a secret`);
+    assert.ok(maskSecrets(real).masked >= 1, `${real} must still be masked`);
+  }
+});

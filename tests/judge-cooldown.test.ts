@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TypeSafeIntegrationError } from "pi-typesafe";
-import { cooldownFailureKind, JudgeCooldown } from "../src/judge-cooldown.js";
+import { classifyJudgeError, cooldownFailureKind, JudgeCooldown } from "../src/judge-cooldown.js";
 
 const settings = { failuresBeforeCooldown: 3, cooldownMs: 1000 };
 
@@ -72,4 +72,20 @@ test("a 401 or 403 is an auth failure; other HTTP errors are network", () => {
   assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("http", "denied", 403)), "auth");
   assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("http", "unavailable", 503)), "network");
   assert.equal(cooldownFailureKind(new TypeSafeIntegrationError("timeout", "slow")), "timeout");
+});
+
+test("HTTP 402 and billing errors classify as billing and open cooldown on the first failure", () => {
+  const err402 = new TypeSafeIntegrationError("http", "Nace.AI / TypeSafe returned HTTP 402. Check your account balance.", 402);
+  const errMsgOnly = new TypeSafeIntegrationError("http", "Nace.AI / TypeSafe returned HTTP 402. Check your account balance.");
+  const errPlain = new Error("Payment Required: insufficient account balance");
+  assert.equal(classifyJudgeError(err402), "billing");
+  assert.equal(cooldownFailureKind(err402), "billing");
+  assert.equal(classifyJudgeError(errMsgOnly), "billing");
+  assert.equal(cooldownFailureKind(errMsgOnly), "billing");
+  assert.equal(classifyJudgeError(errPlain), "billing");
+  assert.equal(cooldownFailureKind(errPlain), "billing");
+
+  const cooldown = new JudgeCooldown(clock().now);
+  assert.deepEqual(cooldown.failure("billing", settings), { type: "started", kind: "billing", ms: 1000 });
+  assert.equal(cooldown.active(), true);
 });

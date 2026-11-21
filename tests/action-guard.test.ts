@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ActionGuard } from "../src/action-guard.js";
 import type { Conversation, InspectOptions, ToolCallRef } from "../src/action-guard.js";
 import { actionAskGate } from "../src/ask-gate.js";
 import { defaultConfig } from "../src/config.js";
-import { matchPatterns, scratchIdentity } from "../src/guard.js";
+import { evaluateAction, matchPatterns, scratchIdentity } from "../src/guard.js";
 import { actionDetails } from "../src/trace.js";
 import type { Judge } from "pi-typesafe";
 import { judgedAction } from "./judged-action.js";
@@ -472,4 +472,91 @@ test("a body over the read limit, and a script the body calls, stay unread", () 
   writeFileSync(join(placement, "scripts", "big.sh"), `# ${"x".repeat(70 * 1024)}\nrm -rf /\n`);
   assert.deepEqual(rmIdsOf("sh ./scripts/big.sh"), [], "a body over 64 KB is left alone");
   assert.deepEqual(rmIdsOf("make app"), [], "the script a recipe runs is a second level and is not read");
+});
+
+test("deferred sensitive hits populate reasons when the ask gate skips Jev or failOpen falls back", async () => {
+  const judge = stubJudge();
+  const gatedConfig = { ...defaultConfig().action, ask: { enabled: true }, traceSample: 0 };
+  const gated = await evaluateAction(
+    { tool: "bash", input: { command: 'grep -o "^[A-Z_]*=" .env' }, cwd: process.cwd(), task: "inspect env keys" },
+    { config: gatedConfig, judge },
+  );
+  assert.equal(gated.level, "warn");
+  assert.equal(judge.requests.length, 0, "ask gate skipped Jev on read-only grep");
+  assert.ok(gated.reasons.length > 0, "warn verdict never carries blank reasons");
+  assert.ok(gated.reasons.some(r => r.startsWith("sensitive:")), `expected sensitive: reason, got ${JSON.stringify(gated.reasons)}`);
+
+  const failingJudge: Judge = {
+    async evaluate() {
+      throw new Error("upstream timeout");
+    },
+  };
+  const failed = await evaluateAction(
+    { tool: "bash", input: { command: "cat .env && rm -f tmp.out" }, cwd: process.cwd(), task: "check env" },
+    { config: { ...defaultConfig().action, ask: { enabled: false }, failOpen: true, traceSample: 0 }, judge: failingJudge },
+  );
+  assert.equal(failed.level, "warn");
+  assert.ok(failed.reasons.some(r => r.startsWith("sensitive:")), `expected sensitive: reason on failOpen fallback, got ${JSON.stringify(failed.reasons)}`);
+});
+
+test("ephemeralRoots allows writes and warns on rm -rf inside scratch subtrees while holding roots, cwd, and credentials", async () => {
+  const scratchSub = join(homedir(), "scratch", `pi-warden-ephemeral-${process.pid}-${Date.now()}`);
+  const scratchFile = join(scratchSub, "out.md");
+  const cfg = defaultConfig().action;
+  mkdirSync(scratchSub, { recursive: true });
+  writeFileSync(scratchFile, "initial\n");
+  try {
+    // Existing file overwrite under ~/scratch subtree is allowed (no outside-project confirm hold).
+    const overwriteScratch = await evaluateAction(
+      { tool: "write", input: { path: scratchFile, content: "updated\n" }, cwd: process.cwd(), task: "write scratch output" },
+      { config: cfg },
+    );
+    assert.equal(overwriteScratch.level, "allow", `overwrite in ~/scratch subtree should allow, got ${overwriteScratch.level}: ${overwriteScratch.reasons.join("; ")}`);
+
+    // Tilde path spelling under ~/scratch subtree is also allowed.
+    const tildePath = `~/scratch/pi-warden-ephemeral-${process.pid}-${scratchSub.split("-").at(-1)}/out.md`;
+    const overwriteTilde = await evaluateAction(
+      { tool: "write", input: { path: tildePath, content: "updated\n" }, cwd: process.cwd(), task: "write scratch output" },
+      { config: cfg },
+    );
+    assert.equal(overwriteTilde.level, "allow", `tilde overwrite in ~/scratch subtree should allow, got ${overwriteTilde.level}`);
+
+    // New file under /tmp subtree is allowed without outside-project warning.
+    const writeTmp = await evaluateAction(
+      { tool: "write", input: { path: `/tmp/pi-warden-run-${process.pid}/out.txt`, content: "hello\n" }, cwd: process.cwd(), task: "write temp output" },
+      { config: cfg },
+    );
+    assert.equal(writeTmp.level, "allow", `write in /tmp subtree should allow, got ${writeTmp.level}`);
+
+    // rm -rf strictly inside ~/scratch subtree warns instead of holding (direct, cd + rel, literal var).
+    for (const command of [
+      "rm -rf ~/scratch/run-1",
+      "cd ~/scratch/run-1 && rm -rf out",
+      'W=~/scratch/run-1 && rm -rf "$W"',
+    ]) {
+      const verdict = await evaluateAction(
+        { tool: "bash", input: { command }, cwd: process.cwd(), task: "clean up run artifacts" },
+        { config: cfg },
+      );
+      assert.equal(verdict.level, "warn", `${command} should warn, got ${verdict.level}: ${verdict.reasons.join("; ")}`);
+    }
+
+    // Forbid-before-allow: ephemeral root itself, non-ephemeral paths, credentials, and cwd inside /tmp still hold.
+    for (const [command, runCwd] of [
+      ["rm -rf ~/scratch", process.cwd()],
+      ["rm -rf /tmp", process.cwd()],
+      ["rm -rf ~/Desktop/app", process.cwd()],
+      ["rm -rf ~/.ssh/keys", process.cwd()],
+      ['rm -rf "$(pwd)"', "/tmp/proj"],
+      ["rm -rf /tmp/proj", "/tmp/proj"],
+    ] as const) {
+      const verdict = await evaluateAction(
+        { tool: "bash", input: { command }, cwd: runCwd, task: "clean up" },
+        { config: cfg },
+      );
+      assert.equal(verdict.level, "confirm", `${command} (cwd=${runCwd}) must still confirm, got ${verdict.level}`);
+    }
+  } finally {
+    rmSync(scratchSub, { recursive: true, force: true });
+  }
 });

@@ -71,6 +71,8 @@ export interface ActionGuardConfig {
   pathRules: PathRule[];
   /** User-defined arming rules: editing files matching globs arms a command pattern for a window (user file only). */
   armingRules: ArmingRule[];
+  /** Directories treated as disposable scratch space (user file only); writes inside a subtree skip outside-project holds and recursive rm warns instead of holding. */
+  ephemeralRoots: string[];
   /** Jev confidence at or above this escalates a violation's severity in the blast-radius and rules-guard escalation paths. */
   escalationThreshold: number;
   /** When a judge answers: "evidence" (default) lets the judge decide the level from irreversible score alone, using built-in pattern hits as context; "level" restores the legacy behaviour where the floor sets the level before the judge.
@@ -547,7 +549,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 15;
+export const CONFIG_SCHEMA = 16;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -578,6 +580,7 @@ export function defaultConfig(): WardenConfig {
       exemptRules: [],
       pathRules: [],
       armingRules: [],
+      ephemeralRoots: ["~/scratch", "/tmp"],
       escalationThreshold: 0.85,
       floor: "evidence",
     },
@@ -725,6 +728,15 @@ function parseExemptRules(raw: unknown): string[] {
     if (typeof item === "string" && item.trim()) ids.add(item.trim());
   }
   return [...ids];
+}
+
+function parseEphemeralRoots(raw: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(raw)) return fallback;
+  const roots = new Set<string>();
+  for (const item of raw) {
+    if (typeof item === "string" && item.trim()) roots.add(item.trim());
+  }
+  return [...roots];
 }
 
 const PATH_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file"]);
@@ -903,6 +915,12 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     pathRules: source === "user" ? parsePathRules(raw.pathRules, warnings) : base.pathRules,
     // Arming rules are user-declared security policy: same gate.
     armingRules: source === "user" ? parseArmingRules(raw.armingRules, warnings) : base.armingRules,
+    // Ephemeral roots relax outside-project write and rm holds, so only the user file may declare them.
+    ephemeralRoots: (() => {
+      if (source === "user") return parseEphemeralRoots(raw.ephemeralRoots, base.ephemeralRoots);
+      if (raw.ephemeralRoots !== undefined) warnings.push("project file: action.ephemeralRoots is ignored; only the user file may declare ephemeral scratch roots");
+      return base.ephemeralRoots;
+    })(),
     escalationThreshold: probability(raw.escalationThreshold, base.escalationThreshold),
     floor: source === "user" && (raw.floor === "level" || raw.floor === "evidence") ? raw.floor : base.floor,
   };
@@ -1474,6 +1492,7 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "action.exemptRules": { kind: "none", why: "user file only" },
   "action.pathRules": { kind: "none", why: "user file only" },
   "action.armingRules": { kind: "none", why: "user file only" },
+  "action.ephemeralRoots": { kind: "none", why: "user file only" },
   "action.escalationThreshold": { kind: "high", check: "escalation", label: "threshold" },
   "action.floor": { kind: "none", why: "user file only" },
 

@@ -700,6 +700,22 @@ export function gitIgnored(projectRel: string, cwd: string, noIndex = false): bo
   }
 }
 
+/** Binary, image, media, font, archive, and compiled/DB extensions skipped before sending writes to Jev. */
+export const BINARY_SKIP_EXTENSIONS: ReadonlySet<string> = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "avif",
+  "pdf",
+  "woff", "woff2", "ttf", "otf", "eot",
+  "mp4", "webm", "mp3", "wav",
+  "zip", "tar", "gz", "tgz", "7z",
+  "wasm", "sqlite", "db", "pyc", "o", "so", "dylib",
+]);
+
+function fileExtension(path: string): string | undefined {
+  const name = path.split(/[\\/]/).at(-1) ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toLowerCase() : undefined;
+}
+
 /** Why a write or edit is not judged against the rules: nothing to judge, no rules, or a path the config keeps out. */
 export function skipReason(target: RulesTarget | undefined, set: RuleSet | undefined, config: RulesConfig): string | undefined {
   if (!target) return "nothing to judge or outside the project";
@@ -708,6 +724,8 @@ export function skipReason(target: RulesTarget | undefined, set: RuleSet | undef
   if (excluded) return `excluded from Jev by rules.exclude (${excluded})`;
   const skipped = matchGlob(target.path, config.skip);
   if (skipped) return `rules do not apply by rules.skip (${skipped})`;
+  const ext = fileExtension(target.path);
+  if (ext && BINARY_SKIP_EXTENSIONS.has(ext)) return `binary or media file (.${ext})`;
   if (set.proseOnly) return `no rules found in ${set.sources.join(", ")} (prose only)`;
   if (set.rules.length && !editRulesFor(set, target.path).length) return "no rule's paths match this file";
   return undefined;

@@ -1813,17 +1813,15 @@ test("hold feedback offline: approval, re-plan, and a stop reply label the calls
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /Holds: 2 holds; 1 approved by you, 0 declined, 1 re-planned, 0 abandoned, 0 awaiting your reply; precision 50% over 2 labels; 2 allowed \(0 regretted by you, 2 accepted\)/);
 
-  // An allowed call the next message regrets: offline, the stop-word heuristic labels it.
+  // An allowed call followed by an offline text objection without a located target is not falsely blamed.
   assert.equal(await toolCall("bash", { command: "rm -rf dist" }), undefined);
   await newPrompt("wait, don't delete dist, I still need it");
   await runCommand("status");
-  assert.match(notices.at(-1)!.text, /3 allowed \(1 regretted by you, 2 accepted\)/);
-  await runCommand("trace", context({ hasUI: false }));
-  assert.match((await latestReport()), /outcome: the user's next message regrets this call; it should have been held/);
+  assert.match(notices.at(-1)!.text, /3 allowed \(0 regretted by you, 3 accepted\)/);
 
   const lines = await readLog(logPath, 5);
   assert.deepEqual(lines.map(record => [record.held, record.outcome, record.outcomeVia]), [
-    [true, "approved", "retry"], [false, "accepted", "text"], [true, "replanned", "next prompt"], [false, "accepted", "text"], [false, "regretted", "text"],
+    [true, "approved", "retry"], [false, "accepted", "text"], [true, "replanned", "next prompt"], [false, "accepted", "text"], [false, "accepted", "text"],
   ]);
   assert.deepEqual(lines[0]!.patterns, ["git-force-push"]);
   assert.equal(lines[0]!.source, "pattern");
@@ -1909,13 +1907,13 @@ test("hold feedback with Jev: the regret question rides the first action request
   assert.match((await latestReport()), /outcome: the user's next message regrets this call \(0\.92\); it should have been held/);
   assert.ok(!(await latestReport()).includes("outcome: the user's next message does not regret"), "the accepted call leaves no line of its own");
 
-  // The agent only replies to the next prompt: no request carries the question, so the heuristic reads the prompt at the end of the run.
+  // The agent only replies to the next prompt: no request carries the question, and offline text without a target does not falsely blame candidates.
   const before = networkCalls;
   await newPrompt("undo that");
   await agentEnd("Done.");
   assert.equal(networkCalls, before);
   await runCommand("status");
-  assert.match(notices.at(-1)!.text, /4 allowed \(2 regretted by you, 2 accepted\)/);
+  assert.match(notices.at(-1)!.text, /4 allowed \(1 regretted by you, 3 accepted\)/);
 });
 
 test("hold feedback: an accepted call writes no outcome line, while the status line still counts it", async () => {

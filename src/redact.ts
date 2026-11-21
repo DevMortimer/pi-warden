@@ -103,6 +103,8 @@ export function looksLikeSecretValue(value: string): boolean {
   if (NOT_VALUES.has(lower)) return false;
   if (/^[$%<\[{*]|^(?:process|os|env|settings|config|secrets?|vault|keychain|import\.meta)\.|^\$?\{|^\*+$|^x+$|^(?:your|my|the|a|an)[-_ ]/i.test(text)) return false;
   if (/^\d+(?:[,_]\d+)*$/.test(text)) return false; // a plain number, separators allowed: 19415506, 797330_123, 19,415,506
+  // Metric key=number pairs (`total=20260.8M`, `count=1500k`, `p95=12.4ms`) after labels such as `tokenTurns:` are telemetry, not secrets.
+  if (/^(?:[a-zA-Z_][\w.-]*=)?[+-]?\d+(?:[,_]\d+)*(?:\.\d+)?(?:%|k|m|g|t|b|kb|mb|gb|tb|kib|mib|gib|tib|ms|us|ns|s|h|d|x|bps|rps|ops|hz)?$/i.test(text)) return false;
   if (CODE_VALUE.some(pattern => pattern.test(text))) return false; // a call, an index, an arrow body, or a template substitution: see CODE_VALUE
   if (/^[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)+$/.test(text)) return false; // a property access: output.secretIds, opts?.value
   if (/^[A-Z][A-Z0-9_]{6,}$/.test(text)) return false; // an environment variable name

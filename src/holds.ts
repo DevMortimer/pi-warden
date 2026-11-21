@@ -24,7 +24,7 @@ import type { ActionSummary, Level, PreviousAction, ScopeLabel, Verdict } from "
  * outcome, never the command or path. The in-memory summary serves the regret question and stays in memory.
  */
 export type CallOutcome = "pending" | "approved" | "declined" | "replanned" | "abandoned" | "regretted" | "accepted";
-export type OutcomeVia = "retry" | "dialog" | "next prompt" | "jev" | "text" | "deny";
+export type OutcomeVia = "retry" | "dialog" | "next prompt" | "same turn" | "run end" | "jev" | "text" | "deny";
 
 export interface CallScores {
   irreversible: number;
@@ -168,14 +168,13 @@ export class HoldLedger {
   }
 
   /**
-   * A call that changes something ran after the user replied: the agent went another way instead of running the held
-   * call, which is a re-plan. The released hold is already labelled `approved` by then (the action guard sets
-   * `approvedByUser` on it), so a hold still pending here was not the one the reply released.
+   * A call that changes something ran after a hold: the agent went another way instead of running the held
+   * call, which is a re-plan. Autonomous runs replan in the same turn (`prompts === 0`) as well as after a reply
+   * (`prompts >= 1`); a released hold is already labelled `approved`, so any pending steer hold here was bypassed.
    */
   replanned(at = Date.now()): CallRecord[] {
     return this.pendingSteerHolds()
-      .filter(item => item.prompts >= 1)
-      .map(item => this.label(item, "replanned", "next prompt", at));
+      .map(item => this.label(item, "replanned", item.prompts >= 1 ? "next prompt" : "same turn", at));
   }
 
   /**
@@ -189,13 +188,14 @@ export class HoldLedger {
 
   /**
    * The run ended. A steer hold whose reply has arrived and whose run ended without a release or a re-plan is
-   * `abandoned`: nothing came of it. A hold from the run that just ended waits, because the reply that can release it
-   * has not arrived yet.
+   * `abandoned`: nothing came of it. Interactive runs keep `prompts === 0` holds waiting for the user's reply;
+   * headless runs have no UI to send one, so remaining `prompts === 0` holds settle as `abandoned` via `run end`.
    */
-  runEnded(at = Date.now()): CallRecord[] {
+  runEnded(at = Date.now(), options?: { headless?: boolean }): CallRecord[] {
+    const headless = options?.headless === true;
     return this.pendingSteerHolds()
-      .filter(item => item.prompts >= 1)
-      .map(item => this.label(item, "abandoned", "next prompt", at));
+      .filter(item => headless || item.prompts >= 1)
+      .map(item => this.label(item, "abandoned", item.prompts >= 1 ? "next prompt" : "run end", at));
   }
 
   /** Holds of steer mode still waiting for the user's reply and the call that settles them. */
@@ -216,13 +216,22 @@ export class HoldLedger {
   }
 
   /**
-   * The reply was read. With regret, the located call (or the latest candidate) is the miss and the rest are accepted;
-   * without it, every candidate is accepted. Returns the records that changed.
+   * The reply was read. With regret, only a matching `target` (or the sole candidate when Jev answered) is labelled
+   * regretted — offline text heuristics without a target no longer blame the latest candidate, which misfired on
+   * read-only calls after conversational "no," / "wait" / "stop". Returns the records that changed.
    */
   regret(result: { regretted: boolean; target?: string | undefined; probability?: number | undefined; via: OutcomeVia }, at = Date.now()): CallRecord[] {
     const candidates = this.tracked.filter(item => !item.record.held && item.record.outcome === "pending" && item.prompts === 1);
     if (!candidates.length) return [];
-    const target = result.regretted ? candidates.find(item => `a${item.record.id}` === result.target) ?? candidates.at(-1) : undefined;
+    let target: Tracked | undefined;
+    if (result.regretted) {
+      target = result.target !== undefined
+        ? candidates.find(item => `a${item.record.id}` === result.target)
+        : undefined;
+      if (!target && result.via === "jev" && candidates.length === 1) {
+        target = candidates[0];
+      }
+    }
     return candidates.map(item => {
       const record = this.label(item, item === target ? "regretted" : "accepted", result.via, at);
       if (result.probability !== undefined) record.regret = result.probability;

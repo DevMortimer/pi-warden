@@ -2,8 +2,8 @@
 // Records full context with each hold and predicts outcomes using history.
 
 import { createHash } from "crypto";
-import { mkdirSync } from "fs";
-import { dirname, join } from "path";
+import { mkdirSync, readFileSync, realpathSync, statSync } from "fs";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { isBunRuntime, openBunSqlite, SqliteUnavailableError } from "./sqlite-adapter.js";
 import type { SqliteDb, SqliteDriver } from "./sqlite-adapter.js";
 import type { HostDirs } from "./host-dirs.js";
@@ -13,6 +13,7 @@ import { redact } from "./redact.js";
 import type { CallScores } from "./holds.js";
 
 const dbs = new Map<string, Promise<SqliteDb>>();
+const canonicalRootCache = new Map<string, string>();
 let sqliteAvailable: boolean | undefined;
 /** Which module opened the learning database; undefined while learning is off. */
 let driver: SqliteDriver | undefined;
@@ -99,6 +100,64 @@ export const HOLDS_SCHEMA = `
     value INTEGER NOT NULL
   ) WITHOUT ROWID;${HOLDS_INDEXES}${CAUSES_SCHEMA}
 `;
+
+/** Resolve a git worktree (or subdirectory inside one) back to its main repository checkout without spawning git. */
+export function canonicalProjectRoot(cwd: string): string {
+  const cached = canonicalRootCache.get(cwd);
+  if (cached !== undefined) return cached;
+  if (!cwd || !isAbsolute(cwd)) {
+    canonicalRootCache.set(cwd, cwd);
+    return cwd;
+  }
+  let result = cwd;
+  let dir = resolve(cwd);
+  for (;;) {
+    const dotGit = join(dir, ".git");
+    let st: ReturnType<typeof statSync> | undefined;
+    try {
+      st = statSync(dotGit);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") break;
+    }
+    if (st?.isDirectory()) {
+      try { result = realpathSync(dir); } catch { result = dir; }
+      break;
+    }
+    if (st?.isFile()) {
+      try {
+        const content = readFileSync(dotGit, "utf8");
+        const match = /^gitdir:\s*(.+)\s*$/m.exec(content);
+        if (match) {
+          const gitDir = resolve(dir, match[1]!.trim());
+          let commonDir: string | undefined;
+          try {
+            const commonRel = readFileSync(join(gitDir, "commondir"), "utf8").trim();
+            if (commonRel) commonDir = resolve(gitDir, commonRel);
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code === "ENOENT" || code === "ENOTDIR") {
+              const wt = /^(.*[/\\]\.git)[/\\]worktrees[/\\][^/\\]+$/.exec(gitDir);
+              if (wt) commonDir = wt[1];
+            }
+          }
+          if (commonDir) {
+            const mainRoot = basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
+            try { result = realpathSync(mainRoot); } catch { result = mainRoot; }
+          }
+        }
+      } catch {
+        result = cwd;
+      }
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  canonicalRootCache.set(cwd, result);
+  return result;
+}
 
 /** The task text hash: the key of hold_tasks. */
 export function taskHash(text: string): string {
@@ -362,7 +421,7 @@ export interface HoldScores {
 }
 
 /** Enumerations for type safety over bare strings. */
-export type HoldLevel = "allow" | "deny" | "confirm";
+export type HoldLevel = "allow" | "warn" | "deny" | "confirm";
 export type HoldOutcome = "approved" | "declined" | "replanned" | "abandoned" | "accepted" | "regretted" | "pending";
 
 /** Context fields gathered at hold time, passed to toHoldRecord. */
@@ -375,6 +434,8 @@ export interface HoldContext {
   preview?: string | undefined;
   /** The Pi session the call belongs to; empty only for a caller that does not know one (the import script). */
   sessionId?: string | undefined;
+  /** When false on an unheld `allow` row, `recordHold` skips inserting it to keep holds.db compact. */
+  sampled?: boolean | undefined;
 }
 
 export interface HoldRecord {
@@ -392,6 +453,8 @@ export interface HoldRecord {
   held: boolean;
   reasons: string[];
   agentReason?: string;
+  /** Explicit sampling flag; false skips inserting routine unheld `allow` rows. */
+  sampled?: boolean;
 }
 
 export interface SmartHistory {
@@ -451,7 +514,7 @@ export function toHoldRecord(
   const raw = item.scores;
   const result: HoldRecord = {
     timestamp: item.at,
-    projectRoot,
+    projectRoot: canonicalProjectRoot(projectRoot),
     tool: item.tool,
     commandPreview: redact(ctx?.preview ?? item.tool).slice(0, 200),
     scores: { irreversible: raw?.irreversible ?? 0, reasons: item.reasons, ...(raw?.largeOutput !== undefined ? { largeOutput: raw.largeOutput } : {}) },
@@ -464,18 +527,21 @@ export function toHoldRecord(
   if (ctx?.contextSummary) result.contextSummary = ctx.contextSummary;
   if (ctx?.agentReason) result.agentReason = ctx.agentReason;
   if (ctx?.sessionId) result.sessionId = ctx.sessionId;
+  if (ctx?.sampled !== undefined) result.sampled = ctx.sampled;
   return result;
 }
 
 // --- Recording ---
 
 /**
- * One row per judged call. The task text goes into hold_tasks under its hash, once per task, for a held and an
- * allowed row alike. A call that was not held carries the judge data and the plan as well, and no summary or
- * agent reason, which no reader and no calibration asks for there.
+ * One row per judged call. Unsampled routine `allow` rows (`!held && level === "allow" && sampled === false`) are
+ * skipped so holds.db does not bloat on unheld traffic. The task text goes into hold_tasks under its hash, once per
+ * task, for persisted rows.
  */
 export async function recordHold(hold: HoldRecord, dirs: HostDirs = defaultHostDirs()): Promise<number> {
+  if (!hold.held && hold.level === "allow" && hold.sampled === false) return -1;
   const d = await getDb(dirs);
+  const root = canonicalProjectRoot(hold.projectRoot);
   const hash = signatureHash(hold.tool, hold.scores);
   const taskKey = hold.task ? taskHash(hold.task) : null;
   if (taskKey && hold.task) d.prepare("INSERT OR IGNORE INTO hold_tasks (hash, text) VALUES (?, ?)").run(taskKey, hold.task);
@@ -487,7 +553,7 @@ export async function recordHold(hold: HoldRecord, dirs: HostDirs = defaultHostD
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
-    hold.timestamp, hold.projectRoot, hold.sessionId ?? null,
+    hold.timestamp, root, hold.sessionId ?? null,
     hold.tool, hash, hold.commandPreview,
     taskKey, hold.plan ?? null,
     hold.held ? hold.contextSummary ?? null : null, JSON.stringify(hold.scores),
@@ -498,6 +564,7 @@ export async function recordHold(hold: HoldRecord, dirs: HostDirs = defaultHostD
 }
 
 export async function recordOutcome(id: number, outcome: string, dirs: HostDirs = defaultHostDirs()): Promise<void> {
+  if (id <= 0) return;
   try { (await getDb(dirs)).prepare("UPDATE holds SET outcome = ?, outcome_at = ? WHERE id = ?").run(outcome, Date.now(), id); } catch (err) { console.warn("pi-warden: could not record hold outcome:", err); }
 }
 
@@ -508,7 +575,7 @@ export async function recordOutcome(id: number, outcome: string, dirs: HostDirs 
 export async function recordCause(summary: string, projectRoot: string, at: number, dirs: HostDirs = defaultHostDirs()): Promise<void> {
   try {
     const d = await getDb(dirs);
-    d.prepare("INSERT INTO causes (project_root, summary, timestamp) VALUES (?, ?, ?)").run(projectRoot, summary, at);
+    d.prepare("INSERT INTO causes (project_root, summary, timestamp) VALUES (?, ?, ?)").run(canonicalProjectRoot(projectRoot), summary, at);
     d.prepare("DELETE FROM causes WHERE timestamp < ?").run(at - 8 * 86_400_000);
   } catch (err) {
     console.warn("pi-warden: could not record cause:", err);
@@ -518,7 +585,7 @@ export async function recordCause(summary: string, projectRoot: string, at: numb
 /** The project's unchecked causes at or after `since`, newest first, at most `limit`. */
 export async function findCause(projectRoot: string, since: number, limit: number, dirs: HostDirs = defaultHostDirs()): Promise<Array<{ summary: string; at: number }>> {
   try {
-    const rows = (await getDb(dirs)).prepare("SELECT summary, timestamp AS at FROM causes WHERE project_root = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?").all(projectRoot, since, limit) as Array<{ summary?: unknown; at?: unknown }>;
+    const rows = (await getDb(dirs)).prepare("SELECT summary, timestamp AS at FROM causes WHERE project_root = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?").all(canonicalProjectRoot(projectRoot), since, limit) as Array<{ summary?: unknown; at?: unknown }>;
     return rows.map(row => ({ summary: String(row.summary), at: Number(row.at) }));
   } catch (err) {
     console.warn("pi-warden: could not read cause history:", err);
@@ -531,10 +598,11 @@ export async function findCause(projectRoot: string, since: number, limit: numbe
 /** Query holds by project and held value. Used by tests and future analytics. */
 export async function queryHoldsForProject(projectRoot: string, options?: { held?: boolean }, dirs: HostDirs = defaultHostDirs()): Promise<Record<string, unknown>[]> {
   const d = await getDb(dirs);
+  const root = canonicalProjectRoot(projectRoot);
   if (options?.held !== undefined) {
-    return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? AND held = ? ORDER BY timestamp").all(projectRoot, options.held ? 1 : 0) as Record<string, unknown>[];
+    return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? AND held = ? ORDER BY timestamp").all(root, options.held ? 1 : 0) as Record<string, unknown>[];
   }
-  return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? ORDER BY timestamp").all(projectRoot) as Record<string, unknown>[];
+  return d.prepare("SELECT id, tool, held, outcome, command_preview FROM holds WHERE project_root = ? ORDER BY timestamp").all(root) as Record<string, unknown>[];
 }
 
 /** Lifetime hold statistics for one project root. Matches the precision formula in holds.ts: (declined + replanned) / (approved + declined + replanned). */
@@ -564,6 +632,7 @@ export interface HoldStats {
 
 export async function holdStats(projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<HoldStats> {
   const d = await getDb(dirs);
+  const root = canonicalProjectRoot(projectRoot);
   const held = d.prepare(
     `SELECT
       COUNT(*) AS total,
@@ -575,14 +644,14 @@ export async function holdStats(projectRoot: string, dirs: HostDirs = defaultHos
       MIN(timestamp) AS oldest,
       MAX(timestamp) AS newest
     FROM holds WHERE project_root = ? AND held = 1`
-  ).get(projectRoot) as Record<string, unknown>;
+  ).get(root) as Record<string, unknown>;
   const allowed = d.prepare(
     `SELECT
       COUNT(*) AS total,
       COUNT(CASE WHEN outcome = 'regretted' THEN 1 END) AS regretted,
       COUNT(CASE WHEN outcome = 'accepted' THEN 1 END) AS accepted
     FROM holds WHERE project_root = ? AND held = 0`
-  ).get(projectRoot) as Record<string, unknown>;
+  ).get(root) as Record<string, unknown>;
   return {
     held: (held.total as number) ?? 0,
     labeled: (held.labeled as number) ?? 0,
@@ -600,6 +669,7 @@ export async function holdStats(projectRoot: string, dirs: HostDirs = defaultHos
 
 export async function querySmartHistory(tool: string, scores: HoldScores, projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<SmartHistory> {
   const d = await getDb(dirs);
+  const root = canonicalProjectRoot(projectRoot);
   const hash = signatureHash(tool, scores);
 
   // The task text lives once in hold_tasks; these queries are the only reader that joins it back.
@@ -608,7 +678,7 @@ export async function querySmartHistory(tool: string, scores: HoldScores, projec
     FROM holds h LEFT JOIN hold_tasks t ON t.hash = h.task_hash
     WHERE h.signature_hash = ? AND h.project_root = ? AND h.held = 1
     ORDER BY h.timestamp DESC LIMIT 10
-  `).all(hash, projectRoot) as Record<string, unknown>[];
+  `).all(hash, root) as Record<string, unknown>[];
 
   const similar = d.prepare(`
     SELECT t.text AS task, h.plan, h.outcome, h.scores, h.agent_reason, h.timestamp
@@ -678,32 +748,39 @@ export interface ThresholdAdjustment {
 }
 
 /** Analyze hold outcomes to suggest threshold adjustments. */
-export async function analyzeThresholds(projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<ThresholdAdjustment[]> {
+export async function analyzeThresholds(
+  projectRoot: string,
+  dirs: HostDirs = defaultHostDirs(),
+  currentConfirmThreshold = 0.9,
+): Promise<ThresholdAdjustment[]> {
   const d = await getDb(dirs);
+  const root = canonicalProjectRoot(projectRoot);
   const adjustments: ThresholdAdjustment[] = [];
 
-  // Analyze action guard: look at holds vs approvals
+  // Exclude outcome IS NULL rows so unsettled holds do not drag down precision.
   const actionHolds = d.prepare(`
     SELECT outcome, COUNT(*) as cnt
-    FROM holds WHERE project_root = ? AND tool != 'rules' AND held = 1
+    FROM holds WHERE project_root = ? AND tool != 'rules' AND held = 1 AND outcome IS NOT NULL
     GROUP BY outcome
-  `).all(projectRoot) as Record<string, unknown>[];
+  `).all(root) as Record<string, unknown>[];
 
-  const totalHolds = actionHolds.reduce((sum, row) => sum + (row.cnt as number), 0);
-  if (totalHolds >= 10) {
-    const approved = actionHolds.find(row => row.outcome === 'approved')?.cnt as number ?? 0;
-    const declined = actionHolds.find(row => row.outcome === 'declined')?.cnt as number ?? 0;
-    const precision = totalHolds > 0 ? (declined + (actionHolds.find(row => row.outcome === 'replanned')?.cnt as number ?? 0)) / totalHolds : 0;
-    
-    // If precision is high (>0.7), we're catching real issues - keep or raise threshold
-    // If precision is low (<0.3), we're being too aggressive - lower threshold
-    if (precision < 0.3 && totalHolds >= 20) {
+  const countOf = (name: string): number => (actionHolds.find(row => row.outcome === name)?.cnt as number) ?? 0;
+  const approved = countOf("approved");
+  const declined = countOf("declined");
+  const replanned = countOf("replanned");
+  const abandoned = countOf("abandoned");
+  const settledHolds = approved + declined + replanned + abandoned;
+
+  if (settledHolds >= 20) {
+    const precision = (declined + replanned) / settledHolds;
+    // Low precision (<0.3) means too many false-positive holds: raise the confirm threshold so fewer calls hold.
+    if (precision < 0.3) {
       adjustments.push({
-        guard: 'action',
-        currentThreshold: 0.7,
-        suggestedThreshold: 0.6,
-        reason: `Low precision (${(precision * 100).toFixed(0)}%); consider lowering the confirmation threshold`,
-        confidence: Math.min(1, totalHolds / 50),
+        guard: "action",
+        currentThreshold: currentConfirmThreshold,
+        suggestedThreshold: Number(Math.min(0.95, currentConfirmThreshold + 0.05).toFixed(2)),
+        reason: `Low precision (${(precision * 100).toFixed(0)}%); consider raising the confirmation threshold`,
+        confidence: Math.min(1, settledHolds / 50),
       });
     }
   }
@@ -714,16 +791,17 @@ export async function analyzeThresholds(projectRoot: string, dirs: HostDirs = de
       COUNT(CASE WHEN outcome = 'regretted' THEN 1 END) as regrets,
       COUNT(CASE WHEN outcome IN ('accepted', 'regretted') THEN 1 END) as total
     FROM holds WHERE project_root = ? AND held = 0
-  `).get(projectRoot) as { regrets: number; total: number } | undefined;
+  `).get(root) as { regrets: number; total: number } | undefined;
 
   if (regretRate && regretRate.total >= 10) {
     const rate = regretRate.regrets / regretRate.total;
+    // High regret rate (>0.15) means risky calls slipped through: lower the confirm threshold so more calls hold.
     if (rate > 0.15) {
       adjustments.push({
-        guard: 'action',
-        currentThreshold: 0.7,
-        suggestedThreshold: 0.75,
-        reason: `High regret rate (${(rate * 100).toFixed(0)}%); consider raising the confirmation threshold`,
+        guard: "action",
+        currentThreshold: currentConfirmThreshold,
+        suggestedThreshold: Number(Math.max(0.5, currentConfirmThreshold - 0.05).toFixed(2)),
+        reason: `High regret rate (${(rate * 100).toFixed(0)}%); consider lowering the confirmation threshold`,
         confidence: Math.min(1, regretRate.total / 30),
       });
     }
@@ -744,6 +822,7 @@ export interface PatternInsight {
 
 export async function analyzePatterns(projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<PatternInsight[]> {
   const d = await getDb(dirs);
+  const root = canonicalProjectRoot(projectRoot);
   const insights: PatternInsight[] = [];
 
   // Get pattern outcomes
@@ -754,7 +833,7 @@ export async function analyzePatterns(projectRoot: string, dirs: HostDirs = defa
       COUNT(*) as cnt
     FROM holds WHERE project_root = ? AND held = 1
     GROUP BY reasons, outcome
-  `).all(projectRoot) as Record<string, unknown>[];
+  `).all(root) as Record<string, unknown>[];
 
   // Aggregate by pattern category
   const patternStats = new Map<string, { approved: number; declined: number; total: number }>();
@@ -848,6 +927,7 @@ export interface SteerEffectivenessReport {
 /** Analyze steer effectiveness from hold outcomes. */
 export async function analyzeSteerEffectivenessReport(projectRoot: string, dirs: HostDirs = defaultHostDirs()): Promise<SteerEffectivenessReport> {
   const d = await getDb(dirs);
+  const root = canonicalProjectRoot(projectRoot);
   const suggestions: string[] = [];
 
   // Get steer outcomes (inferred from hold outcomes)
@@ -858,7 +938,7 @@ export async function analyzeSteerEffectivenessReport(projectRoot: string, dirs:
       COUNT(*) as cnt
     FROM holds WHERE project_root = ? AND held = 1 AND agent_reason IS NOT NULL
     GROUP BY agent_reason, outcome
-  `).all(projectRoot) as Record<string, unknown>[];
+  `).all(root) as Record<string, unknown>[];
 
   // Analyze effectiveness: if a steer led to approval (agent fixed the issue), it was effective
   const steerStats = new Map<string, { effective: number; total: number }>();

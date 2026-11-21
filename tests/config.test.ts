@@ -836,3 +836,22 @@ test("an empty loosened set is a record of its own, so the same set coming back 
   writeLoosenRecord(project, []);
   assert.deepEqual(readLoosenRecord(project), []);
 });
+
+test("action.ephemeralRoots defaults to ~/scratch and /tmp, is user-file only, and falls back to [] on stale configs", () => {
+  const defaults = defaultConfig();
+  assert.deepEqual(defaults.action.ephemeralRoots, ["~/scratch", "/tmp"]);
+
+  const user = applyUserOverrides(defaults, { action: { ephemeralRoots: ["~/scratch", "/tmp", "~/work-tmp"] } });
+  assert.deepEqual(user.action.ephemeralRoots, ["~/scratch", "/tmp", "~/work-tmp"]);
+
+  const layered = applyProjectOverrides(user, { action: { ephemeralRoots: ["~/Desktop"] } });
+  assert.deepEqual(layered.action.ephemeralRoots, ["~/scratch", "/tmp", "~/work-tmp"], "project config cannot modify action.ephemeralRoots");
+  assert.ok(layered.warnings.some(w => w.includes("action.ephemeralRoots")), `expected warning for project action.ephemeralRoots, got ${JSON.stringify(layered.warnings)}`);
+
+  const stale = defaultConfig() as unknown as Record<string, unknown>;
+  const action = { ...(stale.action as Record<string, unknown>) };
+  delete action.ephemeralRoots;
+  stale.action = action;
+  const completed = completeConfig(stale as never);
+  assert.deepEqual(completed.config.action.ephemeralRoots, [], "stale config without ephemeralRoots falls back to []");
+});

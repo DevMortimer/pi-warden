@@ -370,6 +370,16 @@ test("skipReason names exclude, skip, path scoping, and missing rules", () => {
   assert.match(skipReason(target, undefined, rulesConfig())!, /no rules file/);
 });
 
+test("skipReason skips binary, image, media, font, archive, and compiled/DB extensions case-insensitively", () => {
+  const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules("# Any file\nNever leave stubs."), alwaysDropped: 0 };
+  for (const path of ["docs/hero.webp", "assets/icon.PNG", "data/cache.sqlite", "fonts/inter.woff2", "dist/app.wasm", "bundle.tar.gz"]) {
+    const target = describeTarget("write", { path, content: "binary-or-placeholder" }, cwd)!;
+    assert.ok(skipReason(target, set, rulesConfig()), `${path} should be skipped by default`);
+  }
+  const tsTarget = describeTarget("write", { path: "src/app.ts", content: "export const ok = true;" }, cwd)!;
+  assert.equal(skipReason(tsTarget, set, rulesConfig()), undefined, "source files are still judged");
+});
+
 test("evaluateRules: violations at or above the threshold become findings, strongest first, with the located edit; compliant rules do not", async () => {
   const set: RuleSet = { sources: ["pi-warden.md"], rules: parseRules(RULES_MD), alwaysDropped: 0 };
   const judge = stubJudge({ "no-console-statements": 0.91, "todo-comments-need-a-reference": 0.72, "explicit-return-types": 0.69 }, "edit_2");
