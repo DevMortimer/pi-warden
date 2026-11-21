@@ -63,11 +63,35 @@ export function traceFacts(traceDir) {
   return { judged, failed };
 }
 
-/** The `lastFailure` pi-typesafe keeps in the run's agent dir: `{ code, message, at }`, or null. */
+function isFailure(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && typeof value.code === "string");
+}
+
+/** The most recent `lastFailure` pi-typesafe keeps in the run's agent dir: `{ code, message, at }`, or null. */
 function lastFailure(agentDir) {
   try {
-    const failure = JSON.parse(readFileSync(join(agentDir, "pi-typesafe", "auth-state.json"), "utf8")).lastFailure;
-    return failure && typeof failure === "object" ? failure : null;
+    const parsed = JSON.parse(readFileSync(join(agentDir, "pi-typesafe", "auth-state.json"), "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (parsed.backends && typeof parsed.backends === "object" && !Array.isArray(parsed.backends)) {
+      let best = null;
+      let bestAt = Number.NEGATIVE_INFINITY;
+      let bestIsDefault = false;
+      for (const [id, entry] of Object.entries(parsed.backends)) {
+        const failure = entry && typeof entry === "object" && !Array.isArray(entry) ? entry.lastFailure : null;
+        if (!isFailure(failure)) continue;
+        const at = Date.parse(failure.at);
+        const parsedAt = Number.isFinite(at) ? at : Number.NEGATIVE_INFINITY;
+        const isDefault = id === "typesafe";
+        if (best === null || parsedAt > bestAt || (parsedAt === bestAt && isDefault && !bestIsDefault)) {
+          best = failure;
+          bestAt = parsedAt;
+          bestIsDefault = isDefault;
+        }
+      }
+      if (best) return best;
+    }
+    // Pre-0.15 auth-state.json snapshots stored lastFailure at the top level.
+    return isFailure(parsed.lastFailure) ? parsed.lastFailure : null;
   } catch {
     return null;
   }
