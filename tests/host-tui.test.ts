@@ -99,7 +99,7 @@ test("every guard mounts on a host whose TUI has a mouse region", async () => {
   assert.ok(sessionEvent);
   await sessionEvent.handler({}, host.ctx);
 
-  assert.equal(host.events.length, 14, "14 event hooks registered");
+  assert.equal(host.events.length, 15, "15 event hooks registered");
   assert.deepEqual([...host.commands.keys()], ["warden"], "1 command: /warden");
   assert.ok(host.shortcuts.size >= 1, "at least 1 shortcut registered");
   // session_start opened the isolated database, not the developer's ~/.pi/agent/pi-warden.

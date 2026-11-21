@@ -73,10 +73,16 @@ test("a steer hold the reply neither releases nor replaces is abandoned when the
   assert.match(formatHolds(snapshot), /1 hold; 0 approved by you, 0 declined, 0 re-planned, 1 abandoned, 0 awaiting your reply/);
 });
 
-test("a steer hold becomes a re-plan once the reply has arrived and a mutating call arrives instead", () => {
+test("a steer hold becomes a re-plan in the same turn or after a reply when a mutating call runs instead", () => {
+  const sameTurn = new HoldLedger();
+  const hold0 = sameTurn.record(verdict({ command: "rm -rf build" }), { held: true, mode: "steer", at: 1 });
+  assert.deepEqual(sameTurn.replanned(2).map(record => record.id), [hold0.id], "same-turn replan settles prompts === 0");
+  assert.equal(hold0.outcome, "replanned");
+  assert.equal(hold0.outcomeVia, "same turn");
+  assert.deepEqual(sameTurn.runEnded(3), [], "a labelled hold is not labelled again");
+
   const ledger = new HoldLedger();
   const hold = ledger.record(verdict({ command: "rm -rf build" }), { held: true, mode: "steer", at: 1 });
-  assert.deepEqual(ledger.replanned(2), [], "the hold's own run is not a re-plan: the user has not replied yet");
   ledger.promptArrived();
   assert.deepEqual(ledger.replanned(3).map(record => record.id), [hold.id]);
   assert.equal(hold.outcome, "replanned");
@@ -88,6 +94,20 @@ test("a steer hold becomes a re-plan once the reply has arrived and a mutating c
   assert.equal(snapshot.precision, 1);
   assert.equal(snapshot.labels, 1);
   assert.match(outcomeNote(hold)!, /replaced by another call that changes something/);
+});
+
+test("headless runEnded settles prompts === 0 steer holds as abandoned via run end while interactive waits", () => {
+  const interactive = new HoldLedger();
+  const pending = interactive.record(verdict(), { held: true, mode: "steer", at: 1 });
+  assert.deepEqual(interactive.runEnded(2), []);
+  assert.equal(pending.outcome, "pending");
+
+  const headless = new HoldLedger();
+  const held = headless.record(verdict(), { held: true, mode: "steer", at: 1 });
+  const settled = headless.runEnded(2, { headless: true });
+  assert.deepEqual(settled.map(record => record.id), [held.id]);
+  assert.equal(held.outcome, "abandoned");
+  assert.equal(held.outcomeVia, "run end");
 });
 
 test("only a steer hold waits for the reply; the dialog decides a confirm-mode hold at once", () => {
@@ -152,13 +172,25 @@ test("an accepted call writes no outcome line: it was 12,036 of the week's 12,03
   assert.equal(outcomeNote(call), undefined, "but the trace gets no line for it");
 });
 
-test("regret without a located target falls on the latest candidate; candidates two prompts old are no longer asked about", () => {
+test("text regret without a matching target does not blame candidates; jev target or single jev candidate does; stale candidates age out", () => {
   const ledger = new HoldLedger();
   ledger.record(verdict({ level: "allow" }), { held: false, mode: "steer" });
   const last = ledger.record(verdict({ level: "allow" }), { held: false, mode: "steer" });
   ledger.promptArrived();
-  assert.deepEqual(ledger.regret({ regretted: true, target: "a9", via: "text" }).map(record => record.outcome), ["accepted", "regretted"]);
-  assert.equal(last.outcome, "regretted");
+  assert.deepEqual(ledger.regret({ regretted: true, via: "text" }).map(record => record.outcome), ["accepted", "accepted"]);
+  assert.equal(last.outcome, "accepted");
+
+  const mismatch = new HoldLedger();
+  mismatch.record(verdict({ level: "allow" }), { held: false, mode: "steer" });
+  mismatch.record(verdict({ level: "allow" }), { held: false, mode: "steer" });
+  mismatch.promptArrived();
+  assert.deepEqual(mismatch.regret({ regretted: true, target: "a9", via: "text" }).map(record => record.outcome), ["accepted", "accepted"]);
+
+  const jevSingle = new HoldLedger();
+  const only = jevSingle.record(verdict({ level: "allow" }), { held: false, mode: "steer" });
+  jevSingle.promptArrived();
+  assert.deepEqual(jevSingle.regret({ regretted: true, via: "jev", probability: 0.9 }).map(record => record.outcome), ["regretted"]);
+  assert.equal(only.outcome, "regretted");
 
   const stale = new HoldLedger();
   const record = stale.record(verdict({ level: "allow" }), { held: false, mode: "steer" });

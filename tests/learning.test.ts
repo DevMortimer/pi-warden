@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test, after } from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,7 +11,7 @@ const testDir = mkdtempSync(join(tmpdir(), "pi-warden-learn-"));
 // A nested folder that does not exist yet: the database must create its own directory.
 process.env.PI_WARDEN_DB = join(testDir, "nested", "pi-warden", "holds.db");
 
-const { initSchema, recordHold, recordOutcome, toHoldRecord, querySmartHistory, queryHoldsForProject, calculateSmartConfidence, shouldSkipHold, signatureHash } = await import("../src/learning.js");
+const { initSchema, recordHold, recordOutcome, toHoldRecord, querySmartHistory, queryHoldsForProject, calculateSmartConfidence, shouldSkipHold, signatureHash, canonicalProjectRoot } = await import("../src/learning.js");
 
 after(() => {
   rmSync(testDir, { recursive: true, force: true });
@@ -154,9 +155,24 @@ test("analyzeThresholds returns empty for insufficient data", async () => {
   assert.equal(adjustments.length, 0, "no adjustments without enough data");
 });
 
-test("analyzeThresholds suggests lowering threshold when precision is low", async () => {
+test("analyzeThresholds suggests raising threshold when precision is low, excludes NULL outcomes, and suggests lowering when regret is high", async () => {
+  const nullOnlyProject = "project-null-only";
+  for (let i = 0; i < 25; i++) {
+    await recordHold({
+      timestamp: Date.now() - i * 1000,
+      projectRoot: nullOnlyProject,
+      tool: "bash",
+      commandPreview: "unsettled-cmd",
+      scores: { irreversible: 0.5, reasons: ["irreversible 0.5"] },
+      level: "confirm",
+      held: true,
+      reasons: ["irreversible 0.5"],
+    });
+  }
+  assert.deepEqual(await analyzeThresholds(nullOnlyProject), [], "outcome IS NULL rows do not count toward precision denominator");
+
   const projectRoot = "project-beta";
-  // Create many holds that get approved (low precision)
+  // Create many holds that get approved (low precision -> too many false positives -> raise threshold).
   for (let i = 0; i < 25; i++) {
     const id = await recordHold({
       timestamp: Date.now() - i * 1000,
@@ -172,10 +188,30 @@ test("analyzeThresholds suggests lowering threshold when precision is low", asyn
   }
   const adjustments = await analyzeThresholds(projectRoot);
   assert.ok(adjustments.length > 0, "suggests adjustment for low precision");
-  const first = adjustments[0];
-  assert.ok(first, "first adjustment exists");
+  const first = adjustments[0]!;
   assert.equal(first.guard, "action", "adjustment is for action guard");
-  assert.ok(first.suggestedThreshold < first.currentThreshold, "suggests lower threshold");
+  assert.equal(first.currentThreshold, 0.9);
+  assert.equal(first.suggestedThreshold, 0.95, "low precision recommends raising threshold");
+
+  const highRegretProject = "project-high-regret";
+  for (let i = 0; i < 12; i++) {
+    const id = await recordHold({
+      timestamp: Date.now() - i * 1000,
+      projectRoot: highRegretProject,
+      tool: "bash",
+      commandPreview: "allowed-cmd",
+      scores: { irreversible: 0.4, reasons: [] },
+      level: "allow",
+      held: false,
+      reasons: [],
+      sampled: true,
+    });
+    await recordOutcome(id, i < 4 ? "regretted" : "accepted");
+  }
+  const regretAdj = await analyzeThresholds(highRegretProject);
+  assert.ok(regretAdj.length > 0, "suggests adjustment for high regret rate");
+  assert.equal(regretAdj[0]!.currentThreshold, 0.9);
+  assert.equal(regretAdj[0]!.suggestedThreshold, 0.85, "high regret rate recommends lowering threshold");
 });
 
 test("analyzePatterns returns empty for insufficient data", async () => {
@@ -789,6 +825,83 @@ test("a start while another session holds the database settles nothing, and the 
     const d = new DatabaseSync(file, { readOnly: true });
     assert.equal((d.prepare("SELECT task FROM holds ORDER BY id DESC LIMIT 1").get() as { task: string | null }).task, null, "the next start settles it");
     assert.equal((d.prepare("SELECT task_hash IS NOT NULL AS has_hash FROM holds ORDER BY id DESC LIMIT 1").get() as { has_hash: number }).has_hash, 1, "its task text is in hold_tasks and the row points at it");
+    d.close();
+  });
+});
+
+test("canonicalProjectRoot maps git worktrees back to the main repository root without spawning git", async () => {
+  const root = mkdtempSync(join(testDir, "wt-root-"));
+  const mainRepo = join(root, "main-repo");
+  const worktree = join(root, "wt-branch");
+  mkdirSync(mainRepo, { recursive: true });
+  execFileSync("git", ["init", "-b", "main"], { cwd: mainRepo, stdio: "pipe" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: mainRepo, stdio: "pipe" });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: mainRepo, stdio: "pipe" });
+  writeFileSync(join(mainRepo, "README.md"), "# repo\n");
+  execFileSync("git", ["add", "README.md"], { cwd: mainRepo, stdio: "pipe" });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: mainRepo, stdio: "pipe" });
+  execFileSync("git", ["worktree", "add", worktree, "-b", "feature-x"], { cwd: mainRepo, stdio: "pipe" });
+  const sub = join(worktree, "nested", "dir");
+  mkdirSync(sub, { recursive: true });
+
+  const expected = realpathSync(mainRepo);
+  assert.equal(canonicalProjectRoot(mainRepo), expected);
+  assert.equal(canonicalProjectRoot(worktree), expected);
+  assert.equal(canonicalProjectRoot(sub), expected);
+  assert.equal(canonicalProjectRoot("relative-id"), "relative-id");
+
+  await withOwnDatabase(async (dirs, file) => {
+    await initSchema(0, dirs, 0);
+    await recordHold({ ...row(true, Date.now()), projectRoot: worktree }, dirs);
+    const rows = await queryHoldsForProject(mainRepo, undefined, dirs);
+    assert.equal(rows.length, 1, "worktree hold is stored under canonical main repo root");
+    const d = new DatabaseSync(file, { readOnly: true });
+    const stored = d.prepare("SELECT project_root FROM holds").get() as { project_root: string };
+    assert.equal(stored.project_root, expected);
+    d.close();
+  });
+});
+
+test("recordHold skips unsampled allow rows while persisting held, warn, deny, and sampled allow rows", async () => {
+  await withOwnDatabase(async (dirs, file) => {
+    await initSchema(0, dirs, 0);
+    const unsampled = await recordHold({
+      ...row(false, Date.now()),
+      level: "allow",
+      task: "unsampled allow task",
+      sampled: false,
+    }, dirs);
+    assert.equal(unsampled, -1, "unsampled allow row returns -1 and is not inserted");
+
+    const sampledAllow = await recordHold({
+      ...row(false, Date.now()),
+      level: "allow",
+      task: "sampled allow task",
+      sampled: true,
+    }, dirs);
+    assert.ok(sampledAllow > 0, "sampled allow row is persisted");
+
+    const warnRow = await recordHold({
+      ...row(false, Date.now()),
+      level: "warn",
+      task: "warn task",
+      sampled: false,
+    }, dirs);
+    assert.ok(warnRow > 0, "warn row is persisted even when sampled is false");
+
+    const heldRow = await recordHold({
+      ...row(true, Date.now()),
+      level: "confirm",
+      task: "held task",
+      sampled: false,
+    }, dirs);
+    assert.ok(heldRow > 0, "held row is persisted even when sampled is false");
+
+    const d = new DatabaseSync(file, { readOnly: true });
+    const holdsCount = (d.prepare("SELECT COUNT(*) AS cnt FROM holds").get() as { cnt: number }).cnt;
+    assert.equal(holdsCount, 3, "only sampled allow, warn, and held rows were inserted");
+    const tasks = (d.prepare("SELECT text FROM hold_tasks ORDER BY text").all() as Array<{ text: string }>).map(r => r.text);
+    assert.deepEqual(tasks, ["held task", "sampled allow task", "warn task"], "unsampled allow task was not inserted into hold_tasks");
     d.close();
   });
 });

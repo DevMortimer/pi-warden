@@ -182,7 +182,7 @@ test("(d) user command rule severity destructive, judge present, Jev 0.1 → con
 });
 
 test("(e) evidence mode: outside-project existing write, judge present, Jev 0.2 → allow with evidence note", async () => {
-  const config = judgedAction();
+  const config = judgedAction({ ephemeralRoots: [] });
   const j = fakeJudge({ irreversible: 0.2 });
   const verdict = await evaluateAction({ tool: "write", input: { path: "/tmp/test-file.ts", content: "x" }, cwd, task: "write to tmp" }, { config, judge: j });
   assert.equal(verdict.level, "allow");

@@ -55,8 +55,89 @@ test("ask gate: a write, an edit, and the shapes that change something are asked
     "docker compose up -d", "kubectl apply -f x.yaml", "terraform apply",
     "sudo rm /etc/hosts",
   ]) assert.equal(asks(command), true, command);
-  assert.equal(actionAskGate("write", { path: join(cwd, "a.ts"), content: "x" }, undefined, cwd).ask, true);
-  assert.equal(actionAskGate("edit", { path: join(cwd, "a.ts"), edits: [] }, undefined, cwd).ask, true);
+  assert.equal(actionAskGate("write", { path: join(cwd, "a.ts"), content: "x" }, undefined, cwd).ask, false, "inside-project write skips Jev");
+  assert.equal(actionAskGate("edit", { path: join(cwd, "a.ts"), edits: [] }, undefined, cwd).ask, false, "inside-project edit skips Jev");
+  assert.equal(actionAskGate("write", { path: "~/Desktop/notes.txt", content: "x" }, undefined, cwd).ask, true, "outside-project write still asks");
+  assert.equal(actionAskGate("edit", { path: "~/Desktop/notes.txt", edits: [] }, undefined, cwd).ask, true, "outside-project edit still asks");
+  assert.equal(actionAskGate("write", { path: "a.ts", content: "x" }, undefined, undefined).ask, true, "unknown cwd fails safe and asks");
+  assert.equal(actionAskGate("write", { content: "x" }, undefined, cwd).ask, true, "missing path fails safe and asks");
+});
+
+test("ask gate: reversible local git plumbing skips Jev while irreversible or visible git still asks", () => {
+  for (const command of [
+    "git add .",
+    "git add -p src/a.ts",
+    "git add --force dist/a.js",
+    "git rm --cached src/a.ts",
+    "git fetch",
+    "git fetch origin",
+    "git fetch --depth=1 origin",
+    "git switch main",
+    "git switch -c feat/new",
+    "git switch --create feat/new",
+    "git checkout -b feat/new",
+    "git checkout -b feat/new origin/main",
+    "git restore --staged src/a.ts",
+    "git restore -S src/a.ts",
+  ]) assert.equal(asks(command), false, command);
+  for (const command of [
+    "git commit -m x",
+    "git reset --hard",
+    "git rm src/a.ts",
+    "git rm --cached src/a.ts && rm -f src/b.ts",
+    "git fetch --prune",
+    "git fetch -p origin",
+    "git fetch --force origin",
+    "git fetch -f origin",
+    "git fetch origin +main:main",
+    "git switch -f main",
+    "git switch --force main",
+    "git switch -C feat/new",
+    "git switch --force-create feat/new",
+    "git switch --discard-changes main",
+    "git checkout -B main",
+    "git checkout -f -b feat/new",
+    "git checkout --force -b feat/new",
+    "git checkout -- src/a.ts",
+    "git checkout -b feat/new -- src/a.ts",
+    "git checkout main",
+    "git restore src/a.ts",
+    "git restore --staged --worktree src/a.ts",
+    "git restore -SW src/a.ts",
+  ]) assert.equal(asks(command), true, command);
+});
+
+test("ask gate: inside-project and ephemeral writes skip Jev while .env and outside-project writes still reach Jev", async () => {
+  const scratchRoot = await mkdtemp(join(tmpdir(), "pi-warden-eph-"));
+  const hostRoot = await mkdtemp(join(tmpdir(), "pi-warden-host-"));
+  try {
+    const j1 = judgeOf();
+    const projectWrite = await evaluateAction({ tool: "write", input: { path: "src/a.ts", content: "export const a = 1;" }, cwd, task: "add module" }, { config: config(), judge: j1 });
+    assert.equal(j1.calls.length, 0, "inside-project write with no pattern hits skips Jev");
+    assert.equal(projectWrite.source, "pattern");
+    assert.equal(projectWrite.notAsked, "reversible project or scratch edit");
+
+    const j2 = judgeOf();
+    const ephWrite = await evaluateAction({ tool: "write", input: { path: join(scratchRoot, "note.txt"), content: "scratch" }, cwd, task: "save scratch" }, { config: { ...config(), ephemeralRoots: [scratchRoot] }, judge: j2 });
+    assert.equal(j2.calls.length, 0, "ephemeralRoots subtree write skips Jev");
+    assert.equal(ephWrite.notAsked, "reversible project or scratch edit");
+
+    const j3 = judgeOf();
+    const hostWrite = await evaluateAction({ tool: "write", input: { path: join(hostRoot, "out.txt"), content: "ok" }, cwd, task: "write host file" }, { config: config(), judge: j3, hostPaths: [hostRoot] });
+    assert.equal(j3.calls.length, 0, "hostPaths write skips Jev");
+    assert.equal(hostWrite.notAsked, "reversible project or scratch edit");
+
+    const j4 = judgeOf();
+    await evaluateAction({ tool: "write", input: { path: ".env", content: "FOO=bar\n" }, cwd, task: "add env" }, { config: config(), judge: j4 });
+    assert.equal(j4.calls.length, 1, "inside-project .env write hits sensitive pattern and still reaches Jev");
+
+    const j5 = judgeOf();
+    await evaluateAction({ tool: "write", input: { path: "~/Desktop/notes.txt", content: "outside" }, cwd, task: "write desktop note" }, { config: config(), judge: j5 });
+    assert.equal(j5.calls.length, 1, "outside-project non-ephemeral write still reaches Jev");
+  } finally {
+    await rm(scratchRoot, { recursive: true, force: true });
+    await rm(hostRoot, { recursive: true, force: true });
+  }
 });
 
 test("ask gate: reads, builds, tests, and searches are left to the offline pass", () => {
@@ -127,7 +208,7 @@ const write = { tool: "write", input: { path: "src/a.ts", content: "export const
 
 test("with the default config the acting request asks no off-task, scope, or should-proceed question", async () => {
   const j = badAnswers(0.1);
-  const verdict = await evaluateAction({ ...write, cwd }, { config: { ...config(), traceSample: 0 }, judge: j });
+  const verdict = await evaluateAction({ ...write, cwd }, { config: { ...config(), ask: { enabled: false }, traceSample: 0 }, judge: j });
   assert.equal(j.calls.length, 1, "one acting request and no sample");
   for (const id of ["off_task", "scope", "should_proceed"]) assert.equal(id in j.calls[0]!.questions, false, id);
   assert.equal(verdict.level, "allow");
@@ -135,7 +216,7 @@ test("with the default config the acting request asks no off-task, scope, or sho
 });
 
 test("the acting request asks no should-proceed question; a sampled score at or below the threshold is reported", async () => {
-  const cfg = config();
+  const cfg = { ...config(), ask: { enabled: false } };
   const acting = badAnswers(0.3);
   const verdict = await evaluateAction({ ...write, cwd }, { config: cfg, judge: acting, traceSample: 0 });
   assert.equal(acting.calls.length, 1);
@@ -165,7 +246,7 @@ test("the ask gate decides a call offline whatever the sample setting is", async
 });
 
 test("the sampled should-proceed answer is the one reported", async () => {
-  const cfg = config();
+  const cfg = { ...config(), ask: { enabled: false } };
   const j = badAnswers(0.9, 0.1);
   const verdict = await evaluateAction({ ...write, cwd }, { config: cfg, judge: j, traceSample: 1 });
   assert.equal(j.calls.length, 2);
@@ -185,7 +266,7 @@ test("a sampled call reports its off-task and should-proceed answers, and never 
 test("with traceSample 0 no call gets an off-task or should-proceed reason", async () => {
   const j = badAnswers(0.1);
   for (const input of [write, { tool: "edit", input: { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] }, cwd: "", task: "rename" }, { tool: "bash", input: { command: "git push origin main" }, cwd: "", task: "push it" }]) {
-    const verdict = await evaluateAction({ ...input, cwd }, { config: { ...config(), traceSample: 0 }, judge: j, traceSample: 0 });
+    const verdict = await evaluateAction({ ...input, cwd }, { config: { ...config(), ask: { enabled: false }, traceSample: 0 }, judge: j, traceSample: 0 });
     assert.equal(verdict.judgment?.offTask, undefined);
     assert.equal(verdict.judgment?.scope, undefined);
     assert.equal(verdict.judgment?.shouldProceed, undefined);

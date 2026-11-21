@@ -297,7 +297,7 @@ test("a silent session records the arm and withholds the done-check steer", asyn
   assert.ok(suppressed.every(entry => entry.text.length <= TRIAL_TEXT_LIMIT), "every record is clipped");
 });
 
-test("a live session delivers the done-check steer and records only the arm", async () => {
+test("a live headless session delivers the done-check autonomous gate once and records only the arm", async () => {
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0, claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.95, outcome: "complete" };
   const record: Recorded = { bashRan: false, readCalls: 0 };
   let seenAfterNudge = "";
@@ -308,18 +308,18 @@ test("a live session delivers the done-check steer and records only the arm", as
   assert.equal((entries[0] as Extract<TrialRecord, { record: "arm" }>).arm, "live");
   assert.deepEqual(entries.slice(1), [], "a live session has nothing suppressed to record");
   assert.match(await traceFile(session), /no test, build, or lint run/, "the live arm reports the done-check notice on the trace");
-  assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "the notice is not a custom message");
-  assert.equal(seenAfterNudge, "", "the notice asks for no follow-up turn");
+  assert.match(customMessages(session), /no test, build, or lint run/, "the headless autonomous gate injects one custom message");
+  assert.match(seenAfterNudge, /no test, build, or lint run/, "the headless autonomous gate runs one continuation turn");
 });
 
-test("with the setting off, no trial entries are written", async () => {
+test("with the setting off, no trial entries are written and headless done-check still gates", async () => {
   nextAnswers = { irreversible: 0.1, off_task: 0.1, scope: "expected_step", should_proceed: 1.0, claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.95, outcome: "complete" };
   const record: Recorded = { bashRan: false, readCalls: 0 };
   const { session } = await runSession([...writeThenDone, faux.fauxAssistantMessage("Understood.")], record, { id: idFor("silent"), trial: false });
   await session.prompt("add a note");
   assert.deepEqual(trialEntries(session), [], "the setting is off: nothing is recorded");
   assert.match(await traceFile(session), /no test, build, or lint run/, "and the notice is still reported on the trace");
-  assert.doesNotMatch(customMessages(session), /no test, build, or lint run/, "and it is not a custom message");
+  assert.match(customMessages(session), /no test, build, or lint run/, "and the headless autonomous gate delivers its continuation");
 });
 
 test("a silent session still holds an irreversible call", async () => {

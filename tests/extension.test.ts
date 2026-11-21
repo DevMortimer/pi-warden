@@ -262,15 +262,18 @@ const FULL_ACTION = { ask: { enabled: false }, traceSample: 0 };
 /** Writes the user config from JSON, with the pre-cut action section unless the test sets its own, then starts the
  *  session that reads it: a user config edit lands at the next session, so a test that changes one starts a session. */
 const writeConfig = async (json: string) => {
-  const config = JSON.parse(json) as { action?: Record<string, unknown> };
-  await writeFile(configPath(), JSON.stringify({ ...config, action: { ...FULL_ACTION, ...(config.action ?? {}) } }));
+  const config = JSON.parse(json) as { action?: Record<string, unknown>; rules?: Record<string, unknown> };
+  const rules = config.rules !== undefined && config.rules.cadence === undefined
+    ? { cadence: "edit", ...config.rules }
+    : config.rules;
+  await writeFile(configPath(), JSON.stringify({ ...config, action: { ...FULL_ACTION, ...(config.action ?? {}) }, ...(rules !== undefined ? { rules } : {}) }));
   await sessionStart();
 };
 const grantConsent = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, cause: { enabled: false }, ...STACK_BAR }));
-/** Consent with the cause-check at its default (on), for tests whose subject is that guard. */
-const grantConsentCause = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, ...STACK_BAR }));
-/** Consent with the rules guard on: the turn-start reminder needs a rule set to ask about. */
-const curatorConfig = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, cause: { enabled: false }, ...STACK_BAR }));
+/** Consent with the cause-check on, for tests whose subject is that guard. */
+const grantConsentCause = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, cause: { enabled: true }, ...STACK_BAR }));
+/** Consent with the rules guard and turn-start reminder on, for curator tests. */
+const curatorConfig = () => writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, rulesAtTurnStart: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, cause: { enabled: false }, ...STACK_BAR }));
 
 before(async () => {
   temporary = await mkdtemp(join(tmpdir(), "pi-warden-ext-"));
@@ -577,7 +580,7 @@ test("action rules context is disclosed, rides the request only while a violatio
     const { disclosure } = await import("../src/extension.js");
     assert.match(disclosure, /unless the rules guard is on/i);
     assert.match(disclosure, /when a guarded bash call runs a script from the project or a temp folder, up to five redacted lines of its body \(600 characters\) that match a floor pattern/i, "the script body lines ride the request");
-    assert.match(disclosure, /one judged action call in twenty .*up to eight redacted earlier user\/assistant text messages and the resolved active rules file content/i, "earlier messages and the rules content ride the sample");
+    assert.match(disclosure, /when diagnostic trace sampling is enabled .*action\.traceSample.*up to eight redacted earlier user\/assistant text messages and the resolved active rules file content/i, "earlier messages and the rules content ride the sample");
     assert.match(disclosure, /only while a rule violation is open/i);
     assert.match(disclosure, /short continuation or a relayed child report, which send nothing/i);
     assert.doesNotMatch(disclosure, /with every action request/i);
@@ -908,9 +911,12 @@ test("fixture-shaped credentials from a test file are traced once and never stee
   assert.match(trace, /credential-shaped stand-in \(traced\)/, "the trace still names what was seen");
   assert.match(trace, /test fixture or a documented example/);
   assert.ok(!trace.includes("devtok_9f8e7d6c5b4a3210") && !trace.includes("sk-synthetic"), "the trace is redacted");
-  // The second read of the same file adds no credential notice; the only steer is the repeat check's.
+  // The second read of the same file adds no credential notice; the only note is the inline repeat check's.
   reportBaseline = (await recordedSince()).length;
-  assert.equal(await toolResult("read", { path: "tests/baseline.test.js" }, testOutput, false), undefined);
+  const secondRead = await toolResult("read", { path: "tests/baseline.test.js" }, testOutput, false) as { content: Array<{ text: string }> } | undefined;
+  assert.ok(secondRead, "repeat note attaches inline on tool_result");
+  assert.doesNotMatch(secondRead.content[0]!.text, /Possible credentials|do not echo/, "no credential banner on fixture repeat");
+  assert.match(secondRead.content[0]!.text, /pi-warden: you already have this output from `read tests\/baseline\.test\.js`/);
   assert.equal((await shownNotices()).length, 1);
   assert.match((await shownNotices())[0]!.message.content, /^pi-warden: you already have this output from `read tests\/baseline\.test\.js`/);
   await runCommand("trace", context({ hasUI: false }));
@@ -1126,7 +1132,7 @@ test("the trace records a non-zero token-turns ledger line after a compression a
 });
 
 test("an identical repeated result becomes a duplicate note with a stored copy, without a Jev request", async () => {
-  await writeConfig(JSON.stringify({  typesafe: true, stuck: { enabled: false } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false }, context: { duplicateNote: true }, ...STACK_BAR }));
   nextAnswers = { retention: "all" };
   const full = "unique line " + "x".repeat(3000) + "\nERROR: kept once\n";
   assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "the first result stays");
@@ -1753,7 +1759,18 @@ test("a notice the agent ignores is still reported after thirty of them, and /wa
   };
   for (let i = 0; i < 31; i++) assert.equal(await run("a"), 1, `notice ${i + 1} is recorded`);
   await runCommand("status", context({ hasUI: false, ...model("a") }));
-  assert.match((await latestReport()), /Notices followed, per model: test\/a: intent-mismatch \(31 shown, 0% followed, 0% disputed\)/);
+  assert.doesNotMatch((await latestReport()), /intent-mismatch \(\d+ shown/, "invisible trace-only intent-mismatch is not watched as an agent steer");
+  // Actionable inline repeat feedback IS watched and counted in /warden status.
+  await writeConfig(JSON.stringify({ typesafe: false, stuck: { enabled: true, nudge: true, repeatSteer: true, inlineFeedback: true }, ...STACK_BAR }));
+  for (let i = 0; i < 3; i++) {
+    await sessionStart(context({ hasUI: false, ...model("a") }));
+    await newPrompt("run test", context({ hasUI: false, ...model("a") }));
+    await toolResult("bash", { command: "npm test" }, "1 failing", true, context({ hasUI: false, ...model("a") }));
+    await toolResult("bash", { command: "npm test" }, "1 failing", true, context({ hasUI: false, ...model("a") }));
+    for (const text of ["Retrying.", "Continuing."]) await fire("message_end", { message: { role: "assistant", content: [{ type: "text", text }, { type: "toolCall", id: "c", name: "bash", arguments: { command: "npm test" } }] } }, context({ hasUI: false, ...model("a") }));
+  }
+  await runCommand("status", context({ hasUI: false, ...model("a") }));
+  assert.match((await latestReport()), /Notices followed, per model: test\/a: repeat \(3 shown,/);
 });
 
 test("plan: a text-less git push after an earlier plan and an earlier tool call is judged against that plan", async () => {
@@ -1813,17 +1830,15 @@ test("hold feedback offline: approval, re-plan, and a stop reply label the calls
   await runCommand("status");
   assert.match(notices.at(-1)!.text, /Holds: 2 holds; 1 approved by you, 0 declined, 1 re-planned, 0 abandoned, 0 awaiting your reply; precision 50% over 2 labels; 2 allowed \(0 regretted by you, 2 accepted\)/);
 
-  // An allowed call the next message regrets: offline, the stop-word heuristic labels it.
+  // An allowed call followed by an offline text objection without a located target is not falsely blamed.
   assert.equal(await toolCall("bash", { command: "rm -rf dist" }), undefined);
   await newPrompt("wait, don't delete dist, I still need it");
   await runCommand("status");
-  assert.match(notices.at(-1)!.text, /3 allowed \(1 regretted by you, 2 accepted\)/);
-  await runCommand("trace", context({ hasUI: false }));
-  assert.match((await latestReport()), /outcome: the user's next message regrets this call; it should have been held/);
+  assert.match(notices.at(-1)!.text, /3 allowed \(0 regretted by you, 3 accepted\)/);
 
   const lines = await readLog(logPath, 5);
   assert.deepEqual(lines.map(record => [record.held, record.outcome, record.outcomeVia]), [
-    [true, "approved", "retry"], [false, "accepted", "text"], [true, "replanned", "next prompt"], [false, "accepted", "text"], [false, "regretted", "text"],
+    [true, "approved", "retry"], [false, "accepted", "text"], [true, "replanned", "next prompt"], [false, "accepted", "text"], [false, "accepted", "text"],
   ]);
   assert.deepEqual(lines[0]!.patterns, ["git-force-push"]);
   assert.equal(lines[0]!.source, "pattern");
@@ -1909,13 +1924,13 @@ test("hold feedback with Jev: the regret question rides the first action request
   assert.match((await latestReport()), /outcome: the user's next message regrets this call \(0\.92\); it should have been held/);
   assert.ok(!(await latestReport()).includes("outcome: the user's next message does not regret"), "the accepted call leaves no line of its own");
 
-  // The agent only replies to the next prompt: no request carries the question, so the heuristic reads the prompt at the end of the run.
+  // The agent only replies to the next prompt: no request carries the question, and offline text without a target does not falsely blame candidates.
   const before = networkCalls;
   await newPrompt("undo that");
   await agentEnd("Done.");
   assert.equal(networkCalls, before);
   await runCommand("status");
-  assert.match(notices.at(-1)!.text, /4 allowed \(2 regretted by you, 2 accepted\)/);
+  assert.match(notices.at(-1)!.text, /4 allowed \(1 regretted by you, 3 accepted\)/);
 });
 
 test("hold feedback: an accepted call writes no outcome line, while the status line still counts it", async () => {
@@ -2313,7 +2328,7 @@ test("a confirm-dialog write gets its rules and slop steer only after the user a
 });
 
 test("prose: the final reply is scored against the audience and a trend is reported once with its symptoms", async () => {
-  await grantConsent();
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: false }, cause: { enabled: false }, slop: { prose: { enabled: true } }, ...STACK_BAR }));
   await newPrompt("explain the bug");
   nextAnswers = { wordy: 0.9, cliches: 0.95, jargon: 0.1 };
   const longReply = "Great question! Let me walk you through it. ".repeat(6);
@@ -2337,7 +2352,7 @@ test("prose: the final reply is scored against the audience and a trend is repor
   await agentEnd("Short.");
   assert.equal(requests.filter(request => "wordy" in request.questions).length, 3, "replies under minChars are not judged");
 
-  await writeConfig(JSON.stringify({  typesafe: true, slop: { prose: { audience: "plain" } } , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, slop: { prose: { enabled: true, audience: "plain" } }, ...STACK_BAR }));
   await newPrompt("status?");
   nextAnswers = { wordy: 0.1, cliches: 0.1, jargon: 0.95 };
   await agentEnd("The webhook handler lacked HMAC verification so the ORM upsert raced the mutex. ".repeat(3));
@@ -2805,7 +2820,7 @@ test("TypeSafe failures fail open with a warning and never leak the upstream bod
 });
 
 test("regression: a budget error from an end-of-turn guard stops every later request, not only the action guard's", async () => {
-  await writeConfig(JSON.stringify({  typesafe: true, maxRequests: 1 , ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, maxRequests: 1, slop: { prose: { enabled: true } }, ...STACK_BAR }));
   await newPrompt("explain the bug");
   assert.equal(await toolCall("bash", { command: "npm test" }), undefined);
   assert.equal(networkCalls, 1, "the single allowed request goes to the action guard");
@@ -4584,7 +4599,7 @@ test("conscience: warden steer does not invalidate conscience assessment", async
 });
 
 test("stuck-loop diff: third identical failure is not larger than the duplicate note", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, context: { duplicateNote: true }, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000, inlineFeedback: false } }));
   await newPrompt("Run the test suite");
   const full = "FAIL tests/a.test.ts\n  Expected true, got false\n" + "x".repeat(20_000);
   assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "first result stays");
@@ -4614,7 +4629,7 @@ test("stuck-loop diff: three failures with differing outputs carry a diff note",
 });
 
 test("stuck-loop diff: three byte-identical failures do not grow the result", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, context: { duplicateNote: true }, stuck: { enabled: true, window: 12, minFailures: 3, diffLimit: 3000, tailLimit: 1000, inlineFeedback: false } }));
   await newPrompt("Run the test suite");
   const full = "FAIL tests/a.test.ts\n  Expected true, got false\n" + "x".repeat(20_000);
   assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "first stays");
@@ -4627,7 +4642,7 @@ test("stuck-loop diff: three byte-identical failures do not grow the result", as
 });
 
 test("stuck-loop diff: three identical successes are not replaced", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, inlineFeedback: false } }));
   await newPrompt("Run the test suite");
   const full = "all 42 tests passed\n";
   assert.equal(await toolResult("bash", { command: "npm test" }, full, false), undefined, "first stays");
@@ -4636,7 +4651,7 @@ test("stuck-loop diff: three identical successes are not replaced", async () => 
 });
 
 test("stuck-loop diff: two failures then a success leave the success unchanged", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3 } }));
+  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: true, window: 12, minFailures: 3, inlineFeedback: false } }));
   await newPrompt("Run the test suite");
   const fail = "FAIL tests/a.test.ts\n  Expected true, got false";
   const ok = "all 42 tests passed";
@@ -4646,7 +4661,7 @@ test("stuck-loop diff: two failures then a success leave the success unchanged",
 });
 
 test("stuck-loop diff: stuck.enabled: false prevents any replacement", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, stuck: { enabled: false } }));
+  await writeConfig(JSON.stringify({ typesafe: true, context: { duplicateNote: true }, stuck: { enabled: false } }));
   await newPrompt("Run the test suite");
   const full = "FAIL tests/a.test.ts\n  Expected true, got false" + "x".repeat(5000);
   assert.equal(await toolResult("bash", { command: "npm test" }, full, true), undefined, "stays");
@@ -5783,7 +5798,7 @@ test("rules at turn start on subq: 20 rules take two requests of at most 16 ques
   const saved = process.env.SUBQ_API_KEY;
   process.env.SUBQ_API_KEY = "subq-fake-test-key-000";
   const run = async (backend: string) => {
-    await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: backend, notices: true, rules: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, cause: { enabled: false }, ...STACK_BAR }));
+    await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: backend, notices: true, rules: { enabled: true }, rulesAtTurnStart: { enabled: true }, slop: { enabled: false }, done: { enabled: false }, cause: { enabled: false }, ...STACK_BAR }));
     // A new session builds the judge again from the config just written.
     await sessionStart();
     requests.length = 0;
@@ -5892,7 +5907,7 @@ test("rules at turn start: a short continuation and a relayed child report send 
 
 test("rules at turn start: a run a custom message starts has no prompt, and the reminder skips instead of crashing", async () => {
   await curatorConfig();
-  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, conscience: { enabled: true }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, notices: true, rules: { enabled: true }, rulesAtTurnStart: { enabled: true }, conscience: { enabled: true }, ...STACK_BAR }));
   const rules = join(temporary, "pi-warden.md");
   await writeFile(rules, "# No hardcoded secrets\nSource code must not contain passwords or API keys.\n");
   try {
@@ -6325,7 +6340,7 @@ test("context filter: on, the passages that pass the threshold replace the excer
 });
 
 test("context filter: no passing chunk falls back to the excerpt; retention all and duplicates never reach it", async () => {
-  await writeConfig(JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, context: { filter: { enabled: true } }, ...STACK_BAR }));
+  await writeConfig(JSON.stringify({ typesafe: true, rules: { enabled: false }, stuck: { enabled: false }, context: { duplicateNote: true, filter: { enabled: true } }, ...STACK_BAR }));
   await sessionStart();
   nextAnswers = { retention: "errors_and_summary", format: "other" };
   const full = filterLog();
@@ -6585,7 +6600,7 @@ test("the shell shapes that rewrote pi-warden's config in an independent check a
 });
 
 test("a further loosening of an already-named check shows the line again", async () => {
-  await writeConfig(JSON.stringify({ rules: { enabled: false } }));
+  await writeConfig(JSON.stringify({ rules: { enabled: false }, cause: { enabled: true } }));
   await mkdir(join(temporary, ".pi"), { recursive: true });
   await clearProjectConfig();
   await sessionStart();
@@ -6630,7 +6645,7 @@ test("a read-only agent directory does not stop a session, and the loosening lin
 });
 
 test("a loosened project file shows one line at session start, once for that set", async () => {
-  await writeConfig(JSON.stringify({ rules: { enabled: false } }));
+  await writeConfig(JSON.stringify({ rules: { enabled: false }, cause: { enabled: true } }));
   await mkdir(join(temporary, ".pi"), { recursive: true });
   await clearProjectConfig();
   await sessionStart();
@@ -6766,4 +6781,165 @@ test("conscience: a tip set for one run is gone from the next run's system promp
   assert.match(first, /impeccable/, "the tip rides the next run's system prompt");
   const second = await nextPromptAppend("design a third page");
   assert.doesNotMatch(second, /impeccable/, "and only that one run");
+});
+
+test("rules.cadence turn: intermediate writes skip per-edit Jev calls and run one net-diff check at agent_end", async () => {
+  const repo = await turnRepo("# No console statements\nCode must not contain `console.log` calls.\n");
+  await writeConfig(JSON.stringify({
+    typesafe: true,
+    notices: false,
+    action: { ask: { enabled: true }, traceSample: 0 },
+    rules: { enabled: true, cadence: "turn" },
+    slop: { enabled: false },
+    done: { enabled: false },
+    ...STACK_BAR,
+  }));
+  await sessionStart(context({ cwd: repo }));
+  const guard = await snapshotGuard(false);
+  try {
+    await newPrompt("update app", context({ cwd: repo }));
+    await afterBaseline(guard);
+    requests.length = 0;
+    await writeFile(join(repo, "app.txt"), "console.log(1)\n");
+    await toolCall("write", { path: "app.txt", content: "console.log(1)\n" }, context({ cwd: repo }));
+    await writeFile(join(repo, "app.txt"), "console.log(2)\n");
+    await toolCall("edit", { path: "app.txt", edits: [{ oldText: "console.log(1)", newText: "console.log(2)" }] }, context({ cwd: repo }));
+    await writeFile(join(repo, "app.txt"), "console.log(3)\n");
+    await toolCall("edit", { path: "app.txt", edits: [{ oldText: "console.log(2)", newText: "console.log(3)" }] }, context({ cwd: repo }));
+    assert.equal(requests.length, 0, "0 per-edit Action or Rules Jev calls during tool_call");
+    reportBaseline = (await recordedSince()).length;
+    nextAnswers = { ...nextAnswers, "rule_no-console-statements": "violation" };
+    await agentEnd("Done.", context({ cwd: repo }));
+    assert.equal(requests.length, 1, "1 consolidated diff rules request at agent_end");
+    const steers = (await steersOnly()).filter(message => /project rule/.test(message.message.content));
+    assert.equal(steers.length, 1);
+    assert.match(steers[0]!.message.content, /the change to app\.txt violates a project rule/);
+    assert.doesNotMatch(steers[0]!.message.content, /\(made by a command, not an edit\)/);
+  } finally {
+    guard.restore();
+  }
+});
+
+test("inline tool_result feedback attaches rules and repeat notes without custom messages, and honors inlineFeedback: false", async () => {
+  const repo = await turnRepo("# No console statements\nCode must not contain `console.log` calls.\n");
+  await writeConfig(JSON.stringify({
+    typesafe: true,
+    rules: { enabled: true, cadence: "edit", inlineFeedback: true },
+    stuck: { enabled: true, nudge: true, repeatSteer: true, inlineFeedback: true },
+    slop: { enabled: false },
+    done: { enabled: false },
+    ...STACK_BAR,
+  }));
+  await sessionStart(context({ cwd: repo }));
+  await newPrompt("add logging", context({ cwd: repo }));
+  nextAnswers = { ...nextAnswers, "rule_no-console-statements": "violation" };
+  await toolCall("write", { path: "app.txt", content: "console.log(1)\n" }, context({ cwd: repo }));
+  const ruleRes = await toolResult("write", { path: "app.txt", content: "console.log(1)\n" }, "wrote app.txt", false, context({ cwd: repo })) as { content: Array<{ type: string; text: string }> } | undefined;
+  assert.ok(ruleRes, "rules feedback rides the tool_result content");
+  assert.match(ruleRes.content[0]!.text, /wrote app\.txt\n\npi-warden:.*No console statements/);
+
+  // Repeat failure attaches inline on the 2nd identical failure.
+  await toolResult("bash", { command: "npm test" }, "1 failing", true, context({ cwd: repo }));
+  const repeatRes = await toolResult("bash", { command: "npm test" }, "1 failing", true, context({ cwd: repo })) as { content: Array<{ type: string; text: string }> } | undefined;
+  assert.ok(repeatRes, "quickRepeat note rides tool_result content");
+  assert.match(repeatRes.content[0]!.text, /1 failing\n\npi-warden: you already ran `npm test`/);
+
+  // Turning inlineFeedback off keeps tool_result untouched.
+  await writeConfig(JSON.stringify({
+    typesafe: true,
+    rules: { enabled: true, cadence: "edit", inlineFeedback: false },
+    stuck: { enabled: true, nudge: true, repeatSteer: true, inlineFeedback: false },
+    slop: { enabled: false },
+    done: { enabled: false },
+    ...STACK_BAR,
+  }));
+  await sessionStart(context({ cwd: repo }));
+  await newPrompt("retry", context({ cwd: repo }));
+  await toolCall("write", { path: "app.txt", content: "console.log(2)\n" }, context({ cwd: repo }));
+  const noRuleInline = await toolResult("write", { path: "app.txt", content: "console.log(2)\n" }, "wrote app.txt", false, context({ cwd: repo }));
+  assert.equal(noRuleInline, undefined, "rules.inlineFeedback: false leaves tool_result unchanged");
+  await toolResult("bash", { command: "npm test" }, "1 failing", true, context({ cwd: repo }));
+  const noRepeatInline = await toolResult("bash", { command: "npm test" }, "1 failing", true, context({ cwd: repo }));
+  assert.equal(noRepeatInline, undefined, "stuck.inlineFeedback: false leaves tool_result unchanged");
+});
+
+test("agent_before_settle gates unverified headless completion once per prompt and never continues interactive sessions", async () => {
+  await writeConfig(JSON.stringify({
+    typesafe: true,
+    rules: { enabled: false },
+    done: { enabled: true, nudge: true, autonomousGate: true },
+    slop: { enabled: false },
+    ...STACK_BAR,
+  }));
+  const settleEvent = { outcome: "completed", entries: [], continue: false, context: { contextEntries: [], contextMessages: [], llmMessages: [], pendingMessages: [], canContinue: false } };
+
+  // Headless session: fires once and refuses a second continuation on the same prompt.
+  const headless = context({ hasUI: false });
+  await sessionStart(headless);
+  await newPrompt("fix src/a.ts", headless);
+  await toolResult("write", { path: "src/a.ts", content: "export const a = 1;\n" }, "wrote", false, headless);
+  nextAnswers = { claims_done: 0.95, claims_verified: 0.1, verification_applies: 0.95, outcome: "complete" };
+  await agentEnd("All done!", headless);
+  const firstGate = await fire("agent_before_settle", settleEvent, headless) as { entries?: Array<{ type: string; customType?: string; content?: string }>; continue?: boolean } | undefined;
+  assert.equal(firstGate?.continue, true, "headless unverified completion requests 1 continuation");
+  assert.equal(firstGate?.entries?.[0]?.type, "custom_message");
+  assert.equal(firstGate?.entries?.[0]?.customType, "pi-warden-gate");
+  assert.match(String(firstGate?.entries?.[0]?.content ?? ""), /no test, build, or lint run/);
+
+  // Second agent_end on the same prompt must NOT gate again.
+  await fire("agent_start", {}, headless);
+  await agentEnd("Still done!", headless);
+  const secondGate = await fire("agent_before_settle", settleEvent, headless);
+  assert.equal(secondGate, undefined, "at most one autonomous continuation per prompt");
+
+  // Interactive session: never triggers agent_before_settle continuation.
+  const interactive = context({ hasUI: true });
+  await sessionStart(interactive);
+  await newPrompt("fix src/a.ts", interactive);
+  await toolResult("write", { path: "src/a.ts", content: "export const a = 2;\n" }, "wrote", false, interactive);
+  await agentEnd("All done!", interactive);
+  const interactiveGate = await fire("agent_before_settle", settleEvent, interactive);
+  assert.equal(interactiveGate, undefined, "interactive sessions never continue on agent_before_settle");
+});
+
+test("holds.runEnded settles headless steer holds, unsampled allow calls skip holds.db, and HTTP 402 logs a headless billing notice", async () => {
+  const proj = await mkdtemp(join(temporary, "hold-wire-"));
+  await writeConfig(JSON.stringify({
+    typesafe: true,
+    rules: { enabled: false },
+    slop: { enabled: false },
+    done: { enabled: false },
+    action: { ask: { enabled: false }, traceSample: 0, feedbackLog: true },
+    ...STACK_BAR,
+  }));
+  const headless = context({ hasUI: false, cwd: proj });
+  await sessionStart(headless);
+  await newPrompt("run a safe command", headless);
+  nextAnswers = { irreversible: 0.05, mutates: 0.5 };
+  await toolCall("bash", { command: "git push origin feature" }, headless);
+  await _testFlushWrites();
+  const afterAllow = await queryHoldsForProject(proj);
+  assert.equal(afterAllow.filter(h => !h.held && h.level === "allow").length, 0, "unsampled allow call is not inserted into holds.db when traceSample is 0");
+
+  // Headless steer hold settles as abandoned on agent_end without a user prompt.
+  nextAnswers = { irreversible: 0.95, mutates: 0.9 };
+  const heldRes = await toolCall("bash", { command: "git push --force origin main" }, headless);
+  assert.equal(heldRes?.block, true);
+  await agentEnd("Stopped.", headless);
+  await _testFlushWrites();
+  const afterHold = await queryHoldsForProject(proj);
+  const settledHold = afterHold.find(h => h.held);
+  assert.ok(settledHold, "held call is persisted in holds.db");
+  assert.equal(settledHold?.outcome, "abandoned", "headless steer hold settles as abandoned at run end");
+
+  // HTTP 402 trips cooldown immediately and records a headless billing trace entry.
+  reportBaseline = (await recordedSince()).length;
+  failStatus = 402;
+  try {
+    await toolCall("bash", { command: "git push origin main" }, headless);
+  } finally {
+    failStatus = undefined;
+  }
+  const traceEntries = (await recordedSince()).slice(reportBaseline);
+  assert.ok(traceEntries.some(entry => entry.guard === "notice" && /billing failure/i.test(entry.line) && /HTTP 402/i.test(entry.line)), "HTTP 402 records a headless billing cooldown notice");
 });

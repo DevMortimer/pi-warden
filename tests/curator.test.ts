@@ -10,8 +10,8 @@ const shipped = defaultConfig();
 
 const rule = (id: string, name: string, body: string, paths: string[] = []): Rule => ({ id, name, body, paths });
 
-test("the shipped defaults: the reminder is on at the measured cut", () => {
-  assert.deepEqual(shipped.rulesAtTurnStart, { enabled: true, threshold: 0.3 });
+test("the shipped defaults: the turn-start reminder is off by default at the measured cut", () => {
+  assert.deepEqual(shipped.rulesAtTurnStart, { enabled: false, threshold: 0.3 });
 });
 
 test("the rule list carries the heading, the first line, the text, and the path scope, in file order", () => {

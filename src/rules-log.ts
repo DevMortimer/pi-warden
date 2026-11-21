@@ -48,6 +48,8 @@ export interface RuleRecord {
   cleared?: true;
   /** `"calibrate"` on scores from a history replay; live verdicts leave it unset. `/warden report` counts them apart. */
   source?: "calibrate";
+  /** Wall-clock milliseconds the judge call took, when present on the verdict. */
+  elapsedMs?: number;
 }
 
 /** One judgment within a verdict, after clear detection. */
@@ -75,7 +77,8 @@ const isRuleRecord = (value: unknown): value is RuleRecord => {
     && typeof record.threshold === "number"
     && typeof record.finding === "boolean"
     && (record.soft === undefined || record.soft === true)
-    && (record.source === undefined || record.source === "calibrate");
+    && (record.source === undefined || record.source === "calibrate")
+    && (record.elapsedMs === undefined || typeof record.elapsedMs === "number");
 };
 
 /** The log file for a project: the working directory's hash keeps two projects apart without naming either. */
@@ -175,6 +178,7 @@ export class RulesLog {
       finding: observation.finding,
       ...(observation.soft ? { soft: true as const } : {}),
       ...(observation.cleared ? { cleared: true as const } : {}),
+      ...(verdict.elapsedMs !== undefined ? { elapsedMs: verdict.elapsedMs } : {}),
     }));
     this.append(records.map(record => JSON.stringify(record)));
     return observations;

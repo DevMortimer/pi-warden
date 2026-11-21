@@ -833,7 +833,7 @@ const cwdPath = (cwd: string | undefined): DirPath => (cwd === undefined ? { kin
 const unquoteWord = (word: string): string => word.replace(/^["']|["']$/g, "");
 
 /** Whether `child` is `parent` or lies under it. */
-function underPath(child: string, parent: string): boolean {
+export function underPath(child: string, parent: string): boolean {
   return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 }
 
@@ -903,10 +903,10 @@ function isDangerousTarget(target: WordPath, cwd: string | undefined): boolean {
  * A temp path compares by real path, because `$TMPDIR` spells the same directory two ways; a non-temp path compares as
  * written, so this never starts a file-system call for one, and one that cannot be resolved counts as the root.
  */
-function deletesProject(target: WordPath, cwd: string | undefined): boolean {
+function deletesProject(target: WordPath, cwd: string | undefined, extraRoots: readonly string[] = []): boolean {
   if (cwd === undefined || target.kind !== "path") return false;
-  const real = tempCandidate(target.path) ? realTarget(target.path) : resolve(target.path);
-  const root = tempCandidate(cwd) ? realTarget(cwd) : resolve(cwd);
+  const real = tempCandidate(target.path, extraRoots) ? realTarget(target.path) : resolve(target.path);
+  const root = tempCandidate(cwd, extraRoots) ? realTarget(cwd) : resolve(cwd);
   if (real === undefined || root === undefined) return true;
   return underPath(root, real);
 }
@@ -1070,9 +1070,10 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
   // A directory change the guard does not read (`popd`, `eval`, `cd -`, …) leaves every later relative target unread:
   // it may name anything, so it is dangerous rather than merely risky.
   const dangerousTarget = targets.some(target => isDangerousTarget(target, cwd) || (context?.dirChanged === true && target.kind === "unknown"));
+  const ephemeralRoots = context?.ephemeralRoots ?? [];
   // A release deletes the project itself when a target is its root or above it, whatever spelling names it and wherever
   // the project lives: the scratch and temp-subtree rules below answer first for a project under a temp root otherwise.
-  if (targets.some(target => deletesProject(target, cwd))) return DANGEROUS_TARGET;
+  if (targets.some(target => deletesProject(target, cwd, ephemeralRoots))) return DANGEROUS_TARGET;
   const budget = scratchBudget();
   const exemptions = context !== undefined;
   // A command or an earlier call that moved or linked data into a target keeps it: nothing about it is provable then.
@@ -1082,8 +1083,14 @@ function classifyRm(segment: string, cwd?: string, scratch?: ScratchRecords, con
   }
   if (dangerousTarget && targets.length) {
     const roots = exemptions ? context.tempRoots?.() ?? volatileTempRoots() : [];
-    if (roots.length && targets.every(target => clean(target) && isTempSubtree(target, roots))) {
-      return { id: "rm-temp-subtree", severity: "risky", label: "recursive rm of a path under the temp directory" };
+    const allowedSubtree = (target: WordPath): boolean => (roots.length > 0 && isTempSubtree(target, roots)) || isEphemeralSubtree(target, ephemeralRoots, cwd);
+    if ((roots.length || ephemeralRoots.length) && targets.every(target => clean(target) && allowedSubtree(target))) {
+      const underTemp = roots.length > 0 && targets.every(target => isTempSubtree(target, roots));
+      return {
+        id: "rm-temp-subtree",
+        severity: "risky",
+        label: underTemp ? "recursive rm of a path under the temp directory" : "recursive rm of a path under an ephemeral scratch root",
+      };
     }
     return DANGEROUS_TARGET;
   }
@@ -1227,10 +1234,93 @@ function safeIndexDir(env: NodeJS.ProcessEnv, dirs?: HostDirs): string | undefin
 }
 
 /** Whether a target lies in a host path, after `..` and symlinks are resolved. An unresolvable target is not in one. */
-function inHostPath(target: string, roots: readonly string[]): boolean {
+export function inHostPath(target: string, roots: readonly string[]): boolean {
   if (!roots.length) return false;
   const real = realTarget(target);
-  return real !== undefined && roots.some(root => real === root || real.startsWith(root + sep));
+  return real !== undefined && roots.some(root => {
+    const canonical = realTarget(root) ?? root;
+    return real === canonical || real.startsWith(canonical + sep);
+  });
+}
+
+const FORBIDDEN_CREDENTIAL_DIRS = [".ssh", ".aws", ".gnupg"];
+const FORBIDDEN_CONFIG_SUFFIXES = [
+  join("pi-warden", "config.json"),
+  join("pi-typesafe", "auth.json"),
+];
+
+export function resolveActionPath(target: string, cwd: string, home: string = homedir()): string {
+  if (target === "~") return home;
+  if (target.startsWith("~/")) return resolve(home, target.slice(2));
+  return resolve(cwd, target);
+}
+
+/**
+ * Resolve configured ephemeral scratch roots (`~/scratch`, `/tmp`, ...) to canonical and lexical paths.
+ * Rejects relative entries, filesystem roots, and the home directory itself so misconfiguration fails closed.
+ */
+export function resolveEphemeralRoots(entries: readonly string[] | undefined, home: string = homedir()): string[] {
+  if (!entries?.length) return [];
+  const roots = new Set<string>();
+  const homeReal = realTarget(home);
+  const tmpLex = resolve(tmpdir());
+  const tmpReal = realTarget(tmpLex);
+  for (const raw of entries) {
+    const entry = raw.trim();
+    if (!entry || entry === "~") continue;
+    let expanded: string;
+    if (entry.startsWith("~/")) expanded = resolve(home, entry.slice(2));
+    else if (isAbsolute(entry)) expanded = resolve(entry);
+    else continue;
+    if (dirname(expanded) === expanded) continue;
+    const real = realTarget(expanded);
+    if (!real || dirname(real) === real) continue;
+    if (homeReal !== undefined && (real === homeReal || expanded === homeReal)) continue;
+    roots.add(real);
+    roots.add(expanded);
+    if (tmpReal && (real === tmpReal || expanded === tmpLex)) {
+      roots.add(tmpReal);
+      roots.add(tmpLex);
+    }
+  }
+  return [...roots];
+}
+
+/**
+ * Forbid-before-allow containment: credential directories, warden/typesafe config files, `cwd`, and ancestors of `cwd`
+ * never inherit ephemeral scratch exemptions even when they sit under an ephemeral root.
+ */
+function isForbiddenEphemeralPath(targetPath: string, cwd: string | undefined, home: string = homedir()): boolean {
+  const lex = resolve(targetPath);
+  const real = realTarget(lex);
+  if (real === undefined) return true;
+  if (cwd !== undefined) {
+    const realCwd = realTarget(cwd);
+    if (realCwd === undefined || underPath(realCwd, real)) return true;
+  }
+  if (SENSITIVE_PATH.test(real) || SENSITIVE_PATH.test(lex)) return true;
+  if (/(?:^|[\\/])\.(?:ssh|aws|gnupg)(?:[\\/]|$)/i.test(real) || /(?:^|[\\/])\.(?:ssh|aws|gnupg)(?:[\\/]|$)/i.test(lex)) return true;
+  for (const dir of FORBIDDEN_CREDENTIAL_DIRS) {
+    const cred = resolve(home, dir);
+    const credReal = realTarget(cred);
+    if (underPath(real, cred) || (credReal !== undefined && underPath(real, credReal)) || underPath(lex, cred)) return true;
+  }
+  const wardenCfg = resolve(userConfigPath());
+  const wardenCfgReal = realTarget(wardenCfg);
+  if (real === wardenCfg || (wardenCfgReal !== undefined && real === wardenCfgReal) || lex === wardenCfg) return true;
+  for (const suffix of FORBIDDEN_CONFIG_SUFFIXES) {
+    if (real.endsWith(sep + suffix) || lex.endsWith(sep + suffix)) return true;
+  }
+  return false;
+}
+
+/** True only when `targetPath` lies strictly inside an ephemeral root subtree and passes forbid-before-allow checks. */
+export function inEphemeralRoot(targetPath: string, roots: readonly string[], cwd: string | undefined): boolean {
+  if (!roots.length) return false;
+  if (isForbiddenEphemeralPath(targetPath, cwd)) return false;
+  const real = realTarget(targetPath);
+  if (real === undefined) return false;
+  return roots.some(root => real !== root && underPath(real, root));
 }
 
 /** The temp root a real path lies strictly under; a temp root itself has none. */
@@ -1395,6 +1485,8 @@ interface RmContext {
   vars?: VarValues | undefined;
   /** Scratch roots the host declared for this session (`scratchPaths`). */
   roots?: readonly string[] | undefined;
+  /** User-configured ephemeral scratch roots (`resolveEphemeralRoots`). */
+  ephemeralRoots?: readonly string[] | undefined;
   /** The volatile temp roots, read lazily so a command with no recursive `rm` pays nothing. */
   tempRoots?: (() => readonly string[]) | undefined;
   /** Destinations the `mv` and `ln` segments of this command write to. */
@@ -1430,6 +1522,14 @@ function inScratchRoot(target: WordPath, roots: readonly string[]): boolean {
   if (!tempCandidate(clean, roots)) return false;
   const real = realTarget(clean);
   return real !== undefined && roots.some(root => real !== root && underPath(real, root));
+}
+
+/** A literal path target strictly inside a user-configured ephemeral root subtree, enforcing forbid-before-allow. */
+function isEphemeralSubtree(target: WordPath, roots: readonly string[], cwd: string | undefined): boolean {
+  if (!roots.length || target.kind !== "path") return false;
+  const clean = target.path;
+  if (!LITERAL_PATH.test(clean) || clean.split("/").includes("..")) return false;
+  return inEphemeralRoot(clean, roots, cwd);
 }
 
 /** Every target scratch the session recorded, a path a `mktemp` variable of this command holds, or a declared root. */
@@ -2111,6 +2211,8 @@ export interface PatternOptions {
   scratch?: ScratchRecords | undefined;
   /** Scratch roots the host declared for this session; a recursive rm of a path strictly inside one is risky. */
   scratchPaths?: readonly string[] | undefined;
+  /** User-configured ephemeral scratch roots (`action.ephemeralRoots`). */
+  ephemeralRoots?: readonly string[] | undefined;
   /** Real paths earlier calls moved or linked data into; a recursive rm of a path equal to, inside, or above one is held. */
   movedIn?: readonly string[] | undefined;
   /** The platform `scratchPlatform` decides for; the running one when omitted. */
@@ -2203,13 +2305,14 @@ function commandPatternHits(raw: string, cwd: string | undefined, options: Patte
   const volatileRoots = () => (volatile ??= disposableTempRoots());
   const scratchVars = blocked || unreadVariableSink(command) ? undefined : commandVars(segments, volatileRoots, variableWrites(command));
   const scratchRoots = blocked ? undefined : options?.scratchPaths;
+  const ephemeralRoots = blocked ? undefined : resolveEphemeralRoots(options?.ephemeralRoots);
   // `mv` and `ln` in the same command put data under their destination; a target that relates to one keeps the hold.
   // A mover word the per-segment parse cannot read (`bash -c 'mv a b'`, `xargs ln -s a b`) keeps every hold as well.
   const { dirs, changed } = effectiveDirs(segments, cwd, scratchVars);
   const moved = blocked ? [] : segments.map((segment, index) => moverDestination(segment, dirs[index] ?? cwdPath(cwd), scratchVars?.[index])).filter((mover): mover is Mover => mover !== undefined);
   const unread = blocked ? false : unreadMover(segments);
   for (let index = 0; index < segments.length; index++) {
-    const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, tempRoots: volatileRoots, moved, unreadMover: unread, recorded: options?.movedIn, dir: dirs[index], dirChanged: changed[index] });
+    const hit = classifyRm(segments[index]!, cwd, scratch, blocked ? undefined : { vars: scratchVars?.[index], roots: scratchRoots, ephemeralRoots, tempRoots: volatileRoots, moved, unreadMover: unread, recorded: options?.movedIn, dir: dirs[index], dirChanged: changed[index] });
     // classifyRm derives ids (rm-recursive, rm-rf, rm-recursive-dangerous-target); they are exemptable like any built-in.
     if (hit && !exempt.has(hit.id)) add(hit);
   }
@@ -2843,7 +2946,7 @@ export function isReadOnlyCommand(command: string): boolean {
 // Action summary: what is shown to the user and what is sent to TypeSafe.
 
 function displayPath(target: string, cwd: string): { path: string; location: "inside_project" | "outside_project" } {
-  const absolute = resolve(cwd, target);
+  const absolute = resolveActionPath(target, cwd);
   if (isInside(absolute, cwd)) {
     const rel = relative(resolve(cwd), absolute);
     return { path: rel === "" ? "." : rel.split(sep).join("/"), location: "inside_project" };
@@ -2870,7 +2973,7 @@ export function describeAction(tool: string, input: Record<string, unknown>, cwd
     const shown = displayPath(input.path, cwd);
     summary.path = shown.path;
     summary.location = shown.location;
-    summary.exists = existsSync(resolve(cwd, input.path));
+    summary.exists = existsSync(resolveActionPath(input.path, cwd));
   }
   if (tool === "write" && typeof input.content === "string") {
     summary.bytes = Buffer.byteLength(input.content, "utf8");
@@ -3302,7 +3405,7 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   const code = view?.shell ? stripShellComments(view.command) : undefined;
   const shellText = code === undefined ? undefined : stripDataText(code).text;
   const scriptBodies = code === undefined ? [] : scriptSources(code, action.cwd);
-  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scripts: scriptBodies, scratch: options.scratch, scratchPaths: options.scratchPaths, movedIn: options.movedIn });
+  const patterns = matchPatterns(action.tool, action.input, action.cwd, { commandRules: config.commandRules, commandDenyRules: config.commandDenyRules, exemptRules: config.exemptRules, pathRules: config.pathRules, scripts: scriptBodies, scratch: options.scratch, scratchPaths: options.scratchPaths, ephemeralRoots: config.ephemeralRoots, movedIn: options.movedIn });
   // A script body the command runs that hit the floor: its lines ride the request, and the call is worth a judge even
   // when the gate would have left the outer command offline.
   // Lines of the whole body with its comments stripped, as the floor reads them, so a multi-line string keeps its quote
@@ -3341,6 +3444,7 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   let hasBuiltInDestructive = false;
   let hasBuiltInOther = false;
   let hasDeferredSensitive = false;
+  const deferredSensitiveHits: PatternHit[] = [];
   let hasOutsideProject = false;
   let outsideProjectExisting = false;
   const evidenceMode = config.floor === "evidence" && judge !== undefined;
@@ -3349,6 +3453,7 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
     const isBuiltIn = BUILT_IN_IDS.has(hit.id);
     if (hit.severity === "sensitive" && deferSensitive) {
       hasDeferredSensitive = true;
+      deferredSensitiveHits.push(hit);
       continue;
     }
     if (evidenceMode && isBuiltIn) {
@@ -3362,8 +3467,10 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
       reasons.push(`${hit.severity}: ${hit.label}`);
     }
   }
-  const inHost = summary.location === "outside_project" && typeof action.input.path === "string"
-    && inHostPath(resolve(action.cwd, action.input.path), options.hostPaths ?? []);
+  const resolvedEphemeralRoots = resolveEphemeralRoots(config.ephemeralRoots);
+  const resolvedActionPath = typeof action.input.path === "string" ? resolveActionPath(action.input.path, action.cwd) : undefined;
+  const inHost = summary.location === "outside_project" && resolvedActionPath !== undefined
+    && (inHostPath(resolvedActionPath, options.hostPaths ?? []) || inEphemeralRoot(resolvedActionPath, resolvedEphemeralRoots, action.cwd));
   if (summary.location === "outside_project" && !inHost) {
     if (evidenceMode) {
       const pathNote = action.tool === "write" && summary.exists
@@ -3396,12 +3503,22 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   const applyFloor = (): void => {
     if (hasBuiltInDestructive || outsideProjectExisting) level = higher(level, "confirm");
     else if (hasBuiltInOther || hasDeferredSensitive || hasOutsideProject) level = higher(level, "warn");
+    // Deferred sensitive hits were skipped while waiting for a mutates judgment; restore their reasons when no judge runs.
+    if (hasDeferredSensitive) {
+      for (const hit of deferredSensitiveHits) {
+        const reason = evidenceMode ? `${hit.severity}: ${hit.label} (evidence)` : `${hit.severity}: ${hit.label}`;
+        if (!reasons.includes(reason)) reasons.push(reason);
+      }
+    }
   };
 
   // Ask gate: a call that cannot change anything the agent sees is decided by the pattern pass and the floor alone.
+  // Deferred sensitive hits on read-only shell commands still skip Jev so applyFloor() populates their reasons offline,
+  // while non-deferred hits (e.g. write/edit on .env or user pathRules) still reach Jev.
   if (config.ask?.enabled !== false) {
-    const decision = actionAskGate(action.tool, action.input, shellText, action.cwd, scriptBodies);
-    if (!decision.ask && !bodyHit) {
+    const decision = actionAskGate(action.tool, action.input, shellText, action.cwd, scriptBodies, { ephemeralRoots: config.ephemeralRoots, hostPaths: options.hostPaths });
+    const nonDeferredPattern = activePatterns.some(hit => !deferredSensitiveHits.includes(hit));
+    if (!decision.ask && !bodyHit && !nonDeferredPattern && !hasOutsideProject && !(summary.location === "outside_project" && !inHost)) {
       applyFloor();
       return withPlan({ level, source: "pattern", summary, patterns, reasons, notAsked: decision.why });
     }
@@ -3434,6 +3551,7 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
       applyFloor();
       reasons.push("TypeSafe unavailable; built-in patterns decide");
     } else {
+      if (hasDeferredSensitive) applyFloor();
       reasons.push("TypeSafe unavailable; allowed by failOpen");
     }
     return withPlan({ level, source: "error", summary, patterns, reasons, error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) });

@@ -40,7 +40,7 @@ function fakeStore(records: CauseStoreRecord[] = []): CauseStore & { recorded: A
   };
 }
 
-const cause = () => defaultConfig().cause;
+const cause = () => ({ ...defaultConfig().cause, enabled: true });
 const DAY = 86_400_000;
 
 test("a causal guess with no check in the run is steered", async () => {

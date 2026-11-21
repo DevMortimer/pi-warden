@@ -1,7 +1,16 @@
 import type { IntegrationErrorCode } from "pi-typesafe";
 
 /** A failed judge request, as a category safe to name (never an exception body). */
-export type JudgeFailureKind = "timeout" | "network" | "auth" | "configuration" | "other";
+export type JudgeFailureKind = "timeout" | "network" | "auth" | "billing" | "configuration" | "other";
+
+const BILLING_ERROR = /\bhttp\s+402\b|\b402\b.*(?:balance|payment|quota)|payment required|account balance|insufficient.*(?:balance|funds|credits)/i;
+
+function isBillingError(err: unknown): boolean {
+  const status = err && typeof err === "object" && "status" in err ? (err as { status: unknown }).status : undefined;
+  if (status === 402) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return BILLING_ERROR.test(msg);
+}
 
 export interface JudgeCooldownSettings {
   /** Consecutive transient failures that start the cooldown. */
@@ -12,6 +21,10 @@ export interface JudgeCooldownSettings {
 
 /** Classify a judge error into a safe category (spec §6: never exception bodies). */
 export function classifyJudgeError(err: unknown): JudgeFailureKind {
+  // HTTP 402 / billing exhaustion must trip before generic code === "http" maps to transient "network".
+  if (isBillingError(err)) return "billing";
+  const status = err && typeof err === "object" && "status" in err ? (err as { status: unknown }).status : undefined;
+  if (status === 401 || status === 403) return "auth";
   if (err && typeof err === "object" && "code" in err) {
     const code = (err as { code: string }).code as IntegrationErrorCode;
     if (code === "timeout") return "timeout";
@@ -43,6 +56,7 @@ export function cooldownFailureKind(err: unknown, signal?: AbortSignal): JudgeFa
     const reason = signal?.reason as { name?: unknown } | undefined;
     return signal?.aborted && (reason?.name === "TimeoutError" || reason?.name === "AbortError") ? "timeout" : undefined;
   }
+  if (isBillingError(err)) return "billing";
   const status = err && typeof err === "object" && "status" in err ? (err as { status: unknown }).status : undefined;
   if (status === 401 || status === 403) return "auth";
   return classifyJudgeError(err);
@@ -76,7 +90,7 @@ export class JudgeCooldown {
     // The probe after a window failed too: the judge is still down, which the open notice already says.
     if (this.cooled) { this.open(settings); return undefined; }
     this.failures++;
-    const persistent = kind === "auth" || kind === "configuration";
+    const persistent = kind === "auth" || kind === "billing" || kind === "configuration";
     if (!persistent && this.failures < settings.failuresBeforeCooldown) return undefined;
     this.open(settings);
     return { type: "started", kind, ms: settings.cooldownMs };

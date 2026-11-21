@@ -189,3 +189,12 @@ test("two log handles on one file in one process trim it without a failed write"
   assert.equal(second.lastFailure, undefined);
   assert.ok((await readRulesLog(path)).length > 0);
 });
+
+test("RulesLog records elapsedMs when present on the verdict", async () => {
+  const path = join(dir, "elapsed.jsonl");
+  const log = new RulesLog(dir, "s1", { path });
+  log.record({ ...verdict("src/a.ts", score("no-stubs", "No partial implementations", 0.15)), elapsedMs: 137 }, 0.7, NOW);
+  await log.flush();
+  const [entry] = await readRulesLog(path);
+  assert.equal(entry?.elapsedMs, 137);
+});

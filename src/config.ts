@@ -71,6 +71,8 @@ export interface ActionGuardConfig {
   pathRules: PathRule[];
   /** User-defined arming rules: editing files matching globs arms a command pattern for a window (user file only). */
   armingRules: ArmingRule[];
+  /** Directories treated as disposable scratch space (user file only); writes inside a subtree skip outside-project holds and recursive rm warns instead of holding. */
+  ephemeralRoots: string[];
   /** Jev confidence at or above this escalates a violation's severity in the blast-radius and rules-guard escalation paths. */
   escalationThreshold: number;
   /** When a judge answers: "evidence" (default) lets the judge decide the level from irreversible score alone, using built-in pattern hits as context; "level" restores the legacy behaviour where the floor sets the level before the judge.
@@ -151,6 +153,8 @@ export interface StuckGuardConfig {
   diffLimit: number;
   /** Characters of the current output tail shown after the diff in a stuck-loop diff note. */
   tailLimit: number;
+  /** Append repeat and stuck nudges inline onto the triggering tool_result without starting an extra turn. */
+  inlineFeedback: boolean;
 }
 
 export interface DoneGuardConfig {
@@ -159,6 +163,8 @@ export interface DoneGuardConfig {
   claimsDone: number;
   /** Also send the agent a follow-up asking it to verify. Triggers one more LLM turn. */
   nudge: boolean;
+  /** In headless runs, request one pre-stop continuation via `agent_before_settle` when completion is unverified. */
+  autonomousGate: boolean;
   /** After a change to a `uiFiles` path, only a `visualTools` call counts as proof; passing tests do not. */
   uiProof: boolean;
   /** Globs for files whose change shows on screen. `{a,b}` alternatives are allowed; a `!` glob excludes. */
@@ -235,9 +241,18 @@ export interface SecurityConfig {
   shareLinkParams: string[];
 }
 
+export const RULES_CADENCES = ["turn", "edit"] as const;
+export type RulesCadence = typeof RULES_CADENCES[number];
+
 export interface RulesConfig {
-  /** Judge each write and edit against the project's Markdown rules on its own Jev request; steer, never hold. */
+  /** Judge writes and edits against the project's Markdown rules; steer, never hold. */
   enabled: boolean;
+  /** When rules are judged: "turn" (default) coalesces edits into one end-of-run diff check; "edit" checks every write/edit live. */
+  cadence: RulesCadence;
+  /** Append per-edit rules, slop, and sensitive-path feedback inline onto the tool_result without starting an extra turn. */
+  inlineFeedback: boolean;
+  /** In headless runs, request one pre-stop continuation via `agent_before_settle` when end-of-run rules find violations. */
+  autonomousGate: boolean;
   /** P(violation) at or above this names the rule to the agent. */
   threshold: number;
   /** A score from here up to the rule's cutoff becomes a soft "please double-check" steer; `0` turns the tier off. */
@@ -279,6 +294,8 @@ export interface ContextConfig {
   confidence: number;
   /** A text result at least this long that repeats an earlier result of this session is replaced by a short note (code only). */
   duplicateMinChars: number;
+  /** Replace whole repeated tool outputs with a short pointer note (code only). Off by default to avoid high recall overhead; `dedupeRuns` remains on. */
+  duplicateNote: boolean;
   /** Search command named in the recall footer; `auto` detects one at load. */
   recallTool: RecallTool;
   /** Minimum P(format) before a format-specific parser builds the excerpt instead of the generic head/tail one. */
@@ -547,7 +564,7 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 15;
+export const CONFIG_SCHEMA = 16;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
@@ -564,7 +581,7 @@ export function defaultConfig(): WardenConfig {
       tools: [...COMMAND_TOOLS, "write", "edit"],
       failOpen: true,
       ask: { enabled: true },
-      traceSample: 0.05,
+      traceSample: 0,
       timeoutMs: 5000,
       // 0.9 holds: below it the judge is wrong one call in two to one in seven, and the 0.7 to 0.9 band held no call the user regretted.
       irreversible: { warn: 0.5, confirm: 0.9 },
@@ -578,18 +595,19 @@ export function defaultConfig(): WardenConfig {
       exemptRules: [],
       pathRules: [],
       armingRules: [],
+      ephemeralRoots: ["~/scratch", "/tmp"],
       escalationThreshold: 0.85,
       floor: "evidence",
     },
-    stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true, repeatSteer: true, evidence: true, diffLimit: 3000, tailLimit: 1000 },
-    done: { enabled: true, claimsDone: 0.7, nudge: true, uiProof: true, uiFiles: [...DEFAULT_UI_FILES], visualTools: defaultVisualTools() },
-    cause: { enabled: true, claimsCause: 0.7, nudge: true, windowDays: 7 },
-    slop: { enabled: true, threshold: 0.7, prose: { enabled: true, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
+    stuck: { enabled: true, window: 12, minFailures: 3, cooldown: 3, sameStrategy: 0.7, churnThreshold: 5, nudge: true, repeatSteer: true, evidence: true, diffLimit: 3000, tailLimit: 1000, inlineFeedback: true },
+    done: { enabled: true, claimsDone: 0.7, nudge: true, autonomousGate: true, uiProof: true, uiFiles: [...DEFAULT_UI_FILES], visualTools: defaultVisualTools() },
+    cause: { enabled: false, claimsCause: 0.7, nudge: true, windowDays: 7 },
+    slop: { enabled: true, threshold: 0.7, prose: { enabled: false, audience: "technical", threshold: 0.7, trend: 2, minChars: 200 } },
     security: { enabled: true, threshold: 0.7, maskOutput: true, shareLinkParams: [] },
-    rules: { enabled: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} },
+    rules: { enabled: true, cadence: "turn", inlineFeedback: true, autonomousGate: true, threshold: 0.7, softThreshold: 0, files: [], fallback: true, maxChars: 8000, maxRequests: 1, exclude: [], skip: [], auditExtensions: [], sensitivePaths: {} },
     // 0.3 is the measured cut: 69% of the rules named apply, and 68 of the 73 requests that touch a rule's area get one.
-    rulesAtTurnStart: { enabled: true, threshold: 0.3 },
-    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
+    rulesAtTurnStart: { enabled: false, threshold: 0.3 },
+    context: { enabled: true, tailMinChars: 12000, confidence: 0.8, duplicateMinChars: 2000, duplicateNote: false, recallTool: "auto", formatConfidence: 0.7, compactAppendix: true, dedupeRuns: true, dedupeMessages: false, largeOutput: { enabled: true, threshold: 0.85 }, filter: { enabled: false, chunkChars: 2000, minScore: 1.5, maxKeptChars: 6000, timeoutMs: 4000 } },
     runaway: { enabled: true, repeats: 4, thinkingRepeats: 10, minChars: 400, recover: true },
     notify: { enabled: false, cooldownMs: 10000, command: [] },
     judge: { cooldownMs: 60000, failuresBeforeCooldown: 3 },
@@ -725,6 +743,15 @@ function parseExemptRules(raw: unknown): string[] {
     if (typeof item === "string" && item.trim()) ids.add(item.trim());
   }
   return [...ids];
+}
+
+function parseEphemeralRoots(raw: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(raw)) return fallback;
+  const roots = new Set<string>();
+  for (const item of raw) {
+    if (typeof item === "string" && item.trim()) roots.add(item.trim());
+  }
+  return [...roots];
 }
 
 const PATH_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "powershell", "ctx_execute", "ctx_batch_execute", "ctx_execute_file"]);
@@ -903,6 +930,12 @@ function applyAction(base: ActionGuardConfig, raw: unknown, timeoutMs: number, s
     pathRules: source === "user" ? parsePathRules(raw.pathRules, warnings) : base.pathRules,
     // Arming rules are user-declared security policy: same gate.
     armingRules: source === "user" ? parseArmingRules(raw.armingRules, warnings) : base.armingRules,
+    // Ephemeral roots relax outside-project write and rm holds, so only the user file may declare them.
+    ephemeralRoots: (() => {
+      if (source === "user") return parseEphemeralRoots(raw.ephemeralRoots, base.ephemeralRoots);
+      if (raw.ephemeralRoots !== undefined) warnings.push("project file: action.ephemeralRoots is ignored; only the user file may declare ephemeral scratch roots");
+      return base.ephemeralRoots;
+    })(),
     escalationThreshold: probability(raw.escalationThreshold, base.escalationThreshold),
     floor: source === "user" && (raw.floor === "level" || raw.floor === "evidence") ? raw.floor : base.floor,
   };
@@ -923,6 +956,7 @@ function applyStuck(base: StuckGuardConfig, raw: unknown): StuckGuardConfig {
     evidence: boolean(raw.evidence, base.evidence),
     diffLimit: positiveInteger(raw.diffLimit, base.diffLimit),
     tailLimit: positiveInteger(raw.tailLimit, base.tailLimit),
+    inlineFeedback: boolean(raw.inlineFeedback, base.inlineFeedback),
   };
 }
 
@@ -968,6 +1002,7 @@ function applyDone(base: DoneGuardConfig, raw: unknown): DoneGuardConfig {
     enabled: boolean(raw.enabled, base.enabled),
     claimsDone: probability(raw.claimsDone, base.claimsDone),
     nudge: boolean(raw.nudge, base.nudge),
+    autonomousGate: boolean(raw.autonomousGate, base.autonomousGate),
     uiProof: boolean(raw.uiProof, base.uiProof),
     uiFiles: globList(raw.uiFiles, base.uiFiles),
     visualTools: {
@@ -1063,6 +1098,9 @@ function applyRules(base: RulesConfig, raw: unknown, source: "user" | "project",
     : base.sensitivePaths;
   return {
     enabled: boolean(raw.enabled, base.enabled),
+    cadence: isOption(raw.cadence, RULES_CADENCES) ? raw.cadence : base.cadence,
+    inlineFeedback: boolean(raw.inlineFeedback, base.inlineFeedback),
+    autonomousGate: boolean(raw.autonomousGate, base.autonomousGate),
     threshold: probability(raw.threshold, base.threshold),
     softThreshold: probability(raw.softThreshold, base.softThreshold),
     files: globList(raw.files, base.files),
@@ -1137,6 +1175,7 @@ function applyGuards(base: WardenConfig, raw: Json, timeoutMs: number, source: "
       tailMinChars: positiveInteger(raw.context.tailMinChars, base.context.tailMinChars),
       confidence: probability(raw.context.confidence, base.context.confidence),
       duplicateMinChars: positiveInteger(raw.context.duplicateMinChars, base.context.duplicateMinChars),
+      duplicateNote: boolean(raw.context.duplicateNote, base.context.duplicateNote),
       recallTool: isRecallTool(raw.context.recallTool) ? raw.context.recallTool : base.context.recallTool,
       formatConfidence: probability(raw.context.formatConfidence, base.context.formatConfidence),
       compactAppendix: boolean(raw.context.compactAppendix, base.context.compactAppendix),
@@ -1411,11 +1450,13 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "stuck.evidence": { kind: "off", check: "stuck-check", label: "evidence" },
   "stuck.diffLimit": { kind: "low", check: "stuck-check", label: "diff limit" },
   "stuck.tailLimit": { kind: "low", check: "stuck-check", label: "tail limit" },
+  "stuck.inlineFeedback": { kind: "off", check: "stuck-check", label: "inline feedback" },
   "stuck.window": { kind: "none", why: "a cap on minFailures, which decides on its own" },
 
   "done.enabled": { kind: "off", check: "done-check" },
   "done.claimsDone": { kind: "high", check: "done-check", label: "claims-done threshold" },
   "done.nudge": { kind: "off", check: "done-check", label: "nudge" },
+  "done.autonomousGate": { kind: "off", check: "done-check", label: "autonomous gate" },
   "done.uiProof": { kind: "off", check: "done-check", label: "UI proof" },
   "done.uiFiles": { kind: "fewer", check: "done-check", label: "UI files" },
   "done.visualTools.commands": { kind: "more", check: "done-check", label: "visual commands" },
@@ -1437,6 +1478,9 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "slop.prose.audience": { kind: "none", why: "who the prose is written for, not a threshold" },
 
   "rules.enabled": { kind: "off", check: "rules-check" },
+  "rules.cadence": { kind: "none", why: "when in the turn rules are checked, not whether they apply" },
+  "rules.inlineFeedback": { kind: "off", check: "rules-check", label: "inline feedback" },
+  "rules.autonomousGate": { kind: "off", check: "rules-check", label: "autonomous gate" },
   "rules.threshold": { kind: "high", check: "rules-check", label: "threshold" },
   "rules.softThreshold": { kind: "high", check: "rules-check", label: "soft threshold" },
   "rules.fallback": { kind: "off", check: "rules-check", label: "fallback" },
@@ -1474,6 +1518,7 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "action.exemptRules": { kind: "none", why: "user file only" },
   "action.pathRules": { kind: "none", why: "user file only" },
   "action.armingRules": { kind: "none", why: "user file only" },
+  "action.ephemeralRoots": { kind: "none", why: "user file only" },
   "action.escalationThreshold": { kind: "high", check: "escalation", label: "threshold" },
   "action.floor": { kind: "none", why: "user file only" },
 
@@ -1481,6 +1526,7 @@ export const PROJECT_KEYS: Readonly<Record<string, ProjectKeyClass>> = {
   "context.tailMinChars": { kind: "none", why: "how output is trimmed, not a check" },
   "context.confidence": { kind: "none", why: "how a retention answer is trusted" },
   "context.duplicateMinChars": { kind: "none", why: "when an output counts as a repeat" },
+  "context.duplicateNote": { kind: "none", why: "how repeated outputs are shortened" },
   "context.recallTool": { kind: "none", why: "which tool recalls a stored output" },
   "context.formatConfidence": { kind: "none", why: "how a named output format is trusted" },
   "context.compactAppendix": { kind: "none", why: "an appendix after compaction" },

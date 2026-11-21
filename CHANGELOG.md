@@ -4,6 +4,35 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## Unreleased
+
+<!-- Empty. Next release starts here. -->
+
+## 2.14.0
+
+### Added
+
+- User-only `action.ephemeralRoots` config (default `["~/scratch", "/tmp"]`) so writes inside disposable scratch subtrees skip outside-project holds and recursive `rm` on those subtrees warns instead of holding, with forbid-before-allow containment blocking roots, `$HOME`, `cwd`, credential directories, and warden/typesafe config files.
+- Coalesced turn-end rules mode via `rules.cadence` (`"turn"` default, `"edit"` for per-call checking) plus a bounded 256-entry session-scoped SHA-1 cache in `RulesGuard` so intermediate edits skip per-call rules requests and unchanged rewrites spend zero extra requests.
+- Zero-turn inline `tool_result` feedback (`rules.inlineFeedback`, `stuck.inlineFeedback`, both default `true`) that appends actionable rules, slop, sensitive-path, repeat, and stuck notes directly onto the triggering `tool_result` without creating custom messages or extra LLM turns.
+- Pre-stop autonomous gate via `agent_before_settle` (`done.autonomousGate`, `rules.autonomousGate`, both default `true`) that requests at most one continuation per prompt in headless (`hasUI: false`) sessions when completion is unverified or end-of-run rules find violations; interactive sessions never continue.
+- Opt-in `context.duplicateNote` toggle (default `false`) to keep whole-output duplicate replacement off by default while keeping `context.dedupeRuns` active.
+- Done-check runner summary recognition for piped FiveAM, Rove/Parachute, and TAP/`prove` test runs (including zero-test detection for `Did 0 checks.`).
+- Fast-trip billing cooldown (`"billing"` failure kind on HTTP 402) with immediate pause, balance remedy message, and headless trace recording.
+
+### Changed
+
+- Ultra-frugal `actionAskGate`: reversible inside-project `write`/`edit` calls (with no non-deferred pattern hit), writes under `ephemeralRoots` or `hostPaths`, and reversible local git plumbing (`git add`, `git rm --cached`, non-pruning/non-forcing `git fetch`, safe `git switch`, `git checkout -b`, `git restore --staged`) skip Action Jev while outside-project writes, `.env`/credential/path-rule hits, `git commit`, history rewrites, and worktree discards still reach Jev.
+- Frugal default switches: `action.traceSample` defaults to `0` (off), `rulesAtTurnStart.enabled` to `false`, `cause.enabled` to `false`, `slop.prose.enabled` to `false`, and `context.duplicateNote` to `false`.
+- `watchSteer` now tracks only notices actually delivered to the agent (inline `tool_result` notes, `agent_before_settle` continuations, and standing reminders), stopping invisible trace-only diagnostics from skewing per-model follow statistics.
+- `holds.db` skips inserting unsampled routine `allow` rows (`!held && level === "allow" && sampled === false`), preserves an existing non-`pending` outcome, and settles headless steer holds at `agent_end` as `"abandoned"` (`run end`).
+
+### Fixed
+
+- Deferred sensitive pattern hits now populate their `sensitive:` reasons when the ask gate skips Jev or `failOpen` falls back, eliminating blank-reason `warn` verdicts.
+- Rules guard skips binary, media, font, archive, and compiled/database file extensions locally before calling Jev, and skips recording corrupted/empty rule verdicts in the rules log.
+- Credential masking avoids false positives on non-secret code expressions while preserving real secret redaction; learning regret heuristic no longer misattributes generic conversational replies to unrelated read-only calls.
+
 ## 2.13.1
 
 ### Fixed
