@@ -6,10 +6,6 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
-
-## 2.17.0
-
 ### Added
 
 - APPA-style recoverable source-to-sink taint firewall (`src/taint.ts`, `TaintMonitor`, `taint.*`, enabled by default) wired into `pi.on("tool_call")` (Gate 1 prospective sink dispatch, including mutating MCP tools) and `pi.on("tool_result")` (Gate 2 realized-output admission). Tracks a partial in-memory session lattice (`untrusted`, `secret`, `injectionSuspected`), deterministically holds Lethal Trifecta (`taint-lethal-trifecta`), direct secret egress (`taint-secret-egress`), and offline/online prompt-injection egress (`taint-injection-egress`) with zero Jev calls offline, keeps local project edits, `action.ephemeralRoots`, loopback/`allowHosts` traffic, and routine `untrusted`-only `git push` unblocked, supports single-use call-scoped post-taint user recovery rulings (APPA Theorem 6) without taint laundering, and reports `Taint:` activity in `/warden status`.
