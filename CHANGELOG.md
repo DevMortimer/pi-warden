@@ -4,6 +4,12 @@ Notable changes to pi-warden, newest first. Versions follow semver. The publishe
 
 How to keep this current: add the entry in the same pull request as the change, under `Unreleased`. The release commit renames `Unreleased` to the version it ships and adds its own notes. Entries before 0.10.0 are one-line summaries taken from the release commit headers; the detail for those is in `git log`.
 
+## 2.13.1
+
+### Fixed
+
+- Bounded wait and job-status commands (`job wait`, `job show`, `job status`, `gh run watch`, `gh pr checks --watch`, `kubectl wait`) no longer trigger stuck-loop repeat, failure-count, churn, or judgment notices across repeated timeout slices (exit 0, exit 124, or unreported), while 3-call repeat detection stays active for non-watch polls and ordinary commands.
+
 ## 2.13.0
 
 ### Added
