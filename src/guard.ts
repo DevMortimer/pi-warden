@@ -2400,7 +2400,7 @@ export function matchPatterns(tool: string, input: Record<string, unknown>, cwd?
 
 /** Write-sinks a shell grammar actually defines: the target of a redirection, or tee's operands. */
 const REDIRECT_OPERATOR = String.raw`\d*>{1,2}[|&]?`;
-const REDIRECT_TARGET = new RegExp(String.raw`(?:^|[\s;&|)(])${REDIRECT_OPERATOR}\s*(\S+)`, "g");
+const REDIRECT_TARGET = new RegExp(String.raw`(?:^|[\s;&|)(])${REDIRECT_OPERATOR}\s*([^\s;&|()<>]+)`, "g");
 /** A shell word that starts a redirection; the word alone (`2>`) takes the next word as its target. */
 const REDIRECT_WORD = new RegExp(`^${REDIRECT_OPERATOR}`);
 
@@ -2409,10 +2409,7 @@ export function writeSinkTargets(command: string): string[] {
   // Redirect targets are scanned on the full command, not per segment: `>|` and `>&` contain `|`/`&` that
   // splitShell would split as pipe/and operators, separating the operator from its target.
   // The shell ends a word at `;`, `&`, `|` and `)`, so `2>/dev/null;` writes /dev/null, not a file named `null;`.
-  for (const match of command.matchAll(REDIRECT_TARGET)) {
-    const target = match[1]?.replace(/[;&|)]+$/, "");
-    if (target) targets.push(target);
-  }
+  for (const match of command.matchAll(REDIRECT_TARGET)) if (match[1]) targets.push(match[1]);
   // tee writes every operand after its flags; an -a flag only appends, which is still a write.
   // Head-anchored (segment head, skipping wrappers) so `grep tee file.log` is not mistaken for a tee invocation.
   for (const segment of splitShell(command)) {

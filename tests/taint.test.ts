@@ -273,12 +273,18 @@ test("a redirect target ends where the shell ends the word, so /dev/null; and a 
     "(cmd 2>/dev/null)",
     "x=$(cmd 2>/dev/null)",
     "cmd | tee ~/scratch/o.txt 2>/dev/null; echo ok",
+    "cmd 2>/dev/null||true",
+    "cmd 2>/dev/null;echo ok",
+    "cmd 2>&1;echo ok",
   ]) assert.equal(check(command).decision, "allow", command);
 
   const real = check("cmd > /etc/out.txt; echo ok");
   assert.equal(real.decision, "hold", "a real redirect outside the project and scratch still holds");
   assert.equal(real.sink?.target, "out.txt");
   assert.equal(check("(cmd > /etc/out.txt)").sink?.target, "out.txt");
+  const chained = check("(cmd 2>/dev/null)>/etc/out.txt");
+  assert.equal(chained.decision, "hold");
+  assert.equal(chained.sink?.target, "out.txt");
 });
 
 test("APPA Theorem 6 single-use call-scoped user ruling requires post-taint non-negated confirmation and never launders taint", () => {
