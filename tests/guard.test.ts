@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -1233,6 +1234,30 @@ test("slop questions join the write/edit request only, score per symptom, and ne
 
   const off = await evaluateAction({ tool: "write", input: { path: join(cwd, "a.ts"), content: "x" }, cwd, task: "t" }, { config: config.action, judge: j, slop: { ...config.slop, enabled: false } });
   assert.equal(off.slop, undefined);
+});
+
+test("slop questions are not asked for a write to a gitignored project path, and every other question still is", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "pi-warden-ignored-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeFile(join(repo, ".gitignore"), ".local/\nbuild/\n");
+    const config = { ...defaultConfig(), action: judgedAction() };
+    const asked = async (path: string): Promise<string[]> => {
+      const j = withSlop(0.1, 0.1, { dead: 0.9 });
+      await evaluateAction({ tool: "write", input: { path, content: "// const old = 1;\nexport const x = 2;" }, cwd: repo, task: "probe" }, { config: config.action, judge: j, slop: config.slop, security: config.security });
+      return Object.keys((j.calls[0] as { questions: object }).questions);
+    };
+    for (const ignored of [".local/scratch/probe.mjs", "build/scratch/probe.mjs", join(repo, "build", "x.ts")]) {
+      const questions = await asked(ignored);
+      assert.deepEqual(questions.filter(id => id.startsWith("slop_")), [], `${ignored} is gitignored: no slop questions`);
+      assert.ok(questions.includes("security_risk"), `${ignored} still gets the security question`);
+    }
+    const tracked = await asked("src/x.ts");
+    assert.equal(tracked.filter(id => id.startsWith("slop_")).length, 4, "a project file still gets every slop question");
+    assert.ok(tracked.includes("security_risk"));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
 });
 
 test("long writes are sampled head, middle, and tail so a stub at the end is still seen", () => {

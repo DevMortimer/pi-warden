@@ -9,7 +9,7 @@ import type { ActionGuardConfig, ArmingRule, CommandRule, LargeOutputConfig, Pat
 import { redact } from "./redact.js";
 import { SPINE_GOAL_LIMIT, SPINE_HISTORY_LIMIT, SPINE_HISTORY_TURNS } from "./shape.js";
 import type { TaskSpine } from "./shape.js";
-import { askChunks, globToRegExp, questionLimit } from "./rules.js";
+import { askChunks, gitIgnored, globToRegExp, projectPath, questionLimit } from "./rules.js";
 import type { LimitedJudge, RulesSourceConfig } from "./rules.js";
 import { indexDir } from "./index-cmd.js";
 import { PROJECT_CONFIG_FILE, projectConfigPath, userConfigPath } from "./config.js";
@@ -2408,7 +2408,11 @@ export function writeSinkTargets(command: string): string[] {
   const targets: string[] = [];
   // Redirect targets are scanned on the full command, not per segment: `>|` and `>&` contain `|`/`&` that
   // splitShell would split as pipe/and operators, separating the operator from its target.
-  for (const match of command.matchAll(REDIRECT_TARGET)) if (match[1]) targets.push(match[1]);
+  // The shell ends a word at `;`, `&`, `|` and `)`, so `2>/dev/null;` writes /dev/null, not a file named `null;`.
+  for (const match of command.matchAll(REDIRECT_TARGET)) {
+    const target = match[1]?.replace(/[;&|)]+$/, "");
+    if (target) targets.push(target);
+  }
   // tee writes every operand after its flags; an -a flag only appends, which is still a write.
   // Head-anchored (segment head, skipping wrappers) so `grep tee file.log` is not mistaken for a tee invocation.
   for (const segment of splitShell(command)) {
@@ -3323,6 +3327,13 @@ function capScriptLines(lines: readonly string[]): string | undefined {
   return joined.length <= SCRIPT_LINES_CHARS ? joined : joined.slice(0, SCRIPT_LINES_CHARS);
 }
 
+/** A write or edit to a gitignored project path is throwaway work, not project code: the same call the rules check makes. */
+function gitignoredProjectWrite(action: ActionInput): boolean {
+  if (action.tool !== "write" && action.tool !== "edit") return false;
+  const rel = typeof action.input.path === "string" ? projectPath(action.input.path, action.cwd) : undefined;
+  return rel !== undefined && gitIgnored(rel, action.cwd);
+}
+
 export function buildRequest(summary: ActionSummary, task: string | undefined, extras: { slop?: boolean; approval?: boolean; security?: boolean; context?: readonly TaskMessage[] | undefined; previousActions?: readonly PreviousAction[] | undefined; plan?: string | undefined; questions?: Questions | undefined; rules?: string | undefined; rulesSource?: string | undefined; violations?: readonly Violation[] | undefined; floorHits?: string; scriptLines?: string | undefined; spine?: TaskSpine | undefined; largeOutput?: boolean; traceOnly?: boolean } = {}) {
   const writesContent = (summary.tool === "write" || summary.tool === "edit" || summary.writes !== undefined) && hasContent(summary);
   const wantSlop = extras.slop && writesContent;
@@ -3533,7 +3544,7 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
   // should-proceed question. The rules content is only read by the per-violation questions, so it rides the request only
   // while a violation is open.
   const stateRules = remainingViolations.length ? resolved?.content : undefined;
-  const request = buildRequest(summary, action.task, { slop: options.slop?.enabled ?? false, security: options.security?.enabled ?? false, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, scriptLines, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false });
+  const request = buildRequest(summary, action.task, { slop: (options.slop?.enabled ?? false) && !gitignoredProjectWrite(action), security: options.security?.enabled ?? false, previousActions: options.previousActions, plan, questions: options.questions, rules: stateRules, rulesSource: stateRules ? resolved?.source : undefined, violations: remainingViolations, floorHits, scriptLines, spine: action.spine, largeOutput: options.largeOutput?.enabled ?? false });
   // One call in twenty also asks the judgment-only questions, in a second request that goes out beside the first. Its
   // answers go through the off-task chain and the should-proceed block below, which report them, so the recorded signal
   // keeps coming.

@@ -4,6 +4,7 @@ dist/
 .env.*
 !.env.example
 .local/
+build/
 coverage/
 *.tgz
 .DS_Store
