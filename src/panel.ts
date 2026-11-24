@@ -3,7 +3,7 @@ import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@earendil-wo
 import { DECISIONS_BACKENDS } from "pi-typesafe";
 import { resolveJudgmentBackend } from "./backend.js";
 import type { WardenConfig } from "./config.js";
-import { CONSCIENCE_SKILL_MODES, RECALL_TOOLS, WARDEN_MODES, applyUserOverrides, defaultConfig, getNestedValue, readUserConfig, setNestedValue, writeUserConfig } from "./config.js";
+import { CONSCIENCE_SKILL_MODES, LOCAL_MODEL_RUNTIMES, RECALL_TOOLS, WARDEN_MODES, applyUserOverrides, defaultConfig, getNestedValue, readUserConfig, setNestedValue, writeUserConfig } from "./config.js";
 import type { HostDirs } from "./host-dirs.js";
 import { defaultHostDirs } from "./host-dirs.js";
 import type { Trace } from "./trace.js";
@@ -193,7 +193,8 @@ type ConfigDraft =
 
 const SELECTOR_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   mode: WARDEN_MODES,
-  typesafeBackend: Object.keys(DECISIONS_BACKENDS),
+  typesafeBackend: ["cloud", "warden-s1", "auto", ...Object.keys(DECISIONS_BACKENDS)],
+  "localModel.runtime": LOCAL_MODEL_RUNTIMES,
   "widget.placement": WIDGET_PLACEMENTS,
   "widget.barMode": WIDGET_BAR_MODES,
   "conscience.skills.mode": CONSCIENCE_SKILL_MODES,

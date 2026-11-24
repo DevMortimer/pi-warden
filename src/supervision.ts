@@ -1,5 +1,6 @@
 import { ask, backendPrice, DEFAULT_USD_PER_MTOK, estimateUsd, noul, resolveBackend } from "pi-typesafe";
 import type { EntryType, Judge } from "pi-typesafe";
+import { toCloudBackendSpec } from "./backend.js";
 import type { JudgmentBackend } from "./backend.js";
 
 /** Local copy of the redacted v1 event contract; no dependency on pi-subagents. */
@@ -90,7 +91,7 @@ export async function evaluateSupervision(metrics: unknown, options: Supervision
   const valid = validateSupervisionRequest({ version: 1, metrics });
   if (!valid) return { ok: false, reason: "invalid metrics" };
   try {
-    const backend = resolveBackend(options.backend);
+    const backend = resolveBackend(toCloudBackendSpec(options.backend));
     const result = await ask(options.judge, buildSupervisionRequest(valid.metrics), { timeoutMs: options.timeoutMs });
     if (!result.ok) return { ok: false, reason: `judge error: ${result.error}${result.errorCode ? ` (${result.errorCode})` : ""}` };
     // A backend that does not report tokens (SDK 0.7.0 types them nullable) costs nothing in the estimate.
