@@ -315,7 +315,13 @@ function resolveOnnxWorkerSpawnSpec(): { command: string; prefixArgs: string[] }
   }
   const siblingTs = join(here, "warden-s1-onnx-worker.ts");
   if (existsSync(siblingTs)) {
-    return { command: process.execPath, prefixArgs: ["--import", "tsx", siblingTs] };
+    let tsxSpec = "tsx";
+    try {
+      tsxSpec = import.meta.resolve("tsx");
+    } catch {
+      // Fall back to bare specifier when tsx is resolved from cwd.
+    }
+    return { command: process.execPath, prefixArgs: ["--import", tsxSpec, siblingTs] };
   }
   throw new Error(`Warden-S1 ONNX worker entrypoint not found near ${here}`);
 }
