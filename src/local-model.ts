@@ -148,6 +148,7 @@ export interface DownloadResult {
 export interface RemoveOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly runtime?: SelectedRuntime;
+  readonly stateDir?: string;
 }
 
 export interface RemoveResult {
@@ -427,6 +428,23 @@ export function formatDownloadProgress(progress: DownloadProgress): string {
 
 export function removeWardenS1(config?: Partial<LocalModelConfig>, options: RemoveOptions = {}): RemoveResult {
   const modelsRoot = resolveModelsRoot(config, options.env);
+  const env = options.env ?? process.env;
+  const pagesDir = options.stateDir
+    ? join(resolvePath(expandHome(options.stateDir)), "pages")
+    : env.PI_WARDEN_CACHE_DIR?.trim()
+      ? join(resolvePath(expandHome(env.PI_WARDEN_CACHE_DIR.trim())), "pages")
+      : !config?.cacheDir?.trim()
+        ? join(homedir(), ".cache", "pi-warden", "pages")
+        : undefined;
+
+  if (pagesDir && existsSync(pagesDir)) {
+    try {
+      rmSync(pagesDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort session page directory cleanup.
+    }
+  }
+
   if (!existsSync(modelsRoot)) return { removedDirs: [], freedBytes: 0 };
 
   const targetNames = options.runtime

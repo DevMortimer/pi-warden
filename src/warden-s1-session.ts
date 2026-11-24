@@ -678,12 +678,6 @@ export class WardenS1SessionTracker {
     this._totalTokens = totalTokens;
   }
 
-  /** A judged request left the daemon's record at prefix plus candidate, so the prefix it holds is warmed again. */
-  rearmPrewarm(): void {
-    this._lastPrewarmedVersion = -1;
-    this.schedulePrewarm();
-  }
-
   schedulePrewarm(): void {
     this._prewarmDirty = true;
     if (this._prewarmInFlight !== null) return;
@@ -1146,6 +1140,7 @@ export function createWardenS1Judge(options: WardenS1JudgeOptions): WardenS1Judg
         state: composedState,
         chunks: requestChunks,
         questions: validated.questions,
+        ...(historyDescriptors.length > 0 ? { ephemeral_last_chunk: true } : {}),
       });
 
       const wireBytes = Buffer.byteLength(wireBody, "utf8");
@@ -1267,7 +1262,6 @@ export function createWardenS1Judge(options: WardenS1JudgeOptions): WardenS1Judg
 
       ANSWER_META.set(processedAnswers, meta);
       lastMeta = meta;
-      tracker.rearmPrewarm();
 
       const parsedUsage = parseUsage(body.usage);
       usage.requestsSucceeded += 1;

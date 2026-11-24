@@ -10,6 +10,7 @@ import {
   daemonEvictToDisk,
   daemonLockPath,
   daemonMetadataPath,
+  daemonPagesPath,
   daemonPrewarm,
   daemonSalience,
   daemonStats,
@@ -380,6 +381,8 @@ test("MLX worker materializes atomically and passes python3 -m py_compile", () =
       "requantize_kv_cache_list",
       "PriorityQueue",
       "boundary_healed",
+      "ephemeral_last_chunk",
+      "purge_disk_pages",
       "/v1/prewarm",
       "/v1/salience",
       "idle_shutdown_sec",
@@ -390,5 +393,197 @@ test("MLX worker materializes atomically and passes python3 -m py_compile", () =
     execFileSync("python3", ["-m", "py_compile", p1], { timeout: 5000, stdio: "pipe" });
   } finally {
     rmSync(runtimeDir, { recursive: true, force: true });
+  }
+});
+
+test("fork-on-candidate (ephemeral_last_chunk) preserves warm prefix across 6 candidates and next-turn append with 0 cold misses and <1e-6 5-head parity", async () => {
+  const pageDir = makeTempDir("ws1-fork-");
+  try {
+    const tokenizer = createByteLevelFallbackTokenizer(["Ċ Ċ", "# #", "< /", "t u", "tu r", "tur n"]);
+    const turn0 = `<turn index="0" role="user" pinned="true">\nGoal: tidy the workspace.\n</turn>`;
+    const turn1 = `<turn index="1" role="tool" tool="read">\nRead README.md successfully.\n</turn>`;
+    const prefix0 = turn0;
+    const prefix1 = `${turn0}\n\n${turn1}`;
+
+    const questions = {
+      risk: { type: "noul", instructions: "Is this action irreversible?" },
+      route: { type: "choice", instructions: "Pick guard", criteria: { action: "Action", rules: "Rules", done: "Done" } },
+      severity: { type: "score", instructions: "Rate severity", criteria: ["none", "low", "high"] },
+      where: { type: "locus", instructions: "Which turn explains this?" },
+    };
+
+    const incEngine = new WardenS1OnnxEngine({
+      backend: createSyntheticOnnxBackend({ tokenizer }),
+      modelId: "warden-s1-test",
+      modelDir: "mock-weights",
+      pageDir,
+    });
+
+    const w0 = await incEngine.prewarm(
+      { state: prefix0, chunks: [{ index: 0, label: "Turn 0", char_start: 0, char_end: prefix0.length }] },
+      "sess-fork",
+    );
+    assert.equal(w0.cache_mode, "miss");
+    assert.equal(incEngine.cacheMisses, 1);
+
+    const candidates = [
+      "action: bash touch notes.txt",
+      "rules: write src/app.ts",
+      "action: bash npm test",
+      "output: read README.md",
+      "rules: edit src/index.ts",
+      "done: verified all checks pass",
+    ];
+    let lastForkedResp: Awaited<ReturnType<typeof incEngine.evaluate>>["response"] | undefined;
+    let lastState = "";
+    let lastChunks: Array<{ index: number; label: string; char_start: number; char_end: number }> = [];
+
+    for (let i = 0; i < candidates.length; i++) {
+      const candBlock = `<turn index="current" role="candidate">\n${candidates[i]}\n</turn>`;
+      const composed = `${prefix0}\n\n${candBlock}`;
+      const chunks = [
+        { index: 0, label: "Turn 0", char_start: 0, char_end: prefix0.length },
+        { index: 1, label: "Current candidate", char_start: prefix0.length + 2, char_end: composed.length },
+      ];
+      const res = await incEngine.evaluate(
+        { state: composed, chunks, questions, ephemeral_last_chunk: true },
+        "sess-fork",
+      );
+      assert.equal(res.response.s1.cache_mode, "delta", `candidate #${i + 1} must hit warm prefix`);
+      assert.equal(res.response.s1.prefix_reuse_tokens, w0.state_tokens, `candidate #${i + 1} must reuse entire Turn 0 prefix`);
+      assert.equal(incEngine.cacheMisses, 1, `candidate #${i + 1} must incur 0 cold misses after Turn 0`);
+      lastForkedResp = res.response;
+      lastState = composed;
+      lastChunks = chunks;
+    }
+
+    // Verify < 1e-6 5-head parity of forked candidate evaluation vs cold full-sequence evaluation.
+    const coldEngine = new WardenS1OnnxEngine({
+      backend: createSyntheticOnnxBackend({ tokenizer }),
+      modelId: "warden-s1-test",
+      modelDir: "mock-weights",
+      pageDir,
+    });
+    const rCold = await coldEngine.evaluate({ state: lastState, chunks: lastChunks, questions }, "sess-cold-fork");
+    assert.equal(rCold.response.s1.cache_mode, "miss");
+    assert.ok(
+      Math.abs((lastForkedResp!.answers.risk as { noul: number }).noul - (rCold.response.answers.risk as { noul: number }).noul) < 1e-6,
+      "noul parity",
+    );
+    const cFork = (lastForkedResp!.answers.route as { probabilities: Record<string, number> }).probabilities;
+    const cCold = (rCold.response.answers.route as { probabilities: Record<string, number> }).probabilities;
+    for (const k of ["action", "rules", "done"]) {
+      assert.ok(Math.abs(cFork[k]! - cCold[k]!) < 1e-6, `choice[${k}] parity`);
+    }
+    assert.ok(
+      Math.abs((lastForkedResp!.answers.severity as { score: number }).score - (rCold.response.answers.severity as { score: number }).score) < 1e-6,
+      "score parity",
+    );
+    for (let i = 0; i < rCold.response.s1.salience.length; i++) {
+      assert.ok(Math.abs(lastForkedResp!.s1.salience[i]! - rCold.response.s1.salience[i]!) < 1e-6, `salience[${i}] parity`);
+    }
+    for (let i = 0; i < rCold.response.s1.locus.chunk_probs.length; i++) {
+      assert.ok(Math.abs(lastForkedResp!.s1.locus.chunk_probs[i]! - rCold.response.s1.locus.chunk_probs[i]!) < 1e-6, `locus[${i}] parity`);
+    }
+
+    // Next-turn append + candidate evaluation still reuses Turn 0 with 0 cold misses.
+    const cand7 = `<turn index="current" role="candidate">\naction: git status\n</turn>`;
+    const composedNext = `${prefix1}\n\n${cand7}`;
+    const chunksNext = [
+      { index: 0, label: "Turn 0", char_start: 0, char_end: turn0.length },
+      { index: 1, label: "Turn 1", char_start: turn0.length + 2, char_end: prefix1.length },
+      { index: 2, label: "Current candidate", char_start: prefix1.length + 2, char_end: composedNext.length },
+    ];
+    const rNext = await incEngine.evaluate(
+      { state: composedNext, chunks: chunksNext, questions, ephemeral_last_chunk: true },
+      "sess-fork",
+    );
+    assert.equal(rNext.response.s1.cache_mode, "delta");
+    assert.equal(incEngine.cacheMisses, 1, "next-turn append after 6 forked evaluates must incur 0 cold misses");
+    // Prewarm on prefix1 after evaluate hits exact 0-token cache because evaluate committed activeRecord at prefix1.
+    const w1 = await incEngine.prewarm(
+      {
+        state: prefix1,
+        chunks: [
+          { index: 0, label: "Turn 0", char_start: 0, char_end: turn0.length },
+          { index: 1, label: "Turn 1", char_start: turn0.length + 2, char_end: prefix1.length },
+        ],
+      },
+      "sess-fork",
+    );
+    assert.equal(w1.cache_mode, "exact");
+    assert.equal(w1.delta_tokens, 0);
+    assert.equal(incEngine.cacheMisses, 1);
+  } finally {
+    rmSync(pageDir, { recursive: true, force: true });
+  }
+});
+
+test("session page cleanup removes .ws1page files on fresh startup, server close, and stopWardenS1Daemon", async () => {
+  const stateDir = makeTempDir("ws1-page-clean-");
+  const pagesDir = daemonPagesPath(stateDir);
+  try {
+    // Plant a stale .ws1page from a prior crashed daemon and verify fresh startup purges it.
+    mkdirSync(pagesDir, { recursive: true, mode: 0o700 });
+    const stalePage = join(pagesDir, "stale-crash-artifact.ws1page");
+    writeFileSync(stalePage, Buffer.from("stale-page-data"));
+    assert.equal(existsSync(stalePage), true);
+
+    const srv = await startOnnxWorkerServer({
+      mockWeights: true,
+      ramSlots: 1,
+      pageDir: pagesDir,
+      idleShutdownSec: 0,
+      token: "clean-token",
+    });
+    assert.equal(existsSync(stalePage), false, "fresh worker startup must purge stale .ws1page files");
+
+    const ep = {
+      pid: process.pid,
+      instanceId: srv.instanceId,
+      host: srv.host,
+      port: srv.port,
+      runtime: "onnx" as const,
+      modelId: srv.engine.modelId,
+      modelDir: srv.engine.modelDir,
+      startedAt: new Date().toISOString(),
+      idleShutdownSec: 0,
+      token: srv.token,
+      url: srv.url,
+      stateDir,
+    };
+    const q = { ok: { type: "noul", instructions: "Healthy?" } };
+    for (let i = 0; i < 4; i++) {
+      await daemonEvaluate(ep, { state: `<turn index="0">Session ${i}</turn>`, questions: q }, { sessionId: `p-${i}` });
+    }
+    assert.ok(readdirSync(pagesDir).filter((f) => f.endsWith(".ws1page")).length >= 2, "must have spilled pages to disk");
+
+    await srv.close();
+    assert.deepEqual(
+      existsSync(pagesDir) ? readdirSync(pagesDir).filter((f) => f.endsWith(".ws1page")) : [],
+      [],
+      "worker close() must delete all .ws1page files",
+    );
+
+    // Spawn real daemon subprocess, spill pages to disk, and verify stopWardenS1Daemon removes pagesDir completely.
+    const daemonEp = await ensureWardenS1Daemon({
+      runtime: "onnx",
+      mockWeights: true,
+      stateDir,
+      ramSlots: 1,
+      idleShutdownSec: 60,
+      startupTimeoutMs: 15_000,
+    });
+    for (let i = 0; i < 4; i++) {
+      await daemonEvaluate(daemonEp, { state: `<turn index="0">Subprocess session ${i}</turn>`, questions: q }, { sessionId: `sp-${i}` });
+    }
+    assert.ok(readdirSync(pagesDir).filter((f) => f.endsWith(".ws1page")).length >= 2, "subprocess daemon must spill pages");
+
+    const stopped = await stopWardenS1Daemon(stateDir, 5000);
+    assert.equal(stopped.stopped, true);
+    assert.equal(existsSync(pagesDir), false, "stopWardenS1Daemon must remove <stateDir>/pages");
+  } finally {
+    await stopWardenS1Daemon(stateDir, 5000).catch(() => undefined);
+    rmSync(stateDir, { recursive: true, force: true });
   }
 });
