@@ -13,6 +13,8 @@ Want semantic judgment on top? Run `/warden enable` to add [Jev](https://typesaf
 
 It runs inside [Pi](https://github.com/earendil-works/pi), and as hooks in Claude Code and Codex.
 
+> **Coming soon — first-class local [Warden-S1](https://ryanjoshuagapac.com/writing/warden-s1) support (in active integration):** We are adding opt-in local System-1 semantic verification so you can run full semantic guardrails **100% locally at `$0` API cost** in **`<1 GiB`** across **10+ concurrent `64K–128K+` token sessions** (`~0 ms` perceived turn lag via background prefix pre-warming, calibrated `0.50` abstention, `locus` offending-turn citations, and `salience`-guided compaction through `500K+` tokens). Open Apache-2.0 weights are live now on Hugging Face ([`Warden-S1-752M-MLX-4bit`](https://huggingface.co/DevMortimer/Warden-S1-752M-MLX-4bit) `415.5 MiB` · [`Warden-S1-752M-ONNX-Int4`](https://huggingface.co/DevMortimer/Warden-S1-752M-ONNX-Int4) `461.3 MiB` · [`Warden-S1-752M`](https://huggingface.co/DevMortimer/Warden-S1-752M)), with full Stage 3.5 benchmarks in [`eval/reports/2026-11-23-warden-s1-live-eval`](eval/reports/2026-11-23-warden-s1-live-eval/README.md).
+
 ![A careless agent makes six moves in a terminal: it tries to wipe uncommitted work, reads a secrets file, repeats a failing command, tries to switch pi-warden off, fakes a fix with a stub, and claims the tests pass. pi-warden holds two of them, masks the secrets, and reports the other three to the owner.](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/assets/demo.gif)
 
 ## Install in 10 seconds (no API key needed)
