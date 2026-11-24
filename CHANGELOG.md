@@ -6,7 +6,16 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- Strictly opt-in local `Warden-S1` System-1 semantic verification (`"typesafeBackend": "warden-s1"` or `"auto"`, default `"cloud"`, config schema `20`): runs every semantic guard (`action`, `taint` declassification, `rules`, `done`, `stuck`, `security`, and headless Claude Code / Codex hooks) locally on `127.0.0.1` loopback at `$0` API cost with no cloud API key and no consent dialog.
+- Singleton multi-session loopback daemon (`src/warden-s1-daemon.ts`) and dual hardware-aware inference workers (`src/warden-s1-mlx-worker.ts` for Apple Silicon Metal `MLX-4bit` `415.5 MiB` and `src/warden-s1-onnx-worker.ts` for zero-Python `ONNX-Int4` `461.3 MiB`) with `18 Gated DeltaNet + 6 GQA` `L1/L2/L3` zstd session paging (`< 1 GiB` across `10+` concurrent sessions), 2-token BPE boundary healing, fork-on-candidate (`ephemeral_last_chunk: true`) `O(ΔL)` prefix reuse, priority queueing, owner-only Bearer auth, automatic `.ws1page` session page cleanup, and `localModel.idleShutdownSec` auto-exit.
+- Long-horizon `WardenS1SessionTracker` and `WardenS1Judge` (`src/warden-s1-session.ts`) with pinned Turn 0 + rules prefix, asynchronous background turn pre-warming (`/v1/prewarm`) behind `< 1 ms` System-0 gates, block-stepped `salience >= 0.80` compaction across `500K+`-token sessions without rolling-window prefix invalidation, calibrated `|p - 0.50| < 0.08` epistemic abstention (`abstained: insufficient evidence in transcript`, never declassifying `taint-lethal-trifecta` on abstention), and `locus` offending-turn citations (`Locus: Turn #N (source, locus P): "…"`) in inline steers, toasts, and traces.
+- `/warden model status`, `/warden model download`, and `/warden model remove` commands (plus `/warden config` selectors for `typesafeBackend` and `localModel.*` and `HF_ENDPOINT` mirror support) with SHA-256 verification, HTTP `Range` `.part` resume, non-blocking status-line download progress, and `/warden status` local daemon telemetry.
+
+### Docs
+
+- Documented local `Warden-S1` setup, `/warden model` commands, `localModel.*` configuration, multi-session paging, `salience` compaction, `0.50` abstention, `locus` turn citations, and loopback data handling in `README.md`, `docs/configuration.md`, `docs/commands.md`, `docs/guards.md`, and `docs/data-handling.md`.
 
 ## 2.17.1
 
