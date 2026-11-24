@@ -9,6 +9,8 @@ import { redact } from "./redact.js";
 import { isReadOnlyCommand } from "./guard.js";
 import { projectPath } from "./rules.js";
 import { COMMAND_TOOLS, commandOf, outputReportsFailure } from "./tools.js";
+import { wardenS1Notes } from "./warden-s1-session.js";
+import type { WardenS1Notes } from "./warden-s1-session.js";
 import { DEFAULT_TEMPLATES, renderTemplate, stuckTokens } from "./widget.js";
 
 /** Hashed old/new pair for an `edit` operation; keeps raw source text off persisted attempts. */
@@ -110,6 +112,8 @@ export interface StuckVerdict {
   judgment?: StuckJudgment;
   error?: string;
   errorCode?: IntegrationErrorCode;
+  /** Local Warden-S1 only: the turn the loop points at, and the probes that abstained. */
+  s1?: WardenS1Notes;
 }
 
 const CALL_LIMIT = 300;
@@ -599,7 +603,8 @@ export async function evaluateStuck(window: AttemptWindow, task: string | undefi
   const reasons = stuck
     ? [`${failures} failures with the same strategy (${judgment.sameStrategy.toFixed(2)}), approach change ${judgment.approachChange.toFixed(1)}/2, progress ${judgment.progress.toFixed(2)}`]
     : [];
-  return { stuck, source: "typesafe", failures, reasons, judgment };
+  const s1 = wardenS1Notes(result.answers, stuck ? ["same_strategy", "progress"] : undefined);
+  return { stuck, source: "typesafe", failures, reasons, judgment, ...(s1 ? { s1 } : {}) };
 }
 
 /** Steering text for the agent. Names the pattern and asks for a change of method, not another retry. A successful
@@ -620,7 +625,7 @@ export function stuckNudge(verdict: StuckVerdict): string {
   if (verdict.churn) {
     return `pi-warden: ${verdict.reasons.join("; ")}. The output keeps changing but the target stays the same. Either act on the latest result and move on, or try a different command entirely.`;
   }
-  return `pi-warden: ${verdict.reasons.join("; ")}. Stop retrying. Re-read the last error output carefully, state a new hypothesis about the cause, and either gather the missing information (read the relevant file, check versions or paths) or try a different method. If two different methods have failed, report the blocker to the user with the exact error instead of trying again.`;
+  return `pi-warden: ${verdict.reasons.join("; ")}. Stop retrying. Re-read the last error output carefully, state a new hypothesis about the cause, and either gather the missing information (read the relevant file, check versions or paths) or try a different method. If two different methods have failed, report the blocker to the user with the exact error instead of trying again.${verdict.s1?.locus ? ` ${verdict.s1.locus}.` : ""}`;
 }
 
 const STEER_CALL_LIMIT = 120;

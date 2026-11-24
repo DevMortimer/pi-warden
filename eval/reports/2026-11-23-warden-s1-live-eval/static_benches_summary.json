@@ -1,0 +1,343 @@
+{
+  "date": "2026-11-24",
+  "stage": "stage3.5",
+  "model": "warden-s1-752m-mlx-q4",
+  "smoke_integration": {
+    "models": [
+      "warden-s1-752m-mlx-q4"
+    ],
+    "smoke_elapsed_ms": 521,
+    "smoke_answers": {
+      "swallowed": {
+        "type": "noul",
+        "noul": 0.154362
+      },
+      "rule_verdict": {
+        "type": "choice",
+        "choice": "compliant",
+        "confidence": 0.572645,
+        "probabilities": {
+          "compliant": 0.572645,
+          "violation": 0.232085,
+          "not_applicable": 0.17648,
+          "insufficient_context": 0.01879
+        }
+      },
+      "severity": {
+        "type": "score",
+        "score": 0.941437,
+        "confidence": 0.399661,
+        "probabilities": {
+          "0": 0.329451,
+          "1": 0.399661,
+          "2": 0.270888
+        },
+        "legend": [
+          "None",
+          "Minor",
+          "Major"
+        ]
+      }
+    },
+    "smoke_usage": {
+      "requestsStarted": 1,
+      "requestsSucceeded": 1,
+      "requestsFailed": 0,
+      "inputTokens": 137,
+      "outputTokens": 3,
+      "estimatedUsd": 0
+    }
+  },
+  "judge_bench": {
+    "date": "2026-11-24",
+    "thresholds": {
+      "sameStrategy": 0.7,
+      "claimsDone": 0.7,
+      "applies": 0.5
+    },
+    "repeats": 1,
+    "requests_sent": 240,
+    "requests_failed": 0,
+    "wall_ms": 97216,
+    "stuck": {
+      "counts": {
+        "cases": 40,
+        "positive": 20,
+        "code_decided": 0
+      },
+      "arms": {
+        "A": {
+          "cases": 40,
+          "judgments": 40,
+          "tp": 14,
+          "fp": 0,
+          "tn": 20,
+          "fn": 6,
+          "accuracy": 0.85,
+          "precision": 1,
+          "recall": 0.7,
+          "brier": 0.128,
+          "agreement": null,
+          "bytes_p50": 3367,
+          "bytes_p95": 4255,
+          "ms_p50": 327,
+          "ms_p95": 719
+        },
+        "B": {
+          "cases": 40,
+          "judgments": 40,
+          "tp": 10,
+          "fp": 0,
+          "tn": 20,
+          "fn": 10,
+          "accuracy": 0.75,
+          "precision": 1,
+          "recall": 0.5,
+          "brier": 0.212,
+          "agreement": null,
+          "bytes_p50": 4476,
+          "bytes_p95": 5521,
+          "ms_p50": 537,
+          "ms_p95": 836
+        },
+        "C": {
+          "cases": 40,
+          "judgments": 40,
+          "tp": 20,
+          "fp": 5,
+          "tn": 15,
+          "fn": 0,
+          "accuracy": 0.875,
+          "precision": 0.8,
+          "recall": 1,
+          "brier": 0.121,
+          "agreement": null,
+          "bytes_p50": 1837,
+          "bytes_p95": 2473,
+          "ms_p50": 355,
+          "ms_p95": 505
+        }
+      }
+    },
+    "done": {
+      "counts": {
+        "cases": 40,
+        "positive": 20,
+        "reach_judge": 24
+      },
+      "arms": {
+        "A": {
+          "cases": 40,
+          "judgments": 40,
+          "tp": 15,
+          "fp": 8,
+          "tn": 12,
+          "fn": 5,
+          "accuracy": 0.675,
+          "precision": 0.652,
+          "recall": 0.75,
+          "brier": 0.294,
+          "agreement": null,
+          "bytes_p50": 259,
+          "bytes_p95": 360,
+          "ms_p50": 257,
+          "ms_p95": 1602
+        },
+        "B": {
+          "cases": 40,
+          "judgments": 40,
+          "tp": 16,
+          "fp": 8,
+          "tn": 12,
+          "fn": 4,
+          "accuracy": 0.7,
+          "precision": 0.667,
+          "recall": 0.8,
+          "brier": 0.295,
+          "agreement": null,
+          "bytes_p50": 357,
+          "bytes_p95": 1870,
+          "ms_p50": 287,
+          "ms_p95": 436
+        },
+        "C": {
+          "cases": 40,
+          "judgments": 40,
+          "tp": 16,
+          "fp": 8,
+          "tn": 12,
+          "fn": 4,
+          "accuracy": 0.7,
+          "precision": 0.667,
+          "recall": 0.8,
+          "brier": 0.308,
+          "agreement": null,
+          "bytes_p50": 611,
+          "bytes_p95": 910,
+          "ms_p50": 283,
+          "ms_p95": 1723
+        }
+      }
+    },
+    "stage2_baseline_reference": {
+      "stuck_accuracy_range": [
+        0.5,
+        0.5
+      ],
+      "stuck_brier_approx": 0.48,
+      "done_recall_range": [
+        0.1,
+        0.35
+      ]
+    }
+  },
+  "rules_bench": {
+    "date": "2026-11-24",
+    "split": "all",
+    "requests_sent": 161,
+    "requests_failed": 0,
+    "wall_ms": 162309,
+    "usage": {
+      "requestsStarted": 161,
+      "requestsSucceeded": 161,
+      "requestsFailed": 0,
+      "inputTokens": 576932,
+      "outputTokens": 1755,
+      "estimatedUsd": 0
+    },
+    "cases": {
+      "total": 161,
+      "violation": 74,
+      "clean": 87,
+      "asked": 147,
+      "notAsked": 14,
+      "unanswered": 0,
+      "failed": 0,
+      "byKind": {
+        "violation": 74,
+        "near-miss": 53,
+        "not-applicable": 34
+      }
+    },
+    "overall_by_cutoff": [
+      {
+        "cutoff": 0.3,
+        "tp": 43,
+        "fp": 13,
+        "tn": 60,
+        "fn": 31,
+        "positives": 74,
+        "negatives": 73,
+        "recall": 0.581081081081081,
+        "falseAlarmRate": 0.1780821917808219,
+        "precision": 0.7678571428571429
+      },
+      {
+        "cutoff": 0.4,
+        "tp": 34,
+        "fp": 9,
+        "tn": 64,
+        "fn": 40,
+        "positives": 74,
+        "negatives": 73,
+        "recall": 0.4594594594594595,
+        "falseAlarmRate": 0.1232876712328767,
+        "precision": 0.7906976744186046
+      },
+      {
+        "cutoff": 0.5,
+        "tp": 31,
+        "fp": 6,
+        "tn": 67,
+        "fn": 43,
+        "positives": 74,
+        "negatives": 73,
+        "recall": 0.4189189189189189,
+        "falseAlarmRate": 0.0821917808219178,
+        "precision": 0.8378378378378378
+      },
+      {
+        "cutoff": 0.6,
+        "tp": 24,
+        "fp": 5,
+        "tn": 68,
+        "fn": 50,
+        "positives": 74,
+        "negatives": 73,
+        "recall": 0.32432432432432434,
+        "falseAlarmRate": 0.0684931506849315,
+        "precision": 0.8275862068965517
+      },
+      {
+        "cutoff": 0.7,
+        "tp": 17,
+        "fp": 3,
+        "tn": 70,
+        "fn": 57,
+        "positives": 74,
+        "negatives": 73,
+        "recall": 0.22972972972972974,
+        "falseAlarmRate": 0.0410958904109589,
+        "precision": 0.85
+      },
+      {
+        "cutoff": 0.8,
+        "tp": 9,
+        "fp": 0,
+        "tn": 73,
+        "fn": 65,
+        "positives": 74,
+        "negatives": 73,
+        "recall": 0.12162162162162163,
+        "falseAlarmRate": 0,
+        "precision": 1
+      },
+      {
+        "cutoff": 0.9,
+        "tp": 4,
+        "fp": 0,
+        "tn": 73,
+        "fn": 70,
+        "positives": 74,
+        "negatives": 73,
+        "recall": 0.05405405405405406,
+        "falseAlarmRate": 0,
+        "precision": 1
+      }
+    ],
+    "two_tier": {
+      "raise": 0.7,
+      "lower": 0.5,
+      "raiseTrue": 17,
+      "lowerOnlyTrue": 14,
+      "missedAtLower": 43,
+      "raiseFalse": 3,
+      "lowerOnlyFalse": 3,
+      "recallAtRaise": 0.22972972972972974,
+      "recallAtLower": 0.4189189189189189,
+      "addedRecall": 0.1891891891891892,
+      "falseAlarmRateAtRaise": 0.0410958904109589,
+      "falseAlarmRateAtLower": 0.0821917808219178,
+      "addedFalseAlarmRate": 0.0410958904109589
+    },
+    "soft_tier": {
+      "soft": 0.5,
+      "raiseTrue": 17,
+      "softTrue": 14,
+      "raiseFalse": 3,
+      "softFalse": 3,
+      "missedBelowSoft": 43,
+      "recallAtCutoff": 0.22972972972972974,
+      "recallAtSoft": 0.4189189189189189,
+      "addedRecall": 0.1891891891891892,
+      "falseAlarmAtCutoff": 0.0410958904109589,
+      "falseAlarmAtSoft": 0.0821917808219178,
+      "addedFalseAlarm": 0.0410958904109589
+    },
+    "stage2_baseline_reference": {
+      "recall_at_0_5": 0.0541,
+      "recall_at_0_7": 0.0541,
+      "stage35_recall_at_0_5_gain_x": 7.75
+    }
+  }
+}

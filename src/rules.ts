@@ -7,6 +7,8 @@ import type { AskOptions, BackendLimits, IntegrationErrorCode, Judge, Questions,
 import type { RulesConfig } from "./config.js";
 import { redact } from "./redact.js";
 import { evaluateSystem0 } from "./rule-compiler.js";
+import { mergeAnswerMeta, wardenS1Notes } from "./warden-s1-session.js";
+import type { WardenS1Notes } from "./warden-s1-session.js";
 import type { System0RuleResult } from "./rule-compiler.js";
 import { DEFAULT_TEMPLATES, renderTemplate, rulesTokens } from "./widget.js";
 
@@ -119,6 +121,7 @@ export async function askChunks(judge: Judge, requests: readonly SystemOneReques
     Object.assign(answers, result.answers);
     elapsedMs = Math.max(elapsedMs, result.elapsedMs);
   }
+  mergeAnswerMeta(answers, results.map(result => result.ok ? result.answers : undefined));
   const first = results[0];
   return { ok: true, answers, model: first?.ok ? first.model : "", elapsedMs };
 }
@@ -769,6 +772,15 @@ export interface RulesVerdict {
   skippedReason?: string;
   error?: string;
   errorCode?: IntegrationErrorCode;
+  /** Local Warden-S1 only: the turn a finding points at, and the probes that abstained. */
+  s1?: WardenS1Notes;
+}
+
+/** Attaches the Warden-S1 notes of a judged rules answer; the turn is cited only when a rule was flagged. */
+export function noteRulesAnswer(verdict: RulesVerdict, answers: unknown): RulesVerdict {
+  const s1 = wardenS1Notes(answers, verdict.findings.length ? verdict.findings.map(finding => finding.id) : undefined);
+  if (s1) verdict.s1 = s1;
+  return verdict;
 }
 
 export interface RulesOptions {
@@ -997,7 +1009,7 @@ export async function evaluateRulesTarget(target: RulesTarget | undefined, tool:
         verdict.editPreview = edit.newText.trim().split("\n")[0]!.slice(0, 60);
       }
     }
-    return verdict;
+    return noteRulesAnswer(verdict, result.answers);
   }
 
   if (!options.judge) return skipped(target, tool, shownPath, set, "TypeSafe judgments are off");
@@ -1021,7 +1033,7 @@ export async function evaluateRulesTarget(target: RulesTarget | undefined, tool:
       verdict.editPreview = edit.newText.trim().split("\n")[0]!.slice(0, 60);
     }
   }
-  return verdict;
+  return noteRulesAnswer(verdict, result.answers);
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,7 +1058,7 @@ export function rulesSteer(verdict: RulesVerdict, counts: ReadonlyMap<string, nu
   // The steer names the rule and the written file only: a named rules or config file sends a weak model off to read it.
   const what = verdict.aggregate ? "breaks a project rule" : `violates project rule${verdict.findings.length === 1 ? "" : "s"}`;
   const standing = verdict.findings.some(finding => (counts.get(finding.id) ?? 0) >= 3) ? " Treat this as a standing rule for the rest of the session." : "";
-  return `pi-warden: the content just written to ${where} ${what}: ${named}. Fix it in your next edit.${standing}${alsoCheck ? ` ${alsoCheck}` : ""}`;
+  return `pi-warden: the content just written to ${where} ${what}: ${named}. Fix it in your next edit.${standing}${alsoCheck ? ` ${alsoCheck}` : ""}${verdict.s1?.locus ? ` ${verdict.s1.locus}.` : ""}`;
 }
 
 export function formatRules(verdict: RulesVerdict, template: string = DEFAULT_TEMPLATES.rules): string {

@@ -551,15 +551,31 @@ export interface TaintConfig {
 }
 
 
+export const LOCAL_MODEL_RUNTIMES = ["auto", "mlx", "onnx"] as const;
+export type LocalModelRuntime = typeof LOCAL_MODEL_RUNTIMES[number];
+
+export interface LocalModelConfig {
+  /** Strictly opt-in: download Warden-S1 weights automatically when a local backend is selected. Default false. */
+  autoDownload: boolean;
+  /** Hardware runtime selection: "auto" picks MLX on Apple Silicon when Python+mlx_lm is available, else ONNX. */
+  runtime: LocalModelRuntime;
+  /** Optional override directory for downloaded model weights (supports leading ~). */
+  cacheDir?: string;
+  /** Inactivity timeout in seconds before the local Warden-S1 daemon shuts down (>= 10). */
+  idleShutdownSec?: number;
+}
+
 export interface WardenConfig {
   /** Master switch. false disables every guard, including offline pattern checks. */
   enabled: boolean;
   /** Consent to send task and action summaries to api.typesafe.ai. Set by /warden enable; never by a project file. */
   typesafe: boolean;
-  /** The decisions service the judgments go to: a name ("typesafe", "openrouter", "commandcode", "liquid", "subq", "nace") or a caller-supplied endpoint object. User file only: a project must not redirect judgments to another vendor. Undefined when the configured value was refused. */
+  /** The decisions service the judgments go to: "cloud" (default TypeSafe), local modes ("warden-s1", "auto"), a registry name ("typesafe", "openrouter", "commandcode", "liquid", "subq", "nace"), or a caller-supplied endpoint object. User file only: a project must not redirect judgments to another vendor. Undefined when the configured value was refused. */
   typesafeBackend: JudgmentBackend | undefined;
   /** Why the configured typesafeBackend was refused: judgments stay off, and the once-per-session notice and /warden status quote this. */
   backendRefusal: string | undefined;
+  /** Strictly opt-in local Warden-S1 model settings. User file only: a project must never trigger downloads or redirect cacheDir. */
+  localModel: LocalModelConfig;
   /**
    * steer (default): a confirm-level call is held and the agent receives the judgment as its tool result, so it re-plans or asks
    * the user in chat. confirm: open a dialog and let the user decide (falls back to steer without a UI). advise: never hold; report only.
@@ -612,15 +628,20 @@ export interface WardenConfig {
 
 export const PACKAGE_NAME = "pi-warden";
 /** Bumped when WardenConfig gains a section; extension.ts checks it so a half-updated module graph is reported, not crashed on. */
-export const CONFIG_SCHEMA = 19;
+export const CONFIG_SCHEMA = 20;
 export const PROJECT_CONFIG_FILE = `${PACKAGE_NAME}.json`;
 
 export function defaultConfig(): WardenConfig {
   return {
     enabled: true,
     typesafe: false,
-    typesafeBackend: "typesafe",
+    typesafeBackend: "cloud",
     backendRefusal: undefined,
+    localModel: {
+      autoDownload: false,
+      runtime: "auto",
+      idleShutdownSec: 1800,
+    },
     mode: "steer",
     timeoutMs: 5000,
     maxRequests: 500,
@@ -1359,6 +1380,7 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     typesafe: boolean(raw.typesafe, base.typesafe),
     typesafeBackend: backend.typesafeBackend,
     backendRefusal: backend.backendRefusal,
+    localModel: applyLocalModel(base.localModel, raw.localModel),
     mode: isMode(raw.mode) ? raw.mode : base.mode,
     ...shared,
     ...guards,
@@ -1370,6 +1392,21 @@ export function applyUserOverrides(base: WardenConfig, raw: unknown): WardenConf
     improve: applyImprove(base.improve, raw.improve, warnings),
     trial: applyTrial(base.trial, raw.trial),
     warnings: [...(base.warnings ?? []), ...warnings],
+  };
+}
+
+function applyLocalModel(base: LocalModelConfig, raw: unknown): LocalModelConfig {
+  if (!isObject(raw)) return base;
+  const cacheDir = typeof raw.cacheDir === "string" && raw.cacheDir.trim().length > 0
+    ? raw.cacheDir.trim()
+    : base.cacheDir;
+  const idleBase = base.idleShutdownSec ?? 1800;
+  const idleShutdownSec = Math.max(10, positiveInteger(raw.idleShutdownSec, idleBase));
+  return {
+    autoDownload: boolean(raw.autoDownload, base.autoDownload),
+    runtime: isOption(raw.runtime, LOCAL_MODEL_RUNTIMES) ? raw.runtime : base.runtime,
+    ...(cacheDir !== undefined ? { cacheDir } : {}),
+    idleShutdownSec,
   };
 }
 

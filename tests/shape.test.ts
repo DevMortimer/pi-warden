@@ -262,12 +262,13 @@ test("completeConfig fills Wave 2 cadence, inline feedback, autonomous gate, dup
   assert.equal(config.action.traceSample, 0);
 });
 
-test("schema 19 and missing context.mask / taint / Wave 4 fields fill safe defaults in both completeConfig and guardCurrentSections", async () => {
+test("schema 20 and missing localModel / context.mask / taint / Wave 4 fields fill safe defaults in both completeConfig and guardCurrentSections", async () => {
   const { guardCurrentSections } = await import("../src/extension.js");
-  assert.equal(CONFIG_SCHEMA, 19);
-  assert.equal(EXPECTED_SCHEMA, 19);
+  assert.equal(CONFIG_SCHEMA, 20);
+  assert.equal(EXPECTED_SCHEMA, 20);
 
   const stale = defaultConfig() as unknown as Record<string, Record<string, unknown>>;
+  delete stale.localModel;
   const ctxSection = { ...stale.context };
   delete ctxSection.mask;
   stale.context = ctxSection;
@@ -282,7 +283,20 @@ test("schema 19 and missing context.mask / taint / Wave 4 fields fill safe defau
   stale.stuck = stuckSection;
 
   const completed = completeConfig(stale as never);
-  assert.deepEqual(completed.missing.sort(), ["context.mask", "taint"]);
+  assert.deepEqual(completed.missing.sort(), ["context.mask", "localModel", "taint"]);
+  assert.deepEqual(completed.config.localModel, {
+    autoDownload: false,
+    runtime: "auto",
+    idleShutdownSec: 1800,
+  });
+
+  const invalidLocal = { ...defaultConfig(), localModel: { autoDownload: "yes", runtime: "cuda", cacheDir: "  ", idleShutdownSec: 3 } };
+  const repaired = completeConfig(invalidLocal as never);
+  assert.deepEqual(repaired.config.localModel, {
+    autoDownload: false,
+    runtime: "auto",
+    idleShutdownSec: 1800,
+  });
   assert.deepEqual(completed.config.taint, {
     enabled: false,
     holdTrifecta: false,

@@ -86,6 +86,7 @@ export type SkipReason =
   | "bad_backend"
   | "no_key"
   | "key_rejected"
+  | "no_local_model"
   | "no_match"
   | "already_supplied"
   | "awaiting_user"

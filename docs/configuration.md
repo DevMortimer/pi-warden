@@ -10,7 +10,7 @@ Paths in this document are for Pi. On oh-my-pi, `~/.pi/agent` is `~/.omp/agent` 
 
 User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` opens the panel that edits it (`/warden config` again or `q` closes); `/warden config get <key>` prints one value without the panel. A key pi-warden does not know is ignored. A value it cannot apply as written (an unknown rule value, a surprising arming duration, a project value that would weaken the action guard or security) is named in one config warning, shown once when a session starts and again in `/warden status`.
 
-The panel shows selectors for `mode`, `typesafeBackend`, `widget.placement`, `widget.barMode`, `conscience.skills.mode`, and `context.recallTool`. Press Enter to select, then ←/→ to cycle through the supported values, wrapping at either end; Enter saves only that field. Esc cancels, and Enter without cycling leaves the file untouched, including when it does not exist yet. Invalid values stay visible until you choose a supported value. Text and numbers still use Enter to edit and Enter to stage; booleans toggle with Enter. `s` saves those staged edits, which remain pending when a selector saves.
+The panel shows selectors for `mode`, `typesafeBackend`, `localModel.runtime`, `widget.placement`, `widget.barMode`, `conscience.skills.mode`, and `context.recallTool`. Press Enter to select, then ←/→ to cycle through the supported values, wrapping at either end; Enter saves only that field. Esc cancels, and Enter without cycling leaves the file untouched, including when it does not exist yet. Invalid values stay visible until you choose a supported value. Text and numbers still use Enter to edit and Enter to stage; booleans toggle with Enter. `s` saves those staged edits, which remain pending when a selector saves.
 
 Selectors show the user setting or its default. A trusted project can still override a saved `context.recallTool` value. A custom backend remains editable through its child fields; the parent selector can replace it with a named backend from pi-typesafe's registry. Save pending backend child edits with `s` before replacing the parent. A failed write leaves the selection and staged edits available to retry.
 
@@ -88,7 +88,8 @@ Missing keys use these defaults:
   "widget": { "enabled": true, "placement": "aboveEditor", "barMode": "live", "shortcut": "ctrl+shift+w", "panelWidth": "40%" },
   "notices": false,
   "trial": { "silentHalf": false },
-  "typesafeBackend": "typesafe"
+  "typesafeBackend": "cloud",
+  "localModel": { "autoDownload": false, "runtime": "auto", "idleShutdownSec": 1800 }
 }
 ```
 
@@ -96,7 +97,11 @@ Missing keys use these defaults:
 | --- | --- |
 | `enabled` | Master switch for the extension. |
 | `typesafe` | Consent to send requests to TypeSafe. Set by `/warden enable`; only the user file or `PI_WARDEN_ENABLED=1` can grant it. |
-| `typesafeBackend` | Where the judgments go: `"typesafe"` (default, api.typesafe.ai), `"openrouter"` (openrouter.ai), `"commandcode"` (api.commandcode.ai), `"liquid"` (api.liquid.ai, default model `d1:free`), `"subq"` (api.subq.ai, default model `subq-snap-preview`), `"nace"` (console.nace.ai, default model `drex-v2.0`), or an endpoint object for a gateway that serves the same decisions protocol: `{ "label": "Corp judge gateway", "host": "https://gw.example.com", "path": "/judge/systemone", "keyEnv": "GW_JUDGE_KEY", "defaultModel": "jev-1.13" }`. The paid Liquid AI model `d1` is an endpoint object too: `{ "label": "Liquid AI d1", "host": "https://api.liquid.ai", "path": "/decisions/v1/systemone", "keyEnv": "LIQUID_API_KEY", "defaultModel": "d1", "modelsPath": "/decisions/v1/models", "modelsVerifyKey": true }`. `keyEnv` is required, must not be `TYPESAFE_API_KEY`, and names the environment variable that carries the endpoint's key: the TypeSafe key and the `/typesafe login` store are never sent to it. `path`, `defaultModel`, and the model-list fields `modelsPath`, `modelsField`, `modelsIdField`, `modelsVerifyKey` are optional; the host must be `https:` (`http:` only for a loopback host). User file only — a project must not redirect judgments. Nothing silently falls back: an unknown name or an object the judge refuses turns judgments off, and the refusal message is shown once and in `/warden status`. |
+| `typesafeBackend` | Where the judgments go: `"cloud"` (default; TypeSafe at api.typesafe.ai, the same as `"typesafe"`), `"warden-s1"` (the local Warden-S1 model on 127.0.0.1; no consent, no key, never a cloud request), `"auto"` (the local model when it is downloaded and verified, else TypeSafe under the usual consent and key, else pattern checks; see [Local Warden-S1](#local-warden-s1)), `"typesafe"` (api.typesafe.ai), `"openrouter"` (openrouter.ai), `"commandcode"` (api.commandcode.ai), `"liquid"` (api.liquid.ai, default model `d1:free`), `"subq"` (api.subq.ai, default model `subq-snap-preview`), `"nace"` (console.nace.ai, default model `drex-v2.0`), or an endpoint object for a gateway that serves the same decisions protocol: `{ "label": "Corp judge gateway", "host": "https://gw.example.com", "path": "/judge/systemone", "keyEnv": "GW_JUDGE_KEY", "defaultModel": "jev-1.13" }`. The paid Liquid AI model `d1` is an endpoint object too: `{ "label": "Liquid AI d1", "host": "https://api.liquid.ai", "path": "/decisions/v1/systemone", "keyEnv": "LIQUID_API_KEY", "defaultModel": "d1", "modelsPath": "/decisions/v1/models", "modelsVerifyKey": true }`. `keyEnv` is required, must not be `TYPESAFE_API_KEY`, and names the environment variable that carries the endpoint's key: the TypeSafe key and the `/typesafe login` store are never sent to it. `path`, `defaultModel`, and the model-list fields `modelsPath`, `modelsField`, `modelsIdField`, `modelsVerifyKey` are optional; the host must be `https:` (`http:` only for a loopback host). User file only — a project must not redirect judgments. Nothing silently falls back: an unknown name or an object the judge refuses turns judgments off, and the refusal message is shown once and in `/warden status`. |
+| `localModel.autoDownload` | `false` by default: nothing is downloaded until you run `/warden model download`. `true` downloads the weights in the background when `typesafeBackend` is `"warden-s1"` or `"auto"` and they are missing, at session start or the moment you switch it on with `/warden config`; the status line shows the percentage and pattern checks run alone until it ends. User file only. |
+| `localModel.runtime` | `"auto"` (default: MLX on Apple Silicon when a Python with `mlx_lm` is found, else ONNX), `"mlx"`, or `"onnx"`. MLX reads `DevMortimer/Warden-S1-752M-MLX-4bit` (415.5 MiB); ONNX reads `DevMortimer/Warden-S1-752M-ONNX-Int4` (461.3 MiB) and installs `onnxruntime-node` with npm into `~/.pi/agent/pi-warden/runtime` at the first download. |
+| `localModel.cacheDir` | Folder for the downloaded weights; a leading `~` is the home folder. Default `~/.cache/pi-warden/models`. |
+| `localModel.idleShutdownSec` | Seconds without a request after which the shared daemon exits and frees its memory; the next judged call starts it again. Default 1800, minimum 10. |
 | `mode` | `steer` (hold goes back to the agent), `confirm` (dialog for you), `advise` (never holds). User file only; a project's `.pi/pi-warden.json` cannot change it, by design. |
 | `timeoutMs` | Per-request timeout. On timeout the call is allowed with a warning when `action.failOpen` is true. |
 | `maxRequests` | Per-session request budget. When spent, pi-warden says so once and continues with offline checks. On SubQ a request carries at most 16 questions, so a judgment with more than 16 takes more than one request and uses more of this budget. |
@@ -377,7 +382,12 @@ It is a backstop for sanctioned work, not a boundary anyone hostile respects: ke
 | `LIQUID_API_KEY` | API key for the Liquid AI backend. Required when `typesafeBackend` is `"liquid"` and no key is stored by `/typesafe login liquid`; this variable then takes precedence. |
 | `SUBQ_API_KEY` | API key for the SubQ backend. Required when `typesafeBackend` is `"subq"` and no key is stored by `/typesafe login subq`; this variable then takes precedence. |
 | `NACE_API_KEY` | API key for the Nace.AI backend. Required when `typesafeBackend` is `"nace"` and no key is stored by `/typesafe login nace`; this variable then takes precedence. |
-| `PI_WARDEN_ENABLED=1` | Grants consent for headless runs (same as `"typesafe": true`). |
+| `PI_WARDEN_ENABLED=1` | Grants consent for headless runs (same as `"typesafe": true`). The local Warden-S1 model needs no consent. |
+| `PI_WARDEN_CACHE_DIR=<dir>` | Where the local Warden-S1 daemon keeps its metadata, log, and paged session states, and (under `models/`) the downloaded weights, instead of `~/.cache/pi-warden`. |
+| `HF_ENDPOINT=<url>` | The host `/warden model download` reads from, instead of `https://huggingface.co`: the Hugging Face hub's own variable for a mirror. Each file is still checked against its SHA-256. |
+| `HF_TOKEN=<token>` | Sent as the bearer token of the download requests, for a gated mirror. |
+| `PI_WARDEN_PYTHON=<path>` | The Python the MLX runtime probes first for `mlx_lm`. |
+| `PI_WARDEN_S1_MOCK_WEIGHTS=1` | For tests and proofs: the local daemon runs small synthetic weights in place of the download, so its answers mean nothing. Never set it for real work. |
 | `PI_WARDEN_MODE=steer\|confirm\|advise` | Overrides `mode`. |
 | `PI_WARDEN_DB=<path>` | SQLite file for the hold records, instead of `holds.db` next to the user config. |
 | `PI_WARDEN_STEER_STATS=<path>` | File for the steer-follow counts, instead of `steer-stats.json` next to the user config. |
@@ -385,6 +395,21 @@ It is a backstop for sanctioned work, not a boundary anyone hostile respects: ke
 | `PI_WARDEN_TRACE_DIR=<absolute path>` | Appends the trace to `<path>/<session id>.jsonl`, one file per Pi session. For a host that runs Pi in RPC mode, where the status line and the sidebar never show. An empty or relative path turns it off. See [Trace file](#trace-file). |
 | `PI_WARDEN_HOST_PATHS=<dir>:<dir>` | Directories outside the project where the host lets its agent write, `:`-separated. A `write` or `edit` in one of them, after `..` and symlinks are resolved, is not held or warned by the outside-project rule. Every other check still applies: command rules, path rules, deny rules, sensitive paths, secrets, and Jev; the action summary still shows the path as outside the project, and the rules guard still does not judge these files against the project rules. Relative entries, empty entries, and `/` are ignored. Read once per session. Environment only: no config file can set or extend it. pi-warden's index directory (`pi-warden/index/` under Pi's agent directory), where `/warden index` asks the agent to write, is always treated as a host path; the rest of the agent directory is not. |
 | `PI_WARDEN_SCRATCH_PATHS=<dir>:<dir>` | Scratch roots the host declares, `:`-separated. A recursive `rm` whose every target is strictly inside one of them, after `..` and symlinks are resolved, warns (`rm-session-scratch`, risky) instead of holding. A root that is `/`, the home directory, the project root (the session's working directory), or a git working tree (it contains `.git`), a relative entry, and an empty entry are ignored, and a session names every ignored entry and its reason once. Read once per session. Environment only: no config file can set or extend it. |
+
+### Local Warden-S1
+
+`"typesafeBackend": "warden-s1"` or `"auto"` moves the judged checks onto this machine. The choice itself is the opt-in: the local model needs no `/warden enable`, no key, and sends nothing off `127.0.0.1`. Every pattern check runs first, exactly as with a cloud judge, and a call it settles never reaches the model.
+
+| Setting | Model on disk | What judges |
+| --- | --- | --- |
+| `"cloud"` (default) or a named backend | any | The cloud judge under consent and a key. No daemon starts and nothing is downloaded. |
+| `"warden-s1"` | downloaded and verified | The local model. |
+| `"warden-s1"` | missing, `autoDownload: false` | Pattern checks alone. One notice per session: `warden: local Warden-S1 model is not downloaded; run /warden model download or set localModel.autoDownload = true. Pattern checks remain active.` |
+| `"warden-s1"` | missing, `autoDownload: true` | Pattern checks alone while the download runs behind the editor (status line `warden · model · downloading Warden-S1 (onnx) … 42%`), then the local model from the next check on. |
+| `"auto"` | downloaded and verified | The local model. |
+| `"auto"` | missing | TypeSafe when you consented and a key is usable, else pattern checks, with no notice about the local model. With `autoDownload: true` the download runs meanwhile. |
+
+A download that fails says so once and is not retried by itself; `/warden model download` resumes it. `/warden model remove` stops the daemon for every session that shares it and deletes the weights. What the local judge does differently from a cloud one (the warmed transcript, abstention, the cited turn) is in [guards.md](guards.md#local-warden-s1).
 
 ### Liquid AI backend
 
@@ -395,7 +420,7 @@ Measured on 2026-10-03. Read this before you set `"typesafeBackend": "liquid"`: 
 - **Thresholds.** The default thresholds were calibrated on Jev. None has been calibrated on Liquid, so the same score can mean a different hold rate.
 - **Conscience.** The conscience delivers only under a policy measured for the model `jev-1.13.0`, so with Liquid it sends nothing.
 
-When a guard would ask Jev but cannot, Warden tells you once per session and reason why, and what to do: no consent (`/warden enable`, or `PI_WARDEN_ENABLED=1` headless), a refused `typesafeBackend` (the refusal message, quoted; fix the value in the user config), no key for the backend (set its key variable, or run `/typesafe login <backend>` for a named backend: the key is stored for that backend and verified before it is saved), or a rejected key (named by where it comes from: run `/typesafe login` again for the key it saved, or check the key in the environment variable and run `/warden status`); a headless session gets a status message instead of a notice, and a spent request budget keeps its own warning.
+When a guard would ask Jev but cannot, Warden tells you once per session and reason why, and what to do: no consent (`/warden enable`, or `PI_WARDEN_ENABLED=1` headless), a refused `typesafeBackend` (the refusal message, quoted; fix the value in the user config), no key for the backend (set its key variable, or run `/typesafe login <backend>` for a named backend: the key is stored for that backend and verified before it is saved), a rejected key (named by where it comes from: run `/typesafe login` again for the key it saved, or check the key in the environment variable and run `/warden status`), or `"warden-s1"` with no model on disk (`/warden model download`, or `localModel.autoDownload`); a headless session gets a status message instead of a notice, and a spent request budget keeps its own warning.
 
 ### Nace.AI backend
 

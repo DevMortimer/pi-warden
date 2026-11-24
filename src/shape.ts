@@ -5,7 +5,7 @@ import { redact } from "./redact.js";
 import { DEFAULT_TEMPLATES } from "./widget.js";
 
 /** The config layout this extension build expects; compared with the loaded config module's CONFIG_SCHEMA. */
-export const EXPECTED_SCHEMA = 19;
+export const EXPECTED_SCHEMA = 20;
 
 export interface ShapeResult {
   config: WardenConfig;
@@ -19,6 +19,7 @@ const coreTools = () => ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const proseOff = () => ({ ...off, audience: "technical", threshold: 1, trend: 3, minChars: 1 });
 const maskOff = () => ({ ...off, epochTurns: 8, keepRecentTurns: 6, minSweepBytes: 32768, minObsChars: 2000, images: false, supersededReads: false, resolvedChecks: false });
 const taintOff = () => ({ ...off, holdTrifecta: false, holdSecretEgress: false, holdInjectionEgress: false, jevDeclassify: false, warnUntrustedHttpWrite: false, allowHosts: [] as string[] });
+const localModelOff = () => ({ autoDownload: false, runtime: "auto" as const, idleShutdownSec: 1800 });
 // A stale config module hands back either its own resolution or a raw value; both end up resolved here.
 const resolveSetting = (source: Partial<WardenConfig>) => source.backendRefusal !== undefined
   ? { typesafeBackend: source.typesafeBackend, backendRefusal: source.backendRefusal }
@@ -44,6 +45,7 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
     typesafe: source.typesafe ?? false,
     typesafeBackend: backend.typesafeBackend,
     backendRefusal: backend.backendRefusal,
+    localModel: section("localModel", localModelOff()),
     mode: isMode(source.mode) ? source.mode : "steer",
     timeoutMs: source.timeoutMs ?? 5000,
     maxRequests: source.maxRequests ?? 500,
@@ -180,6 +182,15 @@ export function completeConfig(loaded: Partial<WardenConfig> | undefined): Shape
   if (typeof config.taint.warnUntrustedHttpWrite !== "boolean") config.taint = { ...config.taint, warnUntrustedHttpWrite: false };
   if (!Array.isArray(config.taint.allowHosts)) config.taint = { ...config.taint, allowHosts: [] };
   else if (config.taint.allowHosts.some(host => typeof host !== "string")) config.taint = { ...config.taint, allowHosts: config.taint.allowHosts.filter((host): host is string => typeof host === "string") };
+  if (typeof config.localModel.autoDownload !== "boolean") config.localModel = { ...config.localModel, autoDownload: false };
+  if (config.localModel.runtime !== "auto" && config.localModel.runtime !== "mlx" && config.localModel.runtime !== "onnx") config.localModel = { ...config.localModel, runtime: "auto" };
+  if (config.localModel.cacheDir !== undefined && (typeof config.localModel.cacheDir !== "string" || config.localModel.cacheDir.trim().length === 0)) {
+    const { cacheDir: _dropped, ...rest } = config.localModel;
+    config.localModel = rest;
+  }
+  if (typeof config.localModel.idleShutdownSec !== "number" || !Number.isSafeInteger(config.localModel.idleShutdownSec) || config.localModel.idleShutdownSec < 10) {
+    config.localModel = { ...config.localModel, idleShutdownSec: 1800 };
+  }
   return { config, missing };
 }
 

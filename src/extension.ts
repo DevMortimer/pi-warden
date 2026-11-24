@@ -15,7 +15,12 @@ import { authState, backendHost, createTypeSafe, describeAuth, resolveBackend, c
 import type { TypeSafe } from "pi-typesafe";
 import { DEFAULT_BACKEND } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
-import { backendName, describeBackend, disclosureFor, judgeOptions, loginStoresKey } from "./backend.js";
+import { backendName, describeBackend, disclosureFor, isLocalBackendMode, judgeOptions, loginStoresKey, toCloudBackendSpec } from "./backend.js";
+import { downloadWardenS1, getWardenS1Status, removeWardenS1 } from "./local-model.js";
+import type { DownloadResult } from "./local-model.js";
+import { getWardenS1DaemonStatus, stopWardenS1Daemon } from "./warden-s1-daemon.js";
+import { connectWardenS1, createWardenS1Judge, MOCK_WEIGHTS_ENV, resolveLocalWardenS1, WardenS1SessionTracker, wardenS1NoteLines } from "./warden-s1-session.js";
+import type { LocalWardenS1, WardenS1Connection } from "./warden-s1-session.js";
 import type { BackendSetting, JudgmentsOffReason } from "./backend.js";
 import { ActionGuard } from "./action-guard.js";
 import { adaptHost } from "./host-compat.js";
@@ -57,7 +62,7 @@ import { calibrate, calibrateGate, calibrationNotice, collectHistory, formatCali
 import type { Calibration, HistoryCommit } from "./rules-calibrate.js";
 import { readRulesLog, RulesLog, rulesLogPath } from "./rules-log.js";
 import { buildRulesReport, formatRulesReport, REPORT_DEFAULT_DAYS } from "./rules-report.js";
-import { checkPiWardenMissing } from "./rules-file.js";
+import { checkPiWardenMissing, resolveRulesFile } from "./rules-file.js";
 import { writeStarterRules, buildInitPrompt } from "./init.js";
 import { buildAuditPrompt, findProjects, snapshotReport, reportOutcome } from "./audit.js";
 import { detectNotifier, sendNotification } from "./notify.js";
@@ -275,14 +280,38 @@ export function judgmentsOffText(reason: Exclude<JudgmentsOffReason, "budget">, 
     case "bad_backend": return `warden: Jev judgments are off (typesafeBackend refused: ${setting.backendRefusal ?? "the configured value is not usable"})`;
     case "no_key": {
       const backend = setting.typesafeBackend;
-      const name = typeof backend === "string" ? backend : undefined;
+      const cloud = toCloudBackendSpec(backend);
+      const name = typeof cloud === "string" ? cloud : undefined;
       const hint = !loginStoresKey(backend) || name === undefined ? "" : name === DEFAULT_BACKEND ? " or run /typesafe login" : ` or run /typesafe login ${name}`;
-      return `warden: Jev judgments are off (no key for ${backendName(backend)}). Set ${resolveBackend(backend).keyEnv}${hint}.`;
+      return `warden: Jev judgments are off (no key for ${backendName(backend)}). Set ${resolveBackend(cloud).keyEnv}${hint}.`;
     }
     case "key_rejected": return rejectedEnv
       ? `warden: Jev judgments are off (the key in ${rejectedEnv} was rejected). Check the key, then run /warden status.`
       : "warden: Jev judgments are off (the key saved by /typesafe login was rejected). Run /typesafe login.";
+    case "no_local_model": return "warden: local Warden-S1 model is not downloaded; run /warden model download or set localModel.autoDownload = true. Pattern checks remain active.";
   }
+}
+
+const TURN_TEXT_LIMIT = 4000;
+
+/** One transcript turn for the local judge: the head and the tail of a long text, since an error usually ends the output. */
+function clipTurn(text: string): string {
+  if (text.length <= TURN_TEXT_LIMIT) return text;
+  const head = Math.floor(TURN_TEXT_LIMIT * 0.75);
+  return `${text.slice(0, head)}\n… [${text.length - TURN_TEXT_LIMIT} chars cut]\n${text.slice(-(TURN_TEXT_LIMIT - head))}`;
+}
+
+/** The turn a held or warned call points at; an allowed call cites none. */
+function locusOf(verdict: Verdict): string {
+  return verdict.level !== "allow" && verdict.s1?.locus ? ` ${verdict.s1.locus}.` : "";
+}
+
+function actionS1Lines(verdict: Verdict): string[] {
+  return wardenS1NoteLines(verdict.level === "allow" && verdict.s1?.locus ? { ...(verdict.s1.abstained ? { abstained: verdict.s1.abstained } : {}) } : verdict.s1);
+}
+
+function mib(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1);
 }
 
 function activeMode(config: WardenConfig, hasUI: boolean): WardenMode {
@@ -320,6 +349,7 @@ export function confirmMessage(verdict: Verdict): string {
   if (summary.path !== undefined) lines.push(`${summary.tool} ${summary.path}${summary.location === "outside_project" ? " (outside the project)" : ""}${summary.exists === false ? " (new file)" : ""}`);
   if (summary.input !== undefined) lines.push(clip(summary.input));
   lines.push("", `Why: ${verdict.reasons.join("; ")}`);
+  if (verdict.s1?.locus) lines.push(verdict.s1.locus);
   if (verdict.judgment) lines.push(`Jev: irreversible ${verdict.judgment.irreversible.toFixed(2)}, off-task ${verdict.judgment.offTask?.toFixed(2) ?? "n/a"}, ${verdict.judgment.scope?.replace(/_/g, " ") ?? "n/a"} (${verdict.judgment.model}, ${verdict.judgment.elapsedMs} ms)`);
   lines.push("Judgments are model output, not authorization. Yes runs the tool; No blocks it and tells the agent.");
   return lines.join("\n");
@@ -471,6 +501,20 @@ export default function wardenExtension(host: ExtensionAPI): void {
   // fail-closes (no delivery) until the policy is re-measured.
   const consciencePolicy = CONSCIENCE_BETA_POLICY;
   let client: TypeSafe | undefined;
+  // Local Warden-S1. The model folder is read once per session and config, and again after a download or a removal:
+  // the read lists that folder and may probe Python, which no guarded call should pay for.
+  let localModel: { key: string; value: LocalWardenS1 } | undefined;
+  let s1Connection: WardenS1Connection | undefined;
+  let s1Judge: TypeSafe | undefined;
+  let s1Turn = 0;
+  const s1Wire = {
+    resolveEndpoint: async (signal?: AbortSignal) => s1Connection ? s1Connection.resolveEndpoint(signal) : undefined,
+    fetchImpl: (input: string | URL | Request, init?: RequestInit) => (s1Connection?.fetchImpl ?? globalThis.fetch)(input, init),
+  };
+  let s1Tracker = new WardenS1SessionTracker({ sessionId: String(process.pid), ...s1Wire });
+  let modelDownload: { line: string; done: Promise<DownloadResult> } | undefined;
+  /** The last painted session, so a download that outlives a hook can still move the status line. */
+  let painted: { ctx: ExtensionContext | ExtensionCommandContext; config: WardenConfig } | undefined;
   const cooldown = new JudgeCooldown();
   let judgeConfig: WardenConfig | undefined;
   /** Where cooldown notices go; unset headless, where a failure is already silent (see noteError). */
@@ -512,6 +556,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
     sessionUser = { value };
     // The file now holds our write merged over what was there, so the next check sees no outside change.
     seenUser = configKey(readUserConfigFile(dirs));
+    // A local-model setting acts at once: switching autoDownload on starts the download now, not at the next guarded call.
+    if ([...changes.keys()].some(key => key === "typesafeBackend" || key === "localModel" || key.startsWith("localModel."))) localModelFor(sessionUserConfig());
   };
   /** One line for each config file whose content changed during this session, once per new content. */
   const reportConfigChanges = (ctx: ExtensionContext, config: WardenConfig): void => {
@@ -840,13 +886,102 @@ export default function wardenExtension(host: ExtensionAPI): void {
   };
   const consentGiven = (config: WardenConfig) => config.typesafe || process.env.PI_WARDEN_ENABLED === "1";
   /** Why no judge is available, or undefined when one is. The notice, the trace file, and the conscience all use it. */
+  const repaint = () => { if (painted) paint(painted.ctx, painted.config); };
+  const tellOwner = (text: string, level: "info" | "warning") => {
+    if (noticeUi) noticeUi.notify(text, level);
+    else trace.push({ at: Date.now(), guard: "notice", line: redact(text), details: ["trigger: local model"] });
+  };
+  /** One download at a time; its percentage is a line of the status widget, so the editor never waits on it. */
+  const startModelDownload = (config: WardenConfig): Promise<DownloadResult> => {
+    if (modelDownload) return modelDownload.done;
+    const started = { line: "warden · model · downloading Warden-S1 … 0%", done: undefined as unknown as Promise<DownloadResult> };
+    modelDownload = started;
+    let shown = 0;
+    // HF_ENDPOINT is the Hugging Face hub's own variable for a mirror; the files are still checked against their SHA-256.
+    const mirror = process.env.HF_ENDPOINT?.trim();
+    started.done = downloadWardenS1(config.localModel, {
+      dirs,
+      ...(mirror ? { hfBaseUrl: mirror } : {}),
+      onProgress: progress => {
+        if (progress.percent === shown) return;
+        shown = progress.percent;
+        started.line = `warden · model · downloading Warden-S1 (${progress.runtime}) … ${progress.percent}%`;
+        repaint();
+      },
+    }).then(result => {
+      // Only a finished download is read again: a failed one keeps the cached read, so nothing retries it by itself.
+      localModel = undefined;
+      return result;
+    }).finally(() => {
+      if (modelDownload === started) modelDownload = undefined;
+      repaint();
+    });
+    repaint();
+    return started.done;
+  };
+  const autoDownload = (config: WardenConfig) => {
+    if (modelDownload) return;
+    tellOwner("warden: downloading the local Warden-S1 model in the background (localModel.autoDownload is on); the status line shows progress.", "info");
+    startModelDownload(config).then(
+      result => tellOwner(`warden: Warden-S1 (${result.runtime}) downloaded and verified, ${mib(result.totalBytes)} MiB; local judgments start with the next check.`, "info"),
+      (error: unknown) => tellOwner(`warden: the Warden-S1 download failed (${error instanceof Error ? error.message : String(error)}). Pattern checks remain active; /warden model download tries again.`, "warning"),
+    );
+  };
+  /** The local model for a config that asks for one. Reading it starts its daemon when it can judge, and its download when the user switched that on. */
+  const localModelFor = (config: WardenConfig): LocalWardenS1 | undefined => {
+    if (!isLocalBackendMode(config.typesafeBackend)) return undefined;
+    const key = JSON.stringify(config.localModel);
+    if (localModel?.key === key) return localModel.value;
+    const value = resolveLocalWardenS1(config.localModel, { dirs });
+    localModel = { key, value };
+    s1Judge = undefined;
+    s1Connection = value.ready ? connectWardenS1(value.daemon) : undefined;
+    s1Connection?.warm();
+    if (!value.ready && config.localModel.autoDownload) autoDownload(config);
+    return value;
+  };
+  /** Where a judged request goes, for a prompt that names it before sending. */
+  const judgeHost = (config: WardenConfig): string => localModelFor(config)?.ready ? "the local Warden-S1 model on 127.0.0.1" : backendHost(toCloudBackendSpec(config.typesafeBackend));
+  /** One finished turn of the transcript the local judge reads; warming it runs behind the hook, never in it. */
+  const streamTurn = (turn: { role: "user" | "assistant" | "tool"; tool?: string; text: string }) => {
+    s1Tracker.appendTurn({ turnIndex: ++s1Turn, ...turn });
+    s1Tracker.schedulePrewarm();
+  };
+  const daemonLine = async (): Promise<string> => {
+    const daemon = await getWardenS1DaemonStatus();
+    if (!daemon.running || !daemon.stats || !daemon.endpoint) return "Daemon: not running.";
+    const s = daemon.stats;
+    return `Daemon: running (pid ${s.pid}, ${s.runtime}, 127.0.0.1:${daemon.endpoint.port}, model ${s.model}); sessions: ${s.active_session_id ? 1 : 0} active (L1), ${s.l2_ram_sessions} in RAM (L2), ${s.l3_disk_sessions} on disk (L3); ${s.requests_served} requests, ${s.prewarms_served} prewarms; cache ${s.cache_exact_hits} exact / ${s.cache_delta_hits} delta / ${s.cache_misses} miss${s.rss_mb !== undefined ? `; ${Math.round(s.rss_mb)} MiB resident` : ""}.`;
+  };
+  /** `/warden model status`: the runtime, the repo, the cache folder and what is in it, the setting, and the shared daemon. */
+  const modelStatus = async (config: WardenConfig): Promise<string[]> => {
+    const status = getWardenS1Status(config.localModel, { dirs });
+    const state = modelDownload ? modelDownload.line.replace(/^warden · model · /, "")
+      : status.installed ? `installed and verified (${mib(status.downloadedBytes)} MiB on disk, ${status.manifest?.files.length ?? 0} files with a recorded SHA-256)`
+      : status.incomplete ? `incomplete (${mib(status.downloadedBytes)} of ${mib(status.totalBytes)} MiB; /warden model download resumes it)`
+      : `not downloaded (${status.expectedMib} MiB)`;
+    const backend = config.typesafeBackend;
+    const use = !isLocalBackendMode(backend) ? `not in use (typesafeBackend is ${JSON.stringify(typeof backend === "string" ? backend : backendName(backend))}; "warden-s1" or "auto" turns it on)`
+      : localModelFor(config)?.ready ? "in use; judgments run on 127.0.0.1 loopback at $0, with no key, and nothing leaves this machine"
+      : backend === "auto" ? "not ready; auto falls back to TypeSafe or to pattern checks" : "not ready; pattern checks run alone";
+    return [
+      `Warden-S1 local model: runtime ${status.runtime}${status.requestedRuntime !== status.runtime ? ` (requested ${status.requestedRuntime})` : ""}; repo ${status.repoId} (model ${status.modelId}).`,
+      `Cache: ${status.modelDir}.`,
+      `State: ${state}${process.env[MOCK_WEIGHTS_ENV] === "1" ? `; ${MOCK_WEIGHTS_ENV}=1 runs synthetic weights in its place` : ""}${status.diagnostic ? `; ${status.diagnostic}` : ""}.`,
+      `localModel.autoDownload: ${config.localModel.autoDownload}. Backend: ${use}.`,
+      await daemonLine(),
+    ];
+  };
   const judgmentsOffReason = (config: WardenConfig): JudgmentsOffReason | undefined => {
     // A refused backend is a config error the user must see even before consent or keys matter.
     const backend = config.typesafeBackend;
     if (config.backendRefusal !== undefined || backend === undefined) return "bad_backend";
+    // Choosing the local model is the opt-in: it runs on loopback and needs no consent and no key.
+    if (localModelFor(config)?.ready) return undefined;
+    if (backend === "warden-s1") return "no_local_model";
     if (!consentGiven(config)) return "no_consent";
     if (budgetExhausted) return "budget";
-    const auth = authState({ backend });
+    const auth = authState({ backend: toCloudBackendSpec(backend) });
     if (auth.usable) return undefined;
     // No key in effect, or one whose last request came back 401 and pi-typesafe's 15-minute veto has not expired.
     return auth.source === undefined ? "no_key" : "key_rejected";
@@ -860,8 +995,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     traceFile?.judgments(judgmentsState(reason));
     // The budget has its own notice in noteError.
     if (reason === undefined || reason === "budget" || judgmentsReported.has(reason)) return;
+    // A running download already says so on the status line, and says when it ends.
+    if (reason === "no_local_model" && modelDownload) return;
     judgmentsReported.add(reason);
-    const auth = reason === "key_rejected" && config.typesafeBackend !== undefined ? authState({ backend: config.typesafeBackend }) : undefined;
+    const auth = reason === "key_rejected" && config.typesafeBackend !== undefined ? authState({ backend: toCloudBackendSpec(config.typesafeBackend) }) : undefined;
     judgmentsNotify?.(judgmentsOffText(reason, config, judgmentsHeadless, auth?.kind === "environment" ? auth.keyName : undefined));
   };
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
@@ -873,6 +1010,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
     judgeConfig = config;
     // Absent, exactly as with no judge configured, so no guard needs to know a cooldown exists.
     if (cooldown.active()) { stats.cooldownSkips++; return undefined; }
+    if (localModelFor(config)?.ready) {
+      return s1Judge ??= watched(createWardenS1Judge({ sessionTracker: s1Tracker, ...s1Wire }));
+    }
     if (client) return client;
     const backend = config.typesafeBackend;
     // Reached only if a config ever sets no backend and no refusal at once; treating it as off keeps the invariant.
@@ -906,6 +1046,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
         } catch (err) {
           const kind = cooldownFailureKind(err, args[1]?.signal);
           if (kind) {
+            // The model may have been removed, or its daemon stopped, by another session: the next check reads it again.
+            if (s1Judge) localModel = undefined;
             const event = cooldown.failure(kind, judgeConfig?.judge ?? defaultConfig().judge);
             if (!args[1]?.signal || !quietSignals.has(args[1].signal)) tellCooldown(event);
           }
@@ -923,7 +1065,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     }
     const seconds = Math.round(event.ms / 1000);
     const remedy = event.kind === "auth"
-      ? ` Set ${resolveBackend(judgeConfig?.typesafeBackend).keyEnv} or run /warden enable.`
+      ? ` Set ${resolveBackend(toCloudBackendSpec(judgeConfig?.typesafeBackend)).keyEnv} or run /warden enable.`
       : event.kind === "billing"
         ? " Balance exhausted (HTTP 402); top up your backend credit or run /warden disable."
         : event.kind === "configuration" ? " /warden status shows the backend setup." : "";
@@ -989,8 +1131,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const ui = liveUi(ctx);
     if (!ui) return;
     lastUi = ui as unknown as PanelUi;
-    if (!config.widget.enabled || widget.size === 0) { ui.setWidget(WIDGET, undefined); return; }
+    painted = { ctx, config };
+    const downloadEntry = modelDownload ? { guard: "notice" as GuardName, line: modelDownload.line } : undefined;
+    if (!config.widget.enabled || (widget.size === 0 && !downloadEntry)) { ui.setWidget(WIDGET, undefined); return; }
     let entries = [...widget].map(([guard, line]) => ({ guard, line }));
+    if (downloadEntry) entries = [downloadEntry, ...entries];
     // Live state, not an event: while this session's quiet window is live its line is the status line, and it goes
     // away by the clock. The trace keeps every verdict the window hides.
     const quietLine = quiet.statusLine(sessionIdFor(ctx));
@@ -1000,7 +1145,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (config.widget.barMode === "live" && entries.length > 0) {
       if (quietEntry) { ui.setWidget(WIDGET, (_tui, theme) => statusWidget([quietEntry], theme), { placement: config.widget.placement }); return; }
       const lastEntry = trace.entries().at(-1);
-      if (lastEntry?.tokens) {
+      if (lastEntry?.tokens && !downloadEntry) {
         const template = pickSentenceTemplate(lastEntry.guard, lastEntry.tokens);
         const sentence = renderTemplate(template, lastEntry.tokens);
         const chip = lastEntry.tokens.level ?? lastEntry.tokens.status;
@@ -1029,7 +1174,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
         }, { placement: config.widget.placement });
         return;
       }
-      entries = [lastEntry ?? entries.at(-1)!];
+      const latest = lastEntry ?? (widget.size ? entries.at(-1) : undefined);
+      entries = [...(downloadEntry ? [downloadEntry] : []), ...(latest ? [latest] : [])];
     }
     // A custom component so the lines wrap to the pane and a click (fullscreen mode) opens the trace panel.
     // When the host TUI lacks MouseRegion (e.g. omp 18.2.5), the extension still loads — the widget
@@ -1356,6 +1502,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     conscienceFailuresTold.clear();
     if (_event.reason === "reload" || _event.reason === "new") conscienceGeneration++;
     client = undefined;
+    localModel = undefined;
+    s1Connection = undefined;
+    s1Judge = undefined;
+    s1Turn = 0;
     budgetExhausted = false;
     warnedFallback = false;
     warnedMissingRules = false;
@@ -1377,6 +1527,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
     regretCandidates = [];
     const sessionId = typeof ctx.sessionManager.getSessionId === "function" ? ctx.sessionManager.getSessionId() : String(process.pid);
     activeSessionId = sessionId;
+    // Each Pi session is its own slot in the shared daemon.
+    s1Tracker = new WardenS1SessionTracker({ sessionId, ...s1Wire });
     trialArm = "live";
     // A save the session that just ended queued can still land; it must be on disk before this one writes the same file.
     await holdLogWrite;
@@ -1479,6 +1631,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
       warnOwner(ctx, "notice", msg);
     }
     const opening = configFor(ctx);
+    painted = { ctx, config: opening };
+    // Starts the local daemon, or the download the user switched on, before the first guarded call needs either.
+    localModelFor(opening);
     // One line, once per new loosened set: the project file can switch a check off, and this is where the owner hears it.
     const loosened = loosenedChecks(sessionUserConfig(), opening);
     // The name and the detail both count: a further loosening of an already-named check is a new set.
@@ -1646,6 +1801,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // Only genuine operator prompts advance the APPA ruling turn; command-injected runs never authorize tainted sinks.
     if (typeof rawUserPrompt === "string" && rawUserPrompt.trim() && !(injectedRun && rawUserPrompt === injectedRun.prompt)) {
       taintMonitor.noteUserPrompt(rawUserPrompt);
+    }
+    if (config.enabled && typeof rawUserPrompt === "string" && rawUserPrompt.trim() && isLocalBackendMode(config.typesafeBackend)) {
+      if (!s1Tracker.chunks[0]?.pinned) {
+        const rules = config.rules.enabled ? resolveRulesFile(ctx.cwd, config.rules) : null;
+        s1Tracker.setPinnedHeader(`Goal: ${clipTurn(rawUserPrompt)}${rules ? `\n\nProject rules (${rules.source}):\n${rules.content}` : ""}`);
+      }
+      streamTurn({ role: "user", text: clipTurn(rawUserPrompt) });
     }
     finals.reset();
     runaway.reset();
@@ -1959,6 +2121,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     preEditHashes.clear();
     // ── Conscience: re-assess on unconsumed triggers ──
     const config = configFor(ctx);
+    if (config.enabled && isLocalBackendMode(config.typesafeBackend) && event.message.role === "assistant" && Array.isArray(event.message.content)) {
+      const said = assistantText(event.message.content);
+      if (said) streamTurn({ role: "assistant", text: clipTurn(said) });
+    }
     if (config.enabled && config.conscience.enabled && selectedCapability && needsReassessment && assessmentsThisPrompt < config.conscience.maxAssessments) {
       const myGeneration = conscienceGeneration;
       const judge = judgeFor(config);
@@ -2153,6 +2319,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           && !verdict.intentMismatch
           && !verdict.offTaskSteer
           && !hasHardPattern
+          // An abstained probe was set to 0 so it cannot warn; read as confidence it would declassify on no evidence.
+          && !verdict.judgment?.irreversibleAbstained
           && jevConfidence >= 0.85 - 1e-9;
         if (declassified) {
           verdict.patterns.push({
@@ -2278,7 +2446,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // SAFETY: verdict.source is a string union; the read-only → pattern rewrite above may have narrowed it in TS's view,
     // but the field is still one of the source values at runtime when no armed hits fired.
     const actionFmt = formatVerdictTokens(verdict, config.widget.action);
-    const entry = (verdict.source as string) !== "read-only" ? record(ctx, config, "action", actionFmt.line, actionDetails(verdict, { mode, ...(told ? { told } : {}) }), actionFmt.tokens) : undefined;
+    const entry = (verdict.source as string) !== "read-only" ? record(ctx, config, "action", actionFmt.line, [...actionDetails(verdict, { mode, ...(told ? { told } : {}) }), ...actionS1Lines(verdict)], actionFmt.tokens) : undefined;
     // What happens to this call is the label for its scores; a decision made in the dialog lands at once, a steer-mode hold waits for the user.
     const track = (held: boolean, outcome?: CallOutcome, via?: OutcomeVia) => {
       if (!entry) return;
@@ -2373,12 +2541,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
         }
         if (rules.findings.length) {
           stats.ruleViolations++;
-          if (config.notices) liveUi(ctx)?.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
+          if (config.notices) liveUi(ctx)?.notify(`warden · rules · ${rules.path}: ${rules.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}${rules.s1?.locus ? `. ${rules.s1.locus}.` : ""}`, "warning");
         }
         contentNotes.push(proceeds => {
           const hasRules = rules.findings.length > 0 || (rules.softFindings?.length ?? 0) > 0;
           const told = proceeds && hasRules ? rulesSteer(rules, rulesGuard.count(rules)) : undefined;
-          const details = [...shellNote, ...rulesDetails(rules, told)];
+          const details = [...shellNote, ...rulesDetails(rules, told), ...wardenS1NoteLines(rules.s1)];
           if (!proceeds && rules.findings.length) details.push("notice held with the write: the write was held");
           record(ctx, config, "rules", rulesLine, details);
           return told ? { guard: "rules", kind: "rules", text: told } : undefined;
@@ -2441,7 +2609,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     };
     const warnSteer = (reasons: readonly string[]) => {
       if (!reasons.length) return false;
-      return steer(ctx, config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${reasons.map(scoreFreeReason).join("; ")}). Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`, { kind: "warn-headless" });
+      return steer(ctx, config, "action", `pi-warden: this ${event.toolName} call ran with a warning (${reasons.map(scoreFreeReason).join("; ")}).${locusOf(verdict)} Nobody sees this in a headless run, so it is on you: if the flagged risk is expected, continue; otherwise fix it or ask the user before building on it.`, { kind: "warn-headless" });
     };
     // Nobody can approve the hold without a UI, so a write to pi-warden's own config is blocked in every mode there.
     if (configNames.length && verdict.level !== "deny" && !liveUi(ctx)) {
@@ -2455,7 +2623,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       deliverNotes(true);
       stats.warned++;
       const warnUi = liveUi(ctx);
-      if (warnUi && config.notices) warnUi.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}`, "warning");
+      if (warnUi && config.notices) warnUi.notify(`warden · ${event.toolName}: ${verdict.reasons.join("; ")}${locusOf(verdict) && `.${locusOf(verdict)}`}`, "warning");
       else if (!warnUi) {
         const otherReasons = deliveryReasons.filter(r => !r.startsWith("should-proceed "));
         warnSteer(otherReasons);
@@ -2496,7 +2664,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       deliverNotes(true);
       stats.warned++;
       const adviseUi = liveUi(ctx);
-      if (adviseUi && config.notices) adviseUi.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}`, "warning");
+      if (adviseUi && config.notices) adviseUi.notify(`warden · ${event.toolName} (advise mode, not held): ${reasons}${locusOf(verdict) && `.${locusOf(verdict)}`}`, "warning");
       else if (!adviseUi) warnSteer(deliveryReasons);
       track(false);
       return undefined;
@@ -2520,7 +2688,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     stats.held++;
     actionGuard.hold(task);
     track(true);
-    if (config.notices) liveUi(ctx)?.notify(`warden · held ${event.toolName}: ${reasons}. The agent was told why and asked to re-plan or ask you.`, "warning");
+    if (config.notices) liveUi(ctx)?.notify(`warden · held ${event.toolName}: ${reasons}.${locusOf(verdict)} The agent was told why and asked to re-plan or ask you.`, "warning");
     notifyDesktop(ctx, config, `Held ${event.toolName}: ${reasons}. The agent will re-plan or ask you in chat.`);
     return { block: true, reason: told ?? steerReason(deliveryVerdict, { canApprove: judge !== undefined }) };
     })();
@@ -2545,6 +2713,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const maskedContent = maskedCount ? event.content.map(part => part.type === "text" ? { ...part, text: masking[maskIndex++]!.text } : part) : event.content;
     const textBlocks = maskedContent.filter(part => part.type === "text");
     const text = textBlocks.map(part => part.text).join("\n");
+    if (isLocalBackendMode(config.typesafeBackend)) {
+      const called = commandOf(event.toolName, event.input as Record<string, unknown>)?.command ?? JSON.stringify(event.input);
+      streamTurn({ role: "tool", tool: event.toolName, text: `${clip(called)}\n${event.isError ? "failed" : "returned"}:\n${clipTurn(text)}` });
+    }
     const scratch = scratchPending.get(event.toolCallId);
     if (scratch) {
       scratchPending.delete(event.toolCallId);
@@ -2926,10 +3098,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (verdict.source === "repeat" && !verdict.stuck) return withWaste(inlinePatch);
     const nudge = verdict.stuck && config.stuck.nudge ? stuckNudge(verdict) : undefined;
     const stuckLine = formatStuck(verdict, config.widget.stuck);
-    const stuckDetail = stuckDetails(verdict, attempts.attempts, nudge);
+    const stuckDetail = [...stuckDetails(verdict, attempts.attempts, nudge), ...wardenS1NoteLines(verdict.s1)];
     if (!verdict.stuck) { record(ctx, config, "stuck", stuckLine, stuckDetail); return withWaste(inlinePatch); }
     stats.stuck++;
-    if (config.notices) liveUi(ctx)?.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}`, "warning");
+    if (config.notices) liveUi(ctx)?.notify(`warden \u00b7 stuck: ${verdict.reasons.join("; ")}${verdict.s1?.locus ? `. ${verdict.s1.locus}.` : ""}`, "warning");
     if (nudge && steer(ctx, config, "stuck", nudge, { line: stuckLine, details: stuckDetail }) && config.stuck.inlineFeedback && trialArm !== "silent") {
       const applied = appendInline(inlinePatch, redact(nudge));
       inlinePatch = applied.patch;
@@ -3272,10 +3444,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
             }
             if (verdict.findings.length) {
               stats.ruleViolations++;
-              if (config.notices) liveUi(ctx)?.notify(`warden · rules · ${verdict.tool === "turn" ? "this run's changes" : verdict.path}: ${verdict.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
+              if (config.notices) liveUi(ctx)?.notify(`warden · rules · ${verdict.tool === "turn" ? "this run's changes" : verdict.path}: ${verdict.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}${verdict.s1?.locus ? `. ${verdict.s1.locus}.` : ""}`, "warning");
             }
             const notice = told && delivered ? `notice recorded: ${told}` : told ? `notice recorded once already (a repeat): ${told}` : undefined;
-            record(ctx, config, "rules", shown, [...cuts, ...rulesDetails(verdict, notice)]);
+            record(ctx, config, "rules", shown, [...cuts, ...rulesDetails(verdict, notice), ...wardenS1NoteLines(verdict.s1)]);
           } else {
             record(ctx, config, "rules", shown, [`${verdict.tool} ${verdict.path}: ${verdict.skippedReason}`]);
           }
@@ -3318,11 +3490,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
         ? doneNudge(verdict, { lastCheck: lastPassedCheck?.cwd === ctx.cwd ? lastPassedCheck.call : undefined, projectCheck: projectCheckCommand(ctx.cwd), localUrl: lastLocalUrl })
         : undefined;
       const doneLine = formatDone(verdict, config.widget.done);
-      const doneDetail = doneDetails(verdict, finalMessage, nudge);
+      const doneDetail = [...doneDetails(verdict, finalMessage, nudge), ...wardenS1NoteLines(verdict.s1)];
       let doneLineRecorded = false;
       if (verdict.unverified) {
         stats.unverified++;
-        if (config.notices) liveUi(ctx)?.notify(`warden · done-check: ${verdict.reasons.join("; ")}`, "warning");
+        if (config.notices) liveUi(ctx)?.notify(`warden · done-check: ${verdict.reasons.join("; ")}${verdict.s1?.locus ? `. ${verdict.s1.locus}.` : ""}`, "warning");
         if (nudge) {
           doneNoted = true;
           // The notice reaches the owner only: the entry carries the same line under the reply, and nothing is sent to the
@@ -3456,9 +3628,14 @@ export default function wardenExtension(host: ExtensionAPI): void {
     },
   });
 
-  const actions = ["status", "rules", "report", "improve", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "bench"];
+  const actions = ["status", "rules", "report", "improve", "enable", "disable", "mode", "config", "model", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "bench"];
+  const modelActions = [
+    { value: "model status", description: "the local Warden-S1 runtime, cache folder, download state, and daemon" },
+    { value: "model download", description: "download and verify the local Warden-S1 weights in the background" },
+    { value: "model remove", description: "stop the local daemon and delete the downloaded weights" },
+  ];
   pi.registerCommand("warden", {
-    description: "pi-warden status, active rules, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, improve, open loops, and a synthetic guard test",
+    description: "pi-warden status, active rules, config (set/get/editor), TypeSafe consent, the local Warden-S1 model (status/download/remove), mode, trace panel, recommend, standing preferences, improve, open loops, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches: Array<{ value: string; label: string; description?: string }> = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
       // `rules check`, `rules audit`, `rules calibrate`, and `rules tune` are two-word actions: `rules` on its own stays the local list.
@@ -3466,6 +3643,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       if ("rules audit".startsWith(prefix)) matches.push({ value: "rules audit", label: "rules audit", description: "judge existing files against the project rules as if they had just been written" });
       if ("rules calibrate".startsWith(prefix)) matches.push({ value: "rules calibrate", label: "rules calibrate", description: "replay recent commits through the active rules and flag the ones that fire on everything or cannot decide" });
       if ("rules tune".startsWith(prefix)) matches.push({ value: "rules tune", label: "rules tune", description: "ask the agent to rewrite the rules the latest calibrate or rules check flagged" });
+      for (const item of modelActions) if (item.value.startsWith(prefix)) matches.push({ value: item.value, label: item.value, description: item.description });
       return matches.length ? matches : null;
     },
     async handler(args, ctx) {
@@ -3485,9 +3663,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
         if (action === "status") {
           // A refused backend has no key to describe; the refusal itself is the status line.
           const backend = config.typesafeBackend;
-          const auth = config.backendRefusal !== undefined || backend === undefined ? undefined : describeAuth(authState({ backend }));
+          const auth = config.backendRefusal !== undefined || backend === undefined ? undefined : describeAuth(authState({ backend: toCloudBackendSpec(backend) }));
           const source = consentSource(config);
-          const usage = client?.getUsage();
+          const local = localModelFor(config);
+          const localActive = local?.ready === true;
+          const usage = (localActive ? s1Judge : client)?.getUsage();
+          // With the local model judging, consent and the key do not apply; `warden-s1` never falls back to them.
+          const judgments = localActive
+            ? `judgments local: Warden-S1 (${local.mock ? "onnx, synthetic weights" : `${local.status.runtime}, ${local.status.modelId}`}) on 127.0.0.1 loopback, $0, no key`
+            : backend === "warden-s1"
+              ? `judgments are off: the local Warden-S1 model is ${modelDownload ? "downloading" : "not downloaded (run /warden model download)"}`
+              : `TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}${config.backendRefusal !== undefined || backend === undefined || backend === "typesafe" || backend === "cloud" ? "" : ` (${describeBackend(backend)})`}; ${config.backendRefusal !== undefined ? `judgments are off: typesafeBackend refused: ${config.backendRefusal}` : auth?.text ?? ""}`;
           const guards = [config.action.enabled && "action", config.taint.enabled && "taint", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.cause.enabled && "cause-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.rules.enabled && "rules", config.context.enabled && "context", config.runaway.enabled && "runaway", config.subagent.enabled && "subagent triage", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
           const ls = await holdStats(ctx.cwd, dirs);
           const lifetimeLine = ls.labeled === 0
@@ -3495,7 +3681,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
             : `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, ${ls.labeled} labeled, ${ls.declined + ls.replanned} stood (${ls.declined + ls.replanned}/${ls.labeled}), ${ls.abandoned} abandoned, ${ls.allowed} allowed (${ls.accepted} accepted, ${ls.regretted} regretted).`;
           const info = wardenBuild();
           report([
-            `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}${config.backendRefusal !== undefined || backend === undefined || backend === "typesafe" ? "" : ` (${describeBackend(backend)})`}; ${config.backendRefusal !== undefined ? `judgments are off: typesafeBackend refused: ${config.backendRefusal}` : auth?.text ?? ""}`,
+            `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; ${judgments}`,
+            ...(localActive ? [await daemonLine()] : []),
             `Build: pi-warden ${info.version}${info.commit ? ` (${info.commit})` : ""}; ${info.builtAt ? `dist/extension.js built ${info.builtAt}` : "dist/extension.js not built"}; pi-typesafe ${info.typesafeVersion ?? "unknown"}${info.typesafeRange ? ` (declared ${info.typesafeRange})` : ""}.`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan, ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.uncheckedCause}/${stats.causeChecks} unchecked cause, ${stats.proseNudges}/${stats.proseChecks} prose notices, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors, ${stats.cooldownSkips} checks without Jev during a judge cooldown; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Guard notices go to the status line and the trace${config.notices ? ", with a toast each" : ""}; nothing of them enters the conversation.`,
             formatNotices(stats),
@@ -3528,7 +3715,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const result = await runRulesAudit({
             cwd: ctx.cwd, paths: parsed.paths, max: parsed.max, yes: parsed.yes, config: config.rules,
             set: rulesGuard.store.load(ctx.cwd, config.rules), judge, timeoutMs: config.timeoutMs, signal: ctx.signal,
-            destination: backendHost(config.typesafeBackend),
+            destination: judgeHost(config),
             confirm: ctx.hasUI ? (title, body) => ctx.ui.confirm(title, body, ctx.signal ? { signal: ctx.signal } : {}) : undefined,
           });
           switch (result.status) {
@@ -3537,7 +3724,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
               report(`Rules audit sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config, !ctx.hasUI)}` : ""}`);
               return;
             case "no-files": report(`Rules audit sent nothing: ${result.reason}.`); return;
-            case "needs-yes": report(`Rules audit sent nothing: a headless run needs --yes before ${result.files} file samples go to ${backendHost(config.typesafeBackend)} (${result.leftOut} more files left out at the --max ${parsed.max} cap).`, "warning"); return;
+            case "needs-yes": report(`Rules audit sent nothing: a headless run needs --yes before ${result.files} file samples go to ${judgeHost(config)} (${result.leftOut} more files left out at the --max ${parsed.max} cap).`, "warning"); return;
             case "cancelled": report("Rules audit cancelled. Nothing was sent."); return;
             case "done": report(formatRulesAudit(result.outcome)); return;
           }
@@ -3876,25 +4063,57 @@ export default function wardenExtension(host: ExtensionAPI): void {
         if (action === "enable") {
           if (config.backendRefusal !== undefined) { report(`Cannot enable judgments: typesafeBackend refused: ${config.backendRefusal} Fix the value in ${userConfigPath(dirs)}; a hand edit applies at the next session (/new), then run /warden enable again.`, "warning"); return; }
           const backend = config.typesafeBackend;
-          if (!ctx.hasUI) { report(`Consent needs an interactive session. For headless runs set PI_WARDEN_ENABLED=1 and ${resolveBackend(backend).keyEnv} explicitly.`, "warning"); return; }
+          if (backend === "warden-s1") { report("Nothing to enable: typesafeBackend is \"warden-s1\", which judges on this machine (127.0.0.1) with no consent and no key. /warden model status shows the model."); return; }
+          if (!ctx.hasUI) { report(`Consent needs an interactive session. For headless runs set PI_WARDEN_ENABLED=1 and ${resolveBackend(toCloudBackendSpec(backend)).keyEnv} explicitly.`, "warning"); return; }
           // For a non-TypeSafe backend the dialog names who answers: the label, host, and model sent.
-          const consentText = backend === undefined || backend === "typesafe"
+          const consentText = backend === undefined || backend === "typesafe" || backend === "cloud"
             ? disclosure
             : `Judgments go to ${describeBackend(backend)}. ${disclosureFor(backend, disclosure)}`;
           if (!await ctx.ui.confirm("Enable TypeSafe judgments for pi-warden?", consentText)) return;
           // One flow: consent, then a key if none is configured yet. TypeSafe prompts, verifies, and stores the key for every
           // pi-typesafe consumer; any other backend has no login, so a missing key is reported with the variable to set.
-          const key = await ensureApiKey(ctx, backend === undefined ? {} : { backend });
+          const key = await ensureApiKey(ctx, backend === undefined ? {} : { backend: toCloudBackendSpec(backend) });
           if (!key) { report("No key entered; pi-warden stays on pattern checks only. Run /warden enable again when you have a key from console.typesafe.ai.", "warning"); return; }
           const path = writeUserSetting("typesafe", true);
           client = undefined;
           budgetExhausted = false;
-          report(`TypeSafe judgments enabled and saved to ${path}${key.login ? `; key ${key.login.models === undefined ? "verified with one request" : `verified (${key.login.models} model${key.login.models === 1 ? "" : "s"})`} and stored at ${key.login.path}` : ` using the ${key.source === "stored" ? "stored key" : `key from ${resolveBackend(config.typesafeBackend).keyEnv}`}`}. This stays on in new sessions until /warden disable.`);
+          report(`TypeSafe judgments enabled and saved to ${path}${key.login ? `; key ${key.login.models === undefined ? "verified with one request" : `verified (${key.login.models} model${key.login.models === 1 ? "" : "s"})`} and stored at ${key.login.path}` : ` using the ${key.source === "stored" ? "stored key" : `key from ${resolveBackend(toCloudBackendSpec(config.typesafeBackend)).keyEnv}`}`}. This stays on in new sessions until /warden disable.`);
           return;
         }
         if (action === "disable") {
           const path = writeUserSetting("typesafe", false);
           report(`TypeSafe judgments disabled in ${path}. Offline pattern checks stay active; set enabled to false there to turn pi-warden off entirely.`);
+          return;
+        }
+        if (action === "model") {
+          const sub = argument ?? "status";
+          if (sub === "status") { report((await modelStatus(config)).join(" ")); return; }
+          if (sub === "download") {
+            const status = getWardenS1Status(config.localModel, { dirs });
+            if (status.ready) { report(`Warden-S1 (${status.runtime}) is already downloaded and verified at ${status.modelDir}.`); return; }
+            if (status.diagnostic) { report(`Warden-S1 cannot be downloaded: ${status.diagnostic}`, "warning"); return; }
+            const use = isLocalBackendMode(config.typesafeBackend) ? "Local judgments start with the next check." : "Set typesafeBackend to \"warden-s1\" or \"auto\" to judge with it.";
+            const done = startModelDownload(config).then(
+              result => report(`Warden-S1 (${result.runtime}) downloaded and verified: ${result.files.length} files, ${mib(result.totalBytes)} MiB, each checked against its SHA-256, in ${result.modelDir}. ${use}`),
+              (error: unknown) => report(`Warden-S1 download failed: ${error instanceof Error ? error.message : String(error)}. /warden model download resumes it.`, "warning"),
+            );
+            // A session with a UI keeps its editor: the percentage moves on the status line and a notice ends it.
+            if (liveUi(ctx)) report(`Downloading Warden-S1 (${status.runtime}, ${status.expectedMib} MiB) from ${status.repoId} in the background; the status line shows progress.`);
+            else await done;
+            return;
+          }
+          if (sub === "remove") {
+            if (modelDownload) { report("A Warden-S1 download is running; wait for it to end before removing the model.", "warning"); return; }
+            // The daemon holds the weights open and is shared: it stops first, for every session that uses it.
+            const stopped = await stopWardenS1Daemon();
+            const removed = removeWardenS1(config.localModel);
+            localModel = undefined;
+            s1Connection = undefined;
+            s1Judge = undefined;
+            report(`${removed.removedDirs.length ? `Removed the local Warden-S1 model: ${mib(removed.freedBytes)} MiB freed (${removed.removedDirs.join(", ")}).` : "No local Warden-S1 model was downloaded; nothing removed."}${stopped.stopped ? ` Stopped its daemon (pid ${stopped.pid}).` : ""}`);
+            return;
+          }
+          report("Usage: /warden model status | download | remove", "warning");
           return;
         }
         if (action === "mode") {
@@ -4015,8 +4234,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const judge = judgeFor(config);
           // For a non-TypeSafe backend the confirmation names who answers: the label, host, and model sent.
           const backend = config.typesafeBackend;
-          const destination = backend === undefined || backend === "typesafe" ? backendHost(backend) : describeBackend(backend);
-          if (judge && ctx.hasUI && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /var/tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${destination} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
+          const destination = backend === undefined || backend === "typesafe" || backend === "cloud" ? backendHost(toCloudBackendSpec(backend)) : describeBackend(backend);
+          if (judge && ctx.hasUI && !localModelFor(config)?.ready && !await ctx.ui.confirm("Send one synthetic pi-warden test request?", `A synthetic action ("rm -rf /var/tmp/pi-warden-demo" for the task "Prepare the demo environment") goes to ${destination} and may incur charges. ${disclosureFor(config.typesafeBackend, disclosure)}`)) return;
           const verdict = await evaluateAction(
             { tool: "bash", input: { command: "rm -rf /var/tmp/pi-warden-demo" }, cwd: ctx.cwd, task: "Prepare the demo environment" },
             { config: { ...config.action, enabled: true, tools: ["bash"] }, judge, rules: config.rules },
