@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -803,18 +803,32 @@ function buildReusedAccumulators(
 
 export async function loadOrtModule(ortPath?: string, stateDir?: string): Promise<OrtLike> {
   const candidates: string[] = [];
-  if (ortPath) candidates.push(ortPath);
+  const pushPackageDirCandidates = (dir: string): void => {
+    const pkgJson = join(dir, "package.json");
+    if (existsSync(pkgJson)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgJson, "utf8")) as { main?: string };
+        if (pkg.main) candidates.push(pathToFileURL(resolve(dir, pkg.main)).href);
+      } catch {
+        // Fall through to standard layout paths.
+      }
+    }
+    const distIdx = join(dir, "dist", "index.js");
+    const napiIdx = join(dir, "bin", "napi-v3", "index.js");
+    if (existsSync(distIdx)) candidates.push(pathToFileURL(distIdx).href);
+    if (existsSync(napiIdx)) candidates.push(pathToFileURL(napiIdx).href);
+  };
+  if (ortPath) {
+    const resolvedOrt = ortPath.startsWith("/") || ortPath.startsWith(".") ? resolve(ortPath) : ortPath;
+    if ((ortPath.startsWith("/") || ortPath.startsWith(".")) && existsSync(resolvedOrt) && statSync(resolvedOrt).isDirectory()) {
+      pushPackageDirCandidates(resolvedOrt);
+    } else {
+      candidates.push(ortPath);
+    }
+  }
   candidates.push("onnxruntime-node");
   if (stateDir) {
-    const localOrtPkg = join(stateDir, "runtime", "node_modules", "onnxruntime-node", "dist", "index.js");
-    const localOrtCjs = join(stateDir, "runtime", "node_modules", "onnxruntime-node", "bin", "napi-v3", "index.js");
-    const localOrtRoot = join(stateDir, "runtime", "node_modules", "onnxruntime-node", "package.json");
-    if (existsSync(localOrtPkg)) candidates.push(pathToFileURL(localOrtPkg).href);
-    else if (existsSync(localOrtCjs)) candidates.push(pathToFileURL(localOrtCjs).href);
-    else if (existsSync(localOrtRoot)) {
-      const pkg = JSON.parse(readFileSync(localOrtRoot, "utf8")) as { main?: string };
-      if (pkg.main) candidates.push(pathToFileURL(join(dirname(localOrtRoot), pkg.main)).href);
-    }
+    pushPackageDirCandidates(join(stateDir, "runtime", "node_modules", "onnxruntime-node"));
   }
   let lastErr: unknown = null;
   for (const spec of candidates) {
@@ -1690,6 +1704,23 @@ export class OnnxSessionPager {
     return dropped;
   }
 
+  purgePageDirFiles(): void {
+    if (!existsSync(this.pageDir)) return;
+    try {
+      for (const entry of readdirSync(this.pageDir)) {
+        if (entry.endsWith(".ws1page") || entry.includes(".ws1page.")) {
+          try {
+            unlinkSync(join(this.pageDir, entry));
+          } catch {
+            // Ignore already removed page file.
+          }
+        }
+      }
+    } catch {
+      // Ignore unreadable or removed page directory.
+    }
+  }
+
   clearAll(): void {
     this.ramPages.clear();
     for (const p of this.diskPages.values()) {
@@ -1700,6 +1731,11 @@ export class OnnxSessionPager {
       }
     }
     this.diskPages.clear();
+    this.purgePageDirFiles();
+  }
+
+  close(): void {
+    this.clearAll();
   }
 }
 
@@ -2159,11 +2195,75 @@ export class WardenS1OnnxEngine {
       }
 
       const tStart = performance.now();
-      const inc = await this.encodeIncremental(sid, ids, chunkSpans, chunkMeta);
-      const rec = this.activeRecord!;
+      const ephemeralLastChunk = Boolean(payload.ephemeral_last_chunk);
+      let inc: {
+        prefixReuse: number;
+        deltaLen: number;
+        cacheMode: "exact" | "delta" | "miss";
+        boundaryHealed: boolean;
+        pageTier: "L1" | "L2_RAM" | "L3_DISK" | "NEW";
+        swapMs: number;
+        prefillMs: number;
+      } | null = null;
+      let evalState: OnnxState | null = null;
+      let evalChunkReprs: OrtTensorLike | null = null;
+
+      if (ephemeralLastChunk && chunkSpans.length >= 2) {
+        const prefixSpansRaw = chunkSpans.slice(0, -1);
+        const prefixMetaRaw = chunkMeta.slice(0, -1);
+        const candTokenStart = chunkSpans[chunkSpans.length - 1]![0];
+        let maxPrefixEnd = 0;
+        for (const [, e] of prefixSpansRaw) {
+          if (e > maxPrefixEnd) maxPrefixEnd = e;
+        }
+        const splitPos = Math.min(candTokenStart, maxPrefixEnd);
+        if (splitPos > 0 && splitPos < ids.length && prefixSpansRaw.every(([s]) => s < splitPos)) {
+          const prefixIds = ids.slice(0, splitPos);
+          const prefixSpans = prefixSpansRaw.map(([s, e]) => [s, Math.min(e, splitPos)] as [number, number]);
+          const prefixMeta = prefixMetaRaw.map((m, i) => ({
+            ...m,
+            token_start: prefixSpans[i]![0],
+            token_end: prefixSpans[i]![1],
+          }));
+          const tailIds = ids.slice(splitPos);
+          const prefixInc = await this.encodeIncremental(sid, prefixIds, prefixSpans, prefixMeta);
+          const cur = this.activeRecord!;
+          const reused = buildReusedAccumulators(chunkSpans, splitPos, cur.fullChunks);
+          if (reused) {
+            const tTail0 = performance.now();
+            const forkedState = this.backend.cloneState(cur.state);
+            const tailEnc = await this.backend.encodeSlice(tailIds, forkedState, chunkSpans, reused.sums, reused.counts);
+            const tailPrefillMs = performance.now() - tTail0;
+            let effectiveCacheMode = prefixInc.cacheMode;
+            if (effectiveCacheMode === "exact") {
+              this.cacheExactHits -= 1;
+              this.cacheDeltaHits += 1;
+              effectiveCacheMode = "delta";
+            }
+            inc = {
+              prefixReuse: prefixInc.prefixReuse,
+              deltaLen: prefixInc.deltaLen + tailIds.length,
+              cacheMode: effectiveCacheMode,
+              boundaryHealed: prefixInc.boundaryHealed,
+              pageTier: prefixInc.pageTier,
+              swapMs: prefixInc.swapMs,
+              prefillMs: prefixInc.prefillMs + tailPrefillMs,
+            };
+            evalState = tailEnc.state;
+            evalChunkReprs = tailEnc.chunkReprs;
+          }
+        }
+      }
+
+      if (!inc || !evalState || !evalChunkReprs) {
+        inc = await this.encodeIncremental(sid, ids, chunkSpans, chunkMeta);
+        const rec = this.activeRecord!;
+        evalState = rec.state;
+        evalChunkReprs = rec.chunkReprs;
+      }
 
       const tProbe0 = performance.now();
-      const rawHeads = await this.backend.scoreProbes(rec.state, rec.chunkReprs, qIdsList, choiceIndices, choiceOptIds);
+      const rawHeads = await this.backend.scoreProbes(evalState, evalChunkReprs, qIdsList, choiceIndices, choiceOptIds);
       const probeMs = performance.now() - tProbe0;
       const totalMs = performance.now() - tStart;
       this.requestsServed += 1;
@@ -2398,6 +2498,12 @@ export class WardenS1OnnxEngine {
     });
   }
 
+  close(): void {
+    this.activeSid = null;
+    this.activeRecord = null;
+    this.pager.close();
+  }
+
   stats(): DaemonStats {
     const lats = this.recentTelemetry.map((r) => Number(r.total_ms ?? 0));
     const swaps = this.pager.swapLatenciesMs.slice(-200);
@@ -2560,6 +2666,7 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
     ...(options.ramSlots !== undefined ? { ramSlots: options.ramSlots } : {}),
     pageDir,
   });
+  engine.pager.purgePageDirFiles();
 
   const expectedAuth = token ? `Bearer ${token}` : "";
   let closed = false;
@@ -2681,11 +2788,12 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
       clearInterval(idleTimer);
       idleTimer = null;
     }
-    removeStateFileIfOwned(options.stateFile, instanceId);
     await new Promise<void>((resolveP) => {
       server.close(() => resolveP());
       if (typeof server.closeAllConnections === "function") server.closeAllConnections();
     });
+    engine.close();
+    removeStateFileIfOwned(options.stateFile, instanceId);
   };
 
   await new Promise<void>((resolveP, rejectP) => {

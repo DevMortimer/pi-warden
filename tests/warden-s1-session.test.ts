@@ -651,17 +651,27 @@ test("notes of a judged answer: the flagged question's turn, the abstained probe
   assert.equal(wardenS1Notes({ irreversible: { type: "noul", noul: 0.9 } }, ["irreversible"]), undefined, "a cloud answer has no notes");
 });
 
-test("a judged call re-arms the prewarm, because the daemon's record now ends in the candidate", async () => {
-  const paths: string[] = [];
+test("a judged call sends ephemeral_last_chunk when history exists and leaves the warmed prefix intact without re-arming prewarm", async () => {
+  const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
   const base = daemonShapedFetch({}, {});
-  const fetchImpl: FetchLike = async (input, init) => { paths.push(new URL(String(input)).pathname); return base(input, init); };
+  const fetchImpl: FetchLike = async (input, init) => {
+    calls.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+    return base(input, init);
+  };
   const tracker = threeTurnTracker(fetchImpl);
   const judge = createWardenS1Judge({ sessionTracker: tracker, resolveEndpoint: async () => TEST_ENDPOINT, fetchImpl });
   await tracker.prewarmNow();
   assert.equal((await tracker.prewarmNow()).skipped, true, "an unchanged prefix is not sent twice");
   await judge.evaluate(twoQuestions);
-  await tracker.prewarmNow();
-  assert.deepEqual(paths, ["/v1/prewarm", "/v1/systemone", "/v1/prewarm"]);
+  assert.equal((await tracker.prewarmNow()).skipped, true, "evaluate leaves the prefix warm so no re-prewarm is needed");
+  assert.deepEqual(calls.map(c => c.path), ["/v1/prewarm", "/v1/systemone"]);
+  assert.equal(calls[1]!.body.ephemeral_last_chunk, true);
+
+  // Without history chunks (headless single-turn), ephemeral_last_chunk is omitted.
+  const emptyTracker = new WardenS1SessionTracker({ sessionId: "empty-sess", resolveEndpoint: async () => TEST_ENDPOINT, fetchImpl });
+  const emptyJudge = createWardenS1Judge({ sessionTracker: emptyTracker, resolveEndpoint: async () => TEST_ENDPOINT, fetchImpl });
+  await emptyJudge.evaluate(twoQuestions);
+  assert.equal(calls[2]!.body.ephemeral_last_chunk, undefined);
 });
 
 test("one connection: the endpoint is kept, a start is shared, a failed start is not retried at once, and a refused request drops the endpoint", async t => {

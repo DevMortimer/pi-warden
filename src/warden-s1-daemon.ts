@@ -77,6 +77,7 @@ export interface DaemonEvaluatePayload {
   readonly session_id?: string;
   readonly chunks?: readonly ChunkInput[];
   readonly abstain_band?: readonly [number, number];
+  readonly ephemeral_last_chunk?: boolean;
 }
 
 export interface DaemonPrewarmPayload {
@@ -106,6 +107,18 @@ export function daemonMetadataPath(stateDir: string): string {
 
 export function daemonLockPath(stateDir: string): string {
   return join(stateDir, "warden-s1-daemon.lock");
+}
+
+export function daemonPagesPath(stateDir: string): string {
+  return join(stateDir, "pages");
+}
+
+function removeDaemonPagesDir(stateDir: string): void {
+  try {
+    rmSync(daemonPagesPath(stateDir), { recursive: true, force: true });
+  } catch {
+    // Best-effort page directory cleanup.
+  }
 }
 
 export function isPidAlive(pid: number): boolean {
@@ -474,7 +487,10 @@ export async function getWardenS1DaemonStatus(stateDirInput?: string, healthTime
 export async function stopWardenS1Daemon(stateDirInput?: string, timeoutMs = 5000): Promise<{ stopped: boolean; pid?: number }> {
   const stateDir = stateDirInput ? resolve(stateDirInput) : defaultWardenS1StateDir();
   const meta = readDaemonMetadata(stateDir);
-  if (!meta) return { stopped: false };
+  if (!meta) {
+    removeDaemonPagesDir(stateDir);
+    return { stopped: false };
+  }
   const endpoint = toEndpoint(meta, stateDir);
 
   if (isPidAlive(meta.pid)) {
@@ -516,6 +532,7 @@ export async function stopWardenS1Daemon(stateDirInput?: string, timeoutMs = 500
         // Already cleaned up by daemon on exit.
       }
     }
+    removeDaemonPagesDir(stateDir);
     return { stopped: true, pid: meta.pid };
   }
   return { stopped: false, pid: meta.pid };

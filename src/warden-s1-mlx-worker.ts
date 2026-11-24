@@ -591,12 +591,24 @@ class TieredSessionPager:
         self.l2_swaps = 0
         self.l3_swaps = 0
         self.swap_latencies_ms: list[float] = []
+        self.purge_disk_pages()
 
     @property
     def zstd_enabled(self) -> bool:
         return self._zstd_c is not None
 
+    def purge_disk_pages(self) -> None:
+        if not self.page_dir.exists():
+            return
+        for pattern in ("*.ws1page", "*.tmp"):
+            for p in self.page_dir.glob(pattern):
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
     def close(self) -> None:
+        self.clear_all()
         self._pool.shutdown(wait=False)
 
     def _safe_name(self, sid: str) -> str:
@@ -624,6 +636,7 @@ class TieredSessionPager:
             except Exception:
                 pass
         self.disk_pages.clear()
+        self.purge_disk_pages()
         gc.collect()
 
     def _plan_arr_packing(
@@ -1641,26 +1654,98 @@ class WardenS1ServerEngine:
 
         t_start = time.perf_counter()
         mx.reset_peak_memory()
-        prefix_reuse, delta_len, cache_mode, boundary_healed, page_tier, swap_ms, prefill_ms = self._encode_incremental_on_gpu(
-            sid, ids, chunk_spans, chunk_meta
-        )
+        ephemeral_last_chunk = bool(payload.get("ephemeral_last_chunk", False))
+        forked = False
+        prefix_reuse = 0
+        delta_len = 0
+        cache_mode = "miss"
+        boundary_healed = False
+        page_tier = "NEW"
+        swap_ms = 0.0
+        prefill_ms = 0.0
+        q_vecs: list[mx.array] = []
+        chunk_reprs: mx.array | None = None
+        t_probe0 = t_start
 
-        t_probe0 = time.perf_counter()
-        cache = self._active_cache
-        snaps = self._active_snaps
-        chunk_reprs = self._active_chunk_reprs
-        prefix_len = len(ids)
-        assert cache is not None and snaps is not None and chunk_reprs is not None
+        if ephemeral_last_chunk and len(chunk_spans) >= 2:
+            prefix_spans_raw = chunk_spans[:-1]
+            prefix_meta_raw = chunk_meta[:-1]
+            cand_token_start = chunk_spans[-1][0]
+            max_prefix_end = max(e for _, e in prefix_spans_raw)
+            split_pos = min(cand_token_start, max_prefix_end)
+            if 0 < split_pos < len(ids) and all(s < split_pos for s, _ in prefix_spans_raw):
+                prefix_ids = ids[:split_pos]
+                prefix_spans = [(s, min(e, split_pos)) for s, e in prefix_spans_raw]
+                prefix_meta = [
+                    {**m, "token_start": prefix_spans[i][0], "token_end": prefix_spans[i][1]}
+                    for i, m in enumerate(prefix_meta_raw)
+                ]
+                tail_ids = ids[split_pos:]
+                prefix_reuse, delta_len, cache_mode, boundary_healed, page_tier, swap_ms, prefill_ms = self._encode_incremental_on_gpu(
+                    sid, prefix_ids, prefix_spans, prefix_meta
+                )
+                reused = _build_reused_accumulators(chunk_spans, split_pos, self._active_full_chunks)
+                if reused is not None:
+                    cache = self._active_cache
+                    prefix_snaps = self._active_snaps
+                    assert cache is not None and prefix_snaps is not None
+                    try:
+                        restore_cache_from_prefix(cache, prefix_snaps, split_pos)
+                        t_tail0 = time.perf_counter()
+                        tail_sess = self.eng.encode_prefix(
+                            tail_ids,
+                            chunk_spans=chunk_spans,
+                            kv_bits=None,
+                            prefill_step=2048,
+                            init_cache=cache,
+                            start_offset=split_pos,
+                            span_sums=reused[0],
+                            span_counts=reused[1],
+                        )
+                        prefill_ms += (time.perf_counter() - t_tail0) * 1000.0
+                        delta_len += len(tail_ids)
+                        if cache_mode == "exact":
+                            self.cache_exact_hits -= 1
+                            self.cache_delta_hits += 1
+                            cache_mode = "delta"
+                        cand_snaps = clone_arrays_snapshots(cache)
+                        chunk_reprs = tail_sess["chunk_reprs"]
+                        assert chunk_reprs is not None
+                        t_probe0 = time.perf_counter()
+                        eval_len = len(ids)
+                        for q_ids in q_ids_list:
+                            restore_cache_from_prefix(cache, cand_snaps, eval_len)
+                            h = self.eng.model.model(mx.array([q_ids], dtype=mx.int32), cache=cache)
+                            q_vec = h[0, -1].astype(mx.float32)
+                            mx.eval(q_vec)
+                            q_vecs.append(q_vec)
+                            del h
+                    finally:
+                        restore_cache_from_prefix(cache, prefix_snaps, split_pos)
+                    forked = True
 
-        q_vecs = []
-        for q_ids in q_ids_list:
+        if not forked:
+            prefix_reuse, delta_len, cache_mode, boundary_healed, page_tier, swap_ms, prefill_ms = self._encode_incremental_on_gpu(
+                sid, ids, chunk_spans, chunk_meta
+            )
+
+            t_probe0 = time.perf_counter()
+            cache = self._active_cache
+            snaps = self._active_snaps
+            chunk_reprs = self._active_chunk_reprs
+            prefix_len = len(ids)
+            assert cache is not None and snaps is not None and chunk_reprs is not None
+
+            for q_ids in q_ids_list:
+                restore_cache_from_prefix(cache, snaps, prefix_len)
+                h = self.eng.model.model(mx.array([q_ids], dtype=mx.int32), cache=cache)
+                q_vec = h[0, -1].astype(mx.float32)
+                mx.eval(q_vec)
+                q_vecs.append(q_vec)
+                del h
             restore_cache_from_prefix(cache, snaps, prefix_len)
-            h = self.eng.model.model(mx.array([q_ids], dtype=mx.int32), cache=cache)
-            q_vec = h[0, -1].astype(mx.float32)
-            mx.eval(q_vec)
-            q_vecs.append(q_vec)
-            del h
-        restore_cache_from_prefix(cache, snaps, prefix_len)
+
+        assert chunk_reprs is not None
 
         q_mat = mx.stack(q_vecs, axis=0)
         _, noul_probs = self.eng.heads.noul(q_mat)

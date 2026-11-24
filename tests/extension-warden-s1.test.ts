@@ -204,6 +204,7 @@ test("tracker, judge and daemon speak one wire: per-turn spans reach the worker,
   assert.equal(meta.cacheMode, "delta", "the judged call extends the prewarmed prefix");
 
   const judged = bodies.find(body => body.path === "/v1/systemone")!;
+  assert.equal(judged.sent.ephemeral_last_chunk, true, "evaluate marks the candidate chunk ephemeral");
   const chunks = judged.sent.chunks as Array<{ char_start: number; char_end: number; charStart: number; charEnd: number }>;
   assert.equal(chunks.length, 5, "the pinned header, three turns, and the candidate");
   for (const chunk of chunks) assert.deepEqual([chunk.char_start, chunk.char_end], [chunk.charStart, chunk.charEnd]);
@@ -217,6 +218,29 @@ test("tracker, judge and daemon speak one wire: per-turn spans reach the worker,
     assert.equal(meta.locusByQuestion[id]?.chunkIndex, expected, `${id} cites the turn its own locus row ranks first`);
     assert.match(meta.locusByQuestion[id]!.summary, /^Turn #\d+ \(/);
   }
+
+  // 5 more distinct candidates (action, rules, done, output) + next-turn append incur 0 cold misses after Turn 0.
+  for (const candidate of [
+    { guard: "rules", path: "src/app.ts", content: "export const x = 1;" },
+    { guard: "action", command: "npm test" },
+    { guard: "output", tool: "read", text: "file contents" },
+    { guard: "rules", path: "src/index.ts", content: "export * from './app';" },
+    { guard: "done", finalMessage: "All checks passed." },
+  ]) {
+    const next = await judge.evaluate({
+      state: candidate,
+      questions: { ok: { type: "noul", instructions: "Is this safe?" } },
+    });
+    assert.equal(getMetaForAnswers(next.answers)?.cacheMode, "delta", `candidate ${candidate.guard} reuses warm prefix`);
+  }
+  tracker.appendTurn({ turnIndex: 4, role: "assistant", text: "Keeping src intact and tidying build artifacts only." });
+  const afterAppend = await judge.evaluate({
+    state: { action: "bash: ls build" },
+    questions: { ok: { type: "noul", instructions: "Is this safe?" } },
+  });
+  assert.equal(getMetaForAnswers(afterAppend.answers)?.cacheMode, "delta", "next-turn append stays warm");
+  const st = (await getWardenS1DaemonStatus(stateDir)).stats!;
+  assert.equal(st.cache_misses, 1, "only Turn 0 prewarm may be a cold miss across 7 evaluates and a turn append");
 });
 
 test("local Warden-S1 judges without a key or consent: safe turns only prewarm, a held call cites its turn, an abstained probe holds nothing and declassifies nothing", async t => {
@@ -291,9 +315,14 @@ test("local Warden-S1 judges without a key or consent: safe turns only prewarm, 
   assert.match(lastNotice(), /sessions: 1 active \(L1\), \d+ in RAM \(L2\), \d+ on disk \(L3\); \d+ requests, \d+ prewarms; cache \d+ exact \/ \d+ delta \/ \d+ miss/);
   assert.equal(fetches.every(url => url.startsWith("http://127.0.0.1:")), true, `only loopback was called: ${[...new Set(fetches.map(url => new URL(url).host))].join(", ")}`);
 
+  // Plant a spilled session page file and verify /warden model remove cleans <cacheDir>/pages as well.
+  const pagesDir = join(cacheDir, "pages");
+  mkdirSync(pagesDir, { recursive: true });
+  writeFileSync(join(pagesDir, "evicted-session.ws1page"), Buffer.from("compressed-session-page"));
   await runCommand("model remove", ctx);
   assert.match(lastNotice(), /No local Warden-S1 model was downloaded; nothing removed\. Stopped its daemon \(pid \d+\)\./);
   assert.equal((await getWardenS1DaemonStatus(cacheDir)).running, false);
+  assert.equal(existsSync(pagesDir), false, "/warden model remove must delete session pages directory");
 });
 
 test("warden-s1 with no model says so once and keeps the pattern floor; switching autoDownload on downloads at once, behind a status line", async t => {
