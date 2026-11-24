@@ -33,8 +33,8 @@ export type BackendResolution =
   | { readonly typesafeBackend: JudgmentBackend; readonly backendRefusal?: undefined }
   | { readonly typesafeBackend?: undefined; readonly backendRefusal: string };
 
-/** Why no judge is available: consent not given, the backend refused, no key for the backend, a saved 401 still inside its 15-minute veto, or the request budget spent. */
-export type JudgmentsOffReason = "no_consent" | "bad_backend" | "no_key" | "key_rejected" | "budget";
+/** Why no judge is available: consent not given, the backend refused, no key for the backend, a saved 401 still inside its 15-minute veto, the request budget spent, or `warden-s1` chosen with no local model on disk. */
+export type JudgmentsOffReason = "no_consent" | "bad_backend" | "no_key" | "key_rejected" | "budget" | "no_local_model";
 
 /**
  * Resolve a raw config value to the spec judgments go to, kept as written, or to the refusal that turns judgments off.

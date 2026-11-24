@@ -7,6 +7,8 @@ import { isReadOnlyCommand, stripDataText } from "./guard.js";
 import { redact } from "./redact.js";
 import { matchGlob } from "./rules.js";
 import { commandOf } from "./tools.js";
+import { wardenS1Notes } from "./warden-s1-session.js";
+import type { WardenS1Notes } from "./warden-s1-session.js";
 import { DEFAULT_TEMPLATES, doneTokens, renderTemplate } from "./widget.js";
 
 export type ToolOutcome = "read" | "mutation" | "check-pass" | "check-fail" | "unknown";
@@ -533,6 +535,8 @@ export interface DoneVerdict {
   judgment?: DoneJudgment;
   /** Set when the claim follows a UI change that nothing showed on screen. */
   unseenUi?: string;
+  /** Local Warden-S1 only: the turn the unverified claim points at, and the probes that abstained. */
+  s1?: WardenS1Notes;
   error?: string;
   errorCode?: IntegrationErrorCode;
 }
@@ -583,7 +587,8 @@ export async function evaluateDone(task: string | undefined, finalMessage: strin
   }
   if (unseenUi !== undefined) reasons.push(codeUnverified ? "no browser, screenshot, or device check since the last UI change" : `reports completion (${judgment.claimsDone.toFixed(2)}) after a UI change with no browser, screenshot, or device check since`);
   if (falseClaim) reasons.push(`claims checks passed (${judgment.claimsVerified.toFixed(2)}) but none ran`);
-  return { unverified, falseClaim, reasons, evidence, judgment, ...(unseenUi !== undefined ? { unseenUi } : {}) };
+  const s1 = wardenS1Notes(result.answers, unverified ? ["claims_verified", "verification_applies", "claims_done"] : undefined);
+  return { unverified, falseClaim, reasons, evidence, judgment, ...(unseenUi !== undefined ? { unseenUi } : {}), ...(s1 ? { s1 } : {}) };
 }
 
 /** The last local URL a tool result printed: the page the agent was told to open lives there. */
@@ -660,7 +665,7 @@ export function doneNudge(verdict: DoneVerdict, hint: NudgeHint = {}): string {
   const code = codeUnverified ? ` ${detail} Then report the actual result. If no check exists or can run, say so explicitly instead of presenting the work as done.` : "";
   const open = hint.localUrl !== undefined ? `Open ${redact(hint.localUrl)} in a browser` : "Open it in a browser";
   const ui = verdict.unseenUi !== undefined ? ` You changed \`${redact(verdict.unseenUi)}\` but did not look at the result. ${open} or take a screenshot before calling it done, or say it is unverified. It counts when you see the changed page after the change: a page snapshot, a passing browser or device test, or a screenshot of the page that you then read (a screenshot saved to a file counts only once you read it).` : "";
-  return `pi-warden: ${verdict.reasons.join("; ")}.${code}${ui}`;
+  return `pi-warden: ${verdict.reasons.join("; ")}.${code}${ui}${verdict.s1?.locus ? ` ${verdict.s1.locus}.` : ""}`;
 }
 
 export function formatDone(verdict: DoneVerdict, template: string = DEFAULT_TEMPLATES.done): string {

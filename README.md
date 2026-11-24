@@ -13,7 +13,7 @@ Want semantic judgment on top? Run `/warden enable` to add [Jev](https://typesaf
 
 It runs inside [Pi](https://github.com/earendil-works/pi), and as hooks in Claude Code and Codex.
 
-> **Coming soon — first-class local [Warden-S1](https://ryanjoshuagapac.com/writing/warden-s1) support (in active integration):** We are adding opt-in local System-1 semantic verification so you can run full semantic guardrails **100% locally at `$0` API cost** in **`<1 GiB`** across **10+ concurrent `64K–128K+` token sessions** (`~0 ms` perceived turn lag via background prefix pre-warming, calibrated `0.50` abstention, `locus` offending-turn citations, and `salience`-guided compaction through `500K+` tokens). Open Apache-2.0 weights are live now on Hugging Face ([`Warden-S1-752M-MLX-4bit`](https://huggingface.co/DevMortimer/Warden-S1-752M-MLX-4bit) `415.5 MiB` · [`Warden-S1-752M-ONNX-Int4`](https://huggingface.co/DevMortimer/Warden-S1-752M-ONNX-Int4) `461.3 MiB` · [`Warden-S1-752M`](https://huggingface.co/DevMortimer/Warden-S1-752M)), with full Stage 3.5 benchmarks in [`eval/reports/2026-11-23-warden-s1-live-eval`](eval/reports/2026-11-23-warden-s1-live-eval/README.md).
+> **Local [Warden-S1](https://ryanjoshuagapac.com/writing/warden-s1), strictly opt-in:** set `"typesafeBackend": "warden-s1"` (or `"auto"`) and run `/warden model download`, and the semantic checks run **on this machine at `$0`**: no key, no consent screen, nothing leaves `127.0.0.1`. One shared daemon serves every Pi session and pages idle ones to RAM and disk; each session's transcript is warmed behind the turn, so a judged call encodes only what is new. A probe that lands within `0.08` of `0.50` abstains (`insufficient evidence in transcript`) instead of holding, and a hold cites the turn it points at (`Locus: Turn #63 (tiny_fetch, …)`). The default stays `"cloud"`: nothing is downloaded and nothing changes until you ask. Open Apache-2.0 weights: [`Warden-S1-752M-MLX-4bit`](https://huggingface.co/DevMortimer/Warden-S1-752M-MLX-4bit) `415.5 MiB` · [`Warden-S1-752M-ONNX-Int4`](https://huggingface.co/DevMortimer/Warden-S1-752M-ONNX-Int4) `461.3 MiB` · [`Warden-S1-752M`](https://huggingface.co/DevMortimer/Warden-S1-752M); benchmarks in [`eval/reports/2026-11-23-warden-s1-live-eval`](eval/reports/2026-11-23-warden-s1-live-eval/README.md). See [Local Warden-S1](docs/guards.md#local-warden-s1).
 
 ![A careless agent makes six moves in a terminal: it tries to wipe uncommitted work, reads a secrets file, repeats a failing command, tries to switch pi-warden off, fakes a fix with a stub, and claims the tests pass. pi-warden holds two of them, masks the secrets, and reports the other three to the owner.](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/assets/demo.gif)
 
@@ -181,7 +181,9 @@ Add `--project` to install into the project's own settings instead of user setti
 
 **Nothing**, until you run `/warden enable` or set `PI_WARDEN_ENABLED=1`. Every offline guard — including the destructive floor, System-0 rule compiler, trajectory oscillation checks, cache-aware epoch context masking, secret masking, and the APPA taint firewall — runs strictly in memory on your machine with zero network requests.
 
-With consent, redacted, truncated summaries go to `api.typesafe.ai` or the backend named in `typesafeBackend` (OpenRouter, Command Code, Liquid AI, SubQ, Nace.AI, or your own endpoint). A project file can never change the backend, disable taint enforcement, or allowlist external hosts. Full details are in [docs/data-handling.md](docs/data-handling.md).
+With consent, redacted, truncated summaries go to `api.typesafe.ai` or the backend named in `typesafeBackend` (OpenRouter, Command Code, Liquid AI, SubQ, Nace.AI, or your own endpoint).
+
+With `"typesafeBackend": "warden-s1"`, the same redacted summaries and a redacted transcript of the session go to a daemon on `127.0.0.1` on this machine and no further: zero bytes leave it. Its cached states are owner-only files under `~/.cache/pi-warden`. The one network use is the download you ask for, from Hugging Face. A project file can never change the backend, disable taint enforcement, or allowlist external hosts. Full details are in [docs/data-handling.md](docs/data-handling.md).
 
 ## What it costs
 
@@ -191,6 +193,7 @@ With consent, redacted, truncated summaries go to `api.typesafe.ai` or the backe
   - `rules.cadence: "turn"` coalesces semantic rule checks to one net-diff pass per turn, and `rules.system0` settles mechanical/out-of-scope rules locally.
   - `context.mask.*`, trajectory oscillation checks, and offline taint holds cost `0` Jev requests.
   - A session caps at 500 requests (`maxRequests`), fails open if Jev is down, and cools down after 3 consecutive errors.
+- **With local Warden-S1:** `$0` per judgment and no request cap that costs money; the price is `415.5`–`461.3 MiB` of disk and under `1 GiB` of memory for one daemon shared by every session. Read-only and reversible calls still skip the judge.
 - For scale: in this project's benchmark, 780 guarded agent runs cost **$0.90 total** through the SubQ backend ([report](eval/reports/2026-10-25-thesis-v5-low/README.md)). Run `/warden bench` to measure latency and estimated cost on your own rule set.
 
 ## What is measured
@@ -221,6 +224,7 @@ pi-warden's architecture translates peer-reviewed and preprint agent-safety, con
 | --- | --- |
 | `/warden status` | Guards, mode, thresholds, taint summary, context masking stats, session counts, and running build. |
 | `/warden enable`, `/warden disable` | Consent for Jev judgments. Offline checks stay on either way. |
+| `/warden model status\|download\|remove` | The local Warden-S1 model: runtime, cache folder, download state, and its daemon; download and verify the weights; stop the daemon and delete them. |
 | `/warden mode steer\|confirm\|advise` | What a hold does. |
 | `/warden init` | Starter rules for this project, written by the session model. |
 | `/warden audit` | Inspects the workspace for places a judge would help and writes an HTML report. |
@@ -237,7 +241,7 @@ More in [docs/commands.md](docs/commands.md).
 
 ## Configuration
 
-User settings live in `~/.pi/agent/pi-warden/config.json`, and trusted projects can add `.pi/pi-warden.json`. A project file can tighten checks or tune advisory warnings, but security-critical keys are read from your user file only: `mode`, `typesafeBackend`, `action.floor`, `action.ephemeralRoots`, deny/exempt/path/arming rules, `security.maskOutput`, `taint.enabled`, `taint.holdTrifecta`, `taint.holdSecretEgress`, `taint.holdInjectionEgress`, `taint.jevDeclassify`, and `taint.allowHosts`.
+User settings live in `~/.pi/agent/pi-warden/config.json`, and trusted projects can add `.pi/pi-warden.json`. A project file can tighten checks or tune advisory warnings, but security-critical keys are read from your user file only: `mode`, `typesafeBackend`, `localModel`, `action.floor`, `action.ephemeralRoots`, deny/exempt/path/arming rules, `security.maskOutput`, `taint.enabled`, `taint.holdTrifecta`, `taint.holdSecretEgress`, `taint.holdInjectionEgress`, `taint.jevDeclassify`, and `taint.allowHosts`.
 
 ```json
 {
@@ -268,6 +272,7 @@ Opt-in features (off by default):
 
 | Feature | Key | Status |
 | --- | --- | --- |
+| Local judgments with Warden-S1 instead of a cloud judge | `typesafeBackend: "warden-s1"` or `"auto"`, `localModel.*` | New |
 | A transcript toast for each notice | `notices` | Stable |
 | Desktop notifications when a call waits for you, or your own notifier command | `notify.enabled` | Stable |
 | A coach that suggests a skill or tool the agent is missing | `conscience.enabled` | Beta |

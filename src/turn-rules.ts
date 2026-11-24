@@ -7,7 +7,7 @@ import { choice, chunkEvaluationRequest } from "pi-typesafe";
 import type { RulesConfig } from "./config.js";
 import {
   MAX_RULES, OUTCOMES, RULE_BODY_LIMIT, STEER_BODY_LIMIT,
-  askChunks, evaluateRulesTarget, questionLimit, scoreAnswers, turnRulesFor,
+  askChunks, evaluateRulesTarget, noteRulesAnswer, questionLimit, scoreAnswers, turnRulesFor,
 } from "./rules.js";
 import type { LimitedJudge, Rule, RuleScoreEntry, RulesVerdict, RuleSet } from "./rules.js";
 import { redact } from "./redact.js";
@@ -344,7 +344,7 @@ export async function evaluateTurnRules(task: string, diff: string, rules: reado
   if (!result.ok) return { source: "error", ...base, findings: [], error: result.error, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   const entries: RuleScoreEntry[] = rules.map(rule => ({ key: `${TURN_QUESTION_PREFIX}${rule.id}`, id: rule.id, name: rule.name, body: rule.body, rule }));
   const { scores, findings, softFindings } = scoreAnswers(result.answers as Record<string, { type: string; choice?: string; probabilities?: Record<string, number> } | undefined>, entries, options.config);
-  return { source: "typesafe", ...base, scores, findings, ...(softFindings.length ? { softFindings } : {}), model: result.model, elapsedMs: result.elapsedMs };
+  return noteRulesAnswer({ source: "typesafe", ...base, scores, findings, ...(softFindings.length ? { softFindings } : {}), model: result.model, elapsedMs: result.elapsedMs }, result.answers);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,5 +461,6 @@ export function turnSteer(verdicts: readonly RulesVerdict[], counts: ReadonlyMap
     parts.push(`${where} ${what}: ${named}`);
   }
   if (!parts.length) return undefined;
-  return `pi-warden: ${parts.join("; ")}. Review the run's diff and fix the violations before you finish.${standing ? " Treat this as a standing rule for the rest of the session." : ""}`;
+  const locus = verdicts.find(verdict => verdict.findings.length && verdict.s1?.locus)?.s1?.locus;
+  return `pi-warden: ${parts.join("; ")}. Review the run's diff and fix the violations before you finish.${standing ? " Treat this as a standing rule for the rest of the session." : ""}${locus ? ` ${locus}.` : ""}`;
 }
