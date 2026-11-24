@@ -15,6 +15,8 @@ import { indexDir } from "./index-cmd.js";
 import { PROJECT_CONFIG_FILE, projectConfigPath, userConfigPath } from "./config.js";
 import type { HostDirs } from "./host-dirs.js";
 import { resolveRulesFile } from "./rules-file.js";
+import { getMetaForAnswers, wardenS1Notes } from "./warden-s1-session.js";
+import type { WardenS1Notes } from "./warden-s1-session.js";
 import { mergeWrites, shellWrites } from "./shell-writes.js";
 import type { ShellWriteScan } from "./shell-writes.js";
 import { COMMAND_TOOLS, commandOf } from "./tools.js";
@@ -131,6 +133,8 @@ export type ScopeLabel = "expected_step" | "plausible_side_step" | "unrelated" |
 
 export interface Judgment {
   irreversible: number;
+  /** Local Warden-S1 abstained on `irreversible` (raw score near 0.50): the 0 above means no evidence, not a clean call. */
+  irreversibleAbstained?: boolean;
   /** P(the call is outside the active task). Absent when the trace-only questions were not asked on this call. */
   offTask?: number;
   /** How the call relates to the task. Absent when the trace-only questions were not asked on this call. */
@@ -211,6 +215,8 @@ export interface Verdict {
   /** Safe TypeSafe error message when the judge could not answer. */
   error?: string;
   errorCode?: IntegrationErrorCode;
+  /** Local Warden-S1 only: the turn the judgment points at (shown when the call is not plainly allowed), and the probes that abstained. */
+  s1?: WardenS1Notes;
 }
 
 export type { Judge } from "pi-typesafe";
@@ -3669,6 +3675,15 @@ async function judgeAction(action: ActionInput, options: EvaluateOptions): Promi
     }
   }
   const verdict: Verdict = withPlan({ level, source: "typesafe", summary, patterns, reasons, judgment });
+  if (getMetaForAnswers(result.answers)?.abstentions.irreversible !== undefined) judgment.irreversibleAbstained = true;
+  const s1 = wardenS1Notes(result.answers, [
+    ...(judgment.irreversible >= config.irreversible.warn ? ["irreversible"] : []),
+    ...(judgment.securityRisk !== undefined && options.security && judgment.securityRisk >= options.security.threshold ? ["security_risk"] : []),
+    ...(mismatch ? ["intent_mismatch"] : []),
+    ...(shouldProceedSteer ? ["should_proceed"] : []),
+    "irreversible",
+  ]);
+  if (s1) verdict.s1 = s1;
   if (mismatch) verdict.intentMismatch = true;
   if (offTaskSteer) verdict.offTaskSteer = true;
   if (offTaskTraceOnly) verdict.offTaskTraceOnly = true;
@@ -3801,7 +3816,7 @@ export function scoreFreeReason(reason: string): string {
 export function steerReason(verdict: Verdict, options: { canApprove: boolean }): string {
   const what = verdict.reasons.map(scoreFreeReason).join("; ");
   const lines = [
-    `pi-warden held this ${verdict.summary.tool} call before it ran: ${what}.`,
+    `pi-warden held this ${verdict.summary.tool} call before it ran: ${what}.${verdict.s1?.locus ? ` ${verdict.s1.locus}.` : ""}`,
     "Do not retry it unchanged. Either (1) reach the goal with a recoverable alternative that stays inside the project (a targeted path, a dry run, a move instead of a delete, a normal push), or (2) if this exact action is genuinely required, stop and tell the user in one or two sentences what it does, what cannot be undone, and why it is needed, then wait for their reply.",
   ];
   if (options.canApprove) lines.push("If the user's reply approves it, retry the same call and pi-warden will let it through.");

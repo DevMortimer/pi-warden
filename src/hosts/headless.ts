@@ -1,9 +1,10 @@
 import { execFile, fork } from "node:child_process";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatePath, createTypeSafe, openUsageLedger, resolveBackend, usagePath } from "pi-typesafe";
 import type { Judge } from "pi-typesafe";
-import { judgeOptions, toCloudBackendSpec } from "../backend.js";
+import { isLocalBackendMode, judgeOptions, toCloudBackendSpec } from "../backend.js";
+import { connectWardenS1, createWardenS1Judge, resolveLocalWardenS1, WardenS1SessionTracker } from "../warden-s1-session.js";
 import { loadConfig, userConfigPath } from "../config.js";
 import type { RulesConfig, WardenConfig } from "../config.js";
 import { redact } from "../redact.js";
@@ -101,10 +102,24 @@ async function ignored(path: string, cwd: string, signal: AbortSignal): Promise<
   });
 }
 
-export type Unavailable = { reason: "no-consent" | "bad-backend" | "no-key"; problem: string };
+export type Unavailable = { reason: "no-consent" | "bad-backend" | "no-key" | "no-local-model"; problem: string };
 
-/** Headless consent and the active backend's key come from the environment only; each request reserves a session slot first. */
+/**
+ * Headless consent and the active backend's key come from the environment only; each request reserves a session slot
+ * first. The local model needs neither: choosing it in the user config is the opt-in, it spends nothing, and a hook
+ * never downloads it.
+ */
 export async function headlessJudge(config: WardenConfig, state: HostState, signal: AbortSignal): Promise<Judge | Unavailable> {
+  if (isLocalBackendMode(config.typesafeBackend)) {
+    const local = resolveLocalWardenS1(config.localModel);
+    if (local.ready) {
+      const connection = connectWardenS1(local.daemon);
+      // Each hook is its own process, so no transcript is carried between calls: the daemon judges the request alone.
+      const sessionTracker = new WardenS1SessionTracker({ sessionId: state.directory.split(sep).slice(-2).join("-"), ...connection });
+      return createWardenS1Judge({ sessionTracker, ...connection });
+    }
+    if (config.typesafeBackend === "warden-s1") return { reason: "no-local-model", problem: "download the local Warden-S1 model with /warden model download in Pi" };
+  }
   if (process.env.PI_WARDEN_ENABLED !== "1") return { reason: "no-consent", problem: "set PI_WARDEN_ENABLED=1 for this headless host" };
   const backend = config.typesafeBackend;
   if (backend === undefined) return { reason: "bad-backend", problem: "fix typesafeBackend in the global user config" };

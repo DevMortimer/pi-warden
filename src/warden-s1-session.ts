@@ -17,7 +17,13 @@ import {
   type Usage,
   type UsageSnapshot,
 } from "pi-typesafe";
+import type { LocalModelConfig } from "./config.js";
+import type { HostDirs } from "./host-dirs.js";
+import { getWardenS1Status } from "./local-model.js";
+import type { WardenS1Status } from "./local-model.js";
 import { redact } from "./redact.js";
+import { ensureWardenS1Daemon } from "./warden-s1-daemon.js";
+import type { DaemonEndpoint, EnsureDaemonOptions } from "./warden-s1-daemon.js";
 
 export const MAX_PREFIX_TOKENS = 120_000;
 export const COMPACT_UNPINNED_BLOCK_TOKENS = 48_000;
@@ -31,6 +37,9 @@ const EXCERPT_MAX_CHARS = 140;
 const FLOAT_EPSILON = 1e-12;
 const MAX_COMPACTION_ITERATIONS = 32;
 const MAX_COALESCED_PREWARM_PASSES = 16;
+// A daemon that failed to start is left alone this long, so a broken install costs one spawn per window, not one per turn.
+const DAEMON_RETRY_MS = 30_000;
+export const MOCK_WEIGHTS_ENV = "PI_WARDEN_S1_MOCK_WEIGHTS";
 
 export interface WardenS1Endpoint {
   readonly url: string;
@@ -74,6 +83,23 @@ export interface SessionChunkDescriptor {
   readonly label: string;
   readonly charStart: number;
   readonly charEnd: number;
+  /** The daemon workers read spans in snake_case; without them every chunk falls back to the whole state. */
+  readonly char_start: number;
+  readonly char_end: number;
+}
+
+function describeChunk(chunk: { index: number; turnIndex: number; role: string; tool?: string | undefined; label: string; charStart: number; charEnd: number }): SessionChunkDescriptor {
+  return {
+    index: chunk.index,
+    turnIndex: chunk.turnIndex,
+    role: chunk.role,
+    ...(chunk.tool ? { tool: chunk.tool } : {}),
+    label: chunk.label,
+    charStart: chunk.charStart,
+    charEnd: chunk.charEnd,
+    char_start: chunk.charStart,
+    char_end: chunk.charEnd,
+  };
 }
 
 export interface CompactionResult {
@@ -149,6 +175,57 @@ const ANSWER_META = new WeakMap<object, WardenS1EvalMeta>();
 
 export function getMetaForAnswers(answers: unknown): WardenS1EvalMeta | undefined {
   return answers !== null && typeof answers === "object" ? ANSWER_META.get(answers) : undefined;
+}
+
+/** Carries the Warden-S1 meta of each part onto an answers object merged from them; a cloud answer has none and adds nothing. */
+export function mergeAnswerMeta(merged: object, parts: readonly unknown[]): void {
+  const metas = parts.map(getMetaForAnswers).filter((meta): meta is WardenS1EvalMeta => meta !== undefined);
+  const first = metas[0];
+  if (!first) return;
+  if (metas.length === 1) {
+    ANSWER_META.set(merged, first);
+    return;
+  }
+  let topLocus: LocusCitation | undefined;
+  for (const meta of metas) {
+    if (meta.topLocus && (!topLocus || meta.topLocus.probability > topLocus.probability)) topLocus = meta.topLocus;
+  }
+  ANSWER_META.set(merged, {
+    ...first,
+    locusByQuestion: Object.assign({}, ...metas.map(meta => meta.locusByQuestion)) as Record<string, LocusCitation>,
+    ...(topLocus ? { topLocus } : {}),
+    abstentions: Object.assign({}, ...metas.map(meta => meta.abstentions)) as Record<string, string>,
+    rawNoul: Object.assign({}, ...metas.map(meta => meta.rawNoul)) as Record<string, number>,
+  });
+}
+
+/** What a guard shows of a Warden-S1 answer: the turn its flag points at, and the probes that abstained. */
+export interface WardenS1Notes {
+  readonly locus?: string;
+  readonly abstained?: string;
+}
+
+/**
+ * The notes of one judged answer, or undefined for a cloud answer. `flaggedBy` names the questions behind a flag, most
+ * telling first; leave it out when the guard flagged nothing, and no turn is cited.
+ */
+export function wardenS1Notes(answers: unknown, flaggedBy?: readonly string[]): WardenS1Notes | undefined {
+  const meta = getMetaForAnswers(answers);
+  if (!meta) return undefined;
+  const abstainedIds = Object.keys(meta.abstentions);
+  const abstained = abstainedIds.length
+    ? `abstained: ${ABSTENTION_REASON} (${abstainedIds.map(id => `${id} ${(meta.rawNoul[id] ?? 0.5).toFixed(2)}`).join(", ")})`
+    : undefined;
+  const cited = flaggedBy === undefined
+    ? undefined
+    : flaggedBy.map(id => meta.locusByQuestion[id]).find(citation => citation !== undefined) ?? meta.topLocus;
+  if (!cited && !abstained) return undefined;
+  return { ...(cited ? { locus: `Locus: ${cited.summary}` } : {}), ...(abstained ? { abstained } : {}) };
+}
+
+/** The notes as trace detail lines. */
+export function wardenS1NoteLines(notes: WardenS1Notes | undefined): string[] {
+  return [notes?.locus, notes?.abstained].filter((line): line is string => line !== undefined);
 }
 
 export function isEpistemicAbstention(probability: number): boolean {
@@ -429,15 +506,7 @@ export class WardenS1SessionTracker {
   }
 
   describeChunks(): SessionChunkDescriptor[] {
-    return this._chunks.map((c) => ({
-      index: c.index,
-      turnIndex: c.turnIndex,
-      role: c.role,
-      ...(c.tool ? { tool: c.tool } : {}),
-      label: c.label,
-      charStart: c.charStart,
-      charEnd: c.charEnd,
-    }));
+    return this._chunks.map(describeChunk);
   }
 
   applySalienceScores(scores: readonly number[], expectedVersion: number): void {
@@ -607,6 +676,12 @@ export class WardenS1SessionTracker {
     this._chunks = rebuilt;
     this._prefixText = parts.join("\n\n");
     this._totalTokens = totalTokens;
+  }
+
+  /** A judged request left the daemon's record at prefix plus candidate, so the prefix it holds is warmed again. */
+  rearmPrewarm(): void {
+    this._lastPrewarmedVersion = -1;
+    this.schedulePrewarm();
   }
 
   schedulePrewarm(): void {
@@ -791,7 +866,7 @@ function parseLocusEntry(raw: unknown): ParsedLocusEntry | undefined {
   const chunkProbs = Array.isArray(rawProbs)
     ? rawProbs.map((v) => (typeof v === "number" && Number.isFinite(v) ? v : 0))
     : undefined;
-  const rawIdx = obj.top_chunk_idx ?? obj.topChunkIdx;
+  const rawIdx = obj.top_chunk ?? obj.top_chunk_idx ?? obj.topChunkIdx;
   const topChunkIdx = typeof rawIdx === "number" && Number.isInteger(rawIdx) ? rawIdx : undefined;
   const rawProb = obj.top_prob ?? obj.topProb;
   const topProb = typeof rawProb === "number" && Number.isFinite(rawProb) ? rawProb : undefined;
@@ -845,7 +920,11 @@ function extractLocusMap(
   }
 
   const locusObj = rawLocus as Record<string, unknown>;
-  const singleEntry = parseLocusEntry(locusObj);
+  const byQuestion = locusObj.by_question && typeof locusObj.by_question === "object" && !Array.isArray(locusObj.by_question)
+    ? (locusObj.by_question as Record<string, unknown>)
+    : undefined;
+  const perQuestion = byQuestion && Object.keys(byQuestion).length > 0 ? byQuestion : undefined;
+  const singleEntry = perQuestion ? undefined : parseLocusEntry(locusObj);
   if (singleEntry) {
     const citation = selectLocusCitation(singleEntry, historyChunks);
     if (citation) {
@@ -855,9 +934,10 @@ function extractLocusMap(
     return { locusByQuestion };
   }
 
+  const entries = perQuestion ?? locusObj;
   let topLocus: LocusCitation | undefined;
   for (const qid of questionIds) {
-    const entry = parseLocusEntry(locusObj[qid]);
+    const entry = parseLocusEntry(entries[qid]);
     if (!entry) continue;
     const citation = selectLocusCitation(entry, historyChunks);
     if (!citation) continue;
@@ -1050,14 +1130,14 @@ export function createWardenS1Judge(options: WardenS1JudgeOptions): WardenS1Judg
       const candidateStart = prefixText.length > 0 ? prefixText.length + 2 : 0;
       const requestChunks: SessionChunkDescriptor[] = [
         ...historyDescriptors,
-        {
+        describeChunk({
           index: historyDescriptors.length,
           turnIndex: -1,
           role: "candidate",
           label: "Current candidate",
           charStart: candidateStart,
           charEnd: composedState.length,
-        },
+        }),
       ];
 
       const sentModel = validated.model ?? endpoint.modelId;
@@ -1187,6 +1267,7 @@ export function createWardenS1Judge(options: WardenS1JudgeOptions): WardenS1Judg
 
       ANSWER_META.set(processedAnswers, meta);
       lastMeta = meta;
+      tracker.rearmPrewarm();
 
       const parsedUsage = parseUsage(body.usage);
       usage.requestsSucceeded += 1;
@@ -1220,4 +1301,108 @@ export function createWardenS1Judge(options: WardenS1JudgeOptions): WardenS1Judg
   };
 
   return judge;
+}
+
+/** The local model as one session reads it: whether it can judge, and how its daemon is started. */
+export interface LocalWardenS1 {
+  readonly status: WardenS1Status;
+  /** The synthetic weights stand in for the download, for a proof that must not fetch 461 MiB. */
+  readonly mock: boolean;
+  readonly ready: boolean;
+  readonly daemon: EnsureDaemonOptions;
+}
+
+export function resolveLocalWardenS1(
+  localModel: LocalModelConfig,
+  options: { readonly dirs?: HostDirs; readonly env?: NodeJS.ProcessEnv } = {},
+): LocalWardenS1 {
+  const env = options.env ?? process.env;
+  const status = getWardenS1Status(localModel, { ...(options.dirs ? { dirs: options.dirs } : {}), env });
+  const idle = localModel.idleShutdownSec === undefined ? {} : { idleShutdownSec: localModel.idleShutdownSec };
+  if (env[MOCK_WEIGHTS_ENV] === "1") {
+    return { status, mock: true, ready: true, daemon: { runtime: "onnx", mockWeights: true, ...idle } };
+  }
+  return {
+    status,
+    mock: false,
+    ready: status.ready,
+    daemon: {
+      runtime: status.runtime,
+      modelDir: status.modelDir,
+      modelId: status.modelId,
+      ...(status.mlxPython ? { pythonBin: status.mlxPython } : {}),
+      ...(status.ortRuntimePath ? { ortPath: status.ortRuntimePath } : {}),
+      ...idle,
+    },
+  };
+}
+
+export interface WardenS1Connection {
+  readonly resolveEndpoint: ResolveWardenS1Endpoint;
+  readonly fetchImpl: FetchLike;
+  /** Starts the daemon without waiting for it, so the first judged call finds it up. */
+  warm(): void;
+}
+
+function abortable<T>(start: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return start();
+  if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  const promise = start();
+  return new Promise<T>((resolvePromise, reject) => {
+    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolvePromise, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+/**
+ * One session's line to the shared daemon. The endpoint is kept until a request fails to connect or is refused, so a
+ * judged call costs no health probe; a start in progress is shared, and a failed start is not retried for 30 s.
+ */
+export function connectWardenS1(
+  daemon: EnsureDaemonOptions,
+  ensure: (options: EnsureDaemonOptions) => Promise<DaemonEndpoint> = ensureWardenS1Daemon,
+): WardenS1Connection {
+  let endpoint: DaemonEndpoint | undefined;
+  let starting: Promise<DaemonEndpoint> | undefined;
+  let retryAfter = 0;
+  let lastError = "Warden-S1 daemon failed to start.";
+  const start = (): Promise<DaemonEndpoint> => {
+    if (endpoint) return Promise.resolve(endpoint);
+    if (starting) return starting;
+    if (Date.now() < retryAfter) return Promise.reject(new Error(lastError));
+    const attempt = ensure(daemon).then(
+      (started) => {
+        endpoint = started;
+        return started;
+      },
+      (error: unknown) => {
+        retryAfter = Date.now() + DAEMON_RETRY_MS;
+        lastError = safeErrorMessage(error);
+        throw error;
+      },
+    ).finally(() => {
+      if (starting === attempt) starting = undefined;
+    });
+    starting = attempt;
+    return attempt;
+  };
+  return {
+    resolveEndpoint: (signal) => abortable(start, signal),
+    fetchImpl: async (input, init) => {
+      let response: Response;
+      try {
+        response = await globalThis.fetch(input, init);
+      } catch (error) {
+        if (!isAbortError(error, init?.signal ?? undefined)) endpoint = undefined;
+        throw error;
+      }
+      // A restarted daemon answers on a new port with a new token; a refusal means this endpoint is the old one.
+      if (response.status === 401 || response.status === 403) endpoint = undefined;
+      return response;
+    },
+    warm: () => {
+      start().catch(() => undefined);
+    },
+  };
 }
