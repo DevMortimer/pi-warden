@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatePath, createTypeSafe, openUsageLedger, resolveBackend, usagePath } from "pi-typesafe";
 import type { Judge } from "pi-typesafe";
-import { judgeOptions } from "../backend.js";
+import { judgeOptions, toCloudBackendSpec } from "../backend.js";
 import { loadConfig, userConfigPath } from "../config.js";
 import type { RulesConfig, WardenConfig } from "../config.js";
 import { redact } from "../redact.js";
@@ -108,7 +108,7 @@ export async function headlessJudge(config: WardenConfig, state: HostState, sign
   if (process.env.PI_WARDEN_ENABLED !== "1") return { reason: "no-consent", problem: "set PI_WARDEN_ENABLED=1 for this headless host" };
   const backend = config.typesafeBackend;
   if (backend === undefined) return { reason: "bad-backend", problem: "fix typesafeBackend in the global user config" };
-  const key = process.env[resolveBackend(backend).keyEnv]?.trim();
+  const key = process.env[resolveBackend(toCloudBackendSpec(backend)).keyEnv]?.trim();
   if (!key) return { reason: "no-key", problem: "set the active backend key in the environment" };
   await readText(authStatePath(), signal);
   await readText(usagePath(), signal);

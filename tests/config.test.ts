@@ -350,31 +350,60 @@ test("arming rules parse duration strings and numbers", () => {
   assert.equal(config.action.armingRules[4]!.arms.for, 600_000, "default is 10 minutes");
 });
 
-test("defaults: typesafeBackend is typesafe", () => {
-  assert.equal(defaultConfig().typesafeBackend, "typesafe");
+test("defaults: typesafeBackend is cloud and localModel is strictly opt-in", () => {
+  assert.equal(defaultConfig().typesafeBackend, "cloud");
   assert.equal(defaultConfig().backendRefusal, undefined);
+  assert.deepEqual(defaultConfig().localModel, {
+    autoDownload: false,
+    runtime: "auto",
+    idleShutdownSec: 1800,
+  });
 });
 
-test("user overrides: typesafeBackend accepts names and endpoint objects and refuses junk", () => {
+test("user overrides: typesafeBackend accepts cloud, local modes, names, and endpoint objects and refuses junk", () => {
+  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "cloud" }).typesafeBackend, "cloud");
+  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "warden-s1" }).typesafeBackend, "warden-s1");
+  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "auto" }).typesafeBackend, "auto");
   assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "openrouter" }).typesafeBackend, "openrouter");
   assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "commandcode" }).typesafeBackend, "commandcode");
   assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: "typesafe" }).typesafeBackend, "typesafe");
   const gateway = { label: "Acme judge gateway", host: "https://gw.acme.example", path: "/judge/v1/decide", keyEnv: "ACME_JUDGE_KEY", defaultModel: "jev-1.13" };
   assert.deepEqual(applyUserOverrides(defaultConfig(), { typesafeBackend: gateway }).typesafeBackend, gateway, "an endpoint object is kept as written");
   const refusedName = applyUserOverrides(defaultConfig(), { typesafeBackend: "azure" });
-  assert.equal(refusedName.typesafeBackend, undefined, "an unknown name no longer falls back to typesafe");
+  assert.equal(refusedName.typesafeBackend, undefined, "an unknown name no longer falls back to cloud");
   assert.match(refusedName.backendRefusal!, /Unknown judgment backend "azure"/);
   const refusedObject = applyUserOverrides(defaultConfig(), { typesafeBackend: { label: "Acme judge gateway", host: "http://gw.acme.example", keyEnv: "ACME_JUDGE_KEY" } });
   assert.equal(refusedObject.typesafeBackend, undefined, "an object pi-typesafe refuses turns judgments off");
   assert.match(refusedObject.backendRefusal!, /absolute https/);
-  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: null }).typesafeBackend, "typesafe", "null falls back");
-  assert.equal(applyUserOverrides(defaultConfig(), {}).typesafeBackend, "typesafe", "missing falls back");
+  assert.equal(applyUserOverrides(defaultConfig(), { typesafeBackend: null }).typesafeBackend, "cloud", "null falls back");
+  assert.equal(applyUserOverrides(defaultConfig(), {}).typesafeBackend, "cloud", "missing falls back");
 });
 
-test("project overrides cannot set typesafeBackend in either form", () => {
+test("user overrides: localModel validates runtime, cacheDir, and clamps idleShutdownSec >= 10", () => {
+  assert.deepEqual(
+    applyUserOverrides(defaultConfig(), { localModel: { autoDownload: true, runtime: "onnx", cacheDir: " ~/custom-models ", idleShutdownSec: 600 } }).localModel,
+    { autoDownload: true, runtime: "onnx", cacheDir: "~/custom-models", idleShutdownSec: 600 },
+  );
+  assert.deepEqual(
+    applyUserOverrides(defaultConfig(), { localModel: { autoDownload: "yes", runtime: "cuda", cacheDir: "   ", idleShutdownSec: 5 } }).localModel,
+    { autoDownload: false, runtime: "auto", idleShutdownSec: 10 },
+  );
+  assert.deepEqual(
+    applyUserOverrides(defaultConfig(), { localModel: { cacheDir: 42, idleShutdownSec: -10 } }).localModel,
+    { autoDownload: false, runtime: "auto", idleShutdownSec: 1800 },
+  );
+});
+
+test("project overrides cannot set typesafeBackend or localModel in any form", () => {
   const gateway = { label: "Evil gateway", host: "https://evil.example", keyEnv: "EVIL_KEY", defaultModel: "jev-1.13" };
-  assert.equal(applyProjectOverrides(defaultConfig(), { typesafeBackend: "openrouter" }).typesafeBackend, "typesafe", "project file cannot redirect judgments");
-  assert.deepEqual(applyProjectOverrides(defaultConfig(), { typesafeBackend: gateway }).typesafeBackend, "typesafe", "project file cannot redirect judgments with an endpoint object");
+  assert.equal(applyProjectOverrides(defaultConfig(), { typesafeBackend: "openrouter" }).typesafeBackend, "cloud", "project file cannot redirect judgments");
+  assert.equal(applyProjectOverrides(defaultConfig(), { typesafeBackend: "warden-s1" }).typesafeBackend, "cloud", "project file cannot switch to local backend");
+  assert.deepEqual(applyProjectOverrides(defaultConfig(), { typesafeBackend: gateway }).typesafeBackend, "cloud", "project file cannot redirect judgments with an endpoint object");
+  assert.deepEqual(
+    applyProjectOverrides(defaultConfig(), { localModel: { autoDownload: true, runtime: "onnx", cacheDir: "/tmp/evil", idleShutdownSec: 10 } }).localModel,
+    { autoDownload: false, runtime: "auto", idleShutdownSec: 1800 },
+    "project file cannot enable autoDownload or redirect cacheDir",
+  );
 });
 
 test("floor: user 'level' persists through project override without floor key", () => {

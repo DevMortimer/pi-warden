@@ -6,22 +6,40 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DECISIONS_BACKENDS, TypeSafeIntegrationError, createTypeSafe, noul, openUsageLedger } from "pi-typesafe";
-import { backendName, describeBackend, disclosureFor, judgeOptions, loginStoresKey, resolveJudgmentBackend } from "../src/backend.js";
+import { backendName, describeBackend, disclosureFor, isLocalBackendMode, judgeOptions, loginStoresKey, resolveJudgmentBackend, toCloudBackendSpec } from "../src/backend.js";
 
 const gateway = { label: "Acme judge gateway", host: "https://gw.acme.example", path: "/judge/v1/decide", keyEnv: "ACME_JUDGE_KEY", defaultModel: "jev-1.13" };
 
 test("resolveJudgmentBackend: names pass through, junk is refused instead of silently mapped to typesafe", () => {
+  assert.deepEqual(resolveJudgmentBackend("cloud"), { typesafeBackend: "cloud" });
+  assert.deepEqual(resolveJudgmentBackend("warden-s1"), { typesafeBackend: "warden-s1" });
+  assert.deepEqual(resolveJudgmentBackend("auto"), { typesafeBackend: "auto" });
   assert.deepEqual(resolveJudgmentBackend("typesafe"), { typesafeBackend: "typesafe" });
   assert.deepEqual(resolveJudgmentBackend("openrouter"), { typesafeBackend: "openrouter" });
   assert.deepEqual(resolveJudgmentBackend("commandcode"), { typesafeBackend: "commandcode" });
-  assert.deepEqual(resolveJudgmentBackend(undefined), { typesafeBackend: "typesafe" });
-  assert.deepEqual(resolveJudgmentBackend(null), { typesafeBackend: "typesafe" });
+  assert.deepEqual(resolveJudgmentBackend(undefined), { typesafeBackend: "cloud" });
+  assert.deepEqual(resolveJudgmentBackend(null), { typesafeBackend: "cloud" });
   for (const junk of ["", "azure", 42]) {
     const resolution = resolveJudgmentBackend(junk);
-    assert.equal(resolution.typesafeBackend, undefined, `${JSON.stringify(junk)} must not fall back to typesafe`);
+    assert.equal(resolution.typesafeBackend, undefined, `${JSON.stringify(junk)} must not fall back to cloud`);
     assert.ok(resolution.backendRefusal, "the refusal message is kept for the notice and the status line");
   }
   assert.match(resolveJudgmentBackend("azure").backendRefusal!, /Unknown judgment backend "azure"/);
+});
+
+test("isLocalBackendMode and toCloudBackendSpec distinguish local modes and preserve cloud compatibility", () => {
+  assert.equal(isLocalBackendMode("warden-s1"), true);
+  assert.equal(isLocalBackendMode("auto"), true);
+  assert.equal(isLocalBackendMode("cloud"), false);
+  assert.equal(isLocalBackendMode("typesafe"), false);
+  assert.equal(isLocalBackendMode(undefined), false);
+  assert.equal(isLocalBackendMode(gateway), false);
+  assert.equal(toCloudBackendSpec(undefined), "typesafe");
+  assert.equal(toCloudBackendSpec("cloud"), "typesafe");
+  assert.equal(toCloudBackendSpec("warden-s1"), "typesafe");
+  assert.equal(toCloudBackendSpec("auto"), "typesafe");
+  assert.equal(toCloudBackendSpec("openrouter"), "openrouter");
+  assert.equal(toCloudBackendSpec(gateway), gateway);
 });
 
 test("resolveJudgmentBackend: an endpoint object is kept as written, and one pi-typesafe refuses is refused here too", () => {
@@ -31,7 +49,10 @@ test("resolveJudgmentBackend: an endpoint object is kept as written, and one pi-
   assert.match(bad.backendRefusal!, /absolute https/);
 });
 
-test("loginStoresKey is true for every named backend and false for an endpoint", () => {
+test("loginStoresKey is true for every named cloud/auto backend and false for warden-s1 and endpoints", () => {
+  assert.equal(loginStoresKey("cloud"), true);
+  assert.equal(loginStoresKey("auto"), true);
+  assert.equal(loginStoresKey("warden-s1"), false);
   assert.equal(loginStoresKey("typesafe"), true);
   assert.equal(loginStoresKey("openrouter"), true);
   assert.equal(loginStoresKey("commandcode"), true);
@@ -47,21 +68,30 @@ test("nace: the registry entry reaches our helpers, so a user config naming it s
   assert.equal(loginStoresKey("nace"), true);
 });
 
-test("backendName shows the registry name or the endpoint label", () => {
+test("backendName shows the registry name, local mode, or the endpoint label", () => {
+  assert.equal(backendName("cloud"), "typesafe");
+  assert.equal(backendName("warden-s1"), "warden-s1");
+  assert.equal(backendName("auto"), "auto");
   assert.equal(backendName("typesafe"), "typesafe");
   assert.equal(backendName("openrouter"), "openrouter");
   assert.equal(backendName(gateway), "Acme judge gateway");
 });
 
 test("describeBackend names the label, host, and model sent", () => {
+  assert.equal(describeBackend("cloud"), "TypeSafe at api.typesafe.ai, model jev-latest");
+  assert.equal(describeBackend("warden-s1"), "Warden-S1 local loopback daemon at 127.0.0.1, model warden-s1-752m");
+  assert.equal(describeBackend("auto"), "Auto (local Warden-S1 when installed, else TypeSafe at api.typesafe.ai)");
   assert.equal(describeBackend("typesafe"), "TypeSafe at api.typesafe.ai, model jev-latest");
   assert.equal(describeBackend("commandcode"), "Command Code at api.commandcode.ai, model typesafe/jev");
   assert.equal(describeBackend(gateway), "Acme judge gateway at gw.acme.example, model jev-1.13");
 });
 
-test("disclosureFor: typesafe returns the original text unchanged", () => {
+test("disclosureFor: cloud, auto, and typesafe return original text; warden-s1 substitutes loopback", () => {
   const text = "pi-warden sends to api.typesafe.ai: your latest request";
+  assert.equal(disclosureFor("cloud", text), text);
+  assert.equal(disclosureFor("auto", text), text);
   assert.equal(disclosureFor("typesafe", text), text);
+  assert.equal(disclosureFor("warden-s1", text), "pi-warden sends to 127.0.0.1: your latest request");
 });
 
 test("disclosureFor: openrouter replaces the host in the disclosure", () => {
@@ -77,11 +107,13 @@ test("disclosureFor: an endpoint object replaces the host with its own", () => {
   assert.equal(disclosureFor(gateway, text), "pi-warden sends to gw.acme.example: your latest request");
 });
 
-test("judgeOptions: typesafe backend omits the backend field", () => {
-  const opts = judgeOptions({ maxRequests: 10, timeoutMs: 3000, typesafeBackend: "typesafe" });
-  assert.equal(opts.maxRequests, 10);
-  assert.equal(opts.timeoutMs, 3000);
-  assert.equal("backend" in opts, false, "default backend should not be forwarded");
+test("judgeOptions: cloud, local modes, and typesafe omit the backend field", () => {
+  for (const backend of ["cloud", "typesafe", "warden-s1", "auto"] as const) {
+    const opts = judgeOptions({ maxRequests: 10, timeoutMs: 3000, typesafeBackend: backend });
+    assert.equal(opts.maxRequests, 10);
+    assert.equal(opts.timeoutMs, 3000);
+    assert.equal("backend" in opts, false, `${backend} should not forward a backend override`);
+  }
 });
 
 test("judgeOptions: commandcode and openrouter are forwarded as names", () => {

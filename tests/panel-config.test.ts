@@ -13,9 +13,11 @@ const enter = "\r";
 const escape = "\x1b";
 const left = "\x1b[D";
 const right = "\x1b[C";
+const BACKEND_SELECTOR_OPTIONS = ["cloud", "warden-s1", "auto", ...Object.keys(DECISIONS_BACKENDS)];
 const selectors = [
   { path: "mode", options: ["steer", "confirm", "advise"] },
-  { path: "typesafeBackend", options: Object.keys(DECISIONS_BACKENDS) },
+  { path: "typesafeBackend", options: BACKEND_SELECTOR_OPTIONS },
+  { path: "localModel.runtime", options: ["auto", "mlx", "onnx"] },
   { path: "widget.placement", options: ["aboveEditor", "belowEditor"] },
   { path: "widget.barMode", options: ["stack", "live"] },
   { path: "conscience.skills.mode", options: ["off", "recommend", "load"] },
@@ -228,7 +230,7 @@ test("config selector: custom backend child edits prevent replacing their parent
   panel.press(enter);
   panel.press(right);
   panel.press(enter);
-  assert.equal(readUserConfig(panel.dirs).typesafeBackend, Object.keys(DECISIONS_BACKENDS)[0]);
+  assert.equal(readUserConfig(panel.dirs).typesafeBackend, BACKEND_SELECTOR_OPTIONS[0]);
   assert.doesNotMatch(panel.render(), /Changed gateway|EXAMPLE_JUDGE_KEY|defaultModel/);
 });
 
@@ -243,13 +245,13 @@ test("config selector: a successful named backend replacement removes only its c
   panel.press(enter);
   assert.ok(panel.selected("typesafeBackend"), "the cursor stays on the backend row");
   assert.doesNotMatch(panel.render(), /Example gateway|EXAMPLE_JUDGE_KEY|defaultModel/);
-  assert.deepEqual(readUserConfig(panel.dirs), { typesafeBackend: Object.keys(DECISIONS_BACKENDS)[0], widget: { shortcut: "ctrl+shift+w" }, enabled: true, extra: "keep" });
+  assert.deepEqual(readUserConfig(panel.dirs), { typesafeBackend: BACKEND_SELECTOR_OPTIONS[0], widget: { shortcut: "ctrl+shift+w" }, enabled: true, extra: "keep" });
   panel.select("widget.shortcut");
   assert.ok(panel.selected("widget.shortcut")!.includes("ctrl+j *"));
   panel.select("enabled");
   assert.ok(panel.selected("enabled")!.includes("○ *"));
   panel.press("s");
-  assert.deepEqual(readUserConfig(panel.dirs), { typesafeBackend: Object.keys(DECISIONS_BACKENDS)[0], widget: { shortcut: "ctrl+j" }, enabled: false, extra: "keep" });
+  assert.deepEqual(readUserConfig(panel.dirs), { typesafeBackend: BACKEND_SELECTOR_OPTIONS[0], widget: { shortcut: "ctrl+j" }, enabled: false, extra: "keep" });
 });
 
 test("config selector: a write failure retains the draft and pending edits for retry", t => {
@@ -523,7 +525,7 @@ test("config selector: 24-row backend pending notice and chosen backend remain v
   assert.equal(blocked.split("\n").length, 22);
   assert.match(blocked, /Backend fields have pending edits/, "the pending-edit refusal stays visible after scrolling");
   assert.match(blocked.replace(/\n│ /g, " "), /Esc, then s/);
-  assert.ok(panel.selected("typesafeBackend")?.includes(`‹ ${Object.keys(DECISIONS_BACKENDS)[0]} ›`));
+  assert.ok(panel.selected("typesafeBackend")?.includes(`‹ ${BACKEND_SELECTOR_OPTIONS[0]} ›`));
   assert.deepEqual(readUserConfig(panel.dirs).typesafeBackend, customBackend);
   panel.press(escape);
   panel.press("s");
@@ -531,9 +533,29 @@ test("config selector: 24-row backend pending notice and chosen backend remain v
   panel.press(enter);
   panel.press(right);
   panel.press(enter);
-  assert.equal(readUserConfig(panel.dirs).typesafeBackend, Object.keys(DECISIONS_BACKENDS)[0]);
+  assert.equal(readUserConfig(panel.dirs).typesafeBackend, BACKEND_SELECTOR_OPTIONS[0]);
   assert.equal(readUserConfig(panel.dirs).extra, "keep");
   assert.doesNotMatch(panel.render(), /pending edits|Changed gateway/);
+});
+
+test("config panel: localModel controls render and persist to user config", t => {
+  const panel = configPanel(t, { localModel: { cacheDir: "~/models" } });
+  panel.select("localModel.autoDownload");
+  panel.press(enter);
+  panel.select("localModel.runtime");
+  panel.press(enter);
+  panel.press(right);
+  panel.press(enter);
+  assert.equal((readUserConfig(panel.dirs).localModel as Record<string, unknown>).runtime, "mlx");
+  panel.text("localModel.idleShutdownSec", "1800", "900");
+  panel.text("localModel.cacheDir", "~/models", "~/warden-cache");
+  panel.press("s");
+  assert.deepEqual(readUserConfig(panel.dirs).localModel, {
+    autoDownload: true,
+    runtime: "mlx",
+    idleShutdownSec: 900,
+    cacheDir: "~/warden-cache",
+  });
 });
 
 test("the config panel shows the session's snapshot, and a save reports the changed keys", t => {
