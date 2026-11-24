@@ -1,0 +1,3073 @@
+{
+  "generated_at": "2026-11-24T07:48:03.270Z",
+  "stage": "stage3.5",
+  "stage35_rescored_zero_new_jev_calls": true,
+  "max_jev_requests_cap": 100,
+  "jev_requests_sent": 100,
+  "warden_s1_usage": {
+    "requestsStarted": 100,
+    "requestsSucceeded": 100,
+    "requestsFailed": 0,
+    "inputTokens": 3241037,
+    "outputTokens": 999,
+    "estimatedUsd": 0
+  },
+  "cloud_jev_usage": {
+    "requestsStarted": 100,
+    "requestsSucceeded": 66,
+    "requestsFailed": 34,
+    "inputTokens": 657880,
+    "outputTokens": 13296,
+    "estimatedUsd": 0.027631
+  },
+  "overall_all": {
+    "warden_s1": {
+      "requests_total": 100,
+      "requests_succeeded": 100,
+      "requests_failed": 0,
+      "acceptance_rate": 1,
+      "noul": {
+        "n": 615,
+        "accuracy": 0.9691,
+        "accuracy_ci95": [
+          0.9545,
+          0.9821
+        ],
+        "auroc": 0.9949,
+        "auroc_ci95": [
+          0.9911,
+          0.9982
+        ],
+        "brier": 0.0232,
+        "brier_ci95": [
+          0.0142,
+          0.0328
+        ],
+        "ece": 0.0195,
+        "ece_ci95": [
+          0.0137,
+          0.0329
+        ]
+      },
+      "choice": {
+        "n": 122,
+        "accuracy": 0.877,
+        "accuracy_ci95": [
+          0.8197,
+          0.9344
+        ],
+        "macro_f1": 0.8077,
+        "macro_f1_ci95": [
+          0.7705,
+          0.8754
+        ]
+      },
+      "score": {
+        "n": 96,
+        "spearman_rho": 0.916,
+        "spearman_ci95": [
+          0.8785,
+          0.9415
+        ],
+        "mae": 0.0531,
+        "mae_ci95": [
+          0.0305,
+          0.0782
+        ]
+      },
+      "abstention": {
+        "n": 145,
+        "mae_from_half": 0.0216,
+        "mae_ci95": [
+          0.0191,
+          0.0239
+        ],
+        "brier_from_half": 0.0007,
+        "overconfidence_rate": 0,
+        "overconfidence_ci95": [
+          0,
+          0
+        ]
+      },
+      "counterfactual": {
+        "n_target_pairs": 84,
+        "target_flip_rate": 0.9286,
+        "paired_contrast_accuracy": 0.9643,
+        "n_control_pairs": 209,
+        "control_stability_rate": 0.9904
+      },
+      "latency_ms_p50": 5499,
+      "latency_ms_p95": 107125,
+      "latency_ms_mean": 22589,
+      "max_accepted_bytes": 365640,
+      "min_rejected_bytes": null,
+      "max_accepted_tokens": 117899
+    },
+    "cloud_jev": {
+      "requests_total": 100,
+      "requests_succeeded": 66,
+      "requests_failed": 34,
+      "acceptance_rate": 0.66,
+      "noul": {
+        "n": 337,
+        "accuracy": 0.8487,
+        "accuracy_ci95": [
+          0.8042,
+          0.8872
+        ],
+        "auroc": 0.9449,
+        "auroc_ci95": [
+          0.9225,
+          0.9661
+        ],
+        "brier": 0.0998,
+        "brier_ci95": [
+          0.0781,
+          0.124
+        ],
+        "ece": 0.0734,
+        "ece_ci95": [
+          0.0574,
+          0.1151
+        ]
+      },
+      "choice": {
+        "n": 70,
+        "accuracy": 0.8857,
+        "accuracy_ci95": [
+          0.8143,
+          0.9571
+        ],
+        "macro_f1": 0.7995,
+        "macro_f1_ci95": [
+          0.7043,
+          0.8866
+        ]
+      },
+      "score": {
+        "n": 50,
+        "spearman_rho": 0.6636,
+        "spearman_ci95": [
+          0.4557,
+          0.807
+        ],
+        "mae": 0.2312,
+        "mae_ci95": [
+          0.1578,
+          0.3099
+        ]
+      },
+      "abstention": {
+        "n": 77,
+        "mae_from_half": 0.4664,
+        "mae_ci95": [
+          0.4643,
+          0.4683
+        ],
+        "brier_from_half": 0.2176,
+        "overconfidence_rate": 1,
+        "overconfidence_ci95": [
+          1,
+          1
+        ]
+      },
+      "counterfactual": {
+        "n_target_pairs": 46,
+        "target_flip_rate": 0.4783,
+        "paired_contrast_accuracy": 0.8261,
+        "n_control_pairs": 108,
+        "control_stability_rate": 0.8611
+      },
+      "latency_ms_p50": 260,
+      "latency_ms_p95": 466,
+      "latency_ms_mean": 290,
+      "max_accepted_bytes": 103079,
+      "min_rejected_bytes": 100480,
+      "max_accepted_tokens": 33183
+    }
+  },
+  "overall_matched_both_ok": {
+    "warden_s1": {
+      "requests_total": 66,
+      "requests_succeeded": 66,
+      "requests_failed": 0,
+      "acceptance_rate": 1,
+      "noul": {
+        "n": 337,
+        "accuracy": 0.9614,
+        "accuracy_ci95": [
+          0.9407,
+          0.9792
+        ],
+        "auroc": 0.9933,
+        "auroc_ci95": [
+          0.9864,
+          0.9987
+        ],
+        "brier": 0.027,
+        "brier_ci95": [
+          0.0145,
+          0.0411
+        ],
+        "ece": 0.0269,
+        "ece_ci95": [
+          0.0188,
+          0.0481
+        ]
+      },
+      "choice": {
+        "n": 70,
+        "accuracy": 0.8429,
+        "accuracy_ci95": [
+          0.7571,
+          0.9286
+        ],
+        "macro_f1": 0.7797,
+        "macro_f1_ci95": [
+          0.7094,
+          0.8628
+        ]
+      },
+      "score": {
+        "n": 50,
+        "spearman_rho": 0.9161,
+        "spearman_ci95": [
+          0.8637,
+          0.9473
+        ],
+        "mae": 0.0511,
+        "mae_ci95": [
+          0.023,
+          0.0867
+        ]
+      },
+      "abstention": {
+        "n": 77,
+        "mae_from_half": 0.0213,
+        "mae_ci95": [
+          0.0179,
+          0.0252
+        ],
+        "brier_from_half": 0.0007,
+        "overconfidence_rate": 0,
+        "overconfidence_ci95": [
+          0,
+          0
+        ]
+      },
+      "counterfactual": {
+        "n_target_pairs": 46,
+        "target_flip_rate": 0.9565,
+        "paired_contrast_accuracy": 1,
+        "n_control_pairs": 108,
+        "control_stability_rate": 0.9907
+      },
+      "latency_ms_p50": 2744,
+      "latency_ms_p95": 11410,
+      "latency_ms_mean": 4100,
+      "max_accepted_bytes": 103079,
+      "min_rejected_bytes": null,
+      "max_accepted_tokens": 32528
+    },
+    "cloud_jev": {
+      "requests_total": 66,
+      "requests_succeeded": 66,
+      "requests_failed": 0,
+      "acceptance_rate": 1,
+      "noul": {
+        "n": 337,
+        "accuracy": 0.8487,
+        "accuracy_ci95": [
+          0.8042,
+          0.8872
+        ],
+        "auroc": 0.9449,
+        "auroc_ci95": [
+          0.9225,
+          0.9661
+        ],
+        "brier": 0.0998,
+        "brier_ci95": [
+          0.0781,
+          0.124
+        ],
+        "ece": 0.0734,
+        "ece_ci95": [
+          0.0574,
+          0.1151
+        ]
+      },
+      "choice": {
+        "n": 70,
+        "accuracy": 0.8857,
+        "accuracy_ci95": [
+          0.8143,
+          0.9571
+        ],
+        "macro_f1": 0.7995,
+        "macro_f1_ci95": [
+          0.7043,
+          0.8866
+        ]
+      },
+      "score": {
+        "n": 50,
+        "spearman_rho": 0.6636,
+        "spearman_ci95": [
+          0.4557,
+          0.807
+        ],
+        "mae": 0.2312,
+        "mae_ci95": [
+          0.1578,
+          0.3099
+        ]
+      },
+      "abstention": {
+        "n": 77,
+        "mae_from_half": 0.4664,
+        "mae_ci95": [
+          0.4643,
+          0.4683
+        ],
+        "brier_from_half": 0.2176,
+        "overconfidence_rate": 1,
+        "overconfidence_ci95": [
+          1,
+          1
+        ]
+      },
+      "counterfactual": {
+        "n_target_pairs": 46,
+        "target_flip_rate": 0.4783,
+        "paired_contrast_accuracy": 0.8261,
+        "n_control_pairs": 108,
+        "control_stability_rate": 0.8611
+      },
+      "latency_ms_p50": 260,
+      "latency_ms_p95": 466,
+      "latency_ms_mean": 290,
+      "max_accepted_bytes": 103079,
+      "min_rejected_bytes": null,
+      "max_accepted_tokens": 33183
+    }
+  },
+  "by_slice": {
+    "judge_bench_stuck": {
+      "warden_s1": {
+        "requests_total": 7,
+        "requests_succeeded": 7,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 7,
+          "accuracy": 0.8571,
+          "accuracy_ci95": [
+            0.5714,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0934,
+          "brier_ci95": [
+            0.0001,
+            0.2795
+          ],
+          "ece": 0.1288,
+          "ece_ci95": [
+            0.0095,
+            0.3576
+          ]
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 506,
+        "latency_ms_p95": 1369,
+        "latency_ms_mean": 829,
+        "max_accepted_bytes": 5300,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 2005
+      },
+      "cloud_jev": {
+        "requests_total": 7,
+        "requests_succeeded": 7,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 7,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0673,
+          "brier_ci95": [
+            0.031,
+            0.1082
+          ],
+          "ece": 0.23,
+          "ece_ci95": [
+            0.1436,
+            0.3179
+          ]
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 216,
+        "latency_ms_p95": 221,
+        "latency_ms_mean": 223,
+        "max_accepted_bytes": 5300,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 2473
+      }
+    },
+    "judge_bench_done": {
+      "warden_s1": {
+        "requests_total": 7,
+        "requests_succeeded": 7,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 7,
+          "accuracy": 0.4286,
+          "accuracy_ci95": [
+            0.1429,
+            0.8571
+          ],
+          "auroc": 0,
+          "auroc_ci95": [
+            0,
+            0
+          ],
+          "brier": 0.4754,
+          "brier_ci95": [
+            0.1417,
+            0.809
+          ],
+          "ece": 0.5094,
+          "ece_ci95": [
+            0.1381,
+            0.8532
+          ]
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 607,
+        "latency_ms_p95": 705,
+        "latency_ms_mean": 606,
+        "max_accepted_bytes": 1603,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 388
+      },
+      "cloud_jev": {
+        "requests_total": 7,
+        "requests_succeeded": 7,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 7,
+          "accuracy": 0.5714,
+          "accuracy_ci95": [
+            0.2857,
+            1
+          ],
+          "auroc": 0.0417,
+          "auroc_ci95": [
+            0,
+            0.2
+          ],
+          "brier": 0.4046,
+          "brier_ci95": [
+            0.0098,
+            0.6754
+          ],
+          "ece": 0.4074,
+          "ece_ci95": [
+            0.0861,
+            0.7284
+          ]
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 195,
+        "latency_ms_p95": 202,
+        "latency_ms_mean": 194,
+        "max_accepted_bytes": 1603,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 709
+      }
+    },
+    "rules_bench": {
+      "warden_s1": {
+        "requests_total": 14,
+        "requests_succeeded": 14,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 14,
+          "accuracy": 0.5714,
+          "accuracy_ci95": [
+            0.2857,
+            0.8571
+          ],
+          "auroc": 0.7755,
+          "auroc_ci95": [
+            0.4792,
+            1
+          ],
+          "brier": 0.2365,
+          "brier_ci95": [
+            0.1262,
+            0.3617
+          ],
+          "ece": 0.2058,
+          "ece_ci95": [
+            0.1394,
+            0.4802
+          ]
+        },
+        "choice": {
+          "n": 14,
+          "accuracy": 0.5714,
+          "accuracy_ci95": [
+            0.2857,
+            0.7857
+          ],
+          "macro_f1": 0.4274,
+          "macro_f1_ci95": [
+            0.2222,
+            0.6257
+          ]
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 384,
+        "latency_ms_p95": 481,
+        "latency_ms_mean": 397,
+        "max_accepted_bytes": 1737,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 607
+      },
+      "cloud_jev": {
+        "requests_total": 14,
+        "requests_succeeded": 14,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 14,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0078,
+          "brier_ci95": [
+            0.0024,
+            0.0143
+          ],
+          "ece": 0.0607,
+          "ece_ci95": [
+            0.0286,
+            0.0964
+          ]
+        },
+        "choice": {
+          "n": 14,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 197,
+        "latency_ms_p95": 216,
+        "latency_ms_mean": 200,
+        "max_accepted_bytes": 1737,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 714
+      }
+    },
+    "wardens1_bench": {
+      "warden_s1": {
+        "requests_total": 72,
+        "requests_succeeded": 72,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 587,
+          "accuracy": 0.9864,
+          "accuracy_ci95": [
+            0.9761,
+            0.9949
+          ],
+          "auroc": 0.9988,
+          "auroc_ci95": [
+            0.9972,
+            0.9998
+          ],
+          "brier": 0.0119,
+          "brier_ci95": [
+            0.0056,
+            0.0192
+          ],
+          "ece": 0.0142,
+          "ece_ci95": [
+            0.0108,
+            0.0256
+          ]
+        },
+        "choice": {
+          "n": 108,
+          "accuracy": 0.9167,
+          "accuracy_ci95": [
+            0.8611,
+            0.963
+          ],
+          "macro_f1": 0.85,
+          "macro_f1_ci95": [
+            0.8185,
+            0.9273
+          ]
+        },
+        "score": {
+          "n": 96,
+          "spearman_rho": 0.916,
+          "spearman_ci95": [
+            0.8785,
+            0.9415
+          ],
+          "mae": 0.0531,
+          "mae_ci95": [
+            0.0305,
+            0.0782
+          ]
+        },
+        "abstention": {
+          "n": 145,
+          "mae_from_half": 0.0216,
+          "mae_ci95": [
+            0.0191,
+            0.0239
+          ],
+          "brier_from_half": 0.0007,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 84,
+          "target_flip_rate": 0.9286,
+          "paired_contrast_accuracy": 0.9643,
+          "n_control_pairs": 209,
+          "control_stability_rate": 0.9904
+        },
+        "latency_ms_p50": 13432,
+        "latency_ms_p95": 107781,
+        "latency_ms_mean": 31157,
+        "max_accepted_bytes": 365640,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 117899
+      },
+      "cloud_jev": {
+        "requests_total": 72,
+        "requests_succeeded": 38,
+        "requests_failed": 34,
+        "acceptance_rate": 0.5278,
+        "noul": {
+          "n": 309,
+          "accuracy": 0.8447,
+          "accuracy_ci95": [
+            0.8091,
+            0.8803
+          ],
+          "auroc": 0.9517,
+          "auroc_ci95": [
+            0.9302,
+            0.9704
+          ],
+          "brier": 0.0978,
+          "brier_ci95": [
+            0.0766,
+            0.1189
+          ],
+          "ece": 0.076,
+          "ece_ci95": [
+            0.06,
+            0.12
+          ]
+        },
+        "choice": {
+          "n": 56,
+          "accuracy": 0.8571,
+          "accuracy_ci95": [
+            0.75,
+            0.9464
+          ],
+          "macro_f1": 0.7834,
+          "macro_f1_ci95": [
+            0.6667,
+            0.8733
+          ]
+        },
+        "score": {
+          "n": 50,
+          "spearman_rho": 0.6636,
+          "spearman_ci95": [
+            0.4557,
+            0.807
+          ],
+          "mae": 0.2312,
+          "mae_ci95": [
+            0.1578,
+            0.3099
+          ]
+        },
+        "abstention": {
+          "n": 77,
+          "mae_from_half": 0.4664,
+          "mae_ci95": [
+            0.4643,
+            0.4683
+          ],
+          "brier_from_half": 0.2176,
+          "overconfidence_rate": 1,
+          "overconfidence_ci95": [
+            1,
+            1
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 46,
+          "target_flip_rate": 0.4783,
+          "paired_contrast_accuracy": 0.8261,
+          "n_control_pairs": 108,
+          "control_stability_rate": 0.8611
+        },
+        "latency_ms_p50": 353,
+        "latency_ms_p95": 470,
+        "latency_ms_mean": 353,
+        "max_accepted_bytes": 103079,
+        "min_rejected_bytes": 100480,
+        "max_accepted_tokens": 33183
+      }
+    }
+  },
+  "by_length_bucket": {
+    "<4k_pi_warden": {
+      "warden_s1": {
+        "requests_total": 28,
+        "requests_succeeded": 28,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 28,
+          "accuracy": 0.6071,
+          "accuracy_ci95": [
+            0.4286,
+            0.7857
+          ],
+          "auroc": 0.6872,
+          "auroc_ci95": [
+            0.4531,
+            0.9091
+          ],
+          "brier": 0.2605,
+          "brier_ci95": [
+            0.1357,
+            0.3856
+          ],
+          "ece": 0.2574,
+          "ece_ci95": [
+            0.1381,
+            0.4334
+          ]
+        },
+        "choice": {
+          "n": 14,
+          "accuracy": 0.5714,
+          "accuracy_ci95": [
+            0.2857,
+            0.7857
+          ],
+          "macro_f1": 0.4274,
+          "macro_f1_ci95": [
+            0.2222,
+            0.6257
+          ]
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 446,
+        "latency_ms_p95": 868,
+        "latency_ms_mean": 557,
+        "max_accepted_bytes": 5300,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 2005
+      },
+      "cloud_jev": {
+        "requests_total": 28,
+        "requests_succeeded": 28,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 28,
+          "accuracy": 0.8929,
+          "accuracy_ci95": [
+            0.7857,
+            1
+          ],
+          "auroc": 0.7718,
+          "auroc_ci95": [
+            0.5348,
+            1
+          ],
+          "brier": 0.1219,
+          "brier_ci95": [
+            0.0264,
+            0.2329
+          ],
+          "ece": 0.1554,
+          "ece_ci95": [
+            0.0632,
+            0.2785
+          ]
+        },
+        "choice": {
+          "n": 14,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 201,
+        "latency_ms_p95": 221,
+        "latency_ms_mean": 204,
+        "max_accepted_bytes": 5300,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 2473
+      }
+    },
+    "4k-16k": {
+      "warden_s1": {
+        "requests_total": 24,
+        "requests_succeeded": 24,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 195,
+          "accuracy": 0.9949,
+          "accuracy_ci95": [
+            0.9846,
+            1
+          ],
+          "auroc": 0.9999,
+          "auroc_ci95": [
+            0.9993,
+            1
+          ],
+          "brier": 0.0043,
+          "brier_ci95": [
+            0.0007,
+            0.011
+          ],
+          "ece": 0.0163,
+          "ece_ci95": [
+            0.0119,
+            0.0263
+          ]
+        },
+        "choice": {
+          "n": 36,
+          "accuracy": 0.8889,
+          "accuracy_ci95": [
+            0.7778,
+            0.9722
+          ],
+          "macro_f1": 0.7719,
+          "macro_f1_ci95": [
+            0.6875,
+            0.9167
+          ]
+        },
+        "score": {
+          "n": 32,
+          "spearman_rho": 0.9088,
+          "spearman_ci95": [
+            0.818,
+            0.9531
+          ],
+          "mae": 0.0603,
+          "mae_ci95": [
+            0.0213,
+            0.1103
+          ]
+        },
+        "abstention": {
+          "n": 49,
+          "mae_from_half": 0.0237,
+          "mae_ci95": [
+            0.0187,
+            0.0296
+          ],
+          "brier_from_half": 0.0009,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 28,
+          "target_flip_rate": 0.9643,
+          "paired_contrast_accuracy": 1,
+          "n_control_pairs": 69,
+          "control_stability_rate": 0.9855
+        },
+        "latency_ms_p50": 4087,
+        "latency_ms_p95": 5499,
+        "latency_ms_mean": 4128,
+        "max_accepted_bytes": 48008,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 14783
+      },
+      "cloud_jev": {
+        "requests_total": 24,
+        "requests_succeeded": 24,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 195,
+          "accuracy": 0.841,
+          "accuracy_ci95": [
+            0.7846,
+            0.8923
+          ],
+          "auroc": 0.954,
+          "auroc_ci95": [
+            0.9239,
+            0.9786
+          ],
+          "brier": 0.0945,
+          "brier_ci95": [
+            0.0681,
+            0.1235
+          ],
+          "ece": 0.1005,
+          "ece_ci95": [
+            0.071,
+            0.1469
+          ]
+        },
+        "choice": {
+          "n": 36,
+          "accuracy": 0.8611,
+          "accuracy_ci95": [
+            0.75,
+            0.9722
+          ],
+          "macro_f1": 0.7714,
+          "macro_f1_ci95": [
+            0.6277,
+            0.9121
+          ]
+        },
+        "score": {
+          "n": 32,
+          "spearman_rho": 0.6806,
+          "spearman_ci95": [
+            0.4074,
+            0.8469
+          ],
+          "mae": 0.2198,
+          "mae_ci95": [
+            0.1352,
+            0.3098
+          ]
+        },
+        "abstention": {
+          "n": 49,
+          "mae_from_half": 0.4661,
+          "mae_ci95": [
+            0.4635,
+            0.4686
+          ],
+          "brier_from_half": 0.2174,
+          "overconfidence_rate": 1,
+          "overconfidence_ci95": [
+            1,
+            1
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 28,
+          "target_flip_rate": 0.4643,
+          "paired_contrast_accuracy": 0.8571,
+          "n_control_pairs": 69,
+          "control_stability_rate": 0.8696
+        },
+        "latency_ms_p50": 310,
+        "latency_ms_p95": 399,
+        "latency_ms_mean": 311,
+        "max_accepted_bytes": 48008,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 15550
+      }
+    },
+    "16k-48k": {
+      "warden_s1": {
+        "requests_total": 24,
+        "requests_succeeded": 24,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 196,
+          "accuracy": 0.9847,
+          "accuracy_ci95": [
+            0.9643,
+            1
+          ],
+          "auroc": 0.9986,
+          "auroc_ci95": [
+            0.9958,
+            1
+          ],
+          "brier": 0.0139,
+          "brier_ci95": [
+            0.003,
+            0.0277
+          ],
+          "ece": 0.0227,
+          "ece_ci95": [
+            0.0156,
+            0.0403
+          ]
+        },
+        "choice": {
+          "n": 36,
+          "accuracy": 0.9444,
+          "accuracy_ci95": [
+            0.8611,
+            1
+          ],
+          "macro_f1": 0.9368,
+          "macro_f1_ci95": [
+            0.8881,
+            1
+          ]
+        },
+        "score": {
+          "n": 32,
+          "spearman_rho": 0.9338,
+          "spearman_ci95": [
+            0.8632,
+            0.9643
+          ],
+          "mae": 0.0426,
+          "mae_ci95": [
+            0.0134,
+            0.0811
+          ]
+        },
+        "abstention": {
+          "n": 48,
+          "mae_from_half": 0.0165,
+          "mae_ci95": [
+            0.0136,
+            0.0199
+          ],
+          "brier_from_half": 0.0004,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 28,
+          "target_flip_rate": 0.8929,
+          "paired_contrast_accuracy": 0.9286,
+          "n_control_pairs": 70,
+          "control_stability_rate": 1
+        },
+        "latency_ms_p50": 13432,
+        "latency_ms_p95": 17151,
+        "latency_ms_mean": 13221,
+        "max_accepted_bytes": 118416,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 38034
+      },
+      "cloud_jev": {
+        "requests_total": 24,
+        "requests_succeeded": 14,
+        "requests_failed": 10,
+        "acceptance_rate": 0.5833,
+        "noul": {
+          "n": 114,
+          "accuracy": 0.8509,
+          "accuracy_ci95": [
+            0.7895,
+            0.9123
+          ],
+          "auroc": 0.9452,
+          "auroc_ci95": [
+            0.9043,
+            0.9776
+          ],
+          "brier": 0.1036,
+          "brier_ci95": [
+            0.0695,
+            0.142
+          ],
+          "ece": 0.1078,
+          "ece_ci95": [
+            0.0781,
+            0.1692
+          ]
+        },
+        "choice": {
+          "n": 20,
+          "accuracy": 0.85,
+          "accuracy_ci95": [
+            0.65,
+            1
+          ],
+          "macro_f1": 0.6786,
+          "macro_f1_ci95": [
+            0.5354,
+            1
+          ]
+        },
+        "score": {
+          "n": 18,
+          "spearman_rho": 0.6994,
+          "spearman_ci95": [
+            0.315,
+            0.911
+          ],
+          "mae": 0.2515,
+          "mae_ci95": [
+            0.1065,
+            0.4015
+          ]
+        },
+        "abstention": {
+          "n": 28,
+          "mae_from_half": 0.4668,
+          "mae_ci95": [
+            0.4632,
+            0.47
+          ],
+          "brier_from_half": 0.218,
+          "overconfidence_rate": 1,
+          "overconfidence_ci95": [
+            1,
+            1
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 18,
+          "target_flip_rate": 0.5,
+          "paired_contrast_accuracy": 0.7778,
+          "n_control_pairs": 39,
+          "control_stability_rate": 0.8462
+        },
+        "latency_ms_p50": 419,
+        "latency_ms_p95": 517,
+        "latency_ms_mean": 425,
+        "max_accepted_bytes": 103079,
+        "min_rejected_bytes": 100480,
+        "max_accepted_tokens": 33183
+      }
+    },
+    "50k-80k": {
+      "warden_s1": {
+        "requests_total": 12,
+        "requests_succeeded": 12,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 98,
+          "accuracy": 0.9898,
+          "accuracy_ci95": [
+            0.9694,
+            1
+          ],
+          "auroc": 0.9987,
+          "auroc_ci95": [
+            0.9944,
+            1
+          ],
+          "brier": 0.0112,
+          "brier_ci95": [
+            0.0013,
+            0.0264
+          ],
+          "ece": 0.0254,
+          "ece_ci95": [
+            0.0142,
+            0.0476
+          ]
+        },
+        "choice": {
+          "n": 18,
+          "accuracy": 0.8889,
+          "accuracy_ci95": [
+            0.7222,
+            1
+          ],
+          "macro_f1": 0.8667,
+          "macro_f1_ci95": [
+            0.75,
+            1
+          ]
+        },
+        "score": {
+          "n": 16,
+          "spearman_rho": 0.9487,
+          "spearman_ci95": [
+            0.8528,
+            0.9825
+          ],
+          "mae": 0.0415,
+          "mae_ci95": [
+            0.0076,
+            0.1021
+          ]
+        },
+        "abstention": {
+          "n": 24,
+          "mae_from_half": 0.0227,
+          "mae_ci95": [
+            0.0175,
+            0.0278
+          ],
+          "brier_from_half": 0.0007,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 14,
+          "target_flip_rate": 0.9286,
+          "paired_contrast_accuracy": 1,
+          "n_control_pairs": 35,
+          "control_stability_rate": 1
+        },
+        "latency_ms_p50": 44629,
+        "latency_ms_p95": 48283,
+        "latency_ms_mean": 44955,
+        "max_accepted_bytes": 236257,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 76710
+      },
+      "cloud_jev": {
+        "requests_total": 12,
+        "requests_succeeded": 0,
+        "requests_failed": 12,
+        "acceptance_rate": 0,
+        "noul": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "auroc": null,
+          "auroc_ci95": null,
+          "brier": null,
+          "brier_ci95": null,
+          "ece": null,
+          "ece_ci95": null
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_mean": null,
+        "max_accepted_bytes": null,
+        "min_rejected_bytes": 205626,
+        "max_accepted_tokens": null
+      }
+    },
+    "80k-128k": {
+      "warden_s1": {
+        "requests_total": 12,
+        "requests_succeeded": 12,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 98,
+          "accuracy": 0.9694,
+          "accuracy_ci95": [
+            0.9286,
+            1
+          ],
+          "auroc": 0.9961,
+          "auroc_ci95": [
+            0.9876,
+            1
+          ],
+          "brier": 0.0238,
+          "brier_ci95": [
+            0.0045,
+            0.0489
+          ],
+          "ece": 0.0296,
+          "ece_ci95": [
+            0.0132,
+            0.0659
+          ]
+        },
+        "choice": {
+          "n": 18,
+          "accuracy": 0.9444,
+          "accuracy_ci95": [
+            0.8333,
+            1
+          ],
+          "macro_f1": 0.9048,
+          "macro_f1_ci95": [
+            0.7778,
+            1
+          ]
+        },
+        "score": {
+          "n": 16,
+          "spearman_rho": 0.883,
+          "spearman_ci95": [
+            0.6813,
+            0.9627
+          ],
+          "mae": 0.0711,
+          "mae_ci95": [
+            0.0149,
+            0.1479
+          ]
+        },
+        "abstention": {
+          "n": 24,
+          "mae_from_half": 0.0261,
+          "mae_ci95": [
+            0.0201,
+            0.0324
+          ],
+          "brier_from_half": 0.0009,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 14,
+          "target_flip_rate": 0.9286,
+          "paired_contrast_accuracy": 0.9286,
+          "n_control_pairs": 35,
+          "control_stability_rate": 0.9714
+        },
+        "latency_ms_p50": 106327,
+        "latency_ms_p95": 111211,
+        "latency_ms_mean": 107290,
+        "max_accepted_bytes": 365640,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 117899
+      },
+      "cloud_jev": {
+        "requests_total": 12,
+        "requests_succeeded": 0,
+        "requests_failed": 12,
+        "acceptance_rate": 0,
+        "noul": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "auroc": null,
+          "auroc_ci95": null,
+          "brier": null,
+          "brier_ci95": null,
+          "ece": null,
+          "ece_ci95": null
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_mean": null,
+        "max_accepted_bytes": null,
+        "min_rejected_bytes": 325891,
+        "max_accepted_tokens": null
+      }
+    }
+  },
+  "by_domain": {
+    "judge_stuck": {
+      "warden_s1": {
+        "requests_total": 7,
+        "requests_succeeded": 7,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 7,
+          "accuracy": 0.8571,
+          "accuracy_ci95": [
+            0.5714,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0934,
+          "brier_ci95": [
+            0.0001,
+            0.2795
+          ],
+          "ece": 0.1288,
+          "ece_ci95": [
+            0.0095,
+            0.3576
+          ]
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 506,
+        "latency_ms_p95": 1369,
+        "latency_ms_mean": 829,
+        "max_accepted_bytes": 5300,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 2005
+      },
+      "cloud_jev": {
+        "requests_total": 7,
+        "requests_succeeded": 7,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 7,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0673,
+          "brier_ci95": [
+            0.031,
+            0.1082
+          ],
+          "ece": 0.23,
+          "ece_ci95": [
+            0.1436,
+            0.3179
+          ]
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 216,
+        "latency_ms_p95": 221,
+        "latency_ms_mean": 223,
+        "max_accepted_bytes": 5300,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 2473
+      }
+    },
+    "judge_done": {
+      "warden_s1": {
+        "requests_total": 7,
+        "requests_succeeded": 7,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 7,
+          "accuracy": 0.4286,
+          "accuracy_ci95": [
+            0.1429,
+            0.8571
+          ],
+          "auroc": 0,
+          "auroc_ci95": [
+            0,
+            0
+          ],
+          "brier": 0.4754,
+          "brier_ci95": [
+            0.1417,
+            0.809
+          ],
+          "ece": 0.5094,
+          "ece_ci95": [
+            0.1381,
+            0.8532
+          ]
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 607,
+        "latency_ms_p95": 705,
+        "latency_ms_mean": 606,
+        "max_accepted_bytes": 1603,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 388
+      },
+      "cloud_jev": {
+        "requests_total": 7,
+        "requests_succeeded": 7,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 7,
+          "accuracy": 0.5714,
+          "accuracy_ci95": [
+            0.2857,
+            1
+          ],
+          "auroc": 0.0417,
+          "auroc_ci95": [
+            0,
+            0.2
+          ],
+          "brier": 0.4046,
+          "brier_ci95": [
+            0.0098,
+            0.6754
+          ],
+          "ece": 0.4074,
+          "ece_ci95": [
+            0.0861,
+            0.7284
+          ]
+        },
+        "choice": {
+          "n": 0,
+          "accuracy": null,
+          "accuracy_ci95": null,
+          "macro_f1": null,
+          "macro_f1_ci95": null
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 195,
+        "latency_ms_p95": 202,
+        "latency_ms_mean": 194,
+        "max_accepted_bytes": 1603,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 709
+      }
+    },
+    "rules_bench": {
+      "warden_s1": {
+        "requests_total": 14,
+        "requests_succeeded": 14,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 14,
+          "accuracy": 0.5714,
+          "accuracy_ci95": [
+            0.2857,
+            0.8571
+          ],
+          "auroc": 0.7755,
+          "auroc_ci95": [
+            0.4792,
+            1
+          ],
+          "brier": 0.2365,
+          "brier_ci95": [
+            0.1262,
+            0.3617
+          ],
+          "ece": 0.2058,
+          "ece_ci95": [
+            0.1394,
+            0.4802
+          ]
+        },
+        "choice": {
+          "n": 14,
+          "accuracy": 0.5714,
+          "accuracy_ci95": [
+            0.2857,
+            0.7857
+          ],
+          "macro_f1": 0.4274,
+          "macro_f1_ci95": [
+            0.2222,
+            0.6257
+          ]
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 384,
+        "latency_ms_p95": 481,
+        "latency_ms_mean": 397,
+        "max_accepted_bytes": 1737,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 607
+      },
+      "cloud_jev": {
+        "requests_total": 14,
+        "requests_succeeded": 14,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 14,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0078,
+          "brier_ci95": [
+            0.0024,
+            0.0143
+          ],
+          "ece": 0.0607,
+          "ece_ci95": [
+            0.0286,
+            0.0964
+          ]
+        },
+        "choice": {
+          "n": 14,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 0,
+          "spearman_rho": null,
+          "spearman_ci95": null,
+          "mae": null,
+          "mae_ci95": null
+        },
+        "abstention": {
+          "n": 0,
+          "mae_from_half": null,
+          "mae_ci95": null,
+          "brier_from_half": null,
+          "overconfidence_rate": null,
+          "overconfidence_ci95": null
+        },
+        "counterfactual": {
+          "n_target_pairs": 0,
+          "target_flip_rate": null,
+          "paired_contrast_accuracy": null,
+          "n_control_pairs": 0,
+          "control_stability_rate": null
+        },
+        "latency_ms_p50": 197,
+        "latency_ms_p95": 216,
+        "latency_ms_mean": 200,
+        "max_accepted_bytes": 1737,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 714
+      }
+    },
+    "action_guard": {
+      "warden_s1": {
+        "requests_total": 12,
+        "requests_succeeded": 12,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 72,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0029,
+          "brier_ci95": [
+            0.0002,
+            0.0081
+          ],
+          "ece": 0.0161,
+          "ece_ci95": [
+            0.0071,
+            0.0308
+          ]
+        },
+        "choice": {
+          "n": 24,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 24,
+          "spearman_rho": 0.8526,
+          "spearman_ci95": [
+            0.6432,
+            0.9412
+          ],
+          "mae": 0.045,
+          "mae_ci95": [
+            0.0153,
+            0.0872
+          ]
+        },
+        "abstention": {
+          "n": 24,
+          "mae_from_half": 0.0276,
+          "mae_ci95": [
+            0.0186,
+            0.0375
+          ],
+          "brier_from_half": 0.0013,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 9,
+          "target_flip_rate": 1,
+          "paired_contrast_accuracy": 1,
+          "n_control_pairs": 27,
+          "control_stability_rate": 1
+        },
+        "latency_ms_p50": 10184,
+        "latency_ms_p95": 103627,
+        "latency_ms_mean": 30822,
+        "max_accepted_bytes": 358149,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 116771
+      },
+      "cloud_jev": {
+        "requests_total": 12,
+        "requests_succeeded": 6,
+        "requests_failed": 6,
+        "acceptance_rate": 0.5,
+        "noul": {
+          "n": 36,
+          "accuracy": 0.8056,
+          "accuracy_ci95": [
+            0.6667,
+            0.9167
+          ],
+          "auroc": 0.9492,
+          "auroc_ci95": [
+            0.8688,
+            0.9968
+          ],
+          "brier": 0.1011,
+          "brier_ci95": [
+            0.0418,
+            0.1758
+          ],
+          "ece": 0.1119,
+          "ece_ci95": [
+            0.0728,
+            0.2283
+          ]
+        },
+        "choice": {
+          "n": 12,
+          "accuracy": 0.9167,
+          "accuracy_ci95": [
+            0.75,
+            1
+          ],
+          "macro_f1": 0.9143,
+          "macro_f1_ci95": [
+            0.6429,
+            1
+          ]
+        },
+        "score": {
+          "n": 12,
+          "spearman_rho": 0.8732,
+          "spearman_ci95": [
+            0.5372,
+            0.9633
+          ],
+          "mae": 0.0733,
+          "mae_ci95": [
+            0.0311,
+            0.1278
+          ]
+        },
+        "abstention": {
+          "n": 12,
+          "mae_from_half": 0.4717,
+          "mae_ci95": [
+            0.47,
+            0.4742
+          ],
+          "brier_from_half": 0.2225,
+          "overconfidence_rate": 1,
+          "overconfidence_ci95": [
+            1,
+            1
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 5,
+          "target_flip_rate": 0.4,
+          "paired_contrast_accuracy": 1,
+          "n_control_pairs": 13,
+          "control_stability_rate": 0.6923
+        },
+        "latency_ms_p50": 271,
+        "latency_ms_p95": 354,
+        "latency_ms_mean": 301,
+        "max_accepted_bytes": 70493,
+        "min_rejected_bytes": 100480,
+        "max_accepted_tokens": 24131
+      }
+    },
+    "done_verify": {
+      "warden_s1": {
+        "requests_total": 12,
+        "requests_succeeded": 12,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 96,
+          "accuracy": 0.9792,
+          "accuracy_ci95": [
+            0.9479,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.017,
+          "brier_ci95": [
+            0.0001,
+            0.0428
+          ],
+          "ece": 0.0208,
+          "ece_ci95": [
+            0.0046,
+            0.0497
+          ]
+        },
+        "choice": {
+          "n": 12,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 12,
+          "spearman_rho": 0.8987,
+          "spearman_ci95": [
+            0.7606,
+            0.9504
+          ],
+          "mae": 0.0486,
+          "mae_ci95": [
+            0.0199,
+            0.0802
+          ]
+        },
+        "abstention": {
+          "n": 24,
+          "mae_from_half": 0.0169,
+          "mae_ci95": [
+            0.013,
+            0.0207
+          ],
+          "brier_from_half": 0.0004,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 18,
+          "target_flip_rate": 0.8889,
+          "paired_contrast_accuracy": 0.9444,
+          "n_control_pairs": 30,
+          "control_stability_rate": 1
+        },
+        "latency_ms_p50": 10439,
+        "latency_ms_p95": 104013,
+        "latency_ms_mean": 30890,
+        "max_accepted_bytes": 361575,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 117247
+      },
+      "cloud_jev": {
+        "requests_total": 12,
+        "requests_succeeded": 6,
+        "requests_failed": 6,
+        "acceptance_rate": 0.5,
+        "noul": {
+          "n": 48,
+          "accuracy": 0.7083,
+          "accuracy_ci95": [
+            0.5833,
+            0.8333
+          ],
+          "auroc": 0.9065,
+          "auroc_ci95": [
+            0.8131,
+            0.9818
+          ],
+          "brier": 0.1895,
+          "brier_ci95": [
+            0.11,
+            0.262
+          ],
+          "ece": 0.1935,
+          "ece_ci95": [
+            0.1319,
+            0.3056
+          ]
+        },
+        "choice": {
+          "n": 6,
+          "accuracy": 0.6667,
+          "accuracy_ci95": [
+            0.3333,
+            1
+          ],
+          "macro_f1": 0.7,
+          "macro_f1_ci95": [
+            0.3333,
+            1
+          ]
+        },
+        "score": {
+          "n": 6,
+          "spearman_rho": 0.8332,
+          "spearman_ci95": [
+            0.3178,
+            1
+          ],
+          "mae": 0.4183,
+          "mae_ci95": [
+            0.1656,
+            0.65
+          ]
+        },
+        "abstention": {
+          "n": 12,
+          "mae_from_half": 0.4708,
+          "mae_ci95": [
+            0.4667,
+            0.4742
+          ],
+          "brier_from_half": 0.2217,
+          "overconfidence_rate": 1,
+          "overconfidence_ci95": [
+            1,
+            1
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 9,
+          "target_flip_rate": 0.3333,
+          "paired_contrast_accuracy": 0.6667,
+          "n_control_pairs": 15,
+          "control_stability_rate": 0.8
+        },
+        "latency_ms_p50": 310,
+        "latency_ms_p95": 371,
+        "latency_ms_mean": 339,
+        "max_accepted_bytes": 83072,
+        "min_rejected_bytes": 110331,
+        "max_accepted_tokens": 26619
+      }
+    },
+    "repo_rules": {
+      "warden_s1": {
+        "requests_total": 12,
+        "requests_succeeded": 12,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 180,
+          "accuracy": 0.9667,
+          "accuracy_ci95": [
+            0.9389,
+            0.9889
+          ],
+          "auroc": 0.9873,
+          "auroc_ci95": [
+            0.9724,
+            0.9974
+          ],
+          "brier": 0.0284,
+          "brier_ci95": [
+            0.0124,
+            0.0465
+          ],
+          "ece": 0.0471,
+          "ece_ci95": [
+            0.0384,
+            0.0759
+          ]
+        },
+        "choice": {
+          "n": 12,
+          "accuracy": 0.25,
+          "accuracy_ci95": [
+            0,
+            0.5
+          ],
+          "macro_f1": 0.1244,
+          "macro_f1_ci95": [
+            0,
+            0.32
+          ]
+        },
+        "score": {
+          "n": 12,
+          "spearman_rho": 0.5878,
+          "spearman_ci95": [
+            0,
+            0.8916
+          ],
+          "mae": 0.2556,
+          "mae_ci95": [
+            0.1367,
+            0.3702
+          ]
+        },
+        "abstention": {
+          "n": 24,
+          "mae_from_half": 0.023,
+          "mae_ci95": [
+            0.0183,
+            0.0273
+          ],
+          "brier_from_half": 0.0007,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 10,
+          "target_flip_rate": 0.6,
+          "paired_contrast_accuracy": 0.8,
+          "n_control_pairs": 80,
+          "control_stability_rate": 0.975
+        },
+        "latency_ms_p50": 9462,
+        "latency_ms_p95": 105822,
+        "latency_ms_mean": 31145,
+        "max_accepted_bytes": 325906,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 106141
+      },
+      "cloud_jev": {
+        "requests_total": 12,
+        "requests_succeeded": 6,
+        "requests_failed": 6,
+        "acceptance_rate": 0.5,
+        "noul": {
+          "n": 90,
+          "accuracy": 0.9111,
+          "accuracy_ci95": [
+            0.8444,
+            0.9667
+          ],
+          "auroc": 0.9918,
+          "auroc_ci95": [
+            0.9742,
+            1
+          ],
+          "brier": 0.0619,
+          "brier_ci95": [
+            0.0293,
+            0.0982
+          ],
+          "ece": 0.1381,
+          "ece_ci95": [
+            0.1062,
+            0.1836
+          ]
+        },
+        "choice": {
+          "n": 6,
+          "accuracy": 0.6667,
+          "accuracy_ci95": [
+            0.3333,
+            1
+          ],
+          "macro_f1": 0.6667,
+          "macro_f1_ci95": [
+            0.25,
+            1
+          ]
+        },
+        "score": {
+          "n": 6,
+          "spearman_rho": 0.6172,
+          "spearman_ci95": [
+            -0.4472,
+            1
+          ],
+          "mae": 0.3608,
+          "mae_ci95": [
+            0.1508,
+            0.5767
+          ]
+        },
+        "abstention": {
+          "n": 12,
+          "mae_from_half": 0.4633,
+          "mae_ci95": [
+            0.46,
+            0.4667
+          ],
+          "brier_from_half": 0.2147,
+          "overconfidence_rate": 1,
+          "overconfidence_ci95": [
+            1,
+            1
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 5,
+          "target_flip_rate": 0.6,
+          "paired_contrast_accuracy": 0.8,
+          "n_control_pairs": 40,
+          "control_stability_rate": 0.975
+        },
+        "latency_ms_p50": 337,
+        "latency_ms_p95": 369,
+        "latency_ms_mean": 350,
+        "max_accepted_bytes": 74893,
+        "min_rejected_bytes": 117513,
+        "max_accepted_tokens": 24179
+      }
+    },
+    "s1_general": {
+      "warden_s1": {
+        "requests_total": 12,
+        "requests_succeeded": 12,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 59,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0001,
+          "brier_ci95": [
+            0,
+            0.0003
+          ],
+          "ece": 0.0062,
+          "ece_ci95": [
+            0.0041,
+            0.009
+          ]
+        },
+        "choice": {
+          "n": 24,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 24,
+          "spearman_rho": 0.8897,
+          "spearman_ci95": [
+            0.7576,
+            0.9546
+          ],
+          "mae": 0.0061,
+          "mae_ci95": [
+            0.0029,
+            0.0099
+          ]
+        },
+        "abstention": {
+          "n": 25,
+          "mae_from_half": 0.0228,
+          "mae_ci95": [
+            0.0165,
+            0.03
+          ],
+          "brier_from_half": 0.0008,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 11,
+          "target_flip_rate": 1,
+          "paired_contrast_accuracy": 1,
+          "n_control_pairs": 18,
+          "control_stability_rate": 1
+        },
+        "latency_ms_p50": 10293,
+        "latency_ms_p95": 107781,
+        "latency_ms_mean": 31286,
+        "max_accepted_bytes": 358996,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 117748
+      },
+      "cloud_jev": {
+        "requests_total": 12,
+        "requests_succeeded": 6,
+        "requests_failed": 6,
+        "acceptance_rate": 0.5,
+        "noul": {
+          "n": 29,
+          "accuracy": 0.8966,
+          "accuracy_ci95": [
+            0.7586,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0867,
+          "brier_ci95": [
+            0.0371,
+            0.1522
+          ],
+          "ece": 0.2014,
+          "ece_ci95": [
+            0.1397,
+            0.2876
+          ]
+        },
+        "choice": {
+          "n": 12,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 12,
+          "spearman_rho": 0.9008,
+          "spearman_ci95": [
+            0.6719,
+            0.9783
+          ],
+          "mae": 0.0781,
+          "mae_ci95": [
+            0.0394,
+            0.1299
+          ]
+        },
+        "abstention": {
+          "n": 13,
+          "mae_from_half": 0.4615,
+          "mae_ci95": [
+            0.4562,
+            0.4669
+          ],
+          "brier_from_half": 0.2131,
+          "overconfidence_rate": 1,
+          "overconfidence_ci95": [
+            1,
+            1
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 5,
+          "target_flip_rate": 0.6,
+          "paired_contrast_accuracy": 1,
+          "n_control_pairs": 9,
+          "control_stability_rate": 1
+        },
+        "latency_ms_p50": 312,
+        "latency_ms_p95": 399,
+        "latency_ms_mean": 340,
+        "max_accepted_bytes": 77944,
+        "min_rejected_bytes": 118396,
+        "max_accepted_tokens": 24102
+      }
+    },
+    "taint_guard": {
+      "warden_s1": {
+        "requests_total": 12,
+        "requests_succeeded": 12,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 84,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0.0001,
+          "brier_ci95": [
+            0,
+            0.0001
+          ],
+          "ece": 0.0048,
+          "ece_ci95": [
+            0.0037,
+            0.0063
+          ]
+        },
+        "choice": {
+          "n": 24,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 12,
+          "spearman_rho": 0.869,
+          "spearman_ci95": [
+            0.6642,
+            0.8863
+          ],
+          "mae": 0.0142,
+          "mae_ci95": [
+            0.0028,
+            0.0274
+          ]
+        },
+        "abstention": {
+          "n": 24,
+          "mae_from_half": 0.0167,
+          "mae_ci95": [
+            0.0125,
+            0.0216
+          ],
+          "brier_from_half": 0.0004,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 12,
+          "target_flip_rate": 1,
+          "paired_contrast_accuracy": 1,
+          "n_control_pairs": 30,
+          "control_stability_rate": 1
+        },
+        "latency_ms_p50": 14619,
+        "latency_ms_p95": 104293,
+        "latency_ms_mean": 32293,
+        "max_accepted_bytes": 365640,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 117899
+      },
+      "cloud_jev": {
+        "requests_total": 12,
+        "requests_succeeded": 6,
+        "requests_failed": 6,
+        "acceptance_rate": 0.5,
+        "noul": {
+          "n": 42,
+          "accuracy": 0.9286,
+          "accuracy_ci95": [
+            0.8333,
+            1
+          ],
+          "auroc": 0.9954,
+          "auroc_ci95": [
+            0.9769,
+            1
+          ],
+          "brier": 0.0405,
+          "brier_ci95": [
+            0.0123,
+            0.0757
+          ],
+          "ece": 0.085,
+          "ece_ci95": [
+            0.0605,
+            0.1495
+          ]
+        },
+        "choice": {
+          "n": 12,
+          "accuracy": 0.75,
+          "accuracy_ci95": [
+            0.5,
+            1
+          ],
+          "macro_f1": 0.5143,
+          "macro_f1_ci95": [
+            0.3125,
+            1
+          ]
+        },
+        "score": {
+          "n": 6,
+          "spearman_rho": 0.8783,
+          "spearman_ci95": [
+            0.6742,
+            0.9487
+          ],
+          "mae": 0.3183,
+          "mae_ci95": [
+            0.165,
+            0.4322
+          ]
+        },
+        "abstention": {
+          "n": 12,
+          "mae_from_half": 0.4667,
+          "mae_ci95": [
+            0.4642,
+            0.4692
+          ],
+          "brier_from_half": 0.2178,
+          "overconfidence_rate": 1,
+          "overconfidence_ci95": [
+            1,
+            1
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 6,
+          "target_flip_rate": 0.5,
+          "paired_contrast_accuracy": 0.8333,
+          "n_control_pairs": 15,
+          "control_stability_rate": 0.9333
+        },
+        "latency_ms_p50": 316,
+        "latency_ms_p95": 470,
+        "latency_ms_mean": 378,
+        "max_accepted_bytes": 102895,
+        "min_rejected_bytes": 117079,
+        "max_accepted_tokens": 33183
+      }
+    },
+    "trajectory_health": {
+      "warden_s1": {
+        "requests_total": 12,
+        "requests_succeeded": 12,
+        "requests_failed": 0,
+        "acceptance_rate": 1,
+        "noul": {
+          "n": 96,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "auroc": 1,
+          "auroc_ci95": [
+            1,
+            1
+          ],
+          "brier": 0,
+          "brier_ci95": [
+            0,
+            0
+          ],
+          "ece": 0.0025,
+          "ece_ci95": [
+            0.0021,
+            0.0028
+          ]
+        },
+        "choice": {
+          "n": 12,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 12,
+          "spearman_rho": 0.869,
+          "spearman_ci95": [
+            0.6642,
+            0.8863
+          ],
+          "mae": 0.004,
+          "mae_ci95": [
+            0.0021,
+            0.0059
+          ]
+        },
+        "abstention": {
+          "n": 24,
+          "mae_from_half": 0.0224,
+          "mae_ci95": [
+            0.0178,
+            0.0268
+          ],
+          "brier_from_half": 0.0006,
+          "overconfidence_rate": 0,
+          "overconfidence_ci95": [
+            0,
+            0
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 24,
+          "target_flip_rate": 1,
+          "paired_contrast_accuracy": 1,
+          "n_control_pairs": 24,
+          "control_stability_rate": 1
+        },
+        "latency_ms_p50": 11410,
+        "latency_ms_p95": 104567,
+        "latency_ms_mean": 30505,
+        "max_accepted_bytes": 363221,
+        "min_rejected_bytes": null,
+        "max_accepted_tokens": 117110
+      },
+      "cloud_jev": {
+        "requests_total": 12,
+        "requests_succeeded": 8,
+        "requests_failed": 4,
+        "acceptance_rate": 0.6667,
+        "noul": {
+          "n": 64,
+          "accuracy": 0.7969,
+          "accuracy_ci95": [
+            0.6875,
+            0.8906
+          ],
+          "auroc": 0.9731,
+          "auroc_ci95": [
+            0.9335,
+            0.9969
+          ],
+          "brier": 0.1205,
+          "brier_ci95": [
+            0.0682,
+            0.1754
+          ],
+          "ece": 0.1728,
+          "ece_ci95": [
+            0.1109,
+            0.2553
+          ]
+        },
+        "choice": {
+          "n": 8,
+          "accuracy": 1,
+          "accuracy_ci95": [
+            1,
+            1
+          ],
+          "macro_f1": 1,
+          "macro_f1_ci95": [
+            1,
+            1
+          ]
+        },
+        "score": {
+          "n": 8,
+          "spearman_rho": 0.8944,
+          "spearman_ci95": [
+            0.5991,
+            0.9897
+          ],
+          "mae": 0.395,
+          "mae_ci95": [
+            0.1008,
+            0.6838
+          ]
+        },
+        "abstention": {
+          "n": 16,
+          "mae_from_half": 0.465,
+          "mae_ci95": [
+            0.4587,
+            0.4706
+          ],
+          "brier_from_half": 0.2164,
+          "overconfidence_rate": 1,
+          "overconfidence_ci95": [
+            1,
+            1
+          ]
+        },
+        "counterfactual": {
+          "n_target_pairs": 16,
+          "target_flip_rate": 0.5,
+          "paired_contrast_accuracy": 0.8125,
+          "n_control_pairs": 16,
+          "control_stability_rate": 0.625
+        },
+        "latency_ms_p50": 419,
+        "latency_ms_p95": 466,
+        "latency_ms_mean": 398,
+        "max_accepted_bytes": 103079,
+        "min_rejected_bytes": 219341,
+        "max_accepted_tokens": 33144
+      }
+    }
+  }
+}

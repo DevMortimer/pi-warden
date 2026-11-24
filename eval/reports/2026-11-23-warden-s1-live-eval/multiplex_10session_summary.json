@@ -1,0 +1,128 @@
+{
+  "date": "2026-11-24",
+  "stage": "stage3.5",
+  "sessions_multiplexed": 10,
+  "session_token_range": [
+    63989,
+    97957
+  ],
+  "session_actual_tokens": {
+    "session-00": 63989,
+    "session-01": 63989,
+    "session-02": 63989,
+    "session-03": 63989,
+    "session-04": 63989,
+    "session-05": 63989,
+    "session-06": 79917,
+    "session-07": 79917,
+    "session-08": 97957,
+    "session-09": 97957
+  },
+  "concurrent_wall_sec": 17.93,
+  "delta_requests_total": 20,
+  "delta_cache_hits": 20,
+  "boundary_healed_hits": 22,
+  "l2_ram_swap_ms_p50": 104.39,
+  "l2_ram_swap_ms_p95": 1187.79,
+  "l2_ram_swap_ms_max": 1691.49,
+  "baseline_numpy_swap_ms": 2344.0,
+  "l2_swap_speedup_vs_baseline": 22.45,
+  "max_metal_active_mb": 858.33,
+  "strictly_under_1024_mib": true,
+  "server_stats": {
+    "status": "ok",
+    "model": "warden-s1-752m-mlx-q4",
+    "weights_active_mb": 415.41,
+    "metal_active_mb": 777.09,
+    "metal_max_active_mb": 858.33,
+    "metal_max_peak_mb": 2714.52,
+    "under_1024_mib": true,
+    "active_session_id": "session-09",
+    "active_prefix_tokens": 98036,
+    "l2_ram_sessions": 9,
+    "l3_disk_sessions": 2,
+    "zstd_enabled": true,
+    "requests_served": 32,
+    "cache_exact_hits": 0,
+    "cache_delta_hits": 22,
+    "cache_boundary_healed_hits": 22,
+    "cache_misses": 10,
+    "l1_hits": 0,
+    "l2_ram_swaps": 20,
+    "l3_disk_swaps": 2,
+    "swap_ms_p50": 172.94,
+    "swap_ms_p95": 1284.79,
+    "latency_ms_p50": 894.31,
+    "latency_ms_p95": 66323.87
+  },
+  "l3_disk_eviction": [
+    {
+      "evicted": [
+        {
+          "sid": "session-00",
+          "raw_mb": 417.39,
+          "disk_mb": 358.81,
+          "write_ms": 2123.85
+        }
+      ],
+      "ram_slots_used": 9,
+      "disk_pages": 1
+    },
+    {
+      "evicted": [
+        {
+          "sid": "session-09",
+          "raw_mb": 341.69,
+          "disk_mb": 109.01,
+          "write_ms": 877.08
+        }
+      ],
+      "ram_slots_used": 8,
+      "disk_pages": 2
+    }
+  ],
+  "l3_disk_restore_records": [
+    {
+      "sid": "session-00",
+      "wall_ms": 916.94,
+      "server_latency_ms": 846.92,
+      "swap_ms": 482.48,
+      "page_tier": "L3_DISK",
+      "cache_mode": "delta",
+      "delta_tokens": 19,
+      "metal_active_mb": 853.64
+    },
+    {
+      "sid": "session-09",
+      "wall_ms": 2580.0,
+      "server_latency_ms": 2478.65,
+      "swap_ms": 1291.29,
+      "page_tier": "L3_DISK",
+      "cache_mode": "delta",
+      "delta_tokens": 19,
+      "metal_active_mb": 777.14
+    }
+  ],
+  "live_persistent_100k_cache_probe": {
+    "input": 24,
+    "output": 8499,
+    "cacheRead": 397948,
+    "cacheWrite": 52431,
+    "total": 458902,
+    "peak_context_tokens": 53879,
+    "overall_cache_hit_rate": 0.8835,
+    "steady_cache_hit_rate": 0.899
+  },
+  "server_telemetry_summary": {
+    "total_requests": 534,
+    "cache_exact_hits": 28,
+    "cache_delta_hits": 64,
+    "cache_misses": 442,
+    "latency_ms_p50": 780.66,
+    "latency_ms_p95": 40683.96,
+    "latency_ms_max": 114232.54,
+    "metal_active_mb_max": 858.33,
+    "metal_peak_mb_max": 4955.05,
+    "under_1024_mib_active": true
+  }
+}

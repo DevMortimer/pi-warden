@@ -14,6 +14,12 @@ guard.
 Not batches: counts from real Pi sessions, produced by `scripts/field-usage.mjs`.
 
 - [2026-10-27-field-usage](2026-10-27-field-usage/README.md): forty-one days, 3,350 sessions, 184,249 judged actions, what worked and what was noise. The source of the README numbers.
+
+## Local System-One model (`Warden-S1`)
+
+Evaluations of the local `Warden-S1-752M` System-One verification backend (Apache-2.0, `415.5 MiB` MLX-Q4 / `461.3 MiB` sharded ONNX-Int4) behind a TypeSafe-compatible loopback daemon:
+
+- [2026-11-23-warden-s1-live-eval](2026-11-23-warden-s1-live-eval/README.md): Stage 3.5 evaluation archive covering held-out `WardenS1-Bench` (`0.9957` MLX-Q4 / `0.9964` BF16 Noul AUROC across `4K-128K`, `0.8726` Choice F1, `0.0175` ECE), 100-request head-to-head vs. Cloud `Jev` (`0.9933` vs. `0.9449` matched AUROC, `0.0270` vs. `0.0998` Brier, `100%` accepted up to `117K` tokens vs. `34%` rejected past `33K`), OOD `judge-bench` (`stuck` `85.0%-87.5%`, `done` recall `75%-80%`) and `rules-bench` (`41.9%` recall at `0.5`, `7.75x` Stage 2), and 10-session `64K-98K` Apple M5 Metal multiplexing (`858.3 MiB` peak active residency `< 1 GiB`, `20/20` BPE-healed delta hits, `104.4 ms` p50 L2 swap).
 - [2026-10-01-field-usage](2026-10-01-field-usage/README.md): sixteen days, 1,168 sessions, 53,868 judged actions, what worked and what was noise. Superseded by the report above.
 - [2026-09-24-field-usage](2026-09-24-field-usage/README.md): nine days, 759 sessions, 23,664 judged actions, what worked and what was noise. Superseded by the report above.
 - [2026-09-26-judge-bench](2026-09-26-judge-bench/README.md) (judge bench, `npm run eval:judge`, not a batch): 80 labelled stuck and done cases in three request states, 3 repeats. Structured evidence beats today's stuck state on 11 cases to 0 (p = 0.001); done shows no gain beyond noise because a passing check skips the judge; more raw bytes change nothing.
