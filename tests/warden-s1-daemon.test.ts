@@ -805,7 +805,8 @@ test("ensureWardenS1Daemon rejects a missing modelDir before acquiring the lock 
 
 test("resolveOnnxThreads caps default threads to [1, 4] and honors explicit and env overrides", () => {
   assert.equal(resolveOnnxThreads(undefined, {}, 1), 1);
-  assert.equal(resolveOnnxThreads(undefined, {}, 2), 1);
+  assert.equal(resolveOnnxThreads(undefined, {}, 2), 2);
+  assert.equal(resolveOnnxThreads(undefined, {}, 3), 3);
   assert.equal(resolveOnnxThreads(undefined, {}, 4), 2);
   assert.equal(resolveOnnxThreads(undefined, {}, 8), 4);
   assert.equal(resolveOnnxThreads(undefined, {}, 32), 4);
@@ -814,10 +815,10 @@ test("resolveOnnxThreads caps default threads to [1, 4] and honors explicit and 
   assert.equal(resolveOnnxThreads(6, { PI_WARDEN_ONNX_THREADS: "2" }, 16), 6);
 });
 
-test("effectiveWardenS1TimeoutMs enforces 15000 ms floor only for ONNX when timeoutMs <= 5000", () => {
-  assert.equal(effectiveWardenS1TimeoutMs(5000, "onnx"), 15_000);
-  assert.equal(effectiveWardenS1TimeoutMs(3000, "onnx"), 15_000);
-  assert.equal(effectiveWardenS1TimeoutMs(20_000, "onnx"), 20_000);
+test("effectiveWardenS1TimeoutMs enforces 25000 ms floor only for ONNX when timeoutMs <= 5000", () => {
+  assert.equal(effectiveWardenS1TimeoutMs(5000, "onnx"), 25_000);
+  assert.equal(effectiveWardenS1TimeoutMs(3000, "onnx"), 25_000);
+  assert.equal(effectiveWardenS1TimeoutMs(30_000, "onnx"), 30_000);
   assert.equal(effectiveWardenS1TimeoutMs(5000, "mlx"), 5000);
   assert.equal(effectiveWardenS1TimeoutMs(5000, undefined), 5000);
 });

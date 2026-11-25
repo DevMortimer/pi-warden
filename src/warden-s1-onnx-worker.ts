@@ -917,7 +917,7 @@ export function resolveOnnxThreads(
     }
   }
   const logical = Number.isFinite(cpuCount) && cpuCount >= 1 ? Math.floor(cpuCount) : 1;
-  return Math.max(1, Math.min(4, Math.floor(logical / 2)));
+  return Math.max(1, Math.min(4, logical <= 3 ? logical : Math.floor(logical / 2)));
 }
 
 function resolveOnnxProviderCandidates(params: {

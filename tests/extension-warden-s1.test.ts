@@ -630,7 +630,7 @@ test("localModelFor does not permanently memoize ready: false and recovers in th
   assert.match(lastNotice(), /Backend: in use; judgments run on 127\.0\.0\.1 loopback at \$0/);
 });
 
-test("local Warden-S1 fast-gates 6 clean in-project reads + 3KB rg with 0 /v1/systemone calls while judging tiny_fetch, injection reads, and outside reads, and enforces 15000 ms ONNX timeout floor", async t => {
+test("local Warden-S1 fast-gates 6 clean in-project reads + 3KB rg with 0 /v1/systemone calls while judging tiny_fetch, injection reads, and outside reads, and enforces 25000 ms ONNX timeout floor", async t => {
   stopDaemonAfter(t);
   process.env.PI_WARDEN_S1_MOCK_WEIGHTS = "1";
   const repo = await mkdtemp(join(tmpdir(), "pi-warden-s1-fastgate-"));
@@ -799,7 +799,7 @@ test("local Warden-S1 fast-gates 6 clean in-project reads + 3KB rg with 0 /v1/sy
   assert.deepEqual(
     notices.filter(n => /cancel|timeout|timed out/i.test(n.text)),
     [],
-    "15000 ms ONNX timeout floor must prevent spurious 50ms timeout cancellation",
+    "25000 ms ONNX timeout floor must prevent spurious 50ms timeout cancellation",
   );
   await rm(metaPath, { force: true });
 });

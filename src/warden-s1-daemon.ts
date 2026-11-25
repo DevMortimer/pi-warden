@@ -18,7 +18,7 @@ export const DEFAULT_IDLE_SHUTDOWN_SEC = 1800;
 export const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 export const DEFAULT_LOCK_TIMEOUT_MS = 35_000;
 export const DEFAULT_RPC_TIMEOUT_MS = 15_000;
-export const ONNX_MIN_TIMEOUT_MS = 15_000;
+export const ONNX_MIN_TIMEOUT_MS = 25_000;
 export const ONNX_DEFAULT_TIMEOUT_CUTOFF_MS = 5_000;
 
 export type WardenS1Runtime = "mlx" | "onnx";
