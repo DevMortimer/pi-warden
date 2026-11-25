@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 2.18.0
+
 ### Added
 
 - Strictly opt-in local `Warden-S1` System-1 semantic verification (`"typesafeBackend": "warden-s1"` or `"auto"`, default `"cloud"`, config schema `20`): runs every semantic guard (`action`, `taint` declassification, `rules`, `done`, `stuck`, `security`, and headless Claude Code / Codex hooks) locally on `127.0.0.1` loopback at `$0` API cost with no cloud API key and no consent dialog.

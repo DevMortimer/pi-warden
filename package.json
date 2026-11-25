@@ -1,7 +1,7 @@
 {
   "name": "pi-warden",
-  "version": "2.17.1",
-  "description": "Makes the Pi agent follow your project's rules. Jev judges every write against your pi-warden.md and quotes the broken rule back to the agent, names slop, breaks stuck loops, calls out unverified done claims, compresses large tool output, and holds the rare destructive command. Built on pi-typesafe.",
+  "version": "2.18.0",
+  "description": "Zero-key runtime guardrails for Pi, Claude Code, and Codex — blocks destructive commands and secret exfiltration, enforces project rules, and breaks agent loops.",
   "type": "module",
   "license": "MIT",
   "author": "Ryan Gapac",
@@ -15,6 +15,11 @@
   "keywords": [
     "pi-package",
     "pi-extension",
+    "claude-code",
+    "codex",
+    "coding-agents",
+    "prompt-injection",
+    "warden-s1",
     "typesafe",
     "jev",
     "project-rules",
