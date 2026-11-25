@@ -756,3 +756,41 @@ test("WardenS1OnnxBackend requests only hidden_states on non-mutating probes and
     rmSync(pageDir, { recursive: true, force: true });
   }
 });
+
+test("ensureWardenS1Daemon rejects a missing modelDir before acquiring the lock or stopping a live daemon", async () => {
+  const stateDir = makeTempDir("ws1-missing-modeldir-");
+  try {
+    const live = await ensureWardenS1Daemon({
+      runtime: "onnx",
+      mockWeights: true,
+      stateDir,
+      idleShutdownSec: 60,
+      startupTimeoutMs: 15_000,
+      lockTimeoutMs: 15_000,
+    });
+    assert.equal(isPidAlive(live.pid), true);
+    assert.equal((await getWardenS1DaemonStatus(stateDir)).running, true);
+
+    const missingDir = join(stateDir, "deleted-onnx-model-dir");
+    await assert.rejects(
+      ensureWardenS1Daemon({
+        runtime: "onnx",
+        modelDir: missingDir,
+        stateDir,
+        startupTimeoutMs: 5_000,
+        lockTimeoutMs: 5_000,
+      }),
+      /modelDir does not exist/,
+    );
+
+    assert.equal(isPidAlive(live.pid), true, "missing modelDir must not kill an already-running daemon");
+    const status = await getWardenS1DaemonStatus(stateDir);
+    assert.equal(status.running, true);
+    const st = await daemonStats(live);
+    assert.equal(st.pid, live.pid);
+    assert.equal(st.instance_id, live.instanceId);
+  } finally {
+    await stopWardenS1Daemon(stateDir);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

@@ -13,8 +13,8 @@ import { join, resolve } from "node:path";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
 import { createEventBus, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, RegisteredCommand } from "@earendil-works/pi-coding-agent";
-import { _testFlushWrites } from "../src/extension.js";
-import { ONNX_MANIFEST_FILE, ONNX_MODEL_REPO } from "../src/local-model.js";
+import { _testFlushWrites, judgmentsOffText } from "../src/extension.js";
+import { MLX_MODEL_DIR_NAME, MLX_MODEL_ID, MLX_MODEL_REPO, MLX_REQUIRED_FILES, ONNX_MANIFEST_FILE, ONNX_MODEL_DIR_NAME, ONNX_MODEL_ID, ONNX_MODEL_REPO, READY_MANIFEST_FILE } from "../src/local-model.js";
 import { daemonMetadataPath, ensureWardenS1Daemon, getWardenS1DaemonStatus, stopWardenS1Daemon } from "../src/warden-s1-daemon.js";
 import { WardenS1SessionTracker, connectWardenS1, createWardenS1Judge, getMetaForAnswers } from "../src/warden-s1-session.js";
 
@@ -470,4 +470,162 @@ test("/warden model status reports Metal MiB for MLX daemons (with and without R
   await runCommand("model status");
   assert.match(lastNotice(), /612 MiB resident\./);
   assert.doesNotMatch(lastNotice(), /MiB Metal/);
+});
+
+test("warden-s1 with installed weights but unready runtime reports diagnostic instead of not-downloaded, and daemonLine flags runtime mismatches", async t => {
+  assert.equal(
+    judgmentsOffText("no_local_model", { typesafeBackend: "warden-s1", backendRefusal: undefined }, false),
+    "warden: local Warden-S1 model is not downloaded; run /warden model download or set localModel.autoDownload = true. Pattern checks remain active.",
+  );
+  assert.equal(
+    judgmentsOffText("no_local_model", { typesafeBackend: "warden-s1", backendRefusal: undefined }, false, undefined, "MLX runtime is not provisioned yet"),
+    "warden: local Warden-S1 is not ready (MLX runtime is not provisioned yet) Pattern checks remain active.",
+  );
+
+  const mlxDir = join(cacheDir, "models", MLX_MODEL_DIR_NAME);
+  mkdirSync(mlxDir, { recursive: true });
+  const files = MLX_REQUIRED_FILES.map(path => {
+    const payload = Buffer.from(`mlx-weight-${path}\n`);
+    writeFileSync(join(mlxDir, path), payload);
+    return { path, bytes: payload.length, sha256: sha256(payload) };
+  });
+  writeFileSync(
+    join(mlxDir, READY_MANIFEST_FILE),
+    JSON.stringify({
+      version: 1,
+      runtime: "mlx",
+      repoId: MLX_MODEL_REPO,
+      modelId: MLX_MODEL_ID,
+      downloadedAt: new Date().toISOString(),
+      totalBytes: files.reduce((sum, file) => sum + file.bytes, 0),
+      files,
+    }),
+  );
+  t.after(() => rm(mlxDir, { recursive: true, force: true }));
+
+  await startSession({ typesafeBackend: "warden-s1", notices: true, localModel: { runtime: "mlx" }, rules: { enabled: false } });
+  await newPrompt("Tidy the build folder");
+  assert.equal(await toolCall("bash", { command: "touch notes.txt" }), undefined);
+  const s1Notices = notices.filter(notice => /Warden-S1/.test(notice.text)).map(notice => notice.text);
+  assert.equal(s1Notices.length, 1);
+  assert.match(s1Notices[0]!, /^warden: local Warden-S1 is not ready \(.+\) Pattern checks remain active\.$/);
+  assert.doesNotMatch(s1Notices[0]!, /not downloaded/);
+
+  await runCommand("status");
+  assert.match(lastNotice(), /judgments are off: the local Warden-S1 model is not ready \(/);
+  assert.doesNotMatch(lastNotice(), /not downloaded/);
+
+  const instanceId = "mismatch-status-test";
+  const token = "mismatch-status-token";
+  const statsPayload = {
+    status: "ok",
+    runtime: "onnx",
+    pid: process.pid,
+    instance_id: instanceId,
+    model: "warden-s1-752m-onnx-int4",
+    model_dir: "mock-weights",
+    idle_shutdown_sec: 1800,
+    idle_sec: 1,
+    in_flight: 0,
+    rss_mb: 512.0,
+    active_session_id: null,
+    active_prefix_tokens: 0,
+    l2_ram_sessions: 0,
+    l3_disk_sessions: 0,
+    zstd_enabled: true,
+    requests_served: 0,
+    prewarms_served: 0,
+    cache_exact_hits: 0,
+    cache_delta_hits: 0,
+    cache_boundary_healed_hits: 0,
+    cache_misses: 0,
+    l1_hits: 0,
+    l2_ram_swaps: 0,
+    l3_disk_swaps: 0,
+    swap_ms_p50: 0,
+    swap_ms_p95: 0,
+    latency_ms_p50: 0,
+    latency_ms_p95: 0,
+  };
+  const healthServer = createServer((req, res) => {
+    if (req.url === "/health" && req.headers.authorization === `Bearer ${token}`) {
+      const body = JSON.stringify(statsPayload);
+      res.writeHead(200, { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) });
+      res.end(body);
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(done => healthServer.listen(0, "127.0.0.1", done));
+  const { port } = healthServer.address() as AddressInfo;
+  const metaPath = daemonMetadataPath(cacheDir);
+  writeFileSync(
+    metaPath,
+    JSON.stringify({
+      pid: process.pid,
+      instanceId,
+      host: "127.0.0.1",
+      port,
+      runtime: "onnx",
+      modelId: "warden-s1-752m-onnx-int4",
+      modelDir: "mock-weights",
+      startedAt: new Date().toISOString(),
+      idleShutdownSec: 1800,
+      token,
+    }),
+  );
+  t.after(async () => {
+    delete process.env.PI_WARDEN_S1_MOCK_WEIGHTS;
+    await rm(metaPath, { force: true });
+    await new Promise<void>(done => healthServer.close(() => done()));
+  });
+
+  await runCommand("model status");
+  assert.match(lastNotice(), /Daemon: running \(pid \d+, onnx, .*512 MiB resident\. \(mismatch: selected runtime is mlx; next judged call or \/warden model status after reload switches it\)/);
+
+  process.env.PI_WARDEN_S1_MOCK_WEIGHTS = "1";
+  await runCommand("model status");
+  assert.doesNotMatch(lastNotice(), /mismatch: selected runtime/);
+  delete process.env.PI_WARDEN_S1_MOCK_WEIGHTS;
+
+  await startSession({ typesafeBackend: "warden-s1", localModel: { runtime: "onnx" } });
+  await runCommand("model status");
+  assert.doesNotMatch(lastNotice(), /mismatch: selected runtime/);
+});
+
+test("localModelFor does not permanently memoize ready: false and recovers in the same session once weights appear", async t => {
+  stopDaemonAfter(t);
+  const onnxDir = join(cacheDir, "models", ONNX_MODEL_DIR_NAME);
+  await rm(onnxDir, { recursive: true, force: true });
+  t.after(() => rm(onnxDir, { recursive: true, force: true }));
+
+  await startSession({ typesafeBackend: "warden-s1", notices: true, localModel: { runtime: "onnx" }, rules: { enabled: false } });
+  await newPrompt("Tidy the build folder");
+  assert.equal(await toolCall("bash", { command: "touch notes.txt" }), undefined);
+  await runCommand("status");
+  assert.match(lastNotice(), /judgments are off: the local Warden-S1 model is not downloaded/);
+
+  // Simulate another session finishing the download on disk without restarting this Pi session.
+  mkdirSync(onnxDir, { recursive: true });
+  const files = [...MODEL_FILES.entries()].map(([path, payload]) => {
+    writeFileSync(join(onnxDir, path), payload);
+    return { path, bytes: payload.length, sha256: sha256(payload) };
+  });
+  writeFileSync(
+    join(onnxDir, READY_MANIFEST_FILE),
+    JSON.stringify({
+      version: 1,
+      runtime: "onnx",
+      repoId: ONNX_MODEL_REPO,
+      modelId: ONNX_MODEL_ID,
+      downloadedAt: new Date().toISOString(),
+      totalBytes: files.reduce((sum, file) => sum + file.bytes, 0),
+      files,
+    }),
+  );
+
+  await runCommand("status");
+  assert.match(lastNotice(), /judgments local: Warden-S1 \(onnx, warden-s1-752m-onnx-int4\) on 127\.0\.0\.1 loopback, \$0, no key/);
+  await runCommand("model status");
+  assert.match(lastNotice(), /Backend: in use; judgments run on 127\.0\.0\.1 loopback at \$0/);
 });

@@ -338,8 +338,12 @@ function readLogTail(logPath: string, maxChars = 1500): string {
 export async function ensureWardenS1Daemon(options: EnsureDaemonOptions): Promise<DaemonEndpoint> {
   const stateDir = options.stateDir ? resolve(options.stateDir) : defaultWardenS1StateDir();
   const modelDir = normalizeModelDir(options);
-  if (!options.mockWeights && !modelDir) {
-    throw new Error("modelDir is required unless mockWeights is true");
+  if (!options.mockWeights && (!modelDir || !existsSync(modelDir))) {
+    throw new Error(
+      !modelDir
+        ? "modelDir is required unless mockWeights is true"
+        : `Warden-S1 modelDir does not exist: ${modelDir}`,
+    );
   }
   const idleShutdownSec = options.idleShutdownSec ?? DEFAULT_IDLE_SHUTDOWN_SEC;
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;

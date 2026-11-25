@@ -169,6 +169,11 @@ interface ModelFileSpec {
 const SHA256_RE = /^[0-9a-f]{64}$/i;
 const SHA1_RE = /^[0-9a-f]{40}$/i;
 const LOCK_FILE = ".download.lock";
+// find_spec avoids eager `import mlx_lm` (~5.9 s via transformers) on synchronous session startup.
+const MLX_FAST_PROBE_ARGS = [
+  "-c",
+  "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('mlx') and importlib.util.find_spec('mlx_lm') else 1)",
+] as const;
 
 let cachedMlxProbe: { readonly key: string; readonly result: MlxProbeResult } | undefined;
 
@@ -230,9 +235,9 @@ export function probeMlxPython(options: ProbeMlxOptions = {}): MlxProbeResult {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
   const env = options.env ?? process.env;
-  const canCache = options.platform === undefined
-    && options.arch === undefined
-    && options.env === undefined
+  const canCache = (options.platform === undefined || options.platform === process.platform)
+    && (options.arch === undefined || options.arch === process.arch)
+    && (options.env === undefined || options.env === process.env)
     && options.candidates === undefined
     && options.exec === undefined;
   const cacheKey = `${env.PI_WARDEN_PYTHON ?? ""}\0${env.PI_WARDEN_CACHE_DIR ?? ""}`;
@@ -259,24 +264,35 @@ export function probeMlxPython(options: ProbeMlxOptions = {}): MlxProbeResult {
     "/usr/bin/python3",
   ];
   const candidates = [...new Set(rawCandidates.filter(c => c.length > 0))];
-  const timeoutMs = Math.min(3000, Math.max(100, options.timeoutMs ?? 2500));
+  // 8 s default / 15 s cap absorbs cold macOS Gatekeeper/dyld validation without spurious ETIMEDOUT.
+  const timeoutMs = Math.min(15_000, Math.max(100, options.timeoutMs ?? 8000));
   const exec = options.exec ?? ((python: string, args: readonly string[], timeout: number) => {
     if (isAbsolute(python) && !existsSync(python)) return { status: null, error: new Error("ENOENT") };
     const out = spawnSync(python, args, { encoding: "utf8", timeout, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
     return { status: out.status, stderr: out.stderr, error: out.error };
   });
 
+  const isEnoent = (error: Error | undefined): boolean =>
+    error !== undefined && ((error as NodeJS.ErrnoException).code === "ENOENT" || error.message === "ENOENT");
+  let hadTransientError = false;
   for (const python of candidates) {
-    const out = exec(python, ["-c", "import mlx, mlx_lm"], timeoutMs);
+    const out = exec(python, MLX_FAST_PROBE_ARGS, timeoutMs);
     if (!out.error && out.status === 0) {
       const result: MlxProbeResult = { available: true, python };
       if (canCache) cachedMlxProbe = { key: cacheKey, result };
       return result;
     }
+    if ((out.error && !isEnoent(out.error)) || (!out.error && out.status === null)) {
+      hadTransientError = true;
+    }
   }
 
   const result: MlxProbeResult = { available: false, reason: "Python with mlx and mlx_lm not found (run /warden model download or pip install mlx mlx-lm)" };
-  if (canCache) cachedMlxProbe = { key: cacheKey, result };
+  if (canCache) {
+    // Never cache a timeout or spawn error as permanent available: false.
+    if (hadTransientError) cachedMlxProbe = undefined;
+    else cachedMlxProbe = { key: cacheKey, result };
+  }
   return result;
 }
 
@@ -305,7 +321,12 @@ export function selectWardenS1Runtime(config?: Partial<LocalModelConfig>, option
 
   const runProbe = () => options.probeMlx
     ? options.probeMlx()
-    : probeMlxPython({ platform, arch, env, ...(options.refreshProbe !== undefined ? { refresh: options.refreshProbe } : {}) });
+    : probeMlxPython({
+      ...(options.platform !== undefined ? { platform: options.platform } : {}),
+      ...(options.arch !== undefined ? { arch: options.arch } : {}),
+      ...(options.env !== undefined ? { env: options.env } : {}),
+      ...(options.refreshProbe !== undefined ? { refresh: options.refreshProbe } : {}),
+    });
 
   if (requestedRuntime === "mlx") {
     if (platform !== "darwin" || arch !== "arm64") {
@@ -910,20 +931,17 @@ async function ensureDefaultMlxRuntime(options: {
     });
   }
 
-  const verified = probeMlxPython({
-    refresh: true,
-    platform: options.platform,
-    arch: options.arch,
+  // Full import verification runs once at provisioning time (async, 30 s budget); startup probes use find_spec.
+  await runSubprocess(venvPython, ["-c", "import mlx.core as mx, mlx_lm"], {
     env,
-    candidates: [venvPython],
+    ...(options.signal ? { signal: options.signal } : {}),
+    timeoutMs: 30_000,
+    label: `verifying mlx and mlx_lm in ${options.venvDir}`,
   });
-  if (!verified.available || !verified.python) {
-    throw new Error(`Provisioned MLX venv at ${options.venvDir}, but import mlx, mlx_lm failed (${verified.reason ?? "unknown error"})`);
-  }
   if (options.env === undefined && options.platform === process.platform && options.arch === process.arch) {
     probeMlxPython({ refresh: true });
   }
-  return verified.python;
+  return venvPython;
 }
 
 async function runDownload(selection: RuntimeSelection, options: DownloadOptions, emit: (progress: DownloadProgress) => void): Promise<DownloadResult> {
