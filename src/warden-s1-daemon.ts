@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,8 +18,17 @@ export const DEFAULT_IDLE_SHUTDOWN_SEC = 1800;
 export const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 export const DEFAULT_LOCK_TIMEOUT_MS = 35_000;
 export const DEFAULT_RPC_TIMEOUT_MS = 15_000;
+export const ONNX_MIN_TIMEOUT_MS = 15_000;
+export const ONNX_DEFAULT_TIMEOUT_CUTOFF_MS = 5_000;
 
 export type WardenS1Runtime = "mlx" | "onnx";
+
+export function effectiveWardenS1TimeoutMs(timeoutMs: number, runtime?: WardenS1Runtime): number {
+  if (runtime === "onnx" && timeoutMs <= ONNX_DEFAULT_TIMEOUT_CUTOFF_MS) {
+    return Math.max(timeoutMs, ONNX_MIN_TIMEOUT_MS);
+  }
+  return timeoutMs;
+}
 
 export interface DaemonMetadata {
   readonly pid: number;
@@ -52,6 +61,7 @@ export interface EnsureDaemonOptions {
   readonly ortPath?: string;
   readonly mockWeights?: boolean;
   readonly stepDelayMs?: number;
+  readonly threads?: number;
   readonly startupTimeoutMs?: number;
   readonly lockTimeoutMs?: number;
   readonly healthTimeoutMs?: number;
@@ -111,6 +121,158 @@ export function daemonLockPath(stateDir: string): string {
 
 export function daemonPagesPath(stateDir: string): string {
   return join(stateDir, "pages");
+}
+
+export function daemonPidsDir(stateDir: string): string {
+  return join(stateDir, "pids");
+}
+
+export function daemonPidFilePath(stateDir: string, pid: number): string {
+  return join(daemonPidsDir(stateDir), `${pid}.json`);
+}
+
+export interface DaemonPidRecord {
+  readonly pid: number;
+  readonly instanceId: string;
+  readonly startedAt: string;
+  readonly runtime?: WardenS1Runtime;
+}
+
+function writeDaemonPidRecord(stateDir: string, record: DaemonPidRecord): void {
+  try {
+    mkdirSync(daemonPidsDir(stateDir), { recursive: true, mode: 0o700 });
+    writeFileAtomicSync(daemonPidFilePath(stateDir, record.pid), `${JSON.stringify(record)}\n`);
+  } catch {
+    // Best-effort PID registry write.
+  }
+}
+
+function removeDaemonPidRecord(stateDir: string, pid: number, expectedInstanceId?: string): void {
+  const path = daemonPidFilePath(stateDir, pid);
+  if (!existsSync(path)) return;
+  try {
+    if (expectedInstanceId) {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<DaemonPidRecord>;
+      if (parsed.instanceId && parsed.instanceId !== expectedInstanceId) return;
+    }
+    unlinkSync(path);
+  } catch {
+    try {
+      unlinkSync(path);
+    } catch {
+      // Already removed.
+    }
+  }
+}
+
+function readProcessCommandLine(pid: number): string | undefined {
+  if (process.platform === "linux") {
+    try {
+      const raw = readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0+/g, " ").trim();
+      if (raw) return raw;
+    } catch {
+      // Fall through to ps check.
+    }
+  }
+  if (process.platform !== "win32") {
+    try {
+      const out = execFileSync("ps", ["-p", String(pid), "-o", "args="], {
+        encoding: "utf8",
+        timeout: 1000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      if (out) return out;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function isOwnedWardenS1Process(pid: number, instanceId?: string): boolean {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  if (!isPidAlive(pid)) return false;
+  if (process.platform === "win32") return true;
+  const cmdline = readProcessCommandLine(pid);
+  if (!cmdline) return false;
+  if (instanceId && cmdline.includes(instanceId)) return true;
+  return /warden[-_]s1|warden_s1_mlx_daemon|--instance-id/i.test(cmdline);
+}
+
+async function terminatePidWithEscalation(pid: number, sigtermWaitMs: number, sigkillWaitMs = 1000): Promise<boolean> {
+  if (pid === process.pid) return false;
+  if (!isPidAlive(pid)) return true;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    // Already exited.
+  }
+  const termDeadline = Date.now() + Math.max(100, sigtermWaitMs);
+  while (Date.now() < termDeadline && isPidAlive(pid)) {
+    await sleep(25);
+  }
+  if (!isPidAlive(pid)) return true;
+  // Native C++ ORT inference blocks JS SIGTERM handlers until InferenceSession.run returns; escalate to SIGKILL.
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already exited.
+  }
+  const killDeadline = Date.now() + Math.max(200, sigkillWaitMs);
+  while (Date.now() < killDeadline && isPidAlive(pid)) {
+    await sleep(25);
+  }
+  return !isPidAlive(pid);
+}
+
+export async function sweepOrphanDaemonPids(
+  stateDirInput: string,
+  options?: { readonly keepPid?: number; readonly keepInstanceId?: string; readonly timeoutMs?: number },
+): Promise<number[]> {
+  const stateDir = resolve(stateDirInput);
+  const pidsDir = daemonPidsDir(stateDir);
+  if (!existsSync(pidsDir)) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(pidsDir).filter((name) => name.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const reaped: number[] = [];
+  const sigtermWaitMs = Math.max(200, Math.min(1000, options?.timeoutMs ?? 1000));
+  for (const name of entries) {
+    const filePath = join(pidsDir, name);
+    let parsed: Partial<DaemonPidRecord> | undefined;
+    try {
+      parsed = JSON.parse(readFileSync(filePath, "utf8")) as Partial<DaemonPidRecord>;
+    } catch {
+      try { unlinkSync(filePath); } catch {}
+      continue;
+    }
+    const pid = parsed?.pid;
+    const instanceId = typeof parsed?.instanceId === "string" ? parsed.instanceId : undefined;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+      try { unlinkSync(filePath); } catch {}
+      continue;
+    }
+    if (options?.keepPid === pid && (!options.keepInstanceId || options.keepInstanceId === instanceId)) {
+      continue;
+    }
+    if (!isPidAlive(pid)) {
+      try { unlinkSync(filePath); } catch {}
+      continue;
+    }
+    if (!isOwnedWardenS1Process(pid, instanceId)) {
+      try { unlinkSync(filePath); } catch {}
+      continue;
+    }
+    const dead = await terminatePidWithEscalation(pid, sigtermWaitMs, 1000);
+    if (dead) {
+      reaped.push(pid);
+      try { unlinkSync(filePath); } catch {}
+    }
+  }
+  return reaped;
 }
 
 function removeDaemonPagesDir(stateDir: string): void {
@@ -364,6 +526,8 @@ export async function ensureWardenS1Daemon(options: EnsureDaemonOptions): Promis
     const prior = readDaemonMetadata(stateDir);
     if (prior && isPidAlive(prior.pid)) {
       await stopWardenS1Daemon(stateDir, 5000);
+    } else {
+      await sweepOrphanDaemonPids(stateDir, { timeoutMs: 3000 });
     }
 
     const instanceId = randomUUID();
@@ -430,6 +594,7 @@ export async function ensureWardenS1Daemon(options: EnsureDaemonOptions): Promis
       if (options.ramSlots !== undefined) args.push("--ram-slots", String(options.ramSlots));
       if (options.maxTokens !== undefined) args.push("--max-tokens", String(options.maxTokens));
       if (options.stepDelayMs !== undefined) args.push("--step-delay-ms", String(options.stepDelayMs));
+      if (options.threads !== undefined) args.push("--threads", String(options.threads));
     }
 
     const logFd = openSync(logPath, "a", 0o600);
@@ -455,6 +620,12 @@ export async function ensureWardenS1Daemon(options: EnsureDaemonOptions): Promis
     if (!childPid) {
       throw new Error(`Failed to spawn Warden-S1 ${options.runtime} daemon (${command})`);
     }
+    writeDaemonPidRecord(stateDir, {
+      pid: childPid,
+      instanceId,
+      startedAt: new Date().toISOString(),
+      runtime: options.runtime,
+    });
 
     const deadline = Date.now() + startupTimeoutMs;
     while (Date.now() < deadline) {
@@ -465,6 +636,7 @@ export async function ensureWardenS1Daemon(options: EnsureDaemonOptions): Promis
         if (health) return ep;
       }
       if (exitedEarly || !isPidAlive(childPid)) {
+        removeDaemonPidRecord(stateDir, childPid, instanceId);
         const tail = readLogTail(logPath);
         throw new Error(
           `Warden-S1 ${options.runtime} daemon exited during startup (code=${String(exitCode)}): ${tail || "no log output"}`,
@@ -473,11 +645,8 @@ export async function ensureWardenS1Daemon(options: EnsureDaemonOptions): Promis
       await sleep(40);
     }
 
-    try {
-      process.kill(childPid, "SIGTERM");
-    } catch {
-      // Child already exited.
-    }
+    await terminatePidWithEscalation(childPid, 500, 1000);
+    removeDaemonPidRecord(stateDir, childPid, instanceId);
     const tail = readLogTail(logPath);
     throw new Error(`Timed out after ${startupTimeoutMs} ms waiting for Warden-S1 ${options.runtime} daemon: ${tail}`);
   } finally {
@@ -496,46 +665,51 @@ export async function getWardenS1DaemonStatus(stateDirInput?: string, healthTime
   return { running: true, endpoint, stats };
 }
 
-export async function stopWardenS1Daemon(stateDirInput?: string, timeoutMs = 5000): Promise<{ stopped: boolean; pid?: number }> {
+export async function stopWardenS1Daemon(
+  stateDirInput?: string,
+  timeoutMs = 5000,
+): Promise<{ stopped: boolean; pid?: number; reapedPids?: number[] }> {
   const stateDir = stateDirInput ? resolve(stateDirInput) : defaultWardenS1StateDir();
   const meta = readDaemonMetadata(stateDir);
   if (!meta) {
+    const reaped = await sweepOrphanDaemonPids(stateDir, { timeoutMs });
     removeDaemonPagesDir(stateDir);
+    if (reaped.length > 0) {
+      return { stopped: true, pid: reaped[0]!, reapedPids: reaped };
+    }
     return { stopped: false };
   }
   const endpoint = toEndpoint(meta, stateDir);
 
   if (isPidAlive(meta.pid)) {
+    let shutdownAccepted = false;
     try {
-      await fetch(`${endpoint.url}/admin/shutdown`, {
+      const res = await fetch(`${endpoint.url}/admin/shutdown`, {
         method: "POST",
         headers: { Authorization: `Bearer ${meta.token}`, "Content-Type": "application/json" },
         body: "{}",
         signal: AbortSignal.timeout(Math.min(1500, timeoutMs)),
       });
+      shutdownAccepted = res.ok;
     } catch {
-      // Fall through to PID polling and SIGTERM fallback.
+      // Fall through immediately to SIGTERM -> SIGKILL escalation.
     }
 
-    const gracefulDeadline = Date.now() + Math.min(3000, timeoutMs);
-    while (Date.now() < gracefulDeadline && isPidAlive(meta.pid)) {
-      await sleep(40);
+    if (shutdownAccepted) {
+      const gracefulDeadline = Date.now() + Math.min(2500, Math.max(250, Math.floor(timeoutMs * 0.5)));
+      while (Date.now() < gracefulDeadline && isPidAlive(meta.pid)) {
+        await sleep(25);
+      }
     }
 
-    if (isPidAlive(meta.pid)) {
-      try {
-        process.kill(meta.pid, "SIGTERM");
-      } catch {
-        // Already exited.
-      }
-      const killDeadline = Date.now() + Math.max(500, timeoutMs - 3000);
-      while (Date.now() < killDeadline && isPidAlive(meta.pid)) {
-        await sleep(40);
-      }
+    if (isPidAlive(meta.pid) && isOwnedWardenS1Process(meta.pid, meta.instanceId)) {
+      const sigtermWaitMs = Math.max(250, Math.min(1500, shutdownAccepted ? timeoutMs - 2500 : timeoutMs));
+      await terminatePidWithEscalation(meta.pid, sigtermWaitMs, 1000);
     }
   }
 
-  if (!isPidAlive(meta.pid)) {
+  const mainDead = !isPidAlive(meta.pid);
+  if (mainDead) {
     const cur = readDaemonMetadata(stateDir);
     if (cur && cur.instanceId === meta.instanceId) {
       try {
@@ -544,10 +718,19 @@ export async function stopWardenS1Daemon(stateDirInput?: string, timeoutMs = 500
         // Already cleaned up by daemon on exit.
       }
     }
-    removeDaemonPagesDir(stateDir);
-    return { stopped: true, pid: meta.pid };
+    removeDaemonPidRecord(stateDir, meta.pid, meta.instanceId);
   }
-  return { stopped: false, pid: meta.pid };
+
+  const reaped = await sweepOrphanDaemonPids(stateDir, {
+    ...(mainDead ? {} : { keepPid: meta.pid, keepInstanceId: meta.instanceId }),
+    timeoutMs,
+  });
+
+  if (mainDead) {
+    removeDaemonPagesDir(stateDir);
+    return { stopped: true, pid: meta.pid, ...(reaped.length ? { reapedPids: reaped } : {}) };
+  }
+  return { stopped: false, pid: meta.pid, ...(reaped.length ? { reapedPids: reaped } : {}) };
 }
 
 async function daemonPost<T>(

@@ -2133,8 +2133,19 @@ def main() -> None:
         "idleShutdownSec": args.idle_shutdown_sec,
         "token": token,
     }
+    pid_file: Path | None = (args.state_file.parent / "pids" / f"{os.getpid()}.json") if args.state_file is not None else None
     if args.state_file is not None:
         _write_state_file_atomic(args.state_file, metadata)
+        if pid_file is not None:
+            _write_state_file_atomic(
+                pid_file,
+                {
+                    "pid": os.getpid(),
+                    "instanceId": instance_id,
+                    "startedAt": metadata["startedAt"],
+                    "runtime": "mlx",
+                },
+            )
     print(json.dumps({"ready": True, "url": f"http://{bound_host}:{bound_port}", **metadata}), flush=True)
 
     try:
@@ -2144,6 +2155,7 @@ def main() -> None:
         server.server_close()
         engine.stop()
         _remove_state_file_if_owned(args.state_file, instance_id)
+        _remove_state_file_if_owned(pid_file, instance_id)
 
 
 if __name__ == "__main__":
