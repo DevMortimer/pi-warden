@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,18 +11,23 @@ import {
   daemonLockPath,
   daemonMetadataPath,
   daemonPagesPath,
+  daemonPidFilePath,
+  daemonPidsDir,
   daemonPrewarm,
   daemonSalience,
   daemonStats,
+  effectiveWardenS1TimeoutMs,
   ensureWardenS1Daemon,
   getWardenS1DaemonStatus,
   isPidAlive,
   stopWardenS1Daemon,
+  sweepOrphanDaemonPids,
 } from "../src/warden-s1-daemon.js";
 import { materializeMlxDaemonScript, WARDEN_S1_MLX_DAEMON_PY } from "../src/warden-s1-mlx-worker.js";
 import {
   createByteLevelFallbackTokenizer,
   createSyntheticOnnxBackend,
+  resolveOnnxThreads,
   startOnnxWorkerServer,
   WardenS1OnnxBackend,
   WardenS1OnnxEngine,
@@ -636,6 +641,9 @@ test("WardenS1OnnxBackend.loadFromLocalDir disables ORT CPU memory arena and mem
       assert.equal(call.options.enableCpuMemArena, false, `${call.modelPath}: enableCpuMemArena must be false`);
       assert.equal(call.options.enableMemPattern, false, `${call.modelPath}: enableMemPattern must be false`);
       assert.equal(call.options.graphOptimizationLevel, "all");
+      assert.equal(call.options.intraOpNumThreads, resolveOnnxThreads());
+      assert.equal(call.options.interOpNumThreads, 1);
+      assert.equal(call.options.executionMode, "sequential");
       assert.deepEqual(call.options.executionProviders, ["cpu"]);
     }
 
@@ -791,6 +799,228 @@ test("ensureWardenS1Daemon rejects a missing modelDir before acquiring the lock 
     assert.equal(st.instance_id, live.instanceId);
   } finally {
     await stopWardenS1Daemon(stateDir);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveOnnxThreads caps default threads to [1, 4] and honors explicit and env overrides", () => {
+  assert.equal(resolveOnnxThreads(undefined, {}, 1), 1);
+  assert.equal(resolveOnnxThreads(undefined, {}, 2), 2);
+  assert.equal(resolveOnnxThreads(undefined, {}, 3), 3);
+  assert.equal(resolveOnnxThreads(undefined, {}, 4), 2);
+  assert.equal(resolveOnnxThreads(undefined, {}, 8), 4);
+  assert.equal(resolveOnnxThreads(undefined, {}, 32), 4);
+  assert.equal(resolveOnnxThreads(undefined, { PI_WARDEN_ONNX_THREADS: "3" }, 16), 3);
+  assert.equal(resolveOnnxThreads(undefined, { PI_WARDEN_ONNX_THREADS: "0" }, 16), 4);
+  assert.equal(resolveOnnxThreads(6, { PI_WARDEN_ONNX_THREADS: "2" }, 16), 6);
+});
+
+test("effectiveWardenS1TimeoutMs enforces 25000 ms floor only for ONNX when timeoutMs <= 5000", () => {
+  assert.equal(effectiveWardenS1TimeoutMs(5000, "onnx"), 25_000);
+  assert.equal(effectiveWardenS1TimeoutMs(3000, "onnx"), 25_000);
+  assert.equal(effectiveWardenS1TimeoutMs(30_000, "onnx"), 30_000);
+  assert.equal(effectiveWardenS1TimeoutMs(5000, "mlx"), 5000);
+  assert.equal(effectiveWardenS1TimeoutMs(5000, undefined), 5000);
+});
+
+test("WardenS1OnnxBackend auto-probes CUDA on NVIDIA Linux and DirectML on Windows with clean CPU fallback", async () => {
+  const dir = makeTempDir("ws1-gpu-probe-");
+  try {
+    const modelDir = join(dir, "model");
+    mkdirSync(modelDir, { recursive: true });
+    writeFileSync(
+      join(modelDir, "onnx_manifest.json"),
+      JSON.stringify({
+        architecture: { hidden_size: 1024 },
+        models: {
+          embed: { onnx: "embed.onnx" },
+          backbone: { onnx: "backbone.onnx", outputs: ["hidden"] },
+          heads: { onnx: "heads.onnx" },
+        },
+        auxiliary: { tokenizer: "tokenizer.json" },
+      }),
+    );
+    writeFileSync(join(modelDir, "tokenizer.json"), JSON.stringify({ model: { vocab: { a: 0 }, merges: [] } }));
+
+    // 1. Linux with NVIDIA device: CUDA succeeds -> activeExecutionProvider === "cuda".
+    const cudaOkStub = join(dir, "ort-cuda-ok.mjs");
+    writeFileSync(
+      cudaOkStub,
+      [
+        `export class Tensor { constructor(type, data, dims) { this.type = type; this.data = data; this.dims = dims; } }`,
+        `export const InferenceSession = { async create(_p, opts) { return { opts, async run() { return {}; } }; } };`,
+      ].join("\n"),
+    );
+    const cudaBackend = await WardenS1OnnxBackend.loadFromLocalDir({
+      modelDir,
+      ortPath: cudaOkStub,
+      platform: "linux",
+      env: {},
+      hasNvidiaDevice: true,
+      threads: 2,
+    });
+    assert.equal(cudaBackend.activeExecutionProvider, "cuda");
+    assert.equal(cudaBackend.intraOpNumThreads, 2);
+    const engine = new WardenS1OnnxEngine({
+      backend: cudaBackend,
+      modelId: "warden-s1-test",
+      modelDir,
+      pageDir: join(dir, "pages"),
+    });
+    assert.equal(engine.stats().activeExecutionProvider, "cuda");
+    assert.equal(engine.stats().intraOpNumThreads, 2);
+
+    // 2. Linux with CUDA_VISIBLE_DEVICES="0" where CUDA EP shared library is missing -> falls back to ["cpu"].
+    const fallbackLogPath = join(dir, "fallback-log.json");
+    const cudaFailStub = join(dir, "ort-cuda-fail.mjs");
+    writeFileSync(
+      cudaFailStub,
+      [
+        `import { writeFileSync } from "node:fs";`,
+        `const seen = [];`,
+        `export class Tensor { constructor(type, data, dims) { this.type = type; this.data = data; this.dims = dims; } }`,
+        `export const InferenceSession = {`,
+        `  async create(_p, opts) {`,
+        `    seen.push(opts.executionProviders);`,
+        `    writeFileSync(${JSON.stringify(fallbackLogPath)}, JSON.stringify(seen));`,
+        `    if (opts.executionProviders.includes("cuda") || opts.executionProviders.includes("dml")) {`,
+        `      throw new Error("EP shared library unavailable");`,
+        `    }`,
+        `    return { async run() { return {}; } };`,
+        `  },`,
+        `};`,
+      ].join("\n"),
+    );
+    const linuxFallback = await WardenS1OnnxBackend.loadFromLocalDir({
+      modelDir,
+      ortPath: cudaFailStub,
+      platform: "linux",
+      env: { CUDA_VISIBLE_DEVICES: "0" },
+      hasNvidiaDevice: false,
+    });
+    assert.equal(linuxFallback.activeExecutionProvider, "cpu");
+    const linuxSeen = JSON.parse(readFileSync(fallbackLogPath, "utf8")) as string[][];
+    assert.deepEqual(linuxSeen[0], ["cuda", "cpu"]);
+    assert.deepEqual(linuxSeen[1], ["cpu"]);
+
+    // 3. Linux with CUDA_VISIBLE_DEVICES="-1" skips CUDA probe completely.
+    const linuxDisabled = await WardenS1OnnxBackend.loadFromLocalDir({
+      modelDir,
+      ortPath: cudaOkStub,
+      platform: "linux",
+      env: { CUDA_VISIBLE_DEVICES: "-1" },
+      hasNvidiaDevice: false,
+    });
+    assert.equal(linuxDisabled.activeExecutionProvider, "cpu");
+
+    // 4. Windows tries ["dml", "cpu"] and falls back cleanly to ["cpu"].
+    const winFallback = await WardenS1OnnxBackend.loadFromLocalDir({
+      modelDir,
+      ortPath: cudaFailStub,
+      platform: "win32",
+      env: {},
+    });
+    assert.equal(winFallback.activeExecutionProvider, "cpu");
+    const winSeen = JSON.parse(readFileSync(fallbackLogPath, "utf8")) as string[][];
+    assert.ok(winSeen.some((eps) => eps[0] === "dml" && eps[1] === "cpu"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("stopWardenS1Daemon escalates to SIGKILL on SIGTERM-ignoring worker and reaps orphaned PIDs", async () => {
+  const stateDir = makeTempDir("ws1-sigkill-");
+  const stubbornScript = [
+    `process.on("SIGTERM", () => {});`,
+    `setInterval(() => {}, 1000);`,
+  ].join("\n");
+  const spawnStubborn = (instanceId: string) =>
+    spawn(process.execPath, ["-e", stubbornScript, "--", "--warden-s1-test", "--instance-id", instanceId], {
+      detached: true,
+      stdio: "ignore",
+    });
+
+  let stubbornPid: number | undefined;
+  let orphanPid: number | undefined;
+  try {
+    // 1. Stubborn primary daemon ignoring SIGTERM is terminated via SIGKILL escalation.
+    const stubborn = spawnStubborn("stubborn-primary");
+    stubbornPid = stubborn.pid!;
+    stubborn.unref();
+    assert.equal(isPidAlive(stubbornPid), true);
+    mkdirSync(daemonPidsDir(stateDir), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      daemonMetadataPath(stateDir),
+      JSON.stringify({
+        pid: stubbornPid,
+        instanceId: "stubborn-primary",
+        host: "127.0.0.1",
+        port: 1,
+        runtime: "onnx",
+        modelId: "warden-s1-test",
+        modelDir: "mock-weights",
+        startedAt: new Date().toISOString(),
+        idleShutdownSec: 60,
+        token: "tok",
+      }),
+    );
+    writeFileSync(
+      daemonPidFilePath(stateDir, stubbornPid),
+      JSON.stringify({ pid: stubbornPid, instanceId: "stubborn-primary", startedAt: new Date().toISOString(), runtime: "onnx" }),
+    );
+
+    // 2. Also plant a second stubborn orphan recorded only in <stateDir>/pids/<pid>.json.
+    const orphan = spawnStubborn("stubborn-orphan");
+    orphanPid = orphan.pid!;
+    orphan.unref();
+    assert.equal(isPidAlive(orphanPid), true);
+    writeFileSync(
+      daemonPidFilePath(stateDir, orphanPid),
+      JSON.stringify({ pid: orphanPid, instanceId: "stubborn-orphan", startedAt: new Date().toISOString(), runtime: "onnx" }),
+    );
+
+    // 3. Plant a PID record pointing at our own non-worker process to prove ownership check never kills unrelated PIDs.
+    writeFileSync(
+      daemonPidFilePath(stateDir, process.pid),
+      JSON.stringify({ pid: process.pid, instanceId: "self-recycled", startedAt: new Date().toISOString(), runtime: "onnx" }),
+    );
+
+    const stopRes = await stopWardenS1Daemon(stateDir, 600);
+    assert.equal(stopRes.stopped, true);
+    assert.equal(isPidAlive(stubbornPid), false, "SIGTERM-ignoring primary daemon must be killed via SIGKILL");
+    assert.equal(isPidAlive(orphanPid), false, "orphaned worker in pids/ must be reaped via SIGKILL");
+    assert.equal(existsSync(daemonMetadataPath(stateDir)), false);
+    assert.equal(existsSync(daemonPidFilePath(stateDir, stubbornPid)), false);
+    assert.equal(existsSync(daemonPidFilePath(stateDir, orphanPid)), false);
+    assert.equal(existsSync(daemonPidFilePath(stateDir, process.pid)), false, "stale non-warden PID record is unlinked safely");
+
+    // 4. Verify ensureWardenS1Daemon sweeps an orphan recorded in pids/ before spawning a fresh daemon.
+    const orphan2 = spawnStubborn("stubborn-orphan-2");
+    const orphan2Pid = orphan2.pid!;
+    orphan2.unref();
+    mkdirSync(daemonPidsDir(stateDir), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      daemonPidFilePath(stateDir, orphan2Pid),
+      JSON.stringify({ pid: orphan2Pid, instanceId: "stubborn-orphan-2", startedAt: new Date().toISOString(), runtime: "onnx" }),
+    );
+    const fresh = await ensureWardenS1Daemon({
+      runtime: "onnx",
+      mockWeights: true,
+      stateDir,
+      idleShutdownSec: 60,
+      startupTimeoutMs: 15_000,
+    });
+    assert.equal(isPidAlive(orphan2Pid), false, "ensureWardenS1Daemon must reap prior orphaned worker");
+    assert.equal(isPidAlive(fresh.pid), true);
+    assert.equal(existsSync(daemonPidFilePath(stateDir, fresh.pid)), true);
+
+    const swept = await sweepOrphanDaemonPids(stateDir, { keepPid: fresh.pid, keepInstanceId: fresh.instanceId });
+    assert.deepEqual(swept, []);
+    assert.equal(isPidAlive(fresh.pid), true, "keepPid protects the live healthy daemon");
+  } finally {
+    if (stubbornPid && isPidAlive(stubbornPid)) { try { process.kill(stubbornPid, "SIGKILL"); } catch {} }
+    if (orphanPid && isPidAlive(orphanPid)) { try { process.kill(orphanPid, "SIGKILL"); } catch {} }
+    await stopWardenS1Daemon(stateDir, 2000).catch(() => undefined);
     rmSync(stateDir, { recursive: true, force: true });
   }
 });

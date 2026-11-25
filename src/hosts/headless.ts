@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { authStatePath, createTypeSafe, openUsageLedger, resolveBackend, usagePath } from "pi-typesafe";
 import type { Judge } from "pi-typesafe";
 import { isLocalBackendMode, judgeOptions, toCloudBackendSpec } from "../backend.js";
+import { effectiveWardenS1TimeoutMs } from "../warden-s1-daemon.js";
 import { connectWardenS1, createWardenS1Judge, resolveLocalWardenS1, WardenS1SessionTracker } from "../warden-s1-session.js";
 import { loadConfig, userConfigPath } from "../config.js";
 import type { RulesConfig, WardenConfig } from "../config.js";
@@ -104,6 +105,12 @@ async function ignored(path: string, cwd: string, signal: AbortSignal): Promise<
 
 export type Unavailable = { reason: "no-consent" | "bad-backend" | "no-key" | "no-local-model"; problem: string };
 
+export function headlessTimeoutMs(config: WardenConfig): number {
+  if (!isLocalBackendMode(config.typesafeBackend)) return config.timeoutMs;
+  const local = resolveLocalWardenS1(config.localModel);
+  return effectiveWardenS1TimeoutMs(config.timeoutMs, local.ready ? local.daemon.runtime : undefined);
+}
+
 /**
  * Headless consent and the active backend's key come from the environment only; each request reserves a session slot
  * first. The local model needs neither: choosing it in the user config is the opt-in, it spends nothing, and a hook
@@ -164,7 +171,7 @@ export class RulesRun {
     };
     const judge = await this.judge();
     if ("reason" in judge) return unavailable(judge.reason, `rules judgments are off; ${judge.problem}.`);
-    const verdict = await evaluateRulesTarget(target, target.tool, target.path, { cwd: project, config: config.rules, set, judge, timeoutMs: config.timeoutMs, signal });
+    const verdict = await evaluateRulesTarget(target, target.tool, target.path, { cwd: project, config: config.rules, set, judge, timeoutMs: headlessTimeoutMs(config), signal });
     if (verdict.source === "error") return unavailable(verdict.errorCode === "budget" ? "budget" : "judge-error", verdict.errorCode === "budget" ? "rules request budget reached or unavailable; no further request was submitted." : "rules judgment failed; this call continues.");
     const cap = rulesCapNotice(verdict);
     if (cap && state.once("notice", "rules-cap")) notes.push(cap);

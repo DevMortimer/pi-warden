@@ -1,14 +1,18 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ask, choice, noul } from "pi-typesafe";
 import type { IntegrationErrorCode, Judge } from "pi-typesafe";
 import type { ContextConfig, SecurityConfig } from "./config.js";
 import { formatExcerpt, formatQuestion } from "./excerpt.js";
 import type { OutputFormat } from "./excerpt.js";
+import { stripShellComments } from "./guard.js";
 import type { TaskMessage } from "./guard.js";
 import { findSecrets, partitionSecrets, redact, secretFingerprint, secretIds } from "./redact.js";
+import { projectPath } from "./rules.js";
+import { classifyTaintSource, detectOfflineInjection } from "./taint.js";
+import { commandOf } from "./tools.js";
 
 export type Retention = "all" | "errors_and_summary" | "summary_only";
 
@@ -166,6 +170,41 @@ export interface OutputVerdict {
   errorCode?: IntegrationErrorCode;
 }
 
+const SUSPICIOUS_OUTPUT_CUE_RE = /\b(?:ignore\s+(?:all\s+|any\s+|previous\s+|prior\s+|above\s+|earlier\s+)*instructions?|system\s*prompt|you\s+are\s+now|disregard\s+(?:all\s+|any\s+)?(?:previous|prior|above|earlier)\b|exfiltrat\w*|upload\s+[^\n]{0,120}\b(?:secret|token|key|env|credential)\w*|send\s+[^\n]{0,120}\b(?:webhook|attacker|external)\w*)|<\s*(?:system|instruction|assistant|developer)\b/i;
+
+const REMOTE_SHELL_CMD_RE = /\b(?:curl|wget|Invoke-WebRequest|iwr|ssh|scp|sftp|rsync|ncat|netcat|socat|aria2c|lynx|w3m)\b|(?:^|[;&|(\n"'`]\s*)(?:(?:sudo|env|command|timeout(?:\s+\S+)?|time)\s+)*(?:gh|nc|http|ftp|telnet|fetch)\b|\bgit(?:\s+(?:-[a-zA-Z]|--[a-z-]+(?:=\S+)?|-C\s+\S+))*\s+(?:clone|fetch|pull|ls-remote)\b/i;
+
+const LOCAL_LIST_TOOLS = new Set(["grep", "find", "ls"]);
+
+export function hasSuspiciousOutputCue(text: string): boolean {
+  if (!text) return false;
+  return detectOfflineInjection(text) !== undefined || SUSPICIOUS_OUTPUT_CUE_RE.test(text);
+}
+
+export function isTrustedLocalOutputSource(
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd: string,
+  allowHosts?: readonly string[],
+): boolean {
+  if (toolName === "read" || toolName === "view_file") {
+    const rawPath = typeof input.path === "string" ? input.path.trim() : "";
+    return rawPath.length > 0 && projectPath(rawPath, cwd) !== undefined;
+  }
+  if (LOCAL_LIST_TOOLS.has(toolName)) {
+    const rawPath = typeof input.path === "string" ? input.path.trim() : "";
+    if (!rawPath) return true;
+    return projectPath(rawPath, cwd) !== undefined || resolve(cwd, rawPath) === resolve(cwd);
+  }
+  const view = commandOf(toolName, input);
+  if (view) {
+    if (classifyTaintSource({ tool: toolName, input, cwd, allowHosts }).untrusted) return false;
+    const clean = stripShellComments(view.command);
+    return !REMOTE_SHELL_CMD_RE.test(clean);
+  }
+  return false;
+}
+
 export interface OutputOptions {
   security: SecurityConfig;
   context: ContextConfig;
@@ -175,6 +214,8 @@ export interface OutputOptions {
   /** Multiple text/image blocks keep their positions; do not flatten them for compression. */
   compressible?: boolean;
   taskContext?: readonly TaskMessage[];
+  localFastGate?: boolean;
+  trustedLocalSource?: boolean;
 }
 
 export async function evaluateOutput(tool: string, text: string, task: string | undefined, options: OutputOptions, compressionLearner?: CompressionLearner): Promise<OutputVerdict> {
@@ -186,10 +227,9 @@ export async function evaluateOutput(tool: string, text: string, task: string | 
     verdict.secretIds = secretIds(real);
   }
   if (synthetic.length) verdict.syntheticIds = secretIds(synthetic);
-  const contentTool = tool.startsWith("mcp") || /(?:^|_)(?:read|fetch_content|fetch_and_index|web_search|search|search_code|source_check|search_graph|query_graph|trace_path|get_architecture|get_code_snippet|get_search_content)$/.test(tool);
-  const security = options.security.enabled && (contentTool || text.length >= 2048);
+  const contentTool = tool.startsWith("mcp") || /(?:^|_)(?:read|fetch|webfetch|fetch_content|fetch_and_index|web_search|search|search_code|source_check|search_graph|query_graph|trace_path|get_architecture|get_code_snippet|get_search_content)$/.test(tool);
   const compress = options.context.enabled && options.compressible !== false && text.length >= options.context.tailMinChars;
-  
+
   // Use compression learner to suggest retention if available
   if (compress && compressionLearner) {
     const suggestedRetention = compressionLearner.bestRetention(tool);
@@ -198,7 +238,14 @@ export async function evaluateOutput(tool: string, text: string, task: string | 
       verdict.retention = suggestedRetention;
     }
   }
-  
+
+  const suspiciousCue = options.localFastGate ? hasSuspiciousOutputCue(text) : false;
+  if (options.localFastGate && options.trustedLocalSource && !compress && !suspiciousCue) {
+    return verdict;
+  }
+
+  const security = options.security.enabled && (contentTool || text.length >= 2048 || suspiciousCue);
+
   if (!text.trim() || options.signal?.aborted || !options.judge || (!security && !compress)) return verdict;
   const result = await ask(options.judge, buildOutputRequest(tool, text, task, security, compress, options.taskContext), { timeoutMs: options.timeoutMs, ...(options.signal ? { signal: options.signal } : {}) });
   if (!result.ok) {

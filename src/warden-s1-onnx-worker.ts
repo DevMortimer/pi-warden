@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { cpus, homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -143,6 +143,8 @@ export interface SalienceResponse {
 export interface DaemonStats {
   readonly status: "ok";
   readonly runtime: "mlx" | "onnx";
+  readonly activeExecutionProvider?: string;
+  readonly intraOpNumThreads?: number;
   readonly pid: number;
   readonly instance_id: string;
   readonly model: string;
@@ -899,6 +901,49 @@ function disposeSessionRecord(rec: SessionPageRecord | null | undefined): void {
   disposeTensor(rec.chunkReprs);
 }
 
+export function resolveOnnxThreads(
+  explicit?: number,
+  env: NodeJS.ProcessEnv = process.env,
+  cpuCount: number = cpus().length,
+): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 1) {
+    return Math.floor(explicit);
+  }
+  const raw = env.PI_WARDEN_ONNX_THREADS?.trim();
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 1) {
+      return Math.floor(parsed);
+    }
+  }
+  const logical = Number.isFinite(cpuCount) && cpuCount >= 1 ? Math.floor(cpuCount) : 1;
+  return Math.max(1, Math.min(4, logical <= 3 ? logical : Math.floor(logical / 2)));
+}
+
+function resolveOnnxProviderCandidates(params: {
+  providers?: readonly string[];
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  hasNvidiaDevice?: boolean;
+}): string[][] {
+  if (params.providers && params.providers.length > 0) {
+    return [[...params.providers]];
+  }
+  const platform = params.platform ?? process.platform;
+  const env = params.env ?? process.env;
+  if (platform === "linux") {
+    const cudaVisible = env.CUDA_VISIBLE_DEVICES?.trim();
+    const hasCudaEnv = Boolean(cudaVisible && cudaVisible !== "-1");
+    const hasNvidia = params.hasNvidiaDevice ?? existsSync("/dev/nvidia0");
+    if (hasNvidia || hasCudaEnv) {
+      return [["cuda", "cpu"], ["cpu"]];
+    }
+  } else if (platform === "win32") {
+    return [["dml", "cpu"], ["cpu"]];
+  }
+  return [["cpu"]];
+}
+
 export class WardenS1OnnxBackend {
   readonly ort: OrtLike;
   readonly manifest: OnnxModelManifest;
@@ -906,6 +951,8 @@ export class WardenS1OnnxBackend {
   readonly embedSession: OrtSessionLike;
   readonly backboneSession: OrtSessionLike;
   readonly headsSession: OrtSessionLike;
+  readonly activeExecutionProvider: string;
+  readonly intraOpNumThreads: number;
   readonly hiddenSize: number;
   readonly maxChunkLen: number;
   readonly linearLayers: readonly number[];
@@ -926,6 +973,8 @@ export class WardenS1OnnxBackend {
     embedSession: OrtSessionLike;
     backboneSession: OrtSessionLike;
     headsSession: OrtSessionLike;
+    activeExecutionProvider?: string;
+    intraOpNumThreads?: number;
   }) {
     this.ort = params.ort;
     this.manifest = params.manifest;
@@ -933,6 +982,8 @@ export class WardenS1OnnxBackend {
     this.embedSession = params.embedSession;
     this.backboneSession = params.backboneSession;
     this.headsSession = params.headsSession;
+    this.activeExecutionProvider = params.activeExecutionProvider ?? "cpu";
+    this.intraOpNumThreads = params.intraOpNumThreads ?? resolveOnnxThreads();
     const arch = params.manifest.architecture;
     this.hiddenSize = arch.hidden_size ?? HIDDEN_SIZE;
     this.maxChunkLen = arch.max_chunk_len ?? MAX_CHUNK_LEN;
@@ -953,6 +1004,10 @@ export class WardenS1OnnxBackend {
     ortPath?: string;
     stateDir?: string;
     providers?: readonly string[];
+    threads?: number;
+    platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
+    hasNvidiaDevice?: boolean;
   }): Promise<WardenS1OnnxBackend> {
     const ort = await loadOrtModule(params.ortPath, params.stateDir);
     const manifestRaw = await readFile(join(params.modelDir, "onnx_manifest.json"), "utf8");
@@ -960,18 +1015,44 @@ export class WardenS1OnnxBackend {
     const tokFile = manifest.auxiliary?.tokenizer ?? "tokenizer.json";
     const tokRaw = await readFile(join(params.modelDir, tokFile), "utf8");
     const tokenizer = new ByteLevelBPETokenizer(JSON.parse(tokRaw) as TokenizerJsonLike);
-    const providers = params.providers && params.providers.length > 0 ? [...params.providers] : ["cpu"];
-    // Disable ORT's CPU BFC arena and mem-pattern so variable-length (1, L, 1024) prewarms do not retain multi-GiB RSS.
-    const opts = {
-      executionProviders: providers,
-      graphOptimizationLevel: "all",
-      enableCpuMemArena: false,
-      enableMemPattern: false,
-    };
-    const embedSession = await ort.InferenceSession.create(join(params.modelDir, manifest.models.embed.onnx), opts);
-    const backboneSession = await ort.InferenceSession.create(join(params.modelDir, manifest.models.backbone.onnx), opts);
-    const headsSession = await ort.InferenceSession.create(join(params.modelDir, manifest.models.heads.onnx), opts);
-    return new WardenS1OnnxBackend({ ort, manifest, tokenizer, embedSession, backboneSession, headsSession });
+    const intraOpNumThreads = resolveOnnxThreads(params.threads, params.env);
+    const candidates = resolveOnnxProviderCandidates(params);
+    const embedPath = join(params.modelDir, manifest.models.embed.onnx);
+    const backbonePath = join(params.modelDir, manifest.models.backbone.onnx);
+    const headsPath = join(params.modelDir, manifest.models.heads.onnx);
+    let lastErr: unknown;
+    for (let idx = 0; idx < candidates.length; idx++) {
+      const providers = candidates[idx]!;
+      // Cap OpenMP spin-threads and disable CPU BFC arena/mem-pattern so background prewarms stay polite and bounded in RSS.
+      const opts = {
+        executionProviders: providers,
+        graphOptimizationLevel: "all",
+        enableCpuMemArena: false,
+        enableMemPattern: false,
+        intraOpNumThreads,
+        interOpNumThreads: 1,
+        executionMode: "sequential",
+      };
+      try {
+        const embedSession = await ort.InferenceSession.create(embedPath, opts);
+        const backboneSession = await ort.InferenceSession.create(backbonePath, opts);
+        const headsSession = await ort.InferenceSession.create(headsPath, opts);
+        return new WardenS1OnnxBackend({
+          ort,
+          manifest,
+          tokenizer,
+          embedSession,
+          backboneSession,
+          headsSession,
+          activeExecutionProvider: providers[0] ?? "cpu",
+          intraOpNumThreads,
+        });
+      } catch (err) {
+        lastErr = err;
+        if (idx === candidates.length - 1) throw err;
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
   initEmptyState(): OnnxState {
@@ -2696,6 +2777,8 @@ export class WardenS1OnnxEngine {
     return {
       status: "ok",
       runtime: "onnx",
+      activeExecutionProvider: this.backend.activeExecutionProvider,
+      intraOpNumThreads: this.backend.intraOpNumThreads,
       pid: process.pid,
       instance_id: this.instanceId,
       model: this.modelId,
@@ -2743,6 +2826,7 @@ export interface OnnxWorkerServerOptions {
   readonly instanceId?: string;
   readonly stateFile?: string;
   readonly stepDelayMs?: number;
+  readonly threads?: number;
 }
 
 export interface OnnxWorkerServerHandle {
@@ -2831,6 +2915,13 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
         ? join(options.stateDir, "pages")
         : join(homedir(), ".cache", "pi-warden", "pages"));
 
+  const pidsDir = options.stateFile
+    ? join(dirname(options.stateFile), "pids")
+    : options.stateDir
+      ? join(options.stateDir, "pids")
+      : undefined;
+  const pidFile = pidsDir ? join(pidsDir, `${process.pid}.json`) : undefined;
+
   const backend =
     options.backend ??
     (options.mockWeights
@@ -2839,6 +2930,7 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
           modelDir,
           ...(options.ortPath !== undefined ? { ortPath: options.ortPath } : {}),
           ...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
+          ...(options.threads !== undefined ? { threads: options.threads } : {}),
         }));
 
   const engine = new WardenS1OnnxEngine({
@@ -2979,6 +3071,7 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
     });
     engine.close();
     removeStateFileIfOwned(options.stateFile, instanceId);
+    removeStateFileIfOwned(pidFile, instanceId);
   };
 
   await new Promise<void>((resolveP, rejectP) => {
@@ -3018,6 +3111,17 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
     };
     writeFileAtomicSync(options.stateFile, `${JSON.stringify(metadata, null, 2)}\n`);
   }
+  if (pidFile) {
+    try {
+      mkdirSync(dirname(pidFile), { recursive: true, mode: 0o700 });
+      writeFileAtomicSync(
+        pidFile,
+        `${JSON.stringify({ pid: process.pid, instanceId, startedAt: new Date().toISOString(), runtime: "onnx" })}\n`,
+      );
+    } catch {
+      // Best-effort PID registry write.
+    }
+  }
 
   return {
     server,
@@ -3047,6 +3151,7 @@ function parseCliArgs(argv: readonly string[]): OnnxWorkerServerOptions {
   let instanceId: string | undefined;
   let stateFile: string | undefined;
   let stepDelayMs: number | undefined;
+  let threads: number | undefined;
 
   for (let i = 2; i < argv.length; i++) {
     const flag = argv[i];
@@ -3066,6 +3171,7 @@ function parseCliArgs(argv: readonly string[]): OnnxWorkerServerOptions {
     else if (flag === "--instance-id") instanceId = next();
     else if (flag === "--state-file") stateFile = next();
     else if (flag === "--step-delay-ms") stepDelayMs = Number(next());
+    else if (flag === "--threads") threads = Number(next());
   }
 
   return {
@@ -3084,6 +3190,7 @@ function parseCliArgs(argv: readonly string[]): OnnxWorkerServerOptions {
     ...(instanceId !== undefined ? { instanceId } : {}),
     ...(stateFile !== undefined ? { stateFile } : {}),
     ...(stepDelayMs !== undefined ? { stepDelayMs } : {}),
+    ...(threads !== undefined ? { threads } : {}),
   };
 }
 

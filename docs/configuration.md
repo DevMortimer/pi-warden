@@ -103,7 +103,7 @@ Missing keys use these defaults:
 | `localModel.cacheDir` | Folder for the downloaded weights; a leading `~` is the home folder. Default `~/.cache/pi-warden/models`. |
 | `localModel.idleShutdownSec` | Seconds without a request after which the shared daemon exits and frees its memory; the next judged call starts it again. Default 1800, minimum 10. |
 | `mode` | `steer` (hold goes back to the agent), `confirm` (dialog for you), `advise` (never holds). User file only; a project's `.pi/pi-warden.json` cannot change it, by design. |
-| `timeoutMs` | Per-request timeout. On timeout the call is allowed with a warning when `action.failOpen` is true. |
+| `timeoutMs` | Per-request timeout. On timeout the call is allowed with a warning when `action.failOpen` is true. When local Warden-S1 runs on the ONNX runtime and `timeoutMs <= 5000`, pi-warden enforces a 25,000 ms floor so cold CPU prewarm and first evaluation do not cancel early. |
 | `maxRequests` | Per-session request budget. When spent, pi-warden says so once and continues with offline checks. On SubQ a request carries at most 16 questions, so a judgment with more than 16 takes more than one request and uses more of this budget. |
 | `action.tools` | Tools the action guard inspects. Add your own shell-like tools here. |
 | `action.irreversible` | `warn` and `confirm` (hold) thresholds on P(irreversible). Defaults `warn` 0.5 and `confirm` 0.9. The 0.9 hold waits for the confidence at which the judge stops being wrong: on the recorded action-guard corpus the judge errs on 15% of calls below confidence 0.8 and under 1% above it, and a 0.9 cutoff removed about 52 false alarms on a held-out half of the corpus without losing a true catch. Calls the judge scores 0.5 to 0.9 warn instead of holding. See [guards.md](guards.md#irreversible-hold-threshold-2026-09-29-held-out-split). |
@@ -387,6 +387,7 @@ It is a backstop for sanctioned work, not a boundary anyone hostile respects: ke
 | `HF_ENDPOINT=<url>` | The host `/warden model download` reads from, instead of `https://huggingface.co`: the Hugging Face hub's own variable for a mirror. Each file is still checked against its SHA-256. |
 | `HF_TOKEN=<token>` | Sent as the bearer token of the download requests, for a gated mirror. |
 | `PI_WARDEN_PYTHON=<path>` | The Python the MLX runtime probes first for `mlx` and `mlx_lm`, before the managed `<cache>/runtime/mlx-venv/bin/python3`. |
+| `PI_WARDEN_ONNX_THREADS=<n>` | Overrides the ONNX Runtime `intraOpNumThreads` cap (default `min(4, max(1, cpus <= 3 ? cpus : floor(cpus / 2)))`). |
 | `PI_WARDEN_S1_MOCK_WEIGHTS=1` | For tests and proofs: the local daemon runs small synthetic weights in place of the download, so its answers mean nothing. Never set it for real work. |
 | `PI_WARDEN_MODE=steer\|confirm\|advise` | Overrides `mode`. |
 | `PI_WARDEN_DB=<path>` | SQLite file for the hold records, instead of `holds.db` next to the user config. |
