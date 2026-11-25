@@ -951,7 +951,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const daemon = await getWardenS1DaemonStatus();
     if (!daemon.running || !daemon.stats || !daemon.endpoint) return "Daemon: not running.";
     const s = daemon.stats;
-    return `Daemon: running (pid ${s.pid}, ${s.runtime}, 127.0.0.1:${daemon.endpoint.port}, model ${s.model}); sessions: ${s.active_session_id ? 1 : 0} active (L1), ${s.l2_ram_sessions} in RAM (L2), ${s.l3_disk_sessions} on disk (L3); ${s.requests_served} requests, ${s.prewarms_served} prewarms; cache ${s.cache_exact_hits} exact / ${s.cache_delta_hits} delta / ${s.cache_misses} miss${s.rss_mb !== undefined ? `; ${Math.round(s.rss_mb)} MiB resident` : ""}.`;
+    const mem = s.metal_active_mb !== undefined
+      ? `; ${Math.round(s.metal_active_mb)} MiB Metal${s.rss_mb !== undefined ? ` (${Math.round(s.rss_mb)} MiB RSS)` : ""}`
+      : s.rss_mb !== undefined
+        ? `; ${Math.round(s.rss_mb)} MiB resident`
+        : "";
+    return `Daemon: running (pid ${s.pid}, ${s.runtime}, 127.0.0.1:${daemon.endpoint.port}, model ${s.model}); sessions: ${s.active_session_id ? 1 : 0} active (L1), ${s.l2_ram_sessions} in RAM (L2), ${s.l3_disk_sessions} on disk (L3); ${s.requests_served} requests, ${s.prewarms_served} prewarms; cache ${s.cache_exact_hits} exact / ${s.cache_delta_hits} delta / ${s.cache_misses} miss${mem}.`;
   };
   /** `/warden model status`: the runtime, the repo, the cache folder and what is in it, the setting, and the shared daemon. */
   const modelStatus = async (config: WardenConfig): Promise<string[]> => {
@@ -4089,7 +4094,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const sub = argument ?? "status";
           if (sub === "status") { report((await modelStatus(config)).join(" ")); return; }
           if (sub === "download") {
-            const status = getWardenS1Status(config.localModel, { dirs });
+            const status = getWardenS1Status(config.localModel, { dirs, forDownload: true });
             if (status.ready) { report(`Warden-S1 (${status.runtime}) is already downloaded and verified at ${status.modelDir}.`); return; }
             if (status.diagnostic) { report(`Warden-S1 cannot be downloaded: ${status.diagnostic}`, "warning"); return; }
             const use = isLocalBackendMode(config.typesafeBackend) ? "Local judgments start with the next check." : "Set typesafeBackend to \"warden-s1\" or \"auto\" to judge with it.";

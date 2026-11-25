@@ -20,6 +20,9 @@ import {
   getWardenS1Status,
   probeMlxPython,
   removeWardenS1,
+  resolveCacheRoot,
+  resolveManagedMlxPython,
+  resolveManagedMlxVenvDir,
   resolveModelsRoot,
   selectWardenS1Runtime,
   type DownloadProgress,
@@ -100,10 +103,40 @@ test("selectWardenS1Runtime: hardware-aware selection matrix across macOS/Linux/
     { runtime: "auto", cacheDir },
     { platform: "darwin", arch: "arm64", probeMlx: () => ({ available: false, reason: "no mlx_lm" }) },
   );
-  assert.equal(appleWithoutMlx.runtime, "onnx");
-  assert.equal(appleWithoutMlx.repoId, ONNX_MODEL_REPO);
-  assert.equal(appleWithoutMlx.modelId, ONNX_MODEL_ID);
+  assert.equal(appleWithoutMlx.runtime, "mlx");
+  assert.equal(appleWithoutMlx.repoId, MLX_MODEL_REPO);
+  assert.equal(appleWithoutMlx.modelId, MLX_MODEL_ID);
+  assert.equal(appleWithoutMlx.mlxPython, undefined);
   assert.equal(appleWithoutMlx.diagnostic, undefined);
+
+  // An existing ONNX-only install on Apple Silicon stays on ONNX under auto until download upgrades to MLX.
+  const onnxFallbackRoot = makeTempDir(t, "pi-warden-s1-onnx-fallback-");
+  const onnxDir = join(onnxFallbackRoot, "warden-s1-752m-onnx-int4");
+  mkdirSync(onnxDir, { recursive: true });
+  writeFileSync(
+    join(onnxDir, READY_MANIFEST_FILE),
+    JSON.stringify({
+      version: 1,
+      runtime: "onnx",
+      repoId: ONNX_MODEL_REPO,
+      modelId: ONNX_MODEL_ID,
+      downloadedAt: new Date().toISOString(),
+      totalBytes: 12,
+      files: [{ path: "config.json", bytes: 12, sha256: sha256Hex(Buffer.from("placeholder!")) }],
+    }),
+  );
+  const appleOnnxFallback = selectWardenS1Runtime(
+    { runtime: "auto", cacheDir: onnxFallbackRoot },
+    { platform: "darwin", arch: "arm64", probeMlx: () => ({ available: false, reason: "no mlx_lm" }) },
+  );
+  assert.equal(appleOnnxFallback.runtime, "onnx");
+  assert.equal(appleOnnxFallback.repoId, ONNX_MODEL_REPO);
+  const appleOnnxForDownload = selectWardenS1Runtime(
+    { runtime: "auto", cacheDir: onnxFallbackRoot },
+    { platform: "darwin", arch: "arm64", forDownload: true, probeMlx: () => ({ available: false, reason: "no mlx_lm" }) },
+  );
+  assert.equal(appleOnnxForDownload.runtime, "mlx");
+  assert.equal(appleOnnxForDownload.repoId, MLX_MODEL_REPO);
 
   const linux = selectWardenS1Runtime({ runtime: "auto", cacheDir }, { platform: "linux", arch: "x64" });
   assert.equal(linux.runtime, "onnx");
@@ -162,6 +195,42 @@ test("probeMlxPython: skips spawning outside darwin/arm64 and probes candidates 
   assert.equal(macProbe.python, "/custom/venv/bin/python3");
   assert.equal(seen.length, 1);
   assert.ok(seen[0]!.timeoutMs <= 3000, "MLX probe timeout must be bounded <= 3000 ms");
+
+  // Managed mlx-venv under PI_WARDEN_CACHE_DIR is probed right after PI_WARDEN_PYTHON and before global python3.
+  const isolatedCache = "/var/tmp/pi-warden-managed-probe-test";
+  const expectedManagedPython = resolveManagedMlxPython({ PI_WARDEN_CACHE_DIR: isolatedCache });
+  assert.equal(resolveCacheRoot({ PI_WARDEN_CACHE_DIR: isolatedCache }), isolatedCache);
+  assert.equal(resolveManagedMlxVenvDir({ PI_WARDEN_CACHE_DIR: isolatedCache }), join(isolatedCache, "runtime", "mlx-venv"));
+  assert.equal(expectedManagedPython, join(isolatedCache, "runtime", "mlx-venv", "bin", "python3"));
+
+  const probedOrder: string[] = [];
+  const managedProbe = probeMlxPython({
+    platform: "darwin",
+    arch: "arm64",
+    env: { PI_WARDEN_CACHE_DIR: isolatedCache },
+    exec: python => {
+      probedOrder.push(python);
+      return python === expectedManagedPython ? { status: 0 } : { status: 1 };
+    },
+  });
+  assert.equal(managedProbe.available, true);
+  assert.equal(managedProbe.python, expectedManagedPython);
+  assert.deepEqual(probedOrder, [expectedManagedPython], "managed mlx-venv must be probed before global python3");
+
+  const withOverrideOrder: string[] = [];
+  probeMlxPython({
+    platform: "darwin",
+    arch: "arm64",
+    env: { PI_WARDEN_PYTHON: "/override/python3", PI_WARDEN_CACHE_DIR: isolatedCache },
+    exec: python => {
+      withOverrideOrder.push(python);
+      return { status: 1 };
+    },
+  });
+  assert.equal(withOverrideOrder[0], "/override/python3");
+  assert.equal(withOverrideOrder[1], expectedManagedPython);
+  assert.equal(withOverrideOrder[2], "python3");
+  assert.ok(withOverrideOrder.includes("/opt/homebrew/bin/python3.12"));
 });
 
 test("resolveModelsRoot: respects cacheDir, PI_WARDEN_CACHE_DIR, and default home path", () => {
@@ -399,6 +468,88 @@ test("downloadWardenS1 (MLX): downloads HF tree LFS and metadata files with SHA-
     /Apple Silicon/,
   );
   assert.equal(treeFetches, 1, "refused forced-MLX download must make zero network requests");
+});
+
+test("downloadWardenS1 (MLX auto-provision): darwin/arm64 auto invokes ensureMlxRuntime when no global mlx exists and transitions ready false -> true", async t => {
+  const cacheRoot = makeTempDir(t, "pi-warden-s1-mlx-provision-");
+  const env: NodeJS.ProcessEnv = { PI_WARDEN_CACHE_DIR: cacheRoot };
+  const payloads = new Map<string, Buffer>();
+  for (const name of MLX_REQUIRED_FILES) {
+    payloads.set(name, Buffer.from(`mlx-provision-${name}-`.repeat(8), "utf8"));
+  }
+  const tree = MLX_REQUIRED_FILES.map(path => {
+    const buf = payloads.get(path)!;
+    return { type: "file", path, size: buf.length, oid: gitBlobOid(buf), lfs: { oid: sha256Hex(buf), size: buf.length } };
+  });
+  const { baseUrl } = await startServer(t, (req, res) => {
+    if (req.url === `/api/models/${MLX_MODEL_REPO}/tree/main`) {
+      const body = Buffer.from(JSON.stringify(tree), "utf8");
+      res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
+      res.end(body);
+      return;
+    }
+    const prefix = `/${MLX_MODEL_REPO}/resolve/main/`;
+    if (req.url?.startsWith(prefix)) {
+      const name = decodeURIComponent(req.url.slice(prefix.length));
+      const buf = payloads.get(name);
+      if (buf) {
+        serveWithRange(req, res, buf, { etag: `"${sha256Hex(buf)}"` });
+        return;
+      }
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  let provisionedPython: string | undefined;
+  const dynamicProbe = () => provisionedPython
+    ? { available: true, python: provisionedPython }
+    : { available: false, reason: "no global mlx" };
+
+  const before = getWardenS1Status({ runtime: "auto" }, { platform: "darwin", arch: "arm64", env, probeMlx: dynamicProbe });
+  assert.equal(before.runtime, "mlx");
+  assert.equal(before.ready, false);
+  assert.equal(before.diagnostic, undefined);
+
+  let seenVenvDir: string | undefined;
+  const result = await downloadWardenS1(
+    { runtime: "auto" },
+    {
+      platform: "darwin",
+      arch: "arm64",
+      env,
+      hfBaseUrl: baseUrl,
+      probeMlx: dynamicProbe,
+      ensureMlxRuntime: async venvDir => {
+        seenVenvDir = venvDir;
+        const bin = join(venvDir, "bin", "python3");
+        mkdirSync(join(venvDir, "bin"), { recursive: true });
+        writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+        provisionedPython = bin;
+        return bin;
+      },
+    },
+  );
+  assert.equal(result.runtime, "mlx");
+  assert.equal(seenVenvDir, resolveManagedMlxVenvDir(env));
+  assert.equal(result.mlxPython, resolveManagedMlxPython(env));
+
+  // If weights are on disk without mlxPython available yet, status stays ready: false with a clear provisioning hint.
+  const withoutPython = getWardenS1Status(
+    { runtime: "auto" },
+    { platform: "darwin", arch: "arm64", env, probeMlx: () => ({ available: false, reason: "missing" }) },
+  );
+  assert.equal(withoutPython.runtime, "mlx");
+  assert.equal(withoutPython.installed, true);
+  assert.equal(withoutPython.ready, false);
+  assert.match(withoutPython.diagnostic ?? "", /\/warden model download.*mlx-venv/);
+
+  // Once the managed mlx-venv python probes cleanly, status is ready: true.
+  const after = getWardenS1Status({ runtime: "auto" }, { platform: "darwin", arch: "arm64", env, probeMlx: dynamicProbe });
+  assert.equal(after.runtime, "mlx");
+  assert.equal(after.ready, true);
+  assert.equal(after.mlxPython, resolveManagedMlxPython(env));
+  assert.equal(after.diagnostic, undefined);
 });
 
 test("removeWardenS1: deletes downloaded model directories and stray .part files and reports freed bytes", t => {
