@@ -2,7 +2,7 @@
 """Render the pi-warden 3D explainer film with Blender Cycles on an NVIDIA GPU host.
 
     python3 scripts/render-3d-explainer.py --mode keyframes      # graded 1080p stills + contact sheet
-    python3 scripts/render-3d-explainer.py --mode full           # 1920x1080 60 fps MP4 with sound, GIF, contact sheet
+    python3 scripts/render-3d-explainer.py --mode full           # 1920x1080 60 fps MP4 with sound, web copy, GIF, contact sheet
     python3 scripts/render-3d-explainer.py --mode chunk --range 0:779
     python3 scripts/render-3d-explainer.py --mode assemble       # joins chunks rendered on several hosts
     python3 scripts/render-3d-explainer.py --mode audio          # the soundtrack alone
@@ -40,6 +40,7 @@ WIDTH, HEIGHT = 1920, 1080
 DURATION = 26.0
 FRAME_COUNT = round(DURATION * FPS)
 SAMPLE_RATE = 48000
+AUDIO_KBPS = 192
 
 BLENDER_VERSION = "4.5.17"
 BLENDER_URL = f"https://download.blender.org/release/Blender4.5/blender-{BLENDER_VERSION}-linux-x64.tar.xz"
@@ -103,10 +104,7 @@ LOOP_PASSES = (14.78, 15.66, 16.46, 17.18)
 COUNT_SETTLE = [EV["stats"] + 0.16 + 0.09 * k for k in range(6)]
 KEYFRAMES = [0.70, 4.45, 10.55, 12.75, 17.70, 19.00, 21.60, 24.40]
 CUTS = (1.62, 11.20, 14.35)
-
-
-def cut_edge(t):
-    return (math.floor(t * FPS) + 0.5) / FPS
+TAKE_FRAMES = [0] + [math.floor(t * FPS) + 1 for t in CUTS] + [FRAME_COUNT]
 
 
 def clamp(v, lo=0.0, hi=1.0):
@@ -346,13 +344,11 @@ CAM_TAKES = []
 def _cam_takes():
     rm = SPEC["rm"]["path"]
     chase = [(t, (rm(t)[0] + 0.2, -6.4, 1.3), (rm(t)[0] + 1.4, 0.0, 1.0)) for t in (1.62, 1.9, 2.2, 2.5)]
-    take_a = dict(start=-1.0,
-                  pos=Track([(0.0, (-6.7, -3.9, 1.75), (0.0, 0.0, 0.0)), (1.30, (-7.2, -3.45, 1.5)), (1.62, (-6.6, -3.9, 1.45))]),
+    take_a = dict(pos=Track([(0.0, (-6.7, -3.9, 1.75), (0.0, 0.0, 0.0)), (1.30, (-7.2, -3.45, 1.5)), (1.62, (-6.6, -3.9, 1.45))]),
                   tgt=Track([(0.0, (-10.15, 0.2, 1.1), (0.0, 0.0, 0.0)), (1.30, (-10.0, 0.0, 1.0), (0.0, 0.0, 0.0)),
                              (1.45, (-8.3, 0.0, 1.0)), (1.62, (-5.4, 0.0, 0.95))]),
                   lens=Track([(0.0, 40.0), (1.62, 36.0)]))
-    take_b = dict(start=cut_edge(CUTS[0]),
-                  pos=Track([(t, p) for t, p, _ in chase] + [
+    take_b = dict(pos=Track([(t, p) for t, p, _ in chase] + [
                       (EV["freeze"], (2.3, -4.6, 1.45), (0.12, 0.15, 0.0)), (4.30, (2.5, -4.35, 1.42), (0.05, 0.1, 0.0)),
                       (6.00, (-0.5, -10.5, 3.8)), (8.85, (2.0, -3.6, 1.75)), (9.60, (2.2, -3.45, 1.65)), (10.85, (1.85, -3.55, 1.6)),
                       (CUTS[1], (1.4, -3.75, 1.6), (-1.5, 0.0, 0.0))]),
@@ -362,14 +358,12 @@ def _cam_takes():
                       (CUTS[1], (3.3, 0.0, 1.0), (-2.5, 0.0, 0.0))]),
                   lens=Track([(CUTS[0], 32.0), (2.5, 34.0), (EV["freeze"], 38.0), (4.30, 38.0), (6.0, 32.0), (8.85, 36.0),
                               (CUTS[1], 36.0)]))
-    take_c = dict(start=cut_edge(CUTS[1]),
-                  pos=Track([(CUTS[1], (1.2, -5.4, 1.3), (0.0, 0.0, 0.0)), (EV["fetch_stop"], (2.4, -4.8, 1.2)),
+    take_c = dict(pos=Track([(CUTS[1], (1.2, -5.4, 1.3), (0.0, 0.0, 0.0)), (EV["fetch_stop"], (2.4, -4.8, 1.2)),
                              (CUTS[2], (2.7, -4.6, 1.2), (0.1, 0.05, 0.0))]),
                   tgt=Track([(CUTS[1], (3.4, 0.0, 2.0), (0.0, 0.0, 0.0)), (EV["fetch_stop"], (4.5, 0.0, 1.8)),
                              (CUTS[2], (4.6, 0.0, 1.8), (0.03, 0.0, 0.0))]),
                   lens=Track([(CUTS[1], 28.0), (CUTS[2], 28.0)]))
-    take_d = dict(start=cut_edge(CUTS[2]),
-                  pos=Track([(CUTS[2], (-1.4, -7.4, 6.2), (0.4, 0.15, -0.2)), (17.30, (-0.2, -7.0, 5.6)), (18.10, (0.9, -8.0, 2.8)),
+    take_d = dict(pos=Track([(CUTS[2], (-1.4, -7.4, 6.2), (0.4, 0.15, -0.2)), (17.30, (-0.2, -7.0, 5.6)), (18.10, (0.9, -8.0, 2.8)),
                              (19.95, (1.5, -7.6, 2.75)), (22.60, (-2.8, -17.0, 7.6)), (DURATION, (-2.2, -19.5, 8.8), (0.18, -0.7, 0.35))]),
                   tgt=Track([(CUTS[2], (-0.6, -1.4, 0.7), (0.35, 0.1, 0.0)), (17.30, (0.8, -1.0, 0.8)), (18.10, (4.0, 0.0, 2.55)),
                              (19.95, (4.2, 0.0, 2.5)), (22.60, (2.2, 0.0, 1.2)), (DURATION, (2.4, 0.0, 1.6), (0.05, 0.0, 0.1))]),
@@ -381,11 +375,7 @@ CAM_TAKES = _cam_takes()
 SHAKES = ((EV["gate_land"], 0.07, 0.14), (EV["shatter"], 0.025, 0.10), (EV["stats_zero"], 0.02, 0.12))
 
 
-def camera(t):
-    take = CAM_TAKES[0]
-    for candidate in CAM_TAKES:
-        if t >= candidate["start"]:
-            take = candidate
+def camera(take, t):
     pos, tgt, lens = take["pos"](t), take["tgt"](t), take["lens"](t)
     jolt = [0.0, 0.0, 0.0]
     for t0, amp, tau in SHAKES:
@@ -1119,35 +1109,39 @@ def build_scene(fonts):
     return rig
 
 
-def build_camera():
-    data = bpy.data.cameras.new("camera")
-    data.sensor_width = 36.0
-    data.clip_start = 0.05
-    data.clip_end = 400.0
-    data.dof.use_dof = True
-    data.dof.aperture_blades = 7
-    cam = bl_object("camera", data)
-    bpy.context.scene.camera = cam
-    target = bl_object("camera_target", None)
-    con = cam.constraints.new("TRACK_TO")
-    con.target = target
-    con.track_axis = "TRACK_NEGATIVE_Z"
-    con.up_axis = "UP_Y"
-    return cam, target
+# One camera per take, switched by a marker: Cycles blurs each frame with the camera active at its centre. A cut inside
+# one camera's curve smeared the frame before it, because FCurve.update() merges keys under 0.01 frames apart.
+def build_cameras():
+    scene = bpy.context.scene
+    rigs = []
+    for k, first in enumerate(TAKE_FRAMES[:-1]):
+        data = bpy.data.cameras.new(f"camera{k}")
+        data.sensor_width = 36.0
+        data.clip_start = 0.05
+        data.clip_end = 400.0
+        data.dof.use_dof = True
+        data.dof.aperture_blades = 7
+        cam = bl_object(f"camera{k}", data)
+        target = bl_object(f"camera_target{k}", None)
+        con = cam.constraints.new("TRACK_TO")
+        con.target = target
+        con.track_axis = "TRACK_NEGATIVE_Z"
+        con.up_axis = "UP_Y"
+        scene.timeline_markers.new(f"take{k}", frame=first).camera = cam
+        rigs.append((cam, target))
+    scene.camera = rigs[0][0]
+    return rigs
 
 
-def animate_camera(cam, target):
-    frames = list(ALL_FRAMES)
-    for cut in CUTS:
-        edge = cut_edge(cut) * FPS
-        frames += [edge - 0.001, edge]
-    poses = [(f, camera(f / FPS)) for f in sorted(set(frames))]
-    for i in range(3):
-        bake(cam, "location", [(f, p[0][i]) for f, p in poses], i)
-        bake(target, "location", [(f, p[1][i]) for f, p in poses], i)
-    bake(cam.data, "lens", [(f, p[2]) for f, p in poses])
-    bake(cam.data, "dof.aperture_fstop", [(f, p[3]) for f, p in poses])
-    bake(cam.data, "dof.focus_distance", [(f, p[4]) for f, p in poses])
+def animate_cameras(rigs):
+    for k, ((cam, target), take) in enumerate(zip(rigs, CAM_TAKES)):
+        poses = [(f, camera(take, f / FPS)) for f in range(TAKE_FRAMES[k] - 2, TAKE_FRAMES[k + 1] + 2)]
+        for i in range(3):
+            bake(cam, "location", [(f, p[0][i]) for f, p in poses], i)
+            bake(target, "location", [(f, p[1][i]) for f, p in poses], i)
+        bake(cam.data, "lens", [(f, p[2]) for f, p in poses])
+        bake(cam.data, "dof.aperture_fstop", [(f, p[3]) for f, p in poses])
+        bake(cam.data, "dof.focus_distance", [(f, p[4]) for f, p in poses])
 
 
 def animate_capsules(rig):
@@ -1339,8 +1333,7 @@ def blender_main(argv):
     scene, device = bl_setup(a.samples, a.scale, a.device)
     fonts = {k: bpy.data.fonts.load(str(Path(a.fonts) / f)) for k, f in FONTS.items()}
     rig = build_scene(fonts)
-    cam, target = build_camera()
-    animate_camera(cam, target)
+    animate_cameras(build_cameras())
     animate_capsules(rig)
     animate_stage(rig)
     print(f"PWX scene ready in {time.time() - started:.1f}s on {device}", flush=True)
@@ -1947,7 +1940,7 @@ def encode_video(beauty, frames, font_dir, mp4, audio=None, keep=None):
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{WIDTH}x{HEIGHT}", "-r", str(FPS),
            "-i", "-"]
     if audio:
-        cmd += ["-i", str(audio), "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k", "-ar", str(SAMPLE_RATE)]
+        cmd += ["-i", str(audio), "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", f"{AUDIO_KBPS}k", "-ar", str(SAMPLE_RATE)]
     cmd += ["-vf", "scale=out_color_matrix=bt709:out_range=tv:flags=lanczos+accurate_rnd+full_chroma_int",
             "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.2",
             "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
@@ -1974,6 +1967,28 @@ def make_gif(mp4, gif):
         if size < 10 * 2 ** 20:
             return
     raise SystemExit("no GIF setting fits under 10 MiB")
+
+
+# GitHub's web upload takes a video of at most 10 MB on a free plan.
+WEB_LIMIT = 9.5 * 2 ** 20
+
+
+def encode_web(mp4, web):
+    kbps = round((9_400_000 - AUDIO_KBPS * 1000 / 8 * DURATION) * 8 / DURATION / 1000)
+    passlog = web.with_name(web.stem + "-pass")
+    video = ["-c:v", "libx264", "-preset", "slow", "-b:v", f"{kbps}k", "-x264-params", "aq-mode=3", "-pix_fmt", "yuv420p",
+             "-profile:v", "high", "-level:v", "4.2", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+             "-color_range", "tv", "-passlogfile", str(passlog)]
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(mp4), "-map", "0:v", *video, "-pass", "1", "-f", "null", "-"],
+                   check=True)
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(mp4), "-map", "0:v", "-map", "0:a", *video, "-pass", "2",
+                    "-c:a", "copy", "-movflags", "+faststart", str(web)], check=True)
+    for p in web.parent.glob(passlog.name + "*"):
+        p.unlink()
+    size = web.stat().st_size
+    print(f"web copy {web.name}: {kbps} kb/s video, {size / 2 ** 20:.2f} MiB", flush=True)
+    if size >= WEB_LIMIT:
+        raise SystemExit(f"{web.name} is {size / 2 ** 20:.2f} MiB, over the 9.5 MiB limit")
 
 
 def package(out, names, tar_path):
@@ -2046,13 +2061,15 @@ def main():
     listing.write_text("".join(f"file '{c.resolve()}'\n" for c in chunk_files))
     mp4 = out / "pi-warden-3d-explainer-1080p60.mp4"
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-i", str(audio),
-                    "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", str(SAMPLE_RATE),
+                    "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", f"{AUDIO_KBPS}k", "-ar", str(SAMPLE_RATE),
                     "-t", f"{DURATION}", "-movflags", "+faststart", str(mp4)], check=True)
     print(f"film: {mp4.name} {mp4.stat().st_size / 1e6:.1f} MB from {len(chunk_files)} chunk(s)", flush=True)
+    encode_web(mp4, out / "pi-warden-3d-explainer-github.mp4")
     make_gif(mp4, out / "pi-warden-3d-explainer-preview.gif")
     stills = sorted((out / "final-frames").glob("final-*.png"))
     contact_sheet([(s, float(s.stem.split("-")[-1][:-1])) for s in stills], out / "contact-sheet.png", fonts)
-    package(out, ["pi-warden-3d-explainer-1080p60.mp4", "pi-warden-3d-explainer-preview.gif", "contact-sheet.png",
+    package(out, ["pi-warden-3d-explainer-1080p60.mp4", "pi-warden-3d-explainer-github.mp4", "pi-warden-3d-explainer-preview.gif",
+                  "contact-sheet.png",
                   "pi-warden-3d-explainer.wav", *[f"final-frames/{s.name}" for s in stills]], out / "film.tar")
 
 
