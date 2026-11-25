@@ -1308,10 +1308,14 @@ export interface LocalWardenS1 {
 
 export function resolveLocalWardenS1(
   localModel: LocalModelConfig,
-  options: { readonly dirs?: HostDirs; readonly env?: NodeJS.ProcessEnv } = {},
+  options: { readonly dirs?: HostDirs; readonly env?: NodeJS.ProcessEnv; readonly refreshProbe?: boolean } = {},
 ): LocalWardenS1 {
   const env = options.env ?? process.env;
-  const status = getWardenS1Status(localModel, { ...(options.dirs ? { dirs: options.dirs } : {}), env });
+  const status = getWardenS1Status(localModel, {
+    ...(options.dirs ? { dirs: options.dirs } : {}),
+    ...(options.env !== undefined ? { env: options.env } : {}),
+    ...(options.refreshProbe !== undefined ? { refreshProbe: options.refreshProbe } : {}),
+  });
   const idle = localModel.idleShutdownSec === undefined ? {} : { idleShutdownSec: localModel.idleShutdownSec };
   if (env[MOCK_WEIGHTS_ENV] === "1") {
     return { status, mock: true, ready: true, daemon: { runtime: "onnx", mockWeights: true, ...idle } };

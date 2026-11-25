@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -179,6 +180,10 @@ test("probeMlxPython: skips spawning outside darwin/arm64 and probes candidates 
   assert.equal(linuxProbe.available, false);
   assert.equal(called, 0);
 
+  const expectedFastProbeArgs = [
+    "-c",
+    "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('mlx') and importlib.util.find_spec('mlx_lm') else 1)",
+  ];
   const seen: Array<{ python: string; timeoutMs: number }> = [];
   const macProbe = probeMlxPython({
     platform: "darwin",
@@ -187,14 +192,27 @@ test("probeMlxPython: skips spawning outside darwin/arm64 and probes candidates 
     timeoutMs: 99999,
     exec: (python, args, timeoutMs) => {
       seen.push({ python, timeoutMs });
-      assert.deepEqual(args, ["-c", "import mlx, mlx_lm"]);
+      assert.deepEqual(args, expectedFastProbeArgs);
       return python === "/custom/venv/bin/python3" ? { status: 0 } : { status: 1 };
     },
   });
   assert.equal(macProbe.available, true);
   assert.equal(macProbe.python, "/custom/venv/bin/python3");
   assert.equal(seen.length, 1);
-  assert.ok(seen[0]!.timeoutMs <= 3000, "MLX probe timeout must be bounded <= 3000 ms");
+  assert.equal(seen[0]!.timeoutMs, 15_000, "MLX probe timeout ceiling must be 15000 ms");
+
+  let defaultTimeoutSeen = 0;
+  probeMlxPython({
+    platform: "darwin",
+    arch: "arm64",
+    candidates: ["/cold/dyld/python3"],
+    exec: (_python, args, timeoutMs) => {
+      assert.deepEqual(args, expectedFastProbeArgs);
+      defaultTimeoutSeen = timeoutMs;
+      return { status: 0 };
+    },
+  });
+  assert.equal(defaultTimeoutSeen, 8000, "default MLX probe timeout must be 8000 ms so a 3500 ms cold dyld exec succeeds");
 
   // Managed mlx-venv under PI_WARDEN_CACHE_DIR is probed right after PI_WARDEN_PYTHON and before global python3.
   const isolatedCache = "/var/tmp/pi-warden-managed-probe-test";
@@ -231,6 +249,85 @@ test("probeMlxPython: skips spawning outside darwin/arm64 and probes candidates 
   assert.equal(withOverrideOrder[1], expectedManagedPython);
   assert.equal(withOverrideOrder[2], "python3");
   assert.ok(withOverrideOrder.includes("/opt/homebrew/bin/python3.12"));
+});
+
+test("probeMlxPython: uses importlib.util.find_spec against a real Python binary in < 300 ms without executing mlx_lm", t => {
+  const realPython = ["python3", "/opt/homebrew/bin/python3", "/usr/bin/python3"].find(candidate => {
+    const check = spawnSync(candidate, ["--version"], { encoding: "utf8", timeout: 2000, stdio: "ignore" });
+    return !check.error && check.status === 0;
+  });
+  assert.ok(realPython, "a real python3 binary is required on the test host");
+
+  const root = makeTempDir(t, "pi-warden-s1-fast-probe-");
+  const siteDir = join(root, "site-packages");
+  mkdirSync(join(siteDir, "mlx"), { recursive: true });
+  mkdirSync(join(siteDir, "mlx_lm"), { recursive: true });
+  writeFileSync(join(siteDir, "mlx", "__init__.py"), "raise RuntimeError('find_spec must not execute mlx')\n");
+  writeFileSync(join(siteDir, "mlx_lm", "__init__.py"), "raise RuntimeError('find_spec must not execute mlx_lm')\n");
+
+  const binDir = join(root, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const wrapper = join(binDir, "python3");
+  const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+  writeFileSync(wrapper, `#!/bin/sh\nPYTHONPATH=${shellQuote(siteDir)} exec ${shellQuote(realPython)} "$@"\n`);
+  chmodSync(wrapper, 0o755);
+
+  const res = probeMlxPython({
+    platform: "darwin",
+    arch: "arm64",
+    candidates: [wrapper],
+    refresh: true,
+  });
+
+  assert.equal(res.available, true);
+  assert.equal(res.python, wrapper);
+
+  // Measure direct real-Python find_spec latency (best of 2 to avoid parallel-test CPU spikes).
+  let bestMs = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < 2; i += 1) {
+    const t0 = performance.now();
+    probeMlxPython({
+      platform: "darwin",
+      arch: "arm64",
+      candidates: [realPython],
+      refresh: true,
+    });
+    bestMs = Math.min(bestMs, performance.now() - t0);
+  }
+  assert.ok(bestMs < 300, `expected real-Python find_spec probe < 300 ms, got ${Math.round(bestMs)} ms`);
+});
+
+test("probeMlxPython: never caches a timeout or spawn error as permanent available: false", t => {
+  if (process.platform !== "darwin" || process.arch !== "arm64") return;
+  const root = makeTempDir(t, "pi-warden-s1-timeout-cache-");
+  const binDir = join(root, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const py = join(binDir, "python3");
+  writeFileSync(py, "#!/bin/sh\nsleep 0.35\nexit 0\n");
+  chmodSync(py, 0o755);
+
+  const prevPython = process.env.PI_WARDEN_PYTHON;
+  const prevCache = process.env.PI_WARDEN_CACHE_DIR;
+  t.after(() => {
+    if (prevPython === undefined) delete process.env.PI_WARDEN_PYTHON;
+    else process.env.PI_WARDEN_PYTHON = prevPython;
+    if (prevCache === undefined) delete process.env.PI_WARDEN_CACHE_DIR;
+    else process.env.PI_WARDEN_CACHE_DIR = prevCache;
+  });
+
+  process.env.PI_WARDEN_CACHE_DIR = root;
+  process.env.PI_WARDEN_PYTHON = py;
+
+  const first = probeMlxPython({ timeoutMs: 100, refresh: true });
+  assert.equal(first.available, false);
+
+  // Replace the slow stub with a fast succeeding probe under the exact same cache key.
+  writeFileSync(py, "#!/bin/sh\nexit 0\n");
+  chmodSync(py, 0o755);
+
+  const second = probeMlxPython();
+  assert.equal(second.available, true, "transient timeout must not be cached as permanent available: false");
+  assert.equal(second.python, py);
 });
 
 test("resolveModelsRoot: respects cacheDir, PI_WARDEN_CACHE_DIR, and default home path", () => {
