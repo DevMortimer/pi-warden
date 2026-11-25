@@ -373,7 +373,8 @@ export async function ensureWardenS1Daemon(options: EnsureDaemonOptions): Promis
     let args: string[];
     if (options.runtime === "mlx") {
       const scriptPath = materializeMlxDaemonScript(join(stateDir, "runtime"));
-      command = options.pythonBin ?? "python3";
+      const managedMlxPython = join(stateDir, "runtime", "mlx-venv", "bin", "python3");
+      command = options.pythonBin ?? (existsSync(managedMlxPython) ? managedMlxPython : "python3");
       args = [
         scriptPath,
         "--mlx-dir",
@@ -435,6 +436,7 @@ export async function ensureWardenS1Daemon(options: EnsureDaemonOptions): Promis
       const child = spawn(command, args, {
         detached: true,
         stdio: ["ignore", logFd, logFd],
+        env: { ...process.env, ORT_DISABLE_TELEMETRY: "1" },
       });
       childPid = child.pid;
       child.once("exit", (code) => {

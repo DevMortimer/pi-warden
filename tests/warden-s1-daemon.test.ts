@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -24,6 +24,7 @@ import {
   createByteLevelFallbackTokenizer,
   createSyntheticOnnxBackend,
   startOnnxWorkerServer,
+  WardenS1OnnxBackend,
   WardenS1OnnxEngine,
 } from "../src/warden-s1-onnx-worker.js";
 
@@ -585,5 +586,173 @@ test("session page cleanup removes .ws1page files on fresh startup, server close
   } finally {
     await stopWardenS1Daemon(stateDir, 5000).catch(() => undefined);
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("WardenS1OnnxBackend.loadFromLocalDir disables ORT CPU memory arena and mem-pattern, and ensureWardenS1Daemon sets ORT_DISABLE_TELEMETRY=1", async () => {
+  const dir = makeTempDir("ws1-ort-opts-");
+  try {
+    const modelDir = join(dir, "model");
+    mkdirSync(modelDir, { recursive: true });
+    writeFileSync(
+      join(modelDir, "onnx_manifest.json"),
+      JSON.stringify({
+        architecture: { hidden_size: 1024 },
+        models: {
+          embed: { onnx: "embed.onnx" },
+          backbone: { onnx: "backbone.onnx", outputs: ["hidden"] },
+          heads: { onnx: "heads.onnx" },
+        },
+        auxiliary: { tokenizer: "tokenizer.json" },
+      }),
+    );
+    writeFileSync(join(modelDir, "tokenizer.json"), JSON.stringify({ model: { vocab: { a: 0 }, merges: [] } }));
+
+    const recordPath = join(dir, "ort-calls.json");
+    const stubOrtPath = join(dir, "stub-ort.mjs");
+    writeFileSync(
+      stubOrtPath,
+      [
+        `import { writeFileSync } from "node:fs";`,
+        `const calls = [];`,
+        `export class Tensor { constructor(type, data, dims) { this.type = type; this.data = data; this.dims = dims; } }`,
+        `export const InferenceSession = {`,
+        `  async create(modelPath, options) {`,
+        `    calls.push({ modelPath, options });`,
+        `    writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(calls));`,
+        `    return { async run() { return {}; } };`,
+        `  },`,
+        `};`,
+      ].join("\n"),
+    );
+
+    await WardenS1OnnxBackend.loadFromLocalDir({ modelDir, ortPath: stubOrtPath });
+    const recorded = JSON.parse(readFileSync(recordPath, "utf8")) as Array<{
+      modelPath: string;
+      options: Record<string, unknown>;
+    }>;
+    assert.equal(recorded.length, 3, "embed, backbone, and heads sessions must all be created");
+    for (const call of recorded) {
+      assert.equal(call.options.enableCpuMemArena, false, `${call.modelPath}: enableCpuMemArena must be false`);
+      assert.equal(call.options.enableMemPattern, false, `${call.modelPath}: enableMemPattern must be false`);
+      assert.equal(call.options.graphOptimizationLevel, "all");
+      assert.deepEqual(call.options.executionProviders, ["cpu"]);
+    }
+
+    // Verify ensureWardenS1Daemon passes ORT_DISABLE_TELEMETRY=1 to the spawned daemon process.
+    const stateDir = join(dir, "daemon-state");
+    const probeBin = join(dir, "probe-env.sh");
+    writeFileSync(probeBin, '#!/bin/sh\necho "ORT_DISABLE_TELEMETRY=${ORT_DISABLE_TELEMETRY:-unset}" >&2\nexit 1\n');
+    chmodSync(probeBin, 0o755);
+    await assert.rejects(
+      ensureWardenS1Daemon({
+        runtime: "mlx",
+        modelDir,
+        stateDir,
+        pythonBin: probeBin,
+        startupTimeoutMs: 5000,
+      }),
+      /ORT_DISABLE_TELEMETRY=1/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("WardenS1OnnxBackend requests only hidden_states on non-mutating probes and disposes transient tensors without disposing active state", async () => {
+  const pageDir = makeTempDir("ws1-dispose-");
+  try {
+    const base = createSyntheticOnnxBackend();
+    const seenFetches: Array<readonly string[] | undefined> = [];
+    const disposed = new WeakSet<object>();
+    let disposedCount = 0;
+
+    const wrapTensor = <T extends object>(t: T): T => {
+      const target = t as T & { dispose?: () => void };
+      if (!target.dispose) {
+        target.dispose = () => {
+          if (!disposed.has(target)) {
+            disposed.add(target);
+            disposedCount += 1;
+          }
+        };
+      }
+      return target;
+    };
+
+    const wrappedBackbone = {
+      async run(feeds: Record<string, Parameters<typeof base.backboneSession.run>[0][string]>, fetches?: readonly string[]) {
+        for (const [k, v] of Object.entries(feeds)) {
+          assert.equal(disposed.has(v), false, `feed tensor ${k} must not be disposed before run`);
+        }
+        seenFetches.push(fetches);
+        const out = await base.backboneSession.run(feeds, fetches);
+        for (const v of Object.values(out)) wrapTensor(v);
+        return out;
+      },
+    };
+    const wrappedEmbed = {
+      async run(feeds: Record<string, Parameters<typeof base.embedSession.run>[0][string]>) {
+        const out = await base.embedSession.run(feeds);
+        for (const v of Object.values(out)) wrapTensor(v);
+        return out;
+      },
+    };
+    const wrappedHeads = {
+      async run(feeds: Record<string, Parameters<typeof base.headsSession.run>[0][string]>) {
+        const out = await base.headsSession.run(feeds);
+        for (const v of Object.values(out)) wrapTensor(v);
+        return out;
+      },
+    };
+
+    const backend = new WardenS1OnnxBackend({
+      ort: base.ort,
+      manifest: base.manifest,
+      tokenizer: base.tokenizer,
+      embedSession: wrappedEmbed,
+      backboneSession: wrappedBackbone,
+      headsSession: wrappedHeads,
+    });
+    const engine = new WardenS1OnnxEngine({
+      backend,
+      modelId: "warden-s1-dispose-test",
+      modelDir: "mock-weights",
+      pageDir,
+    });
+
+    const questions = {
+      safe: { type: "noul", instructions: "Is this action safe?" },
+      kind: { type: "choice", instructions: "Pick kind", criteria: { a: "Alpha", b: "Beta" } },
+    };
+    const t0 = `<turn index="0" role="user">Initial goal for disposal verification.</turn>`;
+    await engine.prewarm({ state: t0 }, "s-disp");
+    const r1 = await engine.evaluate(
+      {
+        state: `${t0}\n\n<turn index="current" role="candidate">bash: ls</turn>`,
+        questions,
+        ephemeral_last_chunk: true,
+      },
+      "s-disp",
+    );
+    assert.equal(r1.response.s1.cache_mode, "delta");
+    const r2 = await engine.evaluate(
+      {
+        state: `${t0}\n\n<turn index="1" role="tool">read ok</turn>\n\n<turn index="current" role="candidate">bash: pwd</turn>`,
+        questions,
+        ephemeral_last_chunk: true,
+      },
+      "s-disp",
+    );
+    assert.equal(r2.response.s1.cache_mode, "delta");
+
+    assert.ok(
+      seenFetches.some(f => Array.isArray(f) && f.length === 1 && f[0] === "hidden_states"),
+      "non-mutating probe steps must pass ['hidden_states'] fetches to backboneSession.run",
+    );
+    assert.ok(disposedCount > 20, `expected transient tensors to be disposed, got ${disposedCount}`);
+    engine.close();
+  } finally {
+    rmSync(pageDir, { recursive: true, force: true });
   }
 });

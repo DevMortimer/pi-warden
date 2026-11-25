@@ -389,3 +389,85 @@ test("/warden completes the model subcommands", () => {
   assert.deepEqual(complete("model"), ["model", "model status", "model download", "model remove"]);
   assert.deepEqual(complete("model d"), ["model download"]);
 });
+
+test("/warden model status reports Metal MiB for MLX daemons (with and without RSS) and resident MiB when Metal is absent", async t => {
+  const instanceId = "metal-status-test";
+  const token = "metal-status-token";
+  let statsPayload: Record<string, unknown> = {
+    status: "ok",
+    runtime: "mlx",
+    pid: process.pid,
+    instance_id: instanceId,
+    model: "warden-s1-752m-mlx-q4",
+    model_dir: join(cacheDir, "models", "warden-s1-752m-mlx-4bit"),
+    idle_shutdown_sec: 1800,
+    idle_sec: 1,
+    in_flight: 0,
+    metal_active_mb: 474.6,
+    active_session_id: "sess-metal",
+    active_prefix_tokens: 128,
+    l2_ram_sessions: 0,
+    l3_disk_sessions: 0,
+    zstd_enabled: true,
+    requests_served: 3,
+    prewarms_served: 2,
+    cache_exact_hits: 1,
+    cache_delta_hits: 2,
+    cache_boundary_healed_hits: 0,
+    cache_misses: 1,
+    l1_hits: 3,
+    l2_ram_swaps: 0,
+    l3_disk_swaps: 0,
+    swap_ms_p50: 0,
+    swap_ms_p95: 0,
+    latency_ms_p50: 12,
+    latency_ms_p95: 18,
+  };
+  const healthServer = createServer((req, res) => {
+    if (req.url === "/health" && req.headers.authorization === `Bearer ${token}`) {
+      const body = JSON.stringify(statsPayload);
+      res.writeHead(200, { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) });
+      res.end(body);
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(done => healthServer.listen(0, "127.0.0.1", done));
+  const { port } = healthServer.address() as AddressInfo;
+  mkdirSync(cacheDir, { recursive: true });
+  const metaPath = daemonMetadataPath(cacheDir);
+  writeFileSync(
+    metaPath,
+    JSON.stringify({
+      pid: process.pid,
+      instanceId,
+      host: "127.0.0.1",
+      port,
+      runtime: "mlx",
+      modelId: "warden-s1-752m-mlx-q4",
+      modelDir: join(cacheDir, "models", "warden-s1-752m-mlx-4bit"),
+      startedAt: new Date().toISOString(),
+      idleShutdownSec: 1800,
+      token,
+    }),
+  );
+  t.after(async () => {
+    await rm(metaPath, { force: true });
+    await new Promise<void>(done => healthServer.close(() => done()));
+  });
+
+  await startSession({ typesafeBackend: "warden-s1", localModel: { runtime: "auto" } });
+  await runCommand("model status");
+  assert.match(lastNotice(), /475 MiB Metal\./);
+  assert.doesNotMatch(lastNotice(), /MiB resident/);
+
+  statsPayload = { ...statsPayload, rss_mb: 511.7 };
+  await runCommand("model status");
+  assert.match(lastNotice(), /475 MiB Metal \(512 MiB RSS\)\./);
+
+  const { metal_active_mb: _drop, ...onnxStyle } = statsPayload;
+  statsPayload = { ...onnxStyle, runtime: "onnx", rss_mb: 612.4 };
+  await runCommand("model status");
+  assert.match(lastNotice(), /612 MiB resident\./);
+  assert.doesNotMatch(lastNotice(), /MiB Metal/);
+});

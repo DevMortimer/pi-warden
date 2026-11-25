@@ -70,6 +70,7 @@ export interface SelectRuntimeOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly refreshProbe?: boolean;
   readonly probeMlx?: () => MlxProbeResult;
+  readonly forDownload?: boolean;
 }
 
 export interface ReadyManifestFile {
@@ -131,6 +132,7 @@ export interface DownloadOptions extends StatusOptions {
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: DownloadProgress) => void;
   readonly ensureOrtRuntime?: (runtimeDir: string) => Promise<string | undefined>;
+  readonly ensureMlxRuntime?: (venvDir: string) => Promise<string | undefined>;
 }
 
 export interface DownloadResult {
@@ -142,6 +144,7 @@ export interface DownloadResult {
   readonly totalBytes: number;
   readonly resumedFiles: readonly string[];
   readonly skippedFiles: readonly string[];
+  readonly mlxPython?: string;
   readonly ortRuntimePath?: string;
 }
 
@@ -167,7 +170,7 @@ const SHA256_RE = /^[0-9a-f]{64}$/i;
 const SHA1_RE = /^[0-9a-f]{40}$/i;
 const LOCK_FILE = ".download.lock";
 
-let cachedMlxProbe: MlxProbeResult | undefined;
+let cachedMlxProbe: { readonly key: string; readonly result: MlxProbeResult } | undefined;
 
 interface InflightDownload {
   readonly promise: Promise<DownloadResult>;
@@ -176,12 +179,24 @@ interface InflightDownload {
 
 const inflightDownloads = new Map<string, InflightDownload>();
 
+export function resolveCacheRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const envCache = env.PI_WARDEN_CACHE_DIR?.trim();
+  if (envCache) return resolvePath(expandHome(envCache));
+  return join(homedir(), ".cache", "pi-warden");
+}
+
+export function resolveManagedMlxVenvDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(resolveCacheRoot(env), "runtime", "mlx-venv");
+}
+
+export function resolveManagedMlxPython(env: NodeJS.ProcessEnv = process.env): string {
+  return join(resolveManagedMlxVenvDir(env), "bin", "python3");
+}
+
 export function resolveModelsRoot(config?: Partial<LocalModelConfig>, env: NodeJS.ProcessEnv = process.env): string {
   const configured = config?.cacheDir?.trim();
   if (configured) return resolvePath(expandHome(configured));
-  const envCache = env.PI_WARDEN_CACHE_DIR?.trim();
-  if (envCache) return resolvePath(join(expandHome(envCache), "models"));
-  return join(homedir(), ".cache", "pi-warden", "models");
+  return join(resolveCacheRoot(env), "models");
 }
 
 export function resolveModelDir(runtime: SelectedRuntime, config?: Partial<LocalModelConfig>, env: NodeJS.ProcessEnv = process.env): string {
@@ -215,24 +230,30 @@ export function probeMlxPython(options: ProbeMlxOptions = {}): MlxProbeResult {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
   const env = options.env ?? process.env;
-  const useCache = !options.refresh
-    && options.platform === undefined
+  const canCache = options.platform === undefined
     && options.arch === undefined
     && options.env === undefined
     && options.candidates === undefined
     && options.exec === undefined;
-  if (useCache && cachedMlxProbe) return cachedMlxProbe;
+  const cacheKey = `${env.PI_WARDEN_PYTHON ?? ""}\0${env.PI_WARDEN_CACHE_DIR ?? ""}`;
+  if (canCache && !options.refresh && cachedMlxProbe && cachedMlxProbe.key === cacheKey) {
+    return cachedMlxProbe.result;
+  }
 
   if (platform !== "darwin" || arch !== "arm64") {
     const result: MlxProbeResult = { available: false, reason: `MLX requires macOS Apple Silicon (darwin/arm64), found ${platform}/${arch}` };
-    if (useCache) cachedMlxProbe = result;
+    if (canCache) cachedMlxProbe = { key: cacheKey, result };
     return result;
   }
 
   const rawCandidates = options.candidates ?? [
     ...(env.PI_WARDEN_PYTHON?.trim() ? [expandHome(env.PI_WARDEN_PYTHON)] : []),
+    resolveManagedMlxPython(env),
     "python3",
     "/opt/homebrew/bin/python3",
+    "/opt/homebrew/bin/python3.12",
+    "/opt/homebrew/bin/python3.13",
+    "/opt/homebrew/bin/python3.14",
     "/usr/local/bin/python3",
     join(homedir(), ".local", "bin", "python3"),
     "/usr/bin/python3",
@@ -240,6 +261,7 @@ export function probeMlxPython(options: ProbeMlxOptions = {}): MlxProbeResult {
   const candidates = [...new Set(rawCandidates.filter(c => c.length > 0))];
   const timeoutMs = Math.min(3000, Math.max(100, options.timeoutMs ?? 2500));
   const exec = options.exec ?? ((python: string, args: readonly string[], timeout: number) => {
+    if (isAbsolute(python) && !existsSync(python)) return { status: null, error: new Error("ENOENT") };
     const out = spawnSync(python, args, { encoding: "utf8", timeout, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
     return { status: out.status, stderr: out.stderr, error: out.error };
   });
@@ -248,13 +270,13 @@ export function probeMlxPython(options: ProbeMlxOptions = {}): MlxProbeResult {
     const out = exec(python, ["-c", "import mlx, mlx_lm"], timeoutMs);
     if (!out.error && out.status === 0) {
       const result: MlxProbeResult = { available: true, python };
-      if (useCache) cachedMlxProbe = result;
+      if (canCache) cachedMlxProbe = { key: cacheKey, result };
       return result;
     }
   }
 
-  const result: MlxProbeResult = { available: false, reason: "Python with mlx and mlx_lm not found (install via: pip install mlx mlx-lm)" };
-  if (useCache) cachedMlxProbe = result;
+  const result: MlxProbeResult = { available: false, reason: "Python with mlx and mlx_lm not found (run /warden model download or pip install mlx mlx-lm)" };
+  if (canCache) cachedMlxProbe = { key: cacheKey, result };
   return result;
 }
 
@@ -293,8 +315,9 @@ export function selectWardenS1Runtime(config?: Partial<LocalModelConfig>, option
     }
     const probe = runProbe();
     if (!probe.available) {
+      if (options.forDownload) return build("mlx");
       return build("mlx", {
-        diagnostic: `Requested runtime "mlx" is unavailable: ${probe.reason ?? "Python with mlx and mlx_lm not found"}. Install mlx and mlx-lm, or switch localModel.runtime to "auto" or "onnx".`,
+        diagnostic: `Requested runtime "mlx" is unavailable: ${probe.reason ?? "Python with mlx and mlx_lm not found"}. Run /warden model download to provision ${resolveManagedMlxVenvDir(env)}, install mlx and mlx-lm, or switch localModel.runtime to "auto" or "onnx".`,
       });
     }
     return build("mlx", probe.python ? { mlxPython: probe.python } : undefined);
@@ -303,6 +326,17 @@ export function selectWardenS1Runtime(config?: Partial<LocalModelConfig>, option
   if (platform === "darwin" && arch === "arm64") {
     const probe = runProbe();
     if (probe.available) return build("mlx", probe.python ? { mlxPython: probe.python } : undefined);
+    if (!options.forDownload) {
+      const onnxDir = join(modelsRoot, ONNX_MODEL_DIR_NAME);
+      const mlxDir = join(modelsRoot, MLX_MODEL_DIR_NAME);
+      if (
+        readReadyManifest(onnxDir, "onnx", ONNX_MODEL_REPO)
+        && !readReadyManifest(mlxDir, "mlx", MLX_MODEL_REPO)
+      ) {
+        return build("onnx");
+      }
+    }
+    return build("mlx");
   }
   return build("onnx");
 }
@@ -395,7 +429,14 @@ export function getWardenS1Status(config?: Partial<LocalModelConfig>, options: S
   const filesComplete = Boolean(manifest) && missingFiles.length === 0;
   const installed = filesComplete;
   const incomplete = (!filesComplete && (partFiles.length > 0 || downloadedBytes > 0)) || (filesComplete && partFiles.length > 0);
-  const ready = filesComplete && partFiles.length === 0 && !selection.diagnostic;
+  const runtimeReady = selection.runtime !== "mlx" || Boolean(selection.mlxPython);
+  const ready = filesComplete && partFiles.length === 0 && runtimeReady && !selection.diagnostic;
+  const env = options.env ?? process.env;
+  const diagnostic = selection.diagnostic ?? (
+    !options.forDownload && selection.runtime === "mlx" && !selection.mlxPython && filesComplete
+      ? `MLX runtime is not provisioned yet; run /warden model download to provision ${resolveManagedMlxVenvDir(env)}`
+      : undefined
+  );
   const totalBytes = manifest ? manifest.totalBytes : Math.round(selection.expectedMib * 1024 * 1024);
 
   return {
@@ -415,7 +456,7 @@ export function getWardenS1Status(config?: Partial<LocalModelConfig>, options: S
     partFiles,
     ...(selection.mlxPython ? { mlxPython: selection.mlxPython } : {}),
     ...(ortRuntimePath ? { ortRuntimePath } : {}),
-    ...(selection.diagnostic ? { diagnostic: selection.diagnostic } : {}),
+    ...(diagnostic ? { diagnostic } : {}),
     ...(manifest ? { manifest } : {}),
   };
 }
@@ -704,6 +745,67 @@ async function fetchMlxFileList(baseUrl: string, repoId: string, fetchImpl: type
   return files;
 }
 
+async function runSubprocess(
+  cmd: string,
+  args: readonly string[],
+  options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs: number; label: string },
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(cmd, [...args], {
+      stdio: ["ignore", "ignore", "pipe"],
+      windowsHide: true,
+      env: options.env,
+    });
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      if (stderr.length < 4000) stderr += String(chunk);
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`Timed out ${options.label}`));
+    }, options.timeoutMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      child.kill("SIGTERM");
+      reject(new Error(`Cancelled ${options.label}`));
+    };
+    if (options.signal) {
+      if (options.signal.aborted) { onAbort(); return; }
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    }
+    child.once("error", error => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+      reject(new Error(`Failed to run ${cmd} while ${options.label}: ${error.message}`));
+    });
+    child.once("close", code => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+      if (code === 0) resolve();
+      else reject(new Error(`Failed ${options.label} (exit ${code}): ${stderr.trim()}`));
+    });
+  });
+}
+
+function findFirstWorkingBinary(
+  candidates: readonly string[],
+  testArgs: readonly string[],
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  for (const candidate of candidates) {
+    if (isAbsolute(candidate) && !existsSync(candidate)) continue;
+    const out = spawnSync(candidate, [...testArgs], {
+      encoding: "utf8",
+      timeout: 2500,
+      windowsHide: true,
+      stdio: ["ignore", "ignore", "pipe"],
+      env,
+    });
+    if (!out.error && out.status === 0) return candidate;
+  }
+  return undefined;
+}
+
 async function ensureDefaultOrtRuntime(options: { stateDir?: string; dirs?: HostDirs; env?: NodeJS.ProcessEnv; signal?: AbortSignal }): Promise<string> {
   const existing = resolveInstalledOrtPath(options);
   if (existing) return existing;
@@ -714,46 +816,114 @@ async function ensureDefaultOrtRuntime(options: { stateDir?: string; dirs?: Host
     writeFileAtomicSync(runtimePkg, JSON.stringify({ name: "pi-warden-ort-runtime", private: true }, null, 2) + "\n");
   }
   const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(npmCmd, ["install", "--no-audit", "--no-fund", "--prefix", runtimeDir, "onnxruntime-node"], {
-      stdio: ["ignore", "ignore", "pipe"],
-      windowsHide: true,
-      env: options.env ?? process.env,
-    });
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer | string) => {
-      if (stderr.length < 4000) stderr += String(chunk);
-    });
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error("Timed out installing onnxruntime-node runtime"));
-    }, 180_000);
-    const onAbort = () => {
-      clearTimeout(timer);
-      child.kill("SIGTERM");
-      reject(new Error("Cancelled onnxruntime-node runtime installation"));
-    };
-    if (options.signal) {
-      if (options.signal.aborted) { onAbort(); return; }
-      options.signal.addEventListener("abort", onAbort, { once: true });
-    }
-    child.once("error", error => {
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
-      reject(new Error(`Failed to run npm to install onnxruntime-node: ${error.message}`));
-    });
-    child.once("close", code => {
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
-      if (code === 0) resolve();
-      else reject(new Error(`Failed to install onnxruntime-node into ${runtimeDir} (exit ${code}): ${stderr.trim()}`));
-    });
+  await runSubprocess(npmCmd, ["install", "--no-audit", "--no-fund", "--prefix", runtimeDir, "onnxruntime-node"], {
+    env: options.env ?? process.env,
+    ...(options.signal ? { signal: options.signal } : {}),
+    timeoutMs: 180_000,
+    label: `installing onnxruntime-node into ${runtimeDir}`,
   });
   const installed = join(runtimeDir, "node_modules", "onnxruntime-node");
   if (!existsSync(join(installed, "package.json"))) {
     throw new Error(`onnxruntime-node did not appear at ${installed} after npm install`);
   }
   return installed;
+}
+
+async function ensureDefaultMlxRuntime(options: {
+  venvDir: string;
+  platform: NodeJS.Platform;
+  arch: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const env = options.env ?? process.env;
+  const existing = probeMlxPython({
+    refresh: true,
+    ...(options.env !== undefined ? { env: options.env } : {}),
+    ...(options.platform !== process.platform ? { platform: options.platform } : {}),
+    ...(options.arch !== process.arch ? { arch: options.arch } : {}),
+  });
+  if (existing.available && existing.python) return existing.python;
+
+  mkdirSync(dirname(options.venvDir), { recursive: true });
+  const venvPython = join(options.venvDir, "bin", "python3");
+
+  const uvBin = findFirstWorkingBinary(
+    [
+      "uv",
+      "/opt/homebrew/bin/uv",
+      "/usr/local/bin/uv",
+      join(homedir(), ".local", "bin", "uv"),
+      join(homedir(), ".cargo", "bin", "uv"),
+    ],
+    ["--version"],
+    env,
+  );
+
+  if (uvBin) {
+    if (!existsSync(venvPython)) {
+      await runSubprocess(uvBin, ["venv", "--python", "3.12", "--allow-existing", options.venvDir], {
+        env,
+        ...(options.signal ? { signal: options.signal } : {}),
+        timeoutMs: 180_000,
+        label: `creating MLX venv at ${options.venvDir} with uv`,
+      });
+    }
+    await runSubprocess(uvBin, ["pip", "install", "--python", venvPython, "mlx", "mlx-lm", "zstandard"], {
+      env,
+      ...(options.signal ? { signal: options.signal } : {}),
+      timeoutMs: 300_000,
+      label: `installing mlx and mlx-lm into ${options.venvDir} with uv`,
+    });
+  } else {
+    const pyBin = findFirstWorkingBinary(
+      [
+        "python3.12",
+        "/opt/homebrew/bin/python3.12",
+        "/usr/local/bin/python3.12",
+        "python3.13",
+        "/opt/homebrew/bin/python3.13",
+        "/usr/local/bin/python3.13",
+        "python3",
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+      ],
+      ["-c", "import venv"],
+      env,
+    );
+    if (!pyBin) {
+      throw new Error(`Could not find uv or python3 with venv to provision MLX runtime in ${options.venvDir}`);
+    }
+    if (!existsSync(venvPython)) {
+      await runSubprocess(pyBin, ["-m", "venv", options.venvDir], {
+        env,
+        ...(options.signal ? { signal: options.signal } : {}),
+        timeoutMs: 180_000,
+        label: `creating MLX venv at ${options.venvDir} with ${pyBin}`,
+      });
+    }
+    await runSubprocess(venvPython, ["-m", "pip", "install", "--upgrade", "mlx", "mlx-lm", "zstandard"], {
+      env,
+      ...(options.signal ? { signal: options.signal } : {}),
+      timeoutMs: 300_000,
+      label: `installing mlx and mlx-lm into ${options.venvDir} with pip`,
+    });
+  }
+
+  const verified = probeMlxPython({
+    refresh: true,
+    platform: options.platform,
+    arch: options.arch,
+    env,
+    candidates: [venvPython],
+  });
+  if (!verified.available || !verified.python) {
+    throw new Error(`Provisioned MLX venv at ${options.venvDir}, but import mlx, mlx_lm failed (${verified.reason ?? "unknown error"})`);
+  }
+  if (options.env === undefined && options.platform === process.platform && options.arch === process.arch) {
+    probeMlxPython({ refresh: true });
+  }
+  return verified.python;
 }
 
 async function runDownload(selection: RuntimeSelection, options: DownloadOptions, emit: (progress: DownloadProgress) => void): Promise<DownloadResult> {
@@ -898,6 +1068,7 @@ async function runDownload(selection: RuntimeSelection, options: DownloadOptions
     }
 
     let ortRuntimePath: string | undefined;
+    let mlxPython = selection.mlxPython;
     if (selection.runtime === "onnx") {
       const runtimeDir = resolveOrtRuntimeDir(options.stateDir, options.dirs, env);
       ortRuntimePath = options.ensureOrtRuntime
@@ -910,6 +1081,20 @@ async function runDownload(selection: RuntimeSelection, options: DownloadOptions
         });
       if (rawOnnxManifest !== undefined) {
         writeFileAtomicSync(join(selection.modelDir, ONNX_MANIFEST_FILE), rawOnnxManifest);
+      }
+    } else {
+      const venvDir = resolveManagedMlxVenvDir(env);
+      if (options.ensureMlxRuntime) {
+        mlxPython = await options.ensureMlxRuntime(venvDir);
+        if (options.env === undefined) cachedMlxProbe = undefined;
+      } else if (!mlxPython) {
+        mlxPython = await ensureDefaultMlxRuntime({
+          venvDir,
+          platform: selection.platform,
+          arch: selection.arch,
+          ...(options.env !== undefined ? { env: options.env } : {}),
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        });
       }
     }
 
@@ -933,6 +1118,7 @@ async function runDownload(selection: RuntimeSelection, options: DownloadOptions
       totalBytes,
       resumedFiles,
       skippedFiles,
+      ...(mlxPython ? { mlxPython } : {}),
       ...(ortRuntimePath ? { ortRuntimePath } : {}),
     };
   } finally {
@@ -941,7 +1127,7 @@ async function runDownload(selection: RuntimeSelection, options: DownloadOptions
 }
 
 export async function downloadWardenS1(config?: Partial<LocalModelConfig>, options: DownloadOptions = {}): Promise<DownloadResult> {
-  const selection = selectWardenS1Runtime(config, options);
+  const selection = selectWardenS1Runtime(config, { ...options, forDownload: true });
   if (selection.diagnostic) throw new Error(selection.diagnostic);
 
   const key = resolvePath(selection.modelDir);
