@@ -16,7 +16,7 @@
  */
 import { commandOf } from "./tools.js";
 import { scriptSources, type ScriptSource } from "./script-bodies.js";
-import { inEphemeralRoot, inHostPath, realTarget, resolveActionPath, resolveEphemeralRoots, underPath } from "./guard.js";
+import { inEphemeralRoot, inHostPath, realTarget, resolveActionPath, resolveEphemeralRoots, underPath } from "./action-paths.js";
 
 export interface AskDecision {
   /** True when the call goes to Jev; false when the offline pass decides it alone. */
