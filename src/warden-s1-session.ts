@@ -1353,6 +1353,25 @@ function abortable<T>(start: () => Promise<T>, signal?: AbortSignal): Promise<T>
   });
 }
 
+function rewriteRequestForEndpoint(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+  next: DaemonEndpoint,
+): { input: string | Request; init: RequestInit } {
+  const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+  const parsed = new URL(rawUrl);
+  const nextUrl = `${trimTrailingSlash(next.url)}${parsed.pathname}${parsed.search}`;
+  const headers = new Headers(input instanceof Request ? input.headers : undefined);
+  if (init?.headers) {
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  }
+  headers.set("Authorization", `Bearer ${next.token}`);
+  if (input instanceof Request) {
+    return { input: new Request(nextUrl, input), init: { ...init, headers } };
+  }
+  return { input: nextUrl, init: { ...init, headers } };
+}
+
 /**
  * One session's line to the shared daemon. The endpoint is kept until a request fails to connect or is refused, so a
  * judged call costs no health probe; a start in progress is shared, and a failed start is not retried for 30 s.
@@ -1385,18 +1404,49 @@ export function connectWardenS1(
     starting = attempt;
     return attempt;
   };
+  const dropIfCurrent = (stale: DaemonEndpoint | undefined): void => {
+    if (stale !== undefined && endpoint === stale) endpoint = undefined;
+  };
+  const retryOnFreshEndpoint = async (
+    input: string | URL | Request,
+    init: RequestInit | undefined,
+    stale: DaemonEndpoint | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<Response> => {
+    dropIfCurrent(stale);
+    const refreshed = await abortable(start, signal);
+    const rewritten = rewriteRequestForEndpoint(input, init, refreshed);
+    let retried: Response;
+    try {
+      retried = await globalThis.fetch(rewritten.input, rewritten.init);
+    } catch (retryError) {
+      if (!isAbortError(retryError, signal)) dropIfCurrent(refreshed);
+      throw retryError;
+    }
+    if (retried.status === 401 || retried.status === 403) dropIfCurrent(refreshed);
+    return retried;
+  };
   return {
     resolveEndpoint: (signal) => abortable(start, signal),
     fetchImpl: async (input, init) => {
+      const signal = init?.signal ?? undefined;
+      const observed = endpoint;
       let response: Response;
       try {
         response = await globalThis.fetch(input, init);
       } catch (error) {
-        if (!isAbortError(error, init?.signal ?? undefined)) endpoint = undefined;
-        throw error;
+        if (isAbortError(error, signal)) throw error;
+        return retryOnFreshEndpoint(input, init, observed, signal);
       }
-      // A restarted daemon answers on a new port with a new token; a refusal means this endpoint is the old one.
-      if (response.status === 401 || response.status === 403) endpoint = undefined;
+      if (response.status === 401 || response.status === 403) {
+        if (signal?.aborted) return response;
+        try {
+          return await retryOnFreshEndpoint(input, init, observed, signal);
+        } catch (retryError) {
+          if (isAbortError(retryError, signal)) throw retryError;
+          return response;
+        }
+      }
       return response;
     },
     warm: () => {

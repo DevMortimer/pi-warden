@@ -1024,3 +1024,343 @@ test("stopWardenS1Daemon escalates to SIGKILL on SIGTERM-ignoring worker and rea
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test("MLX /health and /stats answer lock-free (< 200ms, 0 off-thread Metal calls) while _gpu_worker_loop is mid-op, preserving daemon PID across concurrent ensureWardenS1Daemon", async () => {
+  const stateDir = makeTempDir("ws1-mlx-health-");
+  const modelDir = join(stateDir, "mock-mlx-model");
+  mkdirSync(modelDir, { recursive: true });
+  const offThreadLog = join(stateDir, "metal-thread-check.json");
+  const runnerPath = join(stateDir, "run-mlx-stub.py");
+  const wrapperBin = join(stateDir, "mlx-stub-python.sh");
+
+  writeFileSync(
+    runnerPath,
+    `import importlib.util, json, sys, threading, time, types
+from pathlib import Path
+
+script_path = sys.argv[1]
+sys.argv = sys.argv[1:]
+
+main_tid = threading.get_ident()
+gpu_tid = [None]
+mem_calls = []
+
+def _install_stubs():
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        np_mod = types.ModuleType("numpy")
+        np_mod.float32 = float
+        np_mod.float64 = float
+        np_mod.uint16 = int
+        np_mod.ndarray = list
+        np_mod.percentile = lambda arr, q: float(sorted(arr)[int((len(arr) - 1) * q / 100.0)]) if arr else 0.0
+        np_mod.array = lambda x, dtype=None, copy=False: list(x) if isinstance(x, (list, tuple)) else [x]
+        np_mod.zeros = lambda shape, dtype=None: [0.0] * (shape[0] if isinstance(shape, tuple) else int(shape))
+        sys.modules["numpy"] = np_mod
+
+    mx = types.ModuleType("mlx.core")
+    mx.array = lambda x, dtype=None: x
+    mx.int32 = "int32"
+    mx.float32 = "float32"
+    mx.bfloat16 = "bfloat16"
+    mx.uint16 = "uint16"
+    mx.clear_cache = lambda: None
+    mx.reset_peak_memory = lambda: None
+    mx.set_cache_limit = lambda _n: None
+    mx.eval = lambda *a, **kw: None
+    def _get_active_memory():
+        tid = threading.get_ident()
+        mem_calls.append({"tid": tid, "main": tid == main_tid, "gpu": tid == gpu_tid[0]})
+        return 420 * 1024 * 1024
+    mx.get_active_memory = _get_active_memory
+    mx.get_peak_memory = lambda: 460 * 1024 * 1024
+    class _FakeArr:
+        def __init__(self, shape):
+            self.shape = shape
+        def astype(self, _dt):
+            return self
+    mx.linspace = lambda _a, _b, n: _FakeArr((n,))
+    mx.load = lambda _p: {
+        "noul.norm.weight": _FakeArr((16,)),
+        "choice.q_proj.weight": _FakeArr((16,)),
+        "score.proj.3.weight": _FakeArr((5,)),
+        "salience.in_proj.weight": _FakeArr((16,)),
+    }
+
+    mlx_pkg = types.ModuleType("mlx")
+    mlx_pkg.core = mx
+    mlx_nn = types.ModuleType("mlx.nn")
+    mlx_pkg.nn = mlx_nn
+    sys.modules["mlx"] = mlx_pkg
+    sys.modules["mlx.core"] = mx
+    sys.modules["mlx.nn"] = mlx_nn
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    class _DummyModel:
+        def parameters(self):
+            return []
+    class _DummyTok:
+        eos_token_id = 1
+        def encode(self, text, add_special_tokens=False):
+            return [1, 2, 3]
+    mlx_lm.load = lambda _d: (_DummyModel(), _DummyTok())
+    cache_mod = types.ModuleType("mlx_lm.models.cache")
+    class _DummyCache:
+        pass
+    cache_mod.ArraysCache = _DummyCache
+    cache_mod.KVCache = _DummyCache
+    cache_mod.QuantizedKVCache = _DummyCache
+    cache_mod.make_prompt_cache = lambda _m: []
+    models_mod = types.ModuleType("mlx_lm.models")
+    models_mod.cache = cache_mod
+    sys.modules["mlx_lm"] = mlx_lm
+    sys.modules["mlx_lm.models"] = models_mod
+    sys.modules["mlx_lm.models.cache"] = cache_mod
+
+_install_stubs()
+spec = importlib.util.spec_from_file_location("warden_s1_mlx_daemon", script_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+orig_prewarm = mod.WardenS1ServerEngine._prewarm_on_gpu
+def _slow_prewarm(self, payload, explicit_sid):
+    gpu_tid[0] = threading.get_ident()
+    delay = float(payload.get("delay_sec", 1.8)) if isinstance(payload, dict) else 1.8
+    time.sleep(delay)
+    self.prewarms_served += 1
+    return {
+        "ok": True,
+        "session_id": explicit_sid or "busy",
+        "runtime": "mlx",
+        "state_tokens": 12,
+        "prefix_reuse_tokens": 0,
+        "delta_tokens": 12,
+        "cache_mode": "miss",
+        "boundary_healed": False,
+        "page_tier": "NEW",
+        "recheckpointed": False,
+        "swap_ms": 0.0,
+        "prefill_ms": delay * 1000.0,
+        "salience": [],
+        "chunks": [],
+    }
+mod.WardenS1ServerEngine._prewarm_on_gpu = _slow_prewarm
+
+orig_worker = mod.WardenS1ServerEngine._gpu_worker_loop
+def _tracked_worker(self):
+    gpu_tid[0] = threading.get_ident()
+    return orig_worker(self)
+mod.WardenS1ServerEngine._gpu_worker_loop = _tracked_worker
+
+try:
+    mod.main()
+finally:
+    off_thread = [c for c in mem_calls if not c["main"] and not c["gpu"]]
+    Path(${JSON.stringify(offThreadLog)}).write_text(
+        json.dumps({"total": len(mem_calls), "off_thread": len(off_thread)}),
+        encoding="utf-8",
+    )
+`,
+  );
+  writeFileSync(wrapperBin, `#!/bin/sh\nexec python3 ${JSON.stringify(runnerPath)} "$@"\n`);
+  chmodSync(wrapperBin, 0o755);
+
+  try {
+    const ep = await ensureWardenS1Daemon({
+      runtime: "mlx",
+      modelDir,
+      stateDir,
+      pythonBin: wrapperBin,
+      idleShutdownSec: 60,
+      startupTimeoutMs: 10_000,
+      healthTimeoutMs: 500,
+    });
+    assert.equal(ep.runtime, "mlx");
+    assert.equal(isPidAlive(ep.pid), true);
+
+    const busyOp = fetch(`${ep.url}/v1/prewarm`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${ep.token}`,
+        "Content-Type": "application/json",
+        "X-Warden-Session-Id": "mlx-busy-sess",
+      },
+      body: JSON.stringify({ state: "long prefill simulation", delay_sec: 1.8 }),
+      signal: AbortSignal.timeout(8_000),
+    });
+
+    await new Promise((r) => setTimeout(r, 150));
+
+    const probeResults = await Promise.all(
+      Array.from({ length: 5 }, async () => {
+        const t0 = performance.now();
+        const res = await fetch(`${ep.url}/health`, {
+          headers: { Authorization: `Bearer ${ep.token}` },
+          signal: AbortSignal.timeout(500),
+        });
+        const elapsedMs = performance.now() - t0;
+        const body = (await res.json()) as { status: string; instance_id: string; in_flight: number; idle_sec: number; metal_active_mb: number };
+        return { ok: res.ok, elapsedMs, body };
+      }),
+    );
+    for (const r of probeResults) {
+      assert.equal(r.ok, true);
+      assert.equal(r.body.status, "ok");
+      assert.equal(r.body.instance_id, ep.instanceId);
+      assert.equal(r.body.in_flight, 1, "active GPU op must be reflected lock-free in /health");
+      assert.equal(r.body.idle_sec, 0);
+      assert.equal(r.body.metal_active_mb, 420);
+      assert.ok(r.elapsedMs < 200, `lock-free /health must answer promptly while GPU is busy, took ${r.elapsedMs.toFixed(1)}ms`);
+    }
+
+    const tStats = performance.now();
+    const statsRes = await fetch(`${ep.url}/stats`, {
+      headers: { Authorization: `Bearer ${ep.token}` },
+      signal: AbortSignal.timeout(500),
+    });
+    const statsMs = performance.now() - tStats;
+    assert.equal(statsRes.ok, true);
+    assert.ok(statsMs < 200, `lock-free /stats must answer promptly while GPU is busy, took ${statsMs.toFixed(1)}ms`);
+    const statsBody = (await statsRes.json()) as { in_flight: number; recent: unknown[] };
+    assert.equal(statsBody.in_flight, 1);
+    assert.ok(Array.isArray(statsBody.recent));
+
+    const ensured = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        ensureWardenS1Daemon({
+          runtime: "mlx",
+          modelDir,
+          stateDir,
+          pythonBin: wrapperBin,
+          idleShutdownSec: 60,
+          startupTimeoutMs: 10_000,
+          healthTimeoutMs: 250,
+        }),
+      ),
+    );
+    for (const got of ensured) {
+      assert.equal(got.pid, ep.pid, "concurrent ensureWardenS1Daemon must preserve live MLX daemon PID");
+      assert.equal(got.instanceId, ep.instanceId, "concurrent ensureWardenS1Daemon must preserve live MLX instanceId");
+    }
+
+    const busyResp = await busyOp;
+    assert.equal(busyResp.ok, true);
+    const afterBusy = await getWardenS1DaemonStatus(stateDir, 500);
+    assert.equal(afterBusy.running, true);
+    assert.equal(afterBusy.stats?.prewarms_served, 1);
+    assert.equal(afterBusy.stats?.in_flight, 0);
+
+    await stopWardenS1Daemon(stateDir, 5000);
+    assert.equal(existsSync(offThreadLog), true);
+    const threadReport = JSON.parse(readFileSync(offThreadLog, "utf8")) as { total: number; off_thread: number };
+    assert.ok(threadReport.total >= 1);
+    assert.equal(threadReport.off_thread, 0, "mx.get_active_memory() must never run on HTTP request threads");
+  } finally {
+    await stopWardenS1Daemon(stateDir, 3000).catch(() => undefined);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("ensureWardenS1Daemon never kills a live owned matching daemon when a short healthTimeoutMs probe races load", async () => {
+  const stateDir = makeTempDir("ws1-busy-live-");
+  const instanceId = "busy-live-owned-instance";
+  const token = "busy-live-token";
+  const slowWorkerScript = `
+    const http = require("node:http");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const stateDir = process.argv[1];
+    const instanceId = process.argv[2];
+    const token = process.argv[3];
+    const server = http.createServer((req, res) => {
+      if (req.headers.authorization !== "Bearer " + token) {
+        res.writeHead(401).end();
+        return;
+      }
+      if (req.url === "/health") {
+        setTimeout(() => {
+          const body = JSON.stringify({
+            status: "ok",
+            runtime: "onnx",
+            pid: process.pid,
+            instance_id: instanceId,
+            model: "warden-s1-mock-onnx",
+            model_dir: "mock-weights",
+            idle_shutdown_sec: 60,
+            idle_sec: 0,
+            in_flight: 1,
+          });
+          res.writeHead(200, { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) });
+          res.end(body);
+        }, 650);
+        return;
+      }
+      if (req.url === "/admin/shutdown") {
+        res.writeHead(200, { "content-type": "application/json" }).end('{"shutting_down":true}');
+        setImmediate(() => { server.close(() => process.exit(0)); });
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      fs.mkdirSync(path.join(stateDir, "pids"), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(stateDir, "warden-s1-daemon.json"), JSON.stringify({
+        pid: process.pid,
+        instanceId,
+        host: "127.0.0.1",
+        port,
+        runtime: "onnx",
+        modelId: "warden-s1-mock-onnx",
+        modelDir: "mock-weights",
+        startedAt: new Date().toISOString(),
+        idleShutdownSec: 60,
+        token,
+      }));
+      fs.writeFileSync(path.join(stateDir, "pids", process.pid + ".json"), JSON.stringify({
+        pid: process.pid,
+        instanceId,
+        startedAt: new Date().toISOString(),
+        runtime: "onnx",
+      }));
+    });
+  `;
+
+  let childPid: number | undefined;
+  try {
+    const child = spawn(
+      process.execPath,
+      ["-e", slowWorkerScript, stateDir, instanceId, token, "--warden-s1-test", "--instance-id", instanceId],
+      { detached: true, stdio: "ignore" },
+    );
+    childPid = child.pid!;
+    child.unref();
+
+    const ready = await waitUntil(() => existsSync(daemonMetadataPath(stateDir)), 5000, 25);
+    assert.equal(ready, true, "slow owned daemon must write metadata");
+    assert.equal(isPidAlive(childPid), true);
+
+    const results = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        ensureWardenS1Daemon({
+          runtime: "onnx",
+          mockWeights: true,
+          stateDir,
+          healthTimeoutMs: 200,
+          startupTimeoutMs: 10_000,
+          lockTimeoutMs: 15_000,
+        }),
+      ),
+    );
+    for (const ep of results) {
+      assert.equal(ep.pid, childPid, "ensureWardenS1Daemon must not kill and replace a live busy owned daemon");
+      assert.equal(ep.instanceId, instanceId);
+    }
+    assert.equal(isPidAlive(childPid), true, "original busy owned daemon must remain alive");
+  } finally {
+    await stopWardenS1Daemon(stateDir, 3000).catch(() => undefined);
+    if (childPid && isPidAlive(childPid)) { try { process.kill(childPid, "SIGKILL"); } catch {} }
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

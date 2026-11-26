@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -294,9 +294,25 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
+function canonicalizePath(target: string): string {
+  const resolved = resolve(target);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 function normalizeModelDir(options: Pick<EnsureDaemonOptions, "modelDir" | "mockWeights">): string {
-  if (options.modelDir && options.modelDir.trim().length > 0) return resolve(options.modelDir);
+  if (options.modelDir && options.modelDir.trim().length > 0) return canonicalizePath(options.modelDir);
   return options.mockWeights ? "mock-weights" : "";
+}
+
+function modelDirMatches(actual: string, expected: string): boolean {
+  if (!expected) return true;
+  if (actual === expected) return true;
+  if (actual === "mock-weights" || expected === "mock-weights") return false;
+  return canonicalizePath(actual) === canonicalizePath(expected);
 }
 
 function readDaemonMetadata(stateDir: string): DaemonMetadata | null {
@@ -339,20 +355,34 @@ function buildSignal(timeoutMs: number, callerSignal?: AbortSignal): AbortSignal
   return callerSignal ? AbortSignal.any([timerSignal, callerSignal]) : timerSignal;
 }
 
-async function probeHealth(endpoint: DaemonEndpoint, timeoutMs = 1500): Promise<DaemonStats | null> {
+type ProbeHealthResult =
+  | { readonly ok: true; readonly stats: DaemonStats }
+  | { readonly ok: false; readonly reason: "timeout" | "connection" | "http" | "mismatch" };
+
+async function probeHealthDetailed(endpoint: DaemonEndpoint, timeoutMs = 1500): Promise<ProbeHealthResult> {
   try {
     const res = await fetch(`${endpoint.url}/health`, {
       method: "GET",
       headers: { Authorization: `Bearer ${endpoint.token}` },
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) return null;
+    if (!res.ok) return { ok: false, reason: "http" };
     const body = (await res.json()) as DaemonStats;
-    if (body.status !== "ok" || body.instance_id !== endpoint.instanceId) return null;
-    return body;
-  } catch {
-    return null;
+    if (body.status !== "ok" || body.instance_id !== endpoint.instanceId) {
+      return { ok: false, reason: "mismatch" };
+    }
+    return { ok: true, stats: body };
+  } catch (err) {
+    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      return { ok: false, reason: "timeout" };
+    }
+    return { ok: false, reason: "connection" };
   }
+}
+
+async function probeHealth(endpoint: DaemonEndpoint, timeoutMs = 1500): Promise<DaemonStats | null> {
+  const result = await probeHealthDetailed(endpoint, timeoutMs);
+  return result.ok ? result.stats : null;
 }
 
 async function tryFastPath(
@@ -364,7 +394,7 @@ async function tryFastPath(
   const meta = readDaemonMetadata(stateDir);
   if (!meta) return null;
   if (meta.runtime !== expectedRuntime) return null;
-  if (expectedModelDir && meta.modelDir !== expectedModelDir) return null;
+  if (!modelDirMatches(meta.modelDir, expectedModelDir)) return null;
   if (!isPidAlive(meta.pid)) return null;
   const ep = toEndpoint(meta, stateDir);
   const health = await probeHealth(ep, healthTimeoutMs);
@@ -524,7 +554,21 @@ export async function ensureWardenS1Daemon(options: EnsureDaemonOptions): Promis
     if (rechecked) return rechecked;
 
     const prior = readDaemonMetadata(stateDir);
+    const priorMatches = prior !== null
+      && prior.runtime === options.runtime
+      && modelDirMatches(prior.modelDir, modelDir);
     if (prior && isPidAlive(prior.pid)) {
+      if (priorMatches && isOwnedWardenS1Process(prior.pid, prior.instanceId)) {
+        const ep = toEndpoint(prior, stateDir);
+        const graceTimeoutMs = Math.max(healthTimeoutMs, Math.min(10_000, startupTimeoutMs));
+        const grace = await probeHealthDetailed(ep, graceTimeoutMs);
+        if (
+          grace.ok
+          || (grace.reason === "timeout" && isPidAlive(prior.pid) && isOwnedWardenS1Process(prior.pid, prior.instanceId))
+        ) {
+          return ep;
+        }
+      }
       await stopWardenS1Daemon(stateDir, 5000);
     } else {
       await sweepOrphanDaemonPids(stateDir, { timeoutMs: 3000 });
