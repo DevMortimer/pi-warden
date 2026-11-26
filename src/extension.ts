@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
-import { join, resolve as pathResolve, relative as pathRelative } from "node:path";
+import { dirname, join, resolve as pathResolve, relative as pathRelative } from "node:path";
 import { homedir } from "node:os";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -81,7 +81,9 @@ import type { IntegrationErrorCode } from "pi-typesafe";
 
 import { classifyJudgeError, cooldownFailureKind, JudgeCooldown } from "./judge-cooldown.js";
 import type { CooldownEvent } from "./judge-cooldown.js";
-import { openConfigPanel, openTracePanel } from "./panel.js";
+import { writeFileAtomicSync } from "./atomic.js";
+import { WARDEN_S1_CREDIT, openConfigPanel, openTracePanel } from "./panel.js";
+export { WARDEN_S1_CREDIT };
 import { completeConfig, shapeWarning, taskSpine } from "./shape.js";
 import type { ShapeResult } from "./shape.js";
 import { ContextLedger, formatFilterLedger, formatLedger } from "./saver.js";
@@ -292,6 +294,29 @@ export function judgmentsOffText(reason: Exclude<JudgmentsOffReason, "budget">, 
       ? `warden: local Warden-S1 is not ready (${localDiagnostic}) Pattern checks remain active.`
       : "warden: local Warden-S1 model is not downloaded; run /warden model download or set localModel.autoDownload = true. Pattern checks remain active.";
   }
+}
+
+export const WARDEN_S1_HINT =
+  'Tip: Run local 128K-context judgments in <1 GB RAM with zero API key via /warden model download (then set typesafeBackend to "warden-s1" or "auto").';
+
+const CLOUD_CONTEXT_OR_TIMEOUT_RE =
+  /\bhttp\s+400\b|\b400\b.*(?:context|token|length|limit|too\s+(?:long|large))|context[\s_-]*(?:window|length|limit|size|exceeded|overflow)|token[\s_-]*limit|max(?:imum)?[\s_-]*(?:context|input)?[\s_-]*tokens?|input[\s_-]*(?:too\s+(?:long|large)|length|limit)|>\s*33\s*k\b|\btimeout\b|\btimed\s+out\b/i;
+
+export function wardenS1HintStatePath(dirs: HostDirs): string {
+  return join(dirname(userConfigPath(dirs)), "state", "warden-s1-hint.json");
+}
+
+export function isWardenS1HintEligible(config: Pick<WardenConfig, "enabled" | "typesafeBackend">, localReady: boolean): boolean {
+  if (!config.enabled) return false;
+  if (config.typesafeBackend === "warden-s1") return false;
+  if (config.typesafeBackend === "auto" && localReady) return false;
+  return !localReady;
+}
+
+export function isCloudContextOrTimeoutError(message: string, code: string | undefined): boolean {
+  if (code === "timeout") return true;
+  if (code === "budget") return false;
+  return CLOUD_CONTEXT_OR_TIMEOUT_RE.test(message);
 }
 
 const TURN_TEXT_LIMIT = 4000;
@@ -991,7 +1016,31 @@ export default function wardenExtension(host: ExtensionAPI): void {
       `State: ${state}${process.env[MOCK_WEIGHTS_ENV] === "1" ? `; ${MOCK_WEIGHTS_ENV}=1 runs synthetic weights in its place` : ""}${status.diagnostic ? `; ${status.diagnostic}` : ""}.`,
       `localModel.autoDownload: ${config.localModel.autoDownload}. Backend: ${use}.`,
       await daemonLine(status.runtime),
+      WARDEN_S1_CREDIT,
     ];
+  };
+  let wardenS1HintFallbackShown = false;
+  const readWardenS1HintShown = (path: string): boolean => {
+    try {
+      const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      return Boolean(raw && typeof raw === "object" && (raw as { wardenS1HintShown?: unknown }).wardenS1HintShown === true);
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+      return code !== "ENOENT";
+    }
+  };
+  const maybeConsumeWardenS1Hint = (config: WardenConfig): string | undefined => {
+    if (wardenS1HintFallbackShown || !config.enabled || config.typesafeBackend === "warden-s1") return undefined;
+    const localReady = localModelFor(config)?.ready === true;
+    if (!isWardenS1HintEligible(config, localReady)) return undefined;
+    const path = wardenS1HintStatePath(dirs);
+    if (readWardenS1HintShown(path)) return undefined;
+    try {
+      writeFileAtomicSync(path, JSON.stringify({ wardenS1HintShown: true, shownAt: new Date().toISOString() }, null, 2) + "\n");
+    } catch {
+      wardenS1HintFallbackShown = true;
+    }
+    return WARDEN_S1_HINT;
   };
   const judgmentsOffReason = (config: WardenConfig): JudgmentsOffReason | undefined => {
     // A refused backend is a config error the user must see even before consent or keys matter.
@@ -1028,7 +1077,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (reason === "no_local_model" && modelDownload) return;
     judgmentsReported.add(reason);
     const auth = reason === "key_rejected" && config.typesafeBackend !== undefined ? authState({ backend: toCloudBackendSpec(config.typesafeBackend) }) : undefined;
-    judgmentsNotify?.(offText(reason, config, judgmentsHeadless, auth?.kind === "environment" ? auth.keyName : undefined));
+    const base = offText(reason, config, judgmentsHeadless, auth?.kind === "environment" ? auth.keyName : undefined);
+    const hint = (reason === "no_consent" || reason === "no_key") && judgmentsNotify ? maybeConsumeWardenS1Hint(config) : undefined;
+    judgmentsNotify?.(hint ? `${base} ${hint}` : base);
   };
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
   /** A consent flag is not proof that judgments happen; check the key state for the chosen backend. */
@@ -1098,7 +1149,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
       : event.kind === "billing"
         ? " Balance exhausted (HTTP 402); top up your backend credit or run /warden disable."
         : event.kind === "configuration" ? " /warden status shows the backend setup." : "";
-    const line = `warden: judgments paused for ${seconds}s after a ${event.kind} failure; pattern checks run alone until then.${remedy}`;
+    const hint = event.kind === "timeout" && judgeConfig ? maybeConsumeWardenS1Hint(judgeConfig) : undefined;
+    const line = `warden: judgments paused for ${seconds}s after a ${event.kind} failure; pattern checks run alone until then.${remedy}${hint ? ` ${hint}` : ""}`;
     if (noticeUi) noticeUi.notify(line, "warning");
     else trace.push({ at: Date.now(), guard: "notice", line, details: ["trigger: judge cooldown"] });
   };
@@ -1120,7 +1172,9 @@ export default function wardenExtension(host: ExtensionAPI): void {
     stats.errors++;
     if (code === "budget") budgetExhausted = true;
     const ui = liveUi(ctx);
-    if (ui) ui.notify(`warden: ${message}${budgetExhausted ? " Pattern checks continue without TypeSafe for the rest of this session." : ""}`, "warning");
+    if (!ui) return;
+    const hint = isCloudContextOrTimeoutError(message, code) ? maybeConsumeWardenS1Hint(configFor(ctx)) : undefined;
+    ui.notify(`warden: ${message}${budgetExhausted ? " Pattern checks continue without TypeSafe for the rest of this session." : ""}${hint ? ` ${hint}` : ""}`, "warning");
   };
   /**
    * The first failure of each category in a session reaches the owner on the channel the judge cooldown already uses,
@@ -3670,7 +3724,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     },
   });
 
-  const actions = ["status", "rules", "report", "improve", "enable", "disable", "mode", "config", "model", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "bench"];
+  const actions = ["status", "help", "rules", "report", "improve", "enable", "disable", "mode", "config", "model", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "bench"];
   const modelActions = [
     { value: "model status", description: "the local Warden-S1 runtime, cache folder, download state, and daemon" },
     { value: "model download", description: "download and verify the local Warden-S1 weights in the background" },
@@ -3721,6 +3775,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const lifetimeLine = ls.labeled === 0
             ? `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, not yet measurable (${ls.allowed} allowed).`
             : `Lifetime here: ${ls.held} hold${ls.held === 1 ? "" : "s"}, ${ls.labeled} labeled, ${ls.declined + ls.replanned} stood (${ls.declined + ls.replanned}/${ls.labeled}), ${ls.abandoned} abandoned, ${ls.allowed} allowed (${ls.accepted} accepted, ${ls.regretted} regretted).`;
+          const off = judgmentsOffReason(config);
+          const hint = off === "no_consent" || off === "no_key" ? maybeConsumeWardenS1Hint(config) : undefined;
           const info = wardenBuild();
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; ${judgments}`,
@@ -3746,7 +3802,22 @@ export default function wardenExtension(host: ExtensionAPI): void {
             ...(config.warnings?.length ? [`Config warnings: ${config.warnings.join("; ")}.`] : []),
             widget.size ? `Last: ${[...widget.values()].join(" | ")}` : "No guarded activity yet this session.",
             `Trace: ${trace.entries().length} events (/warden trace${shortcut ? `, ${shortcut}` : ""}, or click the status line in fullscreen mode; each toggles the sidebar). Widget templates in config.widget: action tokens ${TOKEN_NAMES.action.map(name => `{${name}}`).join(" ")}.`,
+            ...(hint ? [hint] : []),
           ].join(" "));
+          return;
+        }
+        if (action === "help") {
+          report([
+            "pi-warden commands:",
+            "  /warden status — guard state, mode, backend/model, build, and session counts",
+            "  /warden mode [steer|confirm|advise] — show or set hold mode",
+            "  /warden config [get <key>|set <key> <value>] — open config panel or read/write a key",
+            "  /warden model [status|download|remove] — manage the local Warden-S1 judge",
+            "  /warden enable | disable — opt in to or stop cloud TypeSafe judgments",
+            "  /warden rules [check|audit|calibrate|tune] | /warden report | /warden init | /warden improve",
+            "  /warden trace | test | loops | prefs | recommend | index | audit | bench | help",
+            WARDEN_S1_CREDIT,
+          ].join("\n"));
           return;
         }
         if (action === "rules" && argument === "audit") {
@@ -4132,11 +4203,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
           if (sub === "status") { report((await modelStatus(config)).join(" ")); return; }
           if (sub === "download") {
             const status = getWardenS1Status(config.localModel, { dirs, forDownload: true });
-            if (status.ready) { report(`Warden-S1 (${status.runtime}) is already downloaded and verified at ${status.modelDir}.`); return; }
+            if (status.ready) { report(`Warden-S1 (${status.runtime}) is already downloaded and verified at ${status.modelDir}. ${WARDEN_S1_CREDIT}`); return; }
             if (status.diagnostic) { report(`Warden-S1 cannot be downloaded: ${status.diagnostic}`, "warning"); return; }
             const use = isLocalBackendMode(config.typesafeBackend) ? "Local judgments start with the next check." : "Set typesafeBackend to \"warden-s1\" or \"auto\" to judge with it.";
             const done = startModelDownload(config).then(
-              result => report(`Warden-S1 (${result.runtime}) downloaded and verified: ${result.files.length} files, ${mib(result.totalBytes)} MiB, each checked against its SHA-256, in ${result.modelDir}. ${use}`),
+              result => report(`Warden-S1 (${result.runtime}) downloaded and verified: ${result.files.length} files, ${mib(result.totalBytes)} MiB, each checked against its SHA-256, in ${result.modelDir}. ${use} ${WARDEN_S1_CREDIT}`),
               (error: unknown) => report(`Warden-S1 download failed: ${error instanceof Error ? error.message : String(error)}. /warden model download resumes it.`, "warning"),
             );
             // A session with a UI keeps its editor: the percentage moves on the status line and a notice ends it.
@@ -4458,7 +4529,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           report(lines.join("\n"));
           return;
         }
-        report(`Unknown action "${action}". Use: ${actions.join(", ")}.`, "warning");
+        report(`Unknown action "${action}". Use: ${actions.join(", ")} (or /warden help).`, "warning");
       } catch (error) {
         report(error instanceof Error ? error.message : "pi-warden command failed.", "error");
       }

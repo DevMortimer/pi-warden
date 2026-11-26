@@ -13,7 +13,15 @@ import { join, resolve } from "node:path";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
 import { createEventBus, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Extension, RegisteredCommand } from "@earendil-works/pi-coding-agent";
-import { _testFlushWrites, judgmentsOffText } from "../src/extension.js";
+import {
+  WARDEN_S1_CREDIT,
+  WARDEN_S1_HINT,
+  _testFlushWrites,
+  isCloudContextOrTimeoutError,
+  isWardenS1HintEligible,
+  judgmentsOffText,
+  wardenS1HintStatePath,
+} from "../src/extension.js";
 import { MLX_MODEL_DIR_NAME, MLX_MODEL_ID, MLX_MODEL_REPO, MLX_REQUIRED_FILES, ONNX_MANIFEST_FILE, ONNX_MODEL_DIR_NAME, ONNX_MODEL_ID, ONNX_MODEL_REPO, READY_MANIFEST_FILE } from "../src/local-model.js";
 import { daemonMetadataPath, ensureWardenS1Daemon, getWardenS1DaemonStatus, stopWardenS1Daemon } from "../src/warden-s1-daemon.js";
 import { WardenS1SessionTracker, connectWardenS1, createWardenS1Judge, getMetaForAnswers } from "../src/warden-s1-session.js";
@@ -802,4 +810,242 @@ test("local Warden-S1 fast-gates 6 clean in-project reads + 3KB rg with 0 /v1/sy
     "25000 ms ONNX timeout floor must prevent spurious 50ms timeout cancellation",
   );
   await rm(metaPath, { force: true });
+});
+
+async function loadIsolatedExtension(agentDir: string, cwd: string) {
+  await mkdir(agentDir, { recursive: true });
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager: SettingsManager.inMemory(),
+      eventBus: createEventBus(),
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      additionalExtensionPaths: [resolve("src/extension.ts")],
+    });
+    await loader.reload();
+    const result = loader.getExtensions();
+    assert.deepEqual(result.errors, []);
+    result.runtime.sendMessage = () => {};
+    result.runtime.sendUserMessage = () => {};
+    result.runtime.appendEntry = () => {};
+    const ext = result.extensions[0]!;
+    const cmd = ext.commands.get("warden")!;
+    const extNotices: Array<{ text: string; level: string }> = [];
+    const extUi = {
+      notify: (text: string, level = "info") => { extNotices.push({ text, level }); },
+      confirm: async () => true,
+      setWidget: () => {},
+    };
+    const extCtx = {
+      hasUI: true,
+      ui: extUi,
+      cwd,
+      sessionManager: { getBranch: () => [{ type: "message", message: { role: "user", content: "Check the workspace" } }] },
+      signal: undefined,
+      isProjectTrusted: () => true,
+      isIdle: () => true,
+      waitForIdle: async () => {},
+      getContextUsage: () => ({ tokens: 5000, contextWindow: 200000, percent: 2.5 }),
+    };
+    const fireExt = (type: string, event: Record<string, unknown>) =>
+      Reflect.apply(ext.handlers.get(type)![0]!, undefined, [{ type, ...event }, extCtx]) as Promise<unknown>;
+    let seq = 0;
+    return {
+      notices: extNotices,
+      cmd,
+      ctx: extCtx,
+      start: async (cfg?: Record<string, unknown>) => {
+        if (cfg !== undefined) {
+          await mkdir(join(agentDir, "pi-warden"), { recursive: true });
+          await writeFile(join(agentDir, "pi-warden", "config.json"), JSON.stringify({ widget: { barMode: "stack" }, ...cfg }));
+        }
+        await fireExt("session_start", {});
+        extNotices.length = 0;
+      },
+      run: (args: string) => Reflect.apply(cmd.handler, cmd, [args, extCtx]) as Promise<void>,
+      call: (toolName: string, input: Record<string, unknown>) =>
+        fireExt("tool_call", { toolName, toolCallId: `iso-${++seq}`, input }) as Promise<{ block?: boolean; reason?: string } | undefined>,
+      prompt: (text: string) => fireExt("before_agent_start", { prompt: text }),
+    };
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  }
+}
+
+test("warden-s1 discovery hint: pure eligibility and cloud error classifiers", () => {
+  assert.equal(isWardenS1HintEligible({ enabled: true, typesafeBackend: "cloud" }, false), true);
+  assert.equal(isWardenS1HintEligible({ enabled: true, typesafeBackend: "auto" }, false), true);
+  assert.equal(isWardenS1HintEligible({ enabled: true, typesafeBackend: "auto" }, true), false);
+  assert.equal(isWardenS1HintEligible({ enabled: true, typesafeBackend: "warden-s1" }, false), false);
+  assert.equal(isWardenS1HintEligible({ enabled: false, typesafeBackend: "cloud" }, false), false);
+
+  assert.equal(isCloudContextOrTimeoutError("TypeSafe returned HTTP 400. Check the question format and model limits. No automatic retry was made.", "http"), true);
+  assert.equal(isCloudContextOrTimeoutError("Request failed: input exceeds >33K token limit", "http"), true);
+  assert.equal(isCloudContextOrTimeoutError("context length exceeded", undefined), true);
+  assert.equal(isCloudContextOrTimeoutError("TypeSafe request timed out; it was not retried.", "timeout"), true);
+  assert.equal(isCloudContextOrTimeoutError("operation timeout", undefined), true);
+
+  assert.equal(isCloudContextOrTimeoutError("TypeSafe returned HTTP 503. Try again later.", "http"), false);
+  assert.equal(isCloudContextOrTimeoutError("TypeSafe returned HTTP 401. Check TYPESAFE_API_KEY.", "http"), false);
+  assert.equal(isCloudContextOrTimeoutError("TypeSafe request budget reached", "budget"), false);
+  assert.equal(isCloudContextOrTimeoutError("Could not store full text; keeping the repeated run.", undefined), false);
+});
+
+test("warden-s1 discovery hint: shown once on /warden status, persisted under state/, untouched config.json, suppressed across reload", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-hint-status-"));
+  const agentDir = join(dir, "agent");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const first = await loadIsolatedExtension(agentDir, dir);
+  await first.start();
+  await first.run("status");
+  assert.equal(first.notices.length, 1);
+  assert.ok(first.notices[0]!.text.includes("TypeSafe judgments not consented"), "status wording preserved");
+  assert.ok(first.notices[0]!.text.includes(WARDEN_S1_HINT), "first unconfigured /warden status appends one-time hint");
+
+  const hintPath = wardenS1HintStatePath({ agentDir, configDirName: ".pi" });
+  assert.equal(existsSync(hintPath), true, "hint state file written atomically under <agentDir>/pi-warden/state/");
+  assert.equal(existsSync(join(agentDir, "pi-warden", "config.json")), false, "config.json stays untouched");
+  const persisted = JSON.parse(await readFile(hintPath, "utf8")) as { wardenS1HintShown?: unknown; shownAt?: unknown };
+  assert.equal(persisted.wardenS1HintShown, true);
+  assert.equal(typeof persisted.shownAt, "string");
+
+  await first.run("status");
+  assert.equal(first.notices.at(-1)!.text.includes(WARDEN_S1_HINT), false, "second /warden status suppresses hint");
+
+  const reloaded = await loadIsolatedExtension(agentDir, dir);
+  await reloaded.start();
+  await reloaded.run("status");
+  assert.equal(reloaded.notices.at(-1)!.text.includes(WARDEN_S1_HINT), false, "reloaded extension against same dirs suppresses hint on /warden status");
+  reloaded.notices.length = 0;
+  await reloaded.prompt("Check files");
+  await reloaded.call("bash", { command: "touch reloaded-hint.txt" });
+  assert.equal(reloaded.notices.some(n => n.text.includes(WARDEN_S1_HINT)), false, "reloaded extension suppresses hint on no_consent notice too");
+});
+
+test("warden-s1 discovery hint: shown once on first no_key notice and suppressed on later /warden status", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-warden-hint-nokey-"));
+  const agentDir = join(dir, "agent");
+  const savedKey = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  t.after(async () => {
+    if (savedKey !== undefined) process.env.TYPESAFE_API_KEY = savedKey;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const ext = await loadIsolatedExtension(agentDir, dir);
+  await ext.start({ typesafe: true, rules: { enabled: false } });
+  await ext.prompt("Run a check");
+  await ext.call("bash", { command: "touch nokey.txt" });
+  assert.ok(ext.notices.some(n => n.text.includes("no key for typesafe") && n.text.includes(WARDEN_S1_HINT)), "first no_key notice appends hint");
+
+  ext.notices.length = 0;
+  await ext.run("status");
+  assert.equal(ext.notices.at(-1)!.text.includes(WARDEN_S1_HINT), false, "later /warden status does not repeat hint");
+});
+
+test("warden-s1 discovery hint: shown once on cloud HTTP 400 and on cloud timeout when marker is absent", async t => {
+  const savedKey = process.env.TYPESAFE_API_KEY;
+  const savedFetch = globalThis.fetch;
+  process.env.TYPESAFE_API_KEY = "test-key-for-hint";
+  t.after(() => {
+    globalThis.fetch = savedFetch;
+    if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = savedKey;
+  });
+
+  // Case A: Cloud HTTP 400 (e.g. >33K context-length rejection).
+  const dir400 = await mkdtemp(join(tmpdir(), "pi-warden-hint-400-"));
+  t.after(async () => { await rm(dir400, { recursive: true, force: true }); });
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: "context length exceeds 33K tokens" }), { status: 400, headers: { "content-type": "application/json" } });
+  const ext400 = await loadIsolatedExtension(join(dir400, "agent"), dir400);
+  await ext400.start({ typesafe: true, notices: true, rules: { enabled: false }, action: { ask: { enabled: false } } });
+  await ext400.prompt("Run a command");
+  await ext400.call("bash", { command: "touch err400-1.txt" });
+  assert.ok(ext400.notices.some(n => /HTTP 400/.test(n.text) && n.text.includes(WARDEN_S1_HINT)), "first cloud HTTP 400 appends hint");
+  ext400.notices.length = 0;
+  await ext400.call("bash", { command: "touch err400-2.txt" });
+  assert.equal(ext400.notices.some(n => n.text.includes(WARDEN_S1_HINT)), false, "second cloud HTTP 400 does not repeat hint");
+
+  // Case B: Cloud timeout (via cooldown after deadline abort).
+  const dirTimeout = await mkdtemp(join(tmpdir(), "pi-warden-hint-timeout-"));
+  t.after(async () => { await rm(dirTimeout, { recursive: true, force: true }); });
+  globalThis.fetch = (_input, init) => new Promise((_resolve, reject) => {
+    const onAbort = () => reject(init?.signal?.reason ?? Object.assign(new Error("aborted"), { name: "AbortError" }));
+    if (init?.signal?.aborted) { onAbort(); return; }
+    init?.signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  const extTimeout = await loadIsolatedExtension(join(dirTimeout, "agent"), dirTimeout);
+  await extTimeout.start({ typesafe: true, notices: true, rules: { enabled: false }, action: { ask: { enabled: false } }, timeoutMs: 40, judge: { failuresBeforeCooldown: 1, cooldownMs: 60_000 } });
+  await extTimeout.prompt("Run a command");
+  await extTimeout.call("bash", { command: "touch timeout-1.txt" });
+  assert.ok(extTimeout.notices.some(n => /timeout failure/.test(n.text) && n.text.includes(WARDEN_S1_HINT)), "cloud timeout cooldown appends hint once");
+  assert.equal(existsSync(wardenS1HintStatePath({ agentDir: join(dirTimeout, "agent"), configDirName: ".pi" })), true);
+});
+
+test("warden-s1 discovery hint: suppressed for typesafeBackend warden-s1 and auto with ready local weights", async t => {
+  stopDaemonAfter(t);
+  const dirS1 = await mkdtemp(join(tmpdir(), "pi-warden-hint-s1-"));
+  t.after(async () => { await rm(dirS1, { recursive: true, force: true }); });
+  const extS1 = await loadIsolatedExtension(join(dirS1, "agent"), dirS1);
+  await extS1.start({ typesafeBackend: "warden-s1", localModel: { runtime: "onnx" }, rules: { enabled: false } });
+  await extS1.run("status");
+  await extS1.prompt("Check");
+  await extS1.call("bash", { command: "touch s1-only.txt" });
+  assert.equal(extS1.notices.some(n => n.text.includes(WARDEN_S1_HINT)), false, "warden-s1 backend never emits discovery hint");
+  assert.equal(existsSync(wardenS1HintStatePath({ agentDir: join(dirS1, "agent"), configDirName: ".pi" })), false);
+
+  const dirAuto = await mkdtemp(join(tmpdir(), "pi-warden-hint-auto-ready-"));
+  t.after(async () => { await rm(dirAuto, { recursive: true, force: true }); });
+  process.env.PI_WARDEN_S1_MOCK_WEIGHTS = "1";
+  const extAuto = await loadIsolatedExtension(join(dirAuto, "agent"), dirAuto);
+  await extAuto.start({ typesafeBackend: "auto", localModel: { runtime: "onnx" }, rules: { enabled: false } });
+  await extAuto.run("status");
+  assert.match(extAuto.notices.at(-1)!.text, /judgments local: Warden-S1/);
+  assert.equal(extAuto.notices.some(n => n.text.includes(WARDEN_S1_HINT)), false, "auto with ready local weights never emits discovery hint");
+  assert.equal(existsSync(wardenS1HintStatePath({ agentDir: join(dirAuto, "agent"), configDirName: ".pi" })), false);
+});
+
+test("maker credit: appears on model status, model download completion, and /warden help, never in holds or runtime guard notices", async t => {
+  stopDaemonAfter(t);
+  await startSession({ typesafeBackend: "auto", notices: true, localModel: { runtime: "onnx" }, rules: { enabled: false } });
+
+  // /warden help + unknown action reference + completion
+  const complete = (prefix: string) => (command.getArgumentCompletions!(prefix) as Array<{ value: string }> | null)?.map(item => item.value) ?? [];
+  assert.ok(complete("he").includes("help"));
+  await runCommand("help");
+  assert.match(lastNotice(), /pi-warden commands:/);
+  assert.ok(lastNotice().includes(WARDEN_S1_CREDIT), "/warden help ends with maker credit");
+  await runCommand("nonexistent-subcommand");
+  assert.match(lastNotice(), /\/warden help/);
+
+  // /warden model status
+  await runCommand("model status");
+  assert.ok(lastNotice().includes(WARDEN_S1_CREDIT), "/warden model status includes maker credit");
+
+  // /warden model download (fresh completion + already downloaded)
+  await runCommand("model download");
+  await waitFor(() => notices.some(n => /downloaded and verified: 3 files/.test(n.text)), "model download completion");
+  const downloadDone = notices.find(n => /downloaded and verified: 3 files/.test(n.text))!.text;
+  assert.ok(downloadDone.includes(WARDEN_S1_CREDIT), "/warden model download completion includes maker credit");
+  await runCommand("model download");
+  assert.ok(lastNotice().includes("already downloaded and verified") && lastNotice().includes(WARDEN_S1_CREDIT), "already-downloaded response includes maker credit");
+  await runCommand("model remove");
+
+  // Runtime hold + guard toast never include maker credit
+  notices.length = 0;
+  await newPrompt("Deploy changes");
+  const held = await toolCall("bash", { command: "git push --force origin main" });
+  assert.equal(held?.block, true);
+  assert.equal((held?.reason ?? "").includes(WARDEN_S1_CREDIT), false, "hold reason never includes maker credit");
+  assert.equal((held?.reason ?? "").includes("@devmortimer"), false);
+  assert.equal(notices.some(n => n.text.includes(WARDEN_S1_CREDIT) || n.text.includes("@devmortimer")), false, "runtime guard notices never include maker credit");
 });
