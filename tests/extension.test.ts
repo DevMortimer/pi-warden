@@ -5347,6 +5347,30 @@ test("the trace file's session line carries the judgment state and a later chang
   }
 });
 
+test("the DES trace distinguishes a TypeSafe judgment from a failed call without recording their data", async () => {
+  process.env.PI_WARDEN_TRACE_OUTCOMES = "1";
+  try {
+    await grantConsent();
+    await toolCall("bash", { command: "npm test" });
+    failNetwork = true;
+    await toolCall("bash", { command: "npm run lint" });
+    assert.equal(networkCalls, 2);
+
+    const path = join(process.env.PI_WARDEN_TRACE_DIR!, `${process.pid}.jsonl`);
+    await _testFlushWrites();
+    const outcomes = (await readFile(path, "utf8")).trim().split("\n")
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .filter(record => record.kind === "typesafe_outcome");
+    assert.deepEqual(outcomes.map(({ at, ...record }) => record), [
+      { v: 1, kind: "typesafe_outcome", outcome: "received" },
+      { v: 1, kind: "typesafe_outcome", outcome: "failed" },
+    ]);
+    assert.ok(outcomes.every(record => typeof record.at === "string"));
+  } finally {
+    delete process.env.PI_WARDEN_TRACE_OUTCOMES;
+  }
+});
+
 test("conscience: a rejected key traces key_rejected, and missing consent still traces no_consent", async () => {
   const skills = [conscienceSkill("impeccable", "UI design")];
   await writeConscienceConfig();

@@ -13,7 +13,7 @@ type MouseRegionConstructor = new (child: ReturnType<typeof statusWidget>, onMou
 const MouseRegion: MouseRegionConstructor | undefined = (tuiModule as Partial<{ MouseRegion: MouseRegionConstructor }>).MouseRegion;
 import { authState, backendHost, createTypeSafe, describeAuth, resolveBackend, chunkEvaluationRequest } from "pi-typesafe";
 import type { TypeSafe } from "pi-typesafe";
-import { DEFAULT_BACKEND } from "pi-typesafe";
+import { DEFAULT_BACKEND, TypeSafeIntegrationError } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
 import { backendName, describeBackend, disclosureFor, isLocalBackendMode, judgeOptions, loginStoresKey, toCloudBackendSpec } from "./backend.js";
 import { downloadWardenS1, getWardenS1Status, removeWardenS1 } from "./local-model.js";
@@ -1047,7 +1047,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // Reached only if a config ever sets no backend and no refusal at once; treating it as off keeps the invariant.
     if (backend === undefined) return undefined;
     try {
-      client = watched(createTypeSafe(judgeOptions({ maxRequests: config.maxRequests, timeoutMs: config.timeoutMs, typesafeBackend: backend })));
+      client = watched(
+        createTypeSafe(judgeOptions({ maxRequests: config.maxRequests, timeoutMs: config.timeoutMs, typesafeBackend: backend })),
+        toCloudBackendSpec(backend) === DEFAULT_BACKEND,
+      );
     } catch (error) {
       // An endpoint the config accepts can still be unusable (one that names no defaultModel); a hook must never crash.
       const message = error instanceof Error ? error.message : String(error);
@@ -1063,16 +1066,21 @@ export default function wardenExtension(host: ExtensionAPI): void {
   // The observer shares the watched client but never sends cooldown notices of its own.
   const quietSignals = new WeakSet<AbortSignal>();
   /** Every guard reaches the backend through `evaluate`, so this one seam sees each failure and each success. */
-  const watched = (typesafe: TypeSafe): TypeSafe => new Proxy(typesafe, {
+  const watched = (typesafe: TypeSafe, isTypeSafe = false): TypeSafe => new Proxy(typesafe, {
     get(target, prop, receiver) {
       if (prop !== "evaluate") return Reflect.get(target, prop, receiver);
       return async (...args: Parameters<TypeSafe["evaluate"]>) => {
+        const outcomeTrace = isTypeSafe ? traceFile : undefined;
         try {
           const result = await target.evaluate(...args);
+          outcomeTrace?.typesafeOutcome("received");
           const event = cooldown.success();
           if (!args[1]?.signal || !quietSignals.has(args[1].signal)) tellCooldown(event);
           return result;
         } catch (err) {
+          if (outcomeTrace && err instanceof TypeSafeIntegrationError && ["connection", "http", "response", "timeout"].includes(err.code)) {
+            outcomeTrace.typesafeOutcome("failed");
+          }
           const kind = cooldownFailureKind(err, args[1]?.signal);
           if (kind) {
             // The model may have been removed, or its daemon stopped, by another session: the next check reads it again.

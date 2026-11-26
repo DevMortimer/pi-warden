@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Added
+
+- Opt-in `PI_WARDEN_TRACE_OUTCOMES=1` records received and failed TypeSafe evaluations in the existing session trace without recording request or response data in the outcome record.
 
 ## 2.18.0
 

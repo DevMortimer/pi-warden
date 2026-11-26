@@ -14,6 +14,7 @@ import type { TraceEntry, TraceEvent } from "./trace.js";
  * - `{"v":1,"kind":"session","sessionId","cwd","wardenVersion","mode","judgments","at"}` when the file is opened for a
  *   session; `judgments` is `"on"` or `"off:<reason>"`, reason one of `no_consent`, `no_key`, `key_rejected`, `budget`;
  * - `{"v":1,"kind":"judgments","judgments","at"}` when a guard finds the judgment state changed from the last line;
+ * - `{"v":1,"kind":"typesafe_outcome","outcome":"received"|"failed","at"}` when `PI_WARDEN_TRACE_OUTCOMES=1` and a TypeSafe evaluation settles;
  * - `{"v":1,"kind":"entry","id","at","guard","line","details","tokens"?}` for every trace entry, as the trace stores it;
  * - `{"v":1,"kind":"amend","id","line","at"}` for an outcome line added to an entry still in the trace.
  *
@@ -142,6 +143,12 @@ export class TraceFile {
     this.judgmentsNow = state;
     const at = new Date().toISOString();
     this.append(() => ({ v: 1, kind: "judgments", judgments: state, at }));
+  }
+
+  typesafeOutcome(outcome: "received" | "failed"): void {
+    if (this.stopped || process.env.PI_WARDEN_TRACE_OUTCOMES !== "1") return;
+    const at = new Date().toISOString();
+    this.append(() => ({ v: 1, kind: "typesafe_outcome", outcome, at }));
   }
 
   /** Resolves when every event so far is on disk or the file has stopped. */
