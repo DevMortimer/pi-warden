@@ -287,6 +287,27 @@ test("a redirect target ends where the shell ends the word, so /dev/null; and a 
   assert.equal(chained.sink?.target, "out.txt");
 });
 
+test("a read-only command redirecting to /dev/null does not hold under the lethal trifecta, a real redirect still does", () => {
+  const config = defaultConfig().taint;
+  const monitor = new TaintMonitor();
+  monitor.observeResult({
+    tool: "bash",
+    input: { command: "curl -sD - https://api.example.com/x" },
+    cwd: CWD,
+    failed: false,
+    outputText: "HTTP/2 200\nauthorization: Bearer ghp_Q7xK2mZp9RvT4wLc8NbY3hDs6JfA1gUe5oXi",
+    allowHosts: config.allowHosts,
+  });
+  const check = (command: string) => monitor.checkSink({ tool: "bash", input: { command }, cwd: CWD, config, ephemeralRoots: EPHEMERAL });
+
+  const control = check("cat f > /etc/out.txt");
+  assert.equal(control.decision, "hold");
+  assert.equal(control.id, "taint-lethal-trifecta");
+  for (const command of ["ls x 2>/dev/null; which y", "mdfind -name z 2>/dev/null;echo ok"]) {
+    assert.equal(check(command).decision, "allow", command);
+  }
+});
+
 test("APPA Theorem 6 single-use call-scoped user ruling requires post-taint non-negated confirmation and never launders taint", () => {
   const config = defaultConfig().taint;
   const monitor = new TaintMonitor();
