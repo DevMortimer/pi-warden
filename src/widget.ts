@@ -1,4 +1,3 @@
-import { freshChecks } from "./done.js";
 import type { CauseVerdict } from "./cause.js";
 import type { DoneVerdict } from "./done.js";
 import type { Verdict } from "./guard.js";
@@ -415,7 +414,8 @@ export function runawayTokens(verdict: RunawayVerdict, recovering: boolean, at =
 }
 
 export function doneTokens(verdict: DoneVerdict, at = Date.now()): Tokens {
-  const checks = freshChecks(verdict.evidence);
+  // Slice directly instead of importing freshChecks from done.ts; widget.ts must stay a runtime leaf to keep the rules/guard/done graph acyclic.
+  const checks = verdict.evidence.checks.slice(verdict.evidence.checksBeforeMutation ?? 0);
   return {
     guard: "done",
     time: time(at),
