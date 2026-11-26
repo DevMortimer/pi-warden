@@ -17,8 +17,8 @@ import { DEFAULT_BACKEND } from "pi-typesafe";
 import { ensureApiKey } from "pi-typesafe/ui";
 import { backendName, describeBackend, disclosureFor, isLocalBackendMode, judgeOptions, loginStoresKey, toCloudBackendSpec } from "./backend.js";
 import { downloadWardenS1, getWardenS1Status, removeWardenS1 } from "./local-model.js";
-import type { DownloadResult } from "./local-model.js";
-import { getWardenS1DaemonStatus, stopWardenS1Daemon } from "./warden-s1-daemon.js";
+import type { DownloadResult, SelectedRuntime } from "./local-model.js";
+import { effectiveWardenS1TimeoutMs, getWardenS1DaemonStatus, stopWardenS1Daemon } from "./warden-s1-daemon.js";
 import { connectWardenS1, createWardenS1Judge, MOCK_WEIGHTS_ENV, resolveLocalWardenS1, WardenS1SessionTracker, wardenS1NoteLines } from "./warden-s1-session.js";
 import type { LocalWardenS1, WardenS1Connection } from "./warden-s1-session.js";
 import type { BackendSetting, JudgmentsOffReason } from "./backend.js";
@@ -44,7 +44,7 @@ import { formatHolds, HoldLedger, HoldLog, holdLogPath, mutatingCall, outcomeNot
 import { findCause, initSchema, recordCause, recordHold, recordOutcome, toHoldRecord, holdStats, generateRecommendations, analyzeSteerEffectivenessReport } from "./learning.js";
 import type { CallOutcome, CallRecord, OutcomeVia } from "./holds.js";
 import { evaluateProse, proseNudge, ProseTrend, RESTATE_MIN_SENTENCES, RESTATE_SHARE, RestatementWindow, substantiveSentences } from "./prose.js";
-import { compressOutput, duplicateNote, evaluateOutput, isGenericExcerpt, mergeOutput, outputKey, saveOutput, securityNotice, CompressionLearner } from "./output.js";
+import { compressOutput, duplicateNote, evaluateOutput, isGenericExcerpt, isTrustedLocalOutputSource, mergeOutput, outputKey, saveOutput, securityNotice, CompressionLearner } from "./output.js";
 import { filterOutput } from "./filter.js";
 import type { FilterResult } from "./filter.js";
 import type { OutputVerdict } from "./output.js";
@@ -274,7 +274,7 @@ function planForCall(entries: ReturnType<ExtensionContext["sessionManager"]["get
  * variable that holds a rejected key, or undefined when the rejected key is the one `/typesafe login` saved. Never
  * names a key value or a path.
  */
-export function judgmentsOffText(reason: Exclude<JudgmentsOffReason, "budget">, setting: BackendSetting, headless: boolean, rejectedEnv?: string): string {
+export function judgmentsOffText(reason: Exclude<JudgmentsOffReason, "budget">, setting: BackendSetting, headless: boolean, rejectedEnv?: string, localDiagnostic?: string): string {
   switch (reason) {
     case "no_consent": return `warden: Jev judgments are off (no consent). ${headless ? "Set PI_WARDEN_ENABLED=1." : "Run /warden enable."}`;
     case "bad_backend": return `warden: Jev judgments are off (typesafeBackend refused: ${setting.backendRefusal ?? "the configured value is not usable"})`;
@@ -288,7 +288,9 @@ export function judgmentsOffText(reason: Exclude<JudgmentsOffReason, "budget">, 
     case "key_rejected": return rejectedEnv
       ? `warden: Jev judgments are off (the key in ${rejectedEnv} was rejected). Check the key, then run /warden status.`
       : "warden: Jev judgments are off (the key saved by /typesafe login was rejected). Run /typesafe login.";
-    case "no_local_model": return "warden: local Warden-S1 model is not downloaded; run /warden model download or set localModel.autoDownload = true. Pattern checks remain active.";
+    case "no_local_model": return localDiagnostic
+      ? `warden: local Warden-S1 is not ready (${localDiagnostic}) Pattern checks remain active.`
+      : "warden: local Warden-S1 model is not downloaded; run /warden model download or set localModel.autoDownload = true. Pattern checks remain active.";
   }
 }
 
@@ -909,8 +911,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
         repaint();
       },
     }).then(result => {
-      // Only a finished download is read again: a failed one keeps the cached read, so nothing retries it by itself.
       localModel = undefined;
+      autoDownloadAttemptedKey = undefined;
       return result;
     }).finally(() => {
       if (modelDownload === started) modelDownload = undefined;
@@ -927,35 +929,54 @@ export default function wardenExtension(host: ExtensionAPI): void {
       (error: unknown) => tellOwner(`warden: the Warden-S1 download failed (${error instanceof Error ? error.message : String(error)}). Pattern checks remain active; /warden model download tries again.`, "warning"),
     );
   };
+  let autoDownloadAttemptedKey: string | undefined;
   /** The local model for a config that asks for one. Reading it starts its daemon when it can judge, and its download when the user switched that on. */
   const localModelFor = (config: WardenConfig): LocalWardenS1 | undefined => {
     if (!isLocalBackendMode(config.typesafeBackend)) return undefined;
     const key = JSON.stringify(config.localModel);
-    if (localModel?.key === key) return localModel.value;
-    const value = resolveLocalWardenS1(config.localModel, { dirs });
+    if (localModel?.key === key && localModel.value.ready) return localModel.value;
+    const value = resolveLocalWardenS1(config.localModel, { dirs, refreshProbe: true });
     localModel = { key, value };
     s1Judge = undefined;
     s1Connection = value.ready ? connectWardenS1(value.daemon) : undefined;
     s1Connection?.warm();
-    if (!value.ready && config.localModel.autoDownload) autoDownload(config);
+    if (!value.ready && config.localModel.autoDownload && autoDownloadAttemptedKey !== key) {
+      autoDownloadAttemptedKey = key;
+      autoDownload(config);
+    }
     return value;
   };
   /** Where a judged request goes, for a prompt that names it before sending. */
   const judgeHost = (config: WardenConfig): string => localModelFor(config)?.ready ? "the local Warden-S1 model on 127.0.0.1" : backendHost(toCloudBackendSpec(config.typesafeBackend));
+  const judgeTimeoutMs = (config: WardenConfig): number => {
+    const local = localModelFor(config);
+    return effectiveWardenS1TimeoutMs(config.timeoutMs, local?.ready ? local.daemon.runtime : undefined);
+  };
   /** One finished turn of the transcript the local judge reads; warming it runs behind the hook, never in it. */
   const streamTurn = (turn: { role: "user" | "assistant" | "tool"; tool?: string; text: string }) => {
     s1Tracker.appendTurn({ turnIndex: ++s1Turn, ...turn });
     s1Tracker.schedulePrewarm();
   };
-  const daemonLine = async (): Promise<string> => {
+  const daemonLine = async (expectedRuntime?: SelectedRuntime): Promise<string> => {
     const daemon = await getWardenS1DaemonStatus();
     if (!daemon.running || !daemon.stats || !daemon.endpoint) return "Daemon: not running.";
     const s = daemon.stats;
-    return `Daemon: running (pid ${s.pid}, ${s.runtime}, 127.0.0.1:${daemon.endpoint.port}, model ${s.model}); sessions: ${s.active_session_id ? 1 : 0} active (L1), ${s.l2_ram_sessions} in RAM (L2), ${s.l3_disk_sessions} on disk (L3); ${s.requests_served} requests, ${s.prewarms_served} prewarms; cache ${s.cache_exact_hits} exact / ${s.cache_delta_hits} delta / ${s.cache_misses} miss${s.rss_mb !== undefined ? `; ${Math.round(s.rss_mb)} MiB resident` : ""}.`;
+    const mem = s.metal_active_mb !== undefined
+      ? `; ${Math.round(s.metal_active_mb)} MiB Metal${s.rss_mb !== undefined ? ` (${Math.round(s.rss_mb)} MiB RSS)` : ""}`
+      : s.rss_mb !== undefined
+        ? `; ${Math.round(s.rss_mb)} MiB resident`
+        : "";
+    const runtimeLabel = s.runtime === "onnx" && s.activeExecutionProvider && s.activeExecutionProvider !== "cpu"
+      ? `${s.runtime}/${s.activeExecutionProvider}`
+      : s.runtime;
+    const mismatch = expectedRuntime && process.env[MOCK_WEIGHTS_ENV] !== "1" && s.runtime !== expectedRuntime
+      ? ` (mismatch: selected runtime is ${expectedRuntime}; next judged call or /warden model status after reload switches it)`
+      : "";
+    return `Daemon: running (pid ${s.pid}, ${runtimeLabel}, 127.0.0.1:${daemon.endpoint.port}, model ${s.model}); sessions: ${s.active_session_id ? 1 : 0} active (L1), ${s.l2_ram_sessions} in RAM (L2), ${s.l3_disk_sessions} on disk (L3); ${s.requests_served} requests, ${s.prewarms_served} prewarms; cache ${s.cache_exact_hits} exact / ${s.cache_delta_hits} delta / ${s.cache_misses} miss${mem}.${mismatch}`;
   };
   /** `/warden model status`: the runtime, the repo, the cache folder and what is in it, the setting, and the shared daemon. */
   const modelStatus = async (config: WardenConfig): Promise<string[]> => {
-    const status = getWardenS1Status(config.localModel, { dirs });
+    const status = getWardenS1Status(config.localModel, { dirs, refreshProbe: true });
     const state = modelDownload ? modelDownload.line.replace(/^warden · model · /, "")
       : status.installed ? `installed and verified (${mib(status.downloadedBytes)} MiB on disk, ${status.manifest?.files.length ?? 0} files with a recorded SHA-256)`
       : status.incomplete ? `incomplete (${mib(status.downloadedBytes)} of ${mib(status.totalBytes)} MiB; /warden model download resumes it)`
@@ -969,7 +990,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       `Cache: ${status.modelDir}.`,
       `State: ${state}${process.env[MOCK_WEIGHTS_ENV] === "1" ? `; ${MOCK_WEIGHTS_ENV}=1 runs synthetic weights in its place` : ""}${status.diagnostic ? `; ${status.diagnostic}` : ""}.`,
       `localModel.autoDownload: ${config.localModel.autoDownload}. Backend: ${use}.`,
-      await daemonLine(),
+      await daemonLine(status.runtime),
     ];
   };
   const judgmentsOffReason = (config: WardenConfig): JudgmentsOffReason | undefined => {
@@ -990,6 +1011,14 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let judgmentsNotify: ((text: string) => void) | undefined;
   let judgmentsHeadless = false;
   const judgmentsReported = new Set<JudgmentsOffReason>();
+  const localUnreadyDiagnostic = (config: WardenConfig): string | undefined => {
+    const local = localModelFor(config);
+    return local && !local.ready && local.status.installed && local.status.diagnostic
+      ? local.status.diagnostic
+      : undefined;
+  };
+  const offText = (reason: Exclude<JudgmentsOffReason, "budget">, config: WardenConfig, headless: boolean, rejectedEnv?: string): string =>
+    judgmentsOffText(reason, config, headless, rejectedEnv, reason === "no_local_model" ? localUnreadyDiagnostic(config) : undefined);
   /** Say once per session and reason that judgments are off, and record the state in the trace file. */
   const noteJudgments = (config: WardenConfig, reason: JudgmentsOffReason | undefined) => {
     traceFile?.judgments(judgmentsState(reason));
@@ -999,7 +1028,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (reason === "no_local_model" && modelDownload) return;
     judgmentsReported.add(reason);
     const auth = reason === "key_rejected" && config.typesafeBackend !== undefined ? authState({ backend: toCloudBackendSpec(config.typesafeBackend) }) : undefined;
-    judgmentsNotify?.(judgmentsOffText(reason, config, judgmentsHeadless, auth?.kind === "environment" ? auth.keyName : undefined));
+    judgmentsNotify?.(offText(reason, config, judgmentsHeadless, auth?.kind === "environment" ? auth.keyName : undefined));
   };
   const consentSource = (config: WardenConfig) => config.typesafe ? "/warden enable" : process.env.PI_WARDEN_ENABLED === "1" ? "PI_WARDEN_ENABLED" : undefined;
   /** A consent flag is not proof that judgments happen; check the key state for the chosen backend. */
@@ -1047,7 +1076,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const kind = cooldownFailureKind(err, args[1]?.signal);
           if (kind) {
             // The model may have been removed, or its daemon stopped, by another session: the next check reads it again.
-            if (s1Judge) localModel = undefined;
+            if (s1Judge) { localModel = undefined; autoDownloadAttemptedKey = undefined; }
             const event = cooldown.failure(kind, judgeConfig?.judge ?? defaultConfig().judge);
             if (!args[1]?.signal || !quietSignals.has(args[1].signal)) tellCooldown(event);
           }
@@ -1428,7 +1457,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const task = latestUserPrompt(ctx);
     const batch: string[] = [];
     for (const report of reports) {
-      const verdict = await triageReport(report, { config: config.subagent, judge, timeoutMs: config.timeoutMs, signal: ctx.signal, task });
+      const verdict = await triageReport(report, { config: config.subagent, judge, timeoutMs: judgeTimeoutMs(config), signal: ctx.signal, task });
       const label = reportLabel(report);
       record(ctx, config, "subagent", renderTemplate(config.widget.subagent, {
         agent: label, kind: report.customType, wake: verdict.wake ? "wake" : "silent",
@@ -1503,6 +1532,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     if (_event.reason === "reload" || _event.reason === "new") conscienceGeneration++;
     client = undefined;
     localModel = undefined;
+    autoDownloadAttemptedKey = undefined;
     s1Connection = undefined;
     s1Judge = undefined;
     s1Turn = 0;
@@ -2249,7 +2279,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
       }
     }
     // The rules request carries the written content and the rule text, so it goes out beside the action request, not inside it.
-    const rulesOptions = { cwd: ctx.cwd, config: config.rules, judge, timeoutMs: config.timeoutMs, signal: ctx.signal };
+    const effectiveTimeoutMs = judgeTimeoutMs(config);
+    const rulesOptions = { cwd: ctx.cwd, config: config.rules, judge, timeoutMs: effectiveTimeoutMs, signal: ctx.signal };
     // A bash command that writes literal content to a file is judged as a `write` of that content, before it runs, so a
     // heredoc gets the checks a `write` gets.
     const shell = event.toolName === "bash" && typeof (event.input as Record<string, unknown>).command === "string"
@@ -2277,7 +2308,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const quietNow = quiet.active(sessionIdFor(ctx));
     const rulesLive = config.rules.enabled && perEditRules && !quietNow;
     const rulesSystem0Live = config.rules.enabled && !perEditRules && config.rules.system0 && !quietNow;
-    const system0Options = { cwd: ctx.cwd, config: config.rules, judge: undefined, timeoutMs: config.timeoutMs, signal: ctx.signal };
+    const system0Options = { cwd: ctx.cwd, config: config.rules, judge: undefined, timeoutMs: effectiveTimeoutMs, signal: ctx.signal };
     const rulesChecks: Array<{ check: Promise<RulesVerdict>; shellWrite?: ShellWrite; findingsOnly?: boolean }> = rulesLive
       ? (event.toolName === "write" || event.toolName === "edit"
         ? [{ check: rulesGuard.inspect(call, siblings, rulesOptions) }]
@@ -2299,10 +2330,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
     const actionConfig = taintCanDeclassify
       ? {
           ...config.action,
+          timeoutMs: effectiveTimeoutMs,
           tools: config.action.tools.includes(event.toolName) ? config.action.tools : [...config.action.tools, event.toolName],
           ask: { enabled: false },
         }
-      : config.action;
+      : effectiveTimeoutMs !== config.action.timeoutMs
+        ? { ...config.action, timeoutMs: effectiveTimeoutMs }
+        : config.action;
     const verdict = await actionGuard.inspect(
       call,
       { task, context: recentTaskContext(ctx), siblings, plan: assistantPlan(ctx, isVisibleAction(event.toolName, event.input as Record<string, unknown>)), spine: taskSpine(ctx.sessionManager.getBranch()), asked: askedBeforeReply(ctx) },
@@ -2762,7 +2796,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       if (config.stuck.nudge && config.stuck.repeatSteer) quickRepeat = attempts.quickRepeat();
       if (!attempts.shouldJudge(config.stuck)) return undefined;
       stats.stuckChecks++;
-      return evaluateStuck(attempts, latestUserPrompt(ctx), { config: config.stuck, judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
+      return evaluateStuck(attempts, latestUserPrompt(ctx), { config: config.stuck, judge: judgeFor(config), timeoutMs: judgeTimeoutMs(config), signal: ctx.signal });
     })();
     // A recall brings stored text back on purpose: it is not judged, compressed, or dropped again.
     const recallRead = ledger.storedPathIn(JSON.stringify(event.input)) !== undefined;
@@ -2774,6 +2808,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // scan still runs offline.
     const multiBlock = textBlocks.length > 1 && !earlier && !recallRead;
     const blockVerdicts: OutputVerdict[] = [];
+    const localFastGate = Boolean(localModelFor(config)?.ready);
+    const trustedLocalSource = localFastGate
+      ? isTrustedLocalOutputSource(event.toolName, event.input as Record<string, unknown>, ctx.cwd, config.taint.allowHosts)
+      : false;
+    const outputTimeoutMs = judgeTimeoutMs(config);
     let output: OutputVerdict;
     if (earlier || recallRead) {
       output = { secret: false, suspicious: false, retention: "all" };
@@ -2781,15 +2820,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
       for (const blockText of rawTexts) {
         if (ctx.signal?.aborted) break;
         blockVerdicts.push(await evaluateOutput(event.toolName, blockText, latestUserPrompt(ctx), {
-          security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
+          security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: outputTimeoutMs,
           signal: ctx.signal, compressible: true, taskContext: recentTaskContext(ctx),
+          localFastGate, trustedLocalSource,
         }, compressionLearner));
       }
       output = mergeOutput(blockVerdicts);
     } else {
       output = await evaluateOutput(event.toolName, rawTexts.join("\n"), latestUserPrompt(ctx), {
-        security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: config.timeoutMs,
+        security: config.security, context: config.context, judge: judgeFor(config), timeoutMs: outputTimeoutMs,
         signal: ctx.signal, compressible: true, taskContext: recentTaskContext(ctx),
+        localFastGate, trustedLocalSource,
       }, compressionLearner);
     }
     if (ctx.signal?.aborted) return;
@@ -3239,7 +3280,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
       }, {
         judge, config: config.compaction, signal: event.signal, savedPathFor: text => ledger.storedPathIn(text),
         // The client carries the global per-request timeout; compaction.timeoutMs bounds the whole compaction on top of it.
-        requestTimeoutMs: config.timeoutMs,
+        requestTimeoutMs: judgeTimeoutMs(config),
         // Read from the shared client, so requests every guard started count against the reserve.
         requestsLeft: () => (judge.getSpend().caps.maxRequests ?? config.maxRequests) - judge.getUsage().requestsStarted,
       });
@@ -3402,7 +3443,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           config: config.rules,
           set,
           judge,
-          timeoutMs: config.timeoutMs,
+          timeoutMs: judgeTimeoutMs(config),
           signal: ctx.signal,
           task: latestUserPrompt(ctx),
           startTree: snapshot.tree,
@@ -3459,11 +3500,12 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // Pi shows the agent as working until this hook returns, so the two independent checks share one round trip.
     const task = latestUserPrompt(ctx);
     // The text guards are quiet too while this session's quiet window is live: the file is being rewritten, not defended.
+    const endTimeoutMs = judgeTimeoutMs(config);
     const proseCheck = !quietNow && config.slop.enabled && config.slop.prose.enabled && finalMessage.length >= config.slop.prose.minChars
-      ? evaluateProse(task, finalMessage, { config: config.slop.prose, judge, timeoutMs: config.timeoutMs, signal: ctx.signal })
+      ? evaluateProse(task, finalMessage, { config: config.slop.prose, judge, timeoutMs: endTimeoutMs, signal: ctx.signal })
       : undefined;
     const doneCheck = !quietNow && config.done.enabled && needsDoneCheck(evidence)
-      ? evaluateDone(task, finalMessage, evidence, { config: config.done, judge, timeoutMs: config.timeoutMs, signal: ctx.signal })
+      ? evaluateDone(task, finalMessage, evidence, { config: config.done, judge, timeoutMs: endTimeoutMs, signal: ctx.signal })
       : undefined;
     if (proseCheck) {
       stats.proseChecks++;
@@ -3516,7 +3558,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
     // unless the done-check already reported this reply. The offline pre-filter keeps a reply about results costless.
     if (config.cause.enabled && causePreFilter(finalMessage)) {
       stats.causeChecks++;
-      const causeVerdict = await evaluateCause(task, finalMessage, activity, { config: config.cause, judge, timeoutMs: config.timeoutMs, signal: ctx.signal, store: causeStore, projectRoot: ctx.cwd, now: Date.now() });
+      const causeVerdict = await evaluateCause(task, finalMessage, activity, { config: config.cause, judge, timeoutMs: endTimeoutMs, signal: ctx.signal, store: causeStore, projectRoot: ctx.cwd, now: Date.now() });
       if (causeVerdict.error) noteError(ctx, causeVerdict.error, causeVerdict.errorCode);
       const causeSteer = causeVerdict.unchecked && config.cause.nudge && !causeNudged && !doneReported ? causeNudge(causeVerdict) : undefined;
       const causeLine = formatCause(causeVerdict, config.widget.cause);
@@ -3672,7 +3714,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const judgments = localActive
             ? `judgments local: Warden-S1 (${local.mock ? "onnx, synthetic weights" : `${local.status.runtime}, ${local.status.modelId}`}) on 127.0.0.1 loopback, $0, no key`
             : backend === "warden-s1"
-              ? `judgments are off: the local Warden-S1 model is ${modelDownload ? "downloading" : "not downloaded (run /warden model download)"}`
+              ? `judgments are off: the local Warden-S1 model is ${modelDownload ? "downloading" : local?.status.installed && local.status.diagnostic ? `not ready (${local.status.diagnostic})` : "not downloaded (run /warden model download)"}`
               : `TypeSafe judgments ${source ? `consented via ${source}` : "not consented (run /warden enable)"}${config.backendRefusal !== undefined || backend === undefined || backend === "typesafe" || backend === "cloud" ? "" : ` (${describeBackend(backend)})`}; ${config.backendRefusal !== undefined ? `judgments are off: typesafeBackend refused: ${config.backendRefusal}` : auth?.text ?? ""}`;
           const guards = [config.action.enabled && "action", config.taint.enabled && "taint", config.stuck.enabled && "stuck", config.done.enabled && "done-check", config.cause.enabled && "cause-check", config.slop.enabled && "slop", config.slop.enabled && config.slop.prose.enabled && `prose (${config.slop.prose.audience})`, config.security.enabled && "security", config.rules.enabled && "rules", config.context.enabled && "context", config.runaway.enabled && "runaway", config.subagent.enabled && "subagent triage", config.notify.enabled && "desktop notifications"].filter(Boolean).join(", ");
           const ls = await holdStats(ctx.cwd, dirs);
@@ -3682,7 +3724,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const info = wardenBuild();
           report([
             `pi-warden: ${config.enabled ? `guarding ${config.action.tools.join(", ")} (${guards})` : "off"}; mode ${activeMode(config, ctx.hasUI)}; ${judgments}`,
-            ...(localActive ? [await daemonLine()] : []),
+            ...(localActive ? [await daemonLine(local.mock ? undefined : local.status.runtime)] : []),
             `Build: pi-warden ${info.version}${info.commit ? ` (${info.commit})` : ""}; ${info.builtAt ? `dist/extension.js built ${info.builtAt}` : "dist/extension.js not built"}; pi-typesafe ${info.typesafeVersion ?? "unknown"}${info.typesafeRange ? ` (declared ${info.typesafeRange})` : ""}.`,
             `Session: ${stats.inspected} inspected, ${stats.judged} judged, ${stats.warned} warned, ${stats.held} held, ${stats.approved} approved on retry, ${stats.offPlan} off plan, ${stats.offTask} off task, ${stats.slop} slop notes, ${stats.ruleViolations}/${stats.ruleChecks} rule violations, ${stats.pathNotes} sensitive-path notes, ${stats.stuck}/${stats.stuckChecks} stuck, ${stats.unverified}/${stats.doneChecks} unverified done, ${stats.uncheckedCause}/${stats.causeChecks} unchecked cause, ${stats.proseNudges}/${stats.proseChecks} prose notices, ${stats.runaway} runaway stops, ${stats.subagentWoken}/${stats.subagentReports} subagent reports woken, ${stats.restatements} restatements, ${stats.errors} TypeSafe errors, ${stats.cooldownSkips} checks without Jev during a judge cooldown; ${usage?.requestsStarted ?? 0}/${config.maxRequests} requests. Guard notices go to the status line and the trace${config.notices ? ", with a toast each" : ""}; nothing of them enters the conversation.`,
             formatNotices(stats),
@@ -3714,14 +3756,14 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const judge = judgeFor(config);
           const result = await runRulesAudit({
             cwd: ctx.cwd, paths: parsed.paths, max: parsed.max, yes: parsed.yes, config: config.rules,
-            set: rulesGuard.store.load(ctx.cwd, config.rules), judge, timeoutMs: config.timeoutMs, signal: ctx.signal,
+            set: rulesGuard.store.load(ctx.cwd, config.rules), judge, timeoutMs: judgeTimeoutMs(config), signal: ctx.signal,
             destination: judgeHost(config),
             confirm: ctx.hasUI ? (title, body) => ctx.ui.confirm(title, body, ctx.signal ? { signal: ctx.signal } : {}) : undefined,
           });
           switch (result.status) {
             // No key, no consent, or a spent budget: say why and send nothing.
             case "no-judge":
-              report(`Rules audit sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config, !ctx.hasUI)}` : ""}`);
+              report(`Rules audit sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${offText(off, config, !ctx.hasUI)}` : ""}`);
               return;
             case "no-files": report(`Rules audit sent nothing: ${result.reason}.`); return;
             case "needs-yes": report(`Rules audit sent nothing: a headless run needs --yes before ${result.files} file samples go to ${judgeHost(config)} (${result.leftOut} more files left out at the --max ${parsed.max} cap).`, "warning"); return;
@@ -3735,11 +3777,11 @@ export default function wardenExtension(host: ExtensionAPI): void {
           if (parsed.error) { report(parsed.error, "warning"); return; }
           const off = judgmentsOffReason(config);
           const judge = judgeFor(config);
-          const result = await runBench({ runs: parsed.runs, cwd: ctx.cwd, config: config.rules, set: rulesGuard.store.load(ctx.cwd, config.rules), judge, getUsage: judge ? () => judge.getUsage() : undefined, timeoutMs: config.timeoutMs, signal: ctx.signal });
+          const result = await runBench({ runs: parsed.runs, cwd: ctx.cwd, config: config.rules, set: rulesGuard.store.load(ctx.cwd, config.rules), judge, getUsage: judge ? () => judge.getUsage() : undefined, timeoutMs: judgeTimeoutMs(config), signal: ctx.signal });
           switch (result.status) {
             // No key, no consent, or a spent budget: say why and send nothing.
             case "no-judge":
-              report(`Bench sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config, !ctx.hasUI)}` : ""}`);
+              report(`Bench sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${offText(off, config, !ctx.hasUI)}` : ""}`);
               return;
             case "skipped": report(`Bench sent nothing: ${result.reason}.`); return;
             case "done": report(formatBench(result)); return;
@@ -3749,10 +3791,10 @@ export default function wardenExtension(host: ExtensionAPI): void {
         if (action === "rules") {
           if (argument === "check") {
             const off = judgmentsOffReason(config);
-            const result = await checkRules({ set: rulesGuard.store.load(ctx.cwd, config.rules), judge: judgeFor(config), timeoutMs: config.timeoutMs, signal: ctx.signal });
+            const result = await checkRules({ set: rulesGuard.store.load(ctx.cwd, config.rules), judge: judgeFor(config), timeoutMs: judgeTimeoutMs(config), signal: ctx.signal });
             if (result.source === "skipped") {
               // No key, no consent, or a spent budget: say why and send nothing.
-              report(`Rules check sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config, !ctx.hasUI)}` : ""} /warden rules shows the rule set locally.`);
+              report(`Rules check sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${offText(off, config, !ctx.hasUI)}` : ""} /warden rules shows the rule set locally.`);
               return;
             }
             if (result.source === "typesafe") lastCheck = result;
@@ -3774,7 +3816,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
             const off = judgmentsOffReason(config);
             const judge = judgeFor(config);
             if (!judge) {
-              report(`Rules calibrate sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config, !ctx.hasUI)}` : ""} /warden rules shows the rule set locally.`);
+              report(`Rules calibrate sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${offText(off, config, !ctx.hasUI)}` : ""} /warden rules shows the rule set locally.`);
               return;
             }
             let history: HistoryCommit[];
@@ -3797,7 +3839,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
               report("Cancelled. Nothing was sent.");
               return;
             }
-            const result = await calibrate(history, { set, config: config.rules, cwd: ctx.cwd, judge, timeoutMs: config.timeoutMs, maxRequests: max, signal: ctx.signal });
+            const result = await calibrate(history, { set, config: config.rules, cwd: ctx.cwd, judge, timeoutMs: judgeTimeoutMs(config), maxRequests: max, signal: ctx.signal });
             (rulesLog ??= new RulesLog(ctx.cwd, String(process.pid))).appendRecords(result.records);
             lastCalibration = result;
             report(formatCalibration(result));
@@ -4089,7 +4131,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const sub = argument ?? "status";
           if (sub === "status") { report((await modelStatus(config)).join(" ")); return; }
           if (sub === "download") {
-            const status = getWardenS1Status(config.localModel, { dirs });
+            const status = getWardenS1Status(config.localModel, { dirs, forDownload: true });
             if (status.ready) { report(`Warden-S1 (${status.runtime}) is already downloaded and verified at ${status.modelDir}.`); return; }
             if (status.diagnostic) { report(`Warden-S1 cannot be downloaded: ${status.diagnostic}`, "warning"); return; }
             const use = isLocalBackendMode(config.typesafeBackend) ? "Local judgments start with the next check." : "Set typesafeBackend to \"warden-s1\" or \"auto\" to judge with it.";
@@ -4108,6 +4150,7 @@ export default function wardenExtension(host: ExtensionAPI): void {
             const stopped = await stopWardenS1Daemon();
             const removed = removeWardenS1(config.localModel);
             localModel = undefined;
+            autoDownloadAttemptedKey = undefined;
             s1Connection = undefined;
             s1Judge = undefined;
             report(`${removed.removedDirs.length ? `Removed the local Warden-S1 model: ${mib(removed.freedBytes)} MiB freed (${removed.removedDirs.join(", ")}).` : "No local Warden-S1 model was downloaded; nothing removed."}${stopped.stopped ? ` Stopped its daemon (pid ${stopped.pid}).` : ""}`);

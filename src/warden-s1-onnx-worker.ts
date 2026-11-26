@@ -1,8 +1,8 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { cpus, homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,10 +19,14 @@ export interface OrtTensorLike {
   readonly type: string;
   readonly data: Float32Array | BigInt64Array | Int32Array | Uint8Array;
   readonly dims: readonly number[];
+  dispose?: () => void;
 }
 
 export interface OrtSessionLike {
-  run(feeds: Record<string, OrtTensorLike>): Promise<Record<string, OrtTensorLike>>;
+  run(
+    feeds: Record<string, OrtTensorLike>,
+    fetches?: readonly string[],
+  ): Promise<Record<string, OrtTensorLike>>;
 }
 
 export interface OrtLike {
@@ -139,6 +143,8 @@ export interface SalienceResponse {
 export interface DaemonStats {
   readonly status: "ok";
   readonly runtime: "mlx" | "onnx";
+  readonly activeExecutionProvider?: string;
+  readonly intraOpNumThreads?: number;
   readonly pid: number;
   readonly instance_id: string;
   readonly model: string;
@@ -803,18 +809,32 @@ function buildReusedAccumulators(
 
 export async function loadOrtModule(ortPath?: string, stateDir?: string): Promise<OrtLike> {
   const candidates: string[] = [];
-  if (ortPath) candidates.push(ortPath);
+  const pushPackageDirCandidates = (dir: string): void => {
+    const pkgJson = join(dir, "package.json");
+    if (existsSync(pkgJson)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgJson, "utf8")) as { main?: string };
+        if (pkg.main) candidates.push(pathToFileURL(resolve(dir, pkg.main)).href);
+      } catch {
+        // Fall through to standard layout paths.
+      }
+    }
+    const distIdx = join(dir, "dist", "index.js");
+    const napiIdx = join(dir, "bin", "napi-v3", "index.js");
+    if (existsSync(distIdx)) candidates.push(pathToFileURL(distIdx).href);
+    if (existsSync(napiIdx)) candidates.push(pathToFileURL(napiIdx).href);
+  };
+  if (ortPath) {
+    const resolvedOrt = ortPath.startsWith("/") || ortPath.startsWith(".") ? resolve(ortPath) : ortPath;
+    if ((ortPath.startsWith("/") || ortPath.startsWith(".")) && existsSync(resolvedOrt) && statSync(resolvedOrt).isDirectory()) {
+      pushPackageDirCandidates(resolvedOrt);
+    } else {
+      candidates.push(ortPath);
+    }
+  }
   candidates.push("onnxruntime-node");
   if (stateDir) {
-    const localOrtPkg = join(stateDir, "runtime", "node_modules", "onnxruntime-node", "dist", "index.js");
-    const localOrtCjs = join(stateDir, "runtime", "node_modules", "onnxruntime-node", "bin", "napi-v3", "index.js");
-    const localOrtRoot = join(stateDir, "runtime", "node_modules", "onnxruntime-node", "package.json");
-    if (existsSync(localOrtPkg)) candidates.push(pathToFileURL(localOrtPkg).href);
-    else if (existsSync(localOrtCjs)) candidates.push(pathToFileURL(localOrtCjs).href);
-    else if (existsSync(localOrtRoot)) {
-      const pkg = JSON.parse(readFileSync(localOrtRoot, "utf8")) as { main?: string };
-      if (pkg.main) candidates.push(pathToFileURL(join(dirname(localOrtRoot), pkg.main)).href);
-    }
+    pushPackageDirCandidates(join(stateDir, "runtime", "node_modules", "onnxruntime-node"));
   }
   let lastErr: unknown = null;
   for (const spec of candidates) {
@@ -832,6 +852,98 @@ export async function loadOrtModule(ortPath?: string, stateDir?: string): Promis
   );
 }
 
+function disposeTensor(t: OrtTensorLike | null | undefined): void {
+  if (!t) return;
+  let data: OrtTensorLike["data"] | undefined;
+  try {
+    data = t.data;
+  } catch {
+    data = undefined;
+  }
+  try {
+    t.dispose?.();
+  } catch {
+    // Ignore non-native or already-disposed tensors.
+  }
+  // Release CPU ArrayBuffer backing stores immediately instead of waiting for V8 major GC across variable-length ONNX prewarms.
+  if (
+    data
+    && data.buffer instanceof ArrayBuffer
+    && data.byteOffset === 0
+    && data.byteLength === data.buffer.byteLength
+    && data.byteLength > 0
+  ) {
+    const ab = data.buffer as ArrayBuffer & { readonly detached?: boolean; transfer?: (newByteLength?: number) => ArrayBuffer };
+    if (!ab.detached && typeof ab.transfer === "function") {
+      try {
+        ab.transfer(0);
+      } catch {
+        // Non-detachable ArrayBuffer; leave for GC.
+      }
+    }
+  }
+}
+
+function disposeTensorRecord(rec: Record<string, OrtTensorLike> | null | undefined): void {
+  if (!rec) return;
+  for (const t of Object.values(rec)) disposeTensor(t);
+}
+
+function disposeState(state: OnnxState | null | undefined): void {
+  if (!state) return;
+  disposeTensorRecord(state.tensors);
+}
+
+function disposeSessionRecord(rec: SessionPageRecord | null | undefined): void {
+  if (!rec) return;
+  disposeState(rec.state);
+  disposeTensorRecord(rec.ckptRec);
+  disposeTensor(rec.chunkReprs);
+}
+
+export function resolveOnnxThreads(
+  explicit?: number,
+  env: NodeJS.ProcessEnv = process.env,
+  cpuCount: number = cpus().length,
+): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 1) {
+    return Math.floor(explicit);
+  }
+  const raw = env.PI_WARDEN_ONNX_THREADS?.trim();
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 1) {
+      return Math.floor(parsed);
+    }
+  }
+  const logical = Number.isFinite(cpuCount) && cpuCount >= 1 ? Math.floor(cpuCount) : 1;
+  return Math.max(1, Math.min(4, logical <= 3 ? logical : Math.floor(logical / 2)));
+}
+
+function resolveOnnxProviderCandidates(params: {
+  providers?: readonly string[];
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  hasNvidiaDevice?: boolean;
+}): string[][] {
+  if (params.providers && params.providers.length > 0) {
+    return [[...params.providers]];
+  }
+  const platform = params.platform ?? process.platform;
+  const env = params.env ?? process.env;
+  if (platform === "linux") {
+    const cudaVisible = env.CUDA_VISIBLE_DEVICES?.trim();
+    const hasCudaEnv = Boolean(cudaVisible && cudaVisible !== "-1");
+    const hasNvidia = params.hasNvidiaDevice ?? existsSync("/dev/nvidia0");
+    if (hasNvidia || hasCudaEnv) {
+      return [["cuda", "cpu"], ["cpu"]];
+    }
+  } else if (platform === "win32") {
+    return [["dml", "cpu"], ["cpu"]];
+  }
+  return [["cpu"]];
+}
+
 export class WardenS1OnnxBackend {
   readonly ort: OrtLike;
   readonly manifest: OnnxModelManifest;
@@ -839,6 +951,8 @@ export class WardenS1OnnxBackend {
   readonly embedSession: OrtSessionLike;
   readonly backboneSession: OrtSessionLike;
   readonly headsSession: OrtSessionLike;
+  readonly activeExecutionProvider: string;
+  readonly intraOpNumThreads: number;
   readonly hiddenSize: number;
   readonly maxChunkLen: number;
   readonly linearLayers: readonly number[];
@@ -859,6 +973,8 @@ export class WardenS1OnnxBackend {
     embedSession: OrtSessionLike;
     backboneSession: OrtSessionLike;
     headsSession: OrtSessionLike;
+    activeExecutionProvider?: string;
+    intraOpNumThreads?: number;
   }) {
     this.ort = params.ort;
     this.manifest = params.manifest;
@@ -866,6 +982,8 @@ export class WardenS1OnnxBackend {
     this.embedSession = params.embedSession;
     this.backboneSession = params.backboneSession;
     this.headsSession = params.headsSession;
+    this.activeExecutionProvider = params.activeExecutionProvider ?? "cpu";
+    this.intraOpNumThreads = params.intraOpNumThreads ?? resolveOnnxThreads();
     const arch = params.manifest.architecture;
     this.hiddenSize = arch.hidden_size ?? HIDDEN_SIZE;
     this.maxChunkLen = arch.max_chunk_len ?? MAX_CHUNK_LEN;
@@ -886,6 +1004,10 @@ export class WardenS1OnnxBackend {
     ortPath?: string;
     stateDir?: string;
     providers?: readonly string[];
+    threads?: number;
+    platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
+    hasNvidiaDevice?: boolean;
   }): Promise<WardenS1OnnxBackend> {
     const ort = await loadOrtModule(params.ortPath, params.stateDir);
     const manifestRaw = await readFile(join(params.modelDir, "onnx_manifest.json"), "utf8");
@@ -893,12 +1015,44 @@ export class WardenS1OnnxBackend {
     const tokFile = manifest.auxiliary?.tokenizer ?? "tokenizer.json";
     const tokRaw = await readFile(join(params.modelDir, tokFile), "utf8");
     const tokenizer = new ByteLevelBPETokenizer(JSON.parse(tokRaw) as TokenizerJsonLike);
-    const providers = params.providers && params.providers.length > 0 ? [...params.providers] : ["cpu"];
-    const opts = { executionProviders: providers, graphOptimizationLevel: "all" };
-    const embedSession = await ort.InferenceSession.create(join(params.modelDir, manifest.models.embed.onnx), opts);
-    const backboneSession = await ort.InferenceSession.create(join(params.modelDir, manifest.models.backbone.onnx), opts);
-    const headsSession = await ort.InferenceSession.create(join(params.modelDir, manifest.models.heads.onnx), opts);
-    return new WardenS1OnnxBackend({ ort, manifest, tokenizer, embedSession, backboneSession, headsSession });
+    const intraOpNumThreads = resolveOnnxThreads(params.threads, params.env);
+    const candidates = resolveOnnxProviderCandidates(params);
+    const embedPath = join(params.modelDir, manifest.models.embed.onnx);
+    const backbonePath = join(params.modelDir, manifest.models.backbone.onnx);
+    const headsPath = join(params.modelDir, manifest.models.heads.onnx);
+    let lastErr: unknown;
+    for (let idx = 0; idx < candidates.length; idx++) {
+      const providers = candidates[idx]!;
+      // Cap OpenMP spin-threads and disable CPU BFC arena/mem-pattern so background prewarms stay polite and bounded in RSS.
+      const opts = {
+        executionProviders: providers,
+        graphOptimizationLevel: "all",
+        enableCpuMemArena: false,
+        enableMemPattern: false,
+        intraOpNumThreads,
+        interOpNumThreads: 1,
+        executionMode: "sequential",
+      };
+      try {
+        const embedSession = await ort.InferenceSession.create(embedPath, opts);
+        const backboneSession = await ort.InferenceSession.create(backbonePath, opts);
+        const headsSession = await ort.InferenceSession.create(headsPath, opts);
+        return new WardenS1OnnxBackend({
+          ort,
+          manifest,
+          tokenizer,
+          embedSession,
+          backboneSession,
+          headsSession,
+          activeExecutionProvider: providers[0] ?? "cpu",
+          intraOpNumThreads,
+        });
+      } catch (err) {
+        lastErr = err;
+        if (idx === candidates.length - 1) throw err;
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
   initEmptyState(): OnnxState {
@@ -960,8 +1114,12 @@ export class WardenS1OnnxBackend {
   async embedIds(ids: readonly number[]): Promise<OrtTensorLike> {
     const safeIds = ids.length > 0 ? ids : [0];
     const input = new this.ort.Tensor("int64", toBigInt64Array(safeIds), [1, safeIds.length]);
-    const res = await this.embedSession.run({ input_ids: input });
-    return res.inputs_embeds!;
+    try {
+      const res = await this.embedSession.run({ input_ids: input });
+      return res.inputs_embeds!;
+    } finally {
+      disposeTensor(input);
+    }
   }
 
   async stepChunk(chunkIds: readonly number[], state: OnnxState, mutate: boolean): Promise<{ hidden: OrtTensorLike; state: OnnxState }> {
@@ -972,14 +1130,28 @@ export class WardenS1OnnxBackend {
     const embeds = await this.embedIds(chunkIds);
     const pos = new BigInt64Array(seqLen);
     for (let i = 0; i < seqLen; i++) pos[i] = BigInt(state.prefixLen + i);
+    const posTensor = new this.ort.Tensor("int64", pos, [seqLen]);
     const feeds: Record<string, OrtTensorLike> = {
       inputs_embeds: embeds,
-      position_ids: new this.ort.Tensor("int64", pos, [seqLen]),
+      position_ids: posTensor,
       ...state.tensors,
     };
-    const outs = await this.backboneSession.run(feeds);
+    let outs: Record<string, OrtTensorLike>;
+    try {
+      outs = mutate
+        ? await this.backboneSession.run(feeds)
+        : await this.backboneSession.run(feeds, ["hidden_states"]);
+    } finally {
+      disposeTensor(embeds);
+      disposeTensor(posTensor);
+    }
     const hidden = outs.hidden_states!;
-    if (!mutate) return { hidden, state };
+    if (!mutate) {
+      for (const [k, v] of Object.entries(outs)) {
+        if (k !== "hidden_states") disposeTensor(v);
+      }
+      return { hidden, state };
+    }
     const nextTensors: Record<string, OrtTensorLike> = {};
     for (const outName of this.backboneOutputs.slice(1)) {
       const pastName = outName.replace(/^present_/, "past_");
@@ -1011,30 +1183,38 @@ export class WardenS1OnnxBackend {
     spanCounts: number[],
   ): Promise<{ state: OnnxState; chunkReprs: OrtTensorLike }> {
     let state = prevState ?? this.initEmptyState();
+    let ownsState = prevState === null;
     const startOffset = state.prefixLen;
     for (let s = 0; s < tokenIds.length; s += this.maxChunkLen) {
       const e = Math.min(s + this.maxChunkLen, tokenIds.length);
       const step = await this.stepChunk(tokenIds.slice(s, e), state, true);
+      const prevOwned = ownsState ? state : null;
       state = step.state;
-      const hData = step.hidden.data as Float32Array;
-      const absS = startOffset + s;
-      const absE = startOffset + e;
-      for (let ci = 0; ci < chunkSpans.length; ci++) {
-        const [cs, ce] = chunkSpans[ci]!;
-        const ovS = Math.max(cs, absS);
-        const ovE = Math.min(ce, absE);
-        if (ovE > ovS) {
-          let dst = spanSums[ci];
-          if (!dst) {
-            dst = new Float64Array(this.hiddenSize);
-            spanSums[ci] = dst;
+      ownsState = true;
+      disposeState(prevOwned);
+      try {
+        const hData = step.hidden.data as Float32Array;
+        const absS = startOffset + s;
+        const absE = startOffset + e;
+        for (let ci = 0; ci < chunkSpans.length; ci++) {
+          const [cs, ce] = chunkSpans[ci]!;
+          const ovS = Math.max(cs, absS);
+          const ovE = Math.min(ce, absE);
+          if (ovE > ovS) {
+            let dst = spanSums[ci];
+            if (!dst) {
+              dst = new Float64Array(this.hiddenSize);
+              spanSums[ci] = dst;
+            }
+            for (let t = ovS - absS; t < ovE - absS; t++) {
+              const base = t * this.hiddenSize;
+              for (let d = 0; d < this.hiddenSize; d++) dst[d] = dst[d]! + hData[base + d]!;
+            }
+            spanCounts[ci] = (spanCounts[ci] ?? 0) + (ovE - ovS);
           }
-          for (let t = ovS - absS; t < ovE - absS; t++) {
-            const base = t * this.hiddenSize;
-            for (let d = 0; d < this.hiddenSize; d++) dst[d] = dst[d]! + hData[base + d]!;
-          }
-          spanCounts[ci] = (spanCounts[ci] ?? 0) + (ovE - ovS);
         }
+      } finally {
+        disposeTensor(step.hidden);
       }
     }
     const chunkReprs = this.buildChunkReprsTensor(chunkSpans, spanSums, spanCounts);
@@ -1065,17 +1245,30 @@ export class WardenS1OnnxBackend {
       } else {
         let cur = this.cloneState(state);
         let chunkHidden: OrtTensorLike | null = null;
-        for (let s = 0; s < qIds.length; s += this.maxChunkLen) {
-          const e = Math.min(s + this.maxChunkLen, qIds.length);
-          const step = await this.stepChunk(qIds.slice(s, e), cur, e < qIds.length);
-          cur = step.state;
-          chunkHidden = step.hidden;
+        try {
+          for (let s = 0; s < qIds.length; s += this.maxChunkLen) {
+            const e = Math.min(s + this.maxChunkLen, qIds.length);
+            const mutate = e < qIds.length;
+            const step = await this.stepChunk(qIds.slice(s, e), cur, mutate);
+            if (mutate) {
+              disposeState(cur);
+              cur = step.state;
+            }
+            disposeTensor(chunkHidden);
+            chunkHidden = step.hidden;
+          }
+        } finally {
+          disposeState(cur);
         }
         lastHidden = chunkHidden!;
       }
-      const seqLen = lastHidden.dims[1] ?? 1;
-      const srcOff = (seqLen - 1) * this.hiddenSize;
-      qMat.set((lastHidden.data as Float32Array).subarray(srcOff, srcOff + this.hiddenSize), qi * this.hiddenSize);
+      try {
+        const seqLen = lastHidden.dims[1] ?? 1;
+        const srcOff = (seqLen - 1) * this.hiddenSize;
+        qMat.set((lastHidden.data as Float32Array).subarray(srcOff, srcOff + this.hiddenSize), qi * this.hiddenSize);
+      } finally {
+        disposeTensor(lastHidden);
+      }
     }
 
     let cQTensor: OrtTensorLike;
@@ -1093,16 +1286,20 @@ export class WardenS1OnnxBackend {
         const opts = choiceOptionIdsList[ci]!;
         for (let oi = 0; oi < opts.length; oi++) {
           const emb = await this.embedIds(opts[oi]!);
-          const embData = emb.data as Float32Array;
-          const tokCount = Math.max(1, opts[oi]!.length);
-          const dstBase = (ci * maxOpts + oi) * this.hiddenSize;
-          for (let t = 0; t < tokCount; t++) {
-            const srcBase = t * this.hiddenSize;
-            for (let d = 0; d < this.hiddenSize; d++) {
-              optBuf[dstBase + d] = optBuf[dstBase + d]! + embData[srcBase + d]! / tokCount;
+          try {
+            const embData = emb.data as Float32Array;
+            const tokCount = Math.max(1, opts[oi]!.length);
+            const dstBase = (ci * maxOpts + oi) * this.hiddenSize;
+            for (let t = 0; t < tokCount; t++) {
+              const srcBase = t * this.hiddenSize;
+              for (let d = 0; d < this.hiddenSize; d++) {
+                optBuf[dstBase + d] = optBuf[dstBase + d]! + embData[srcBase + d]! / tokCount;
+              }
             }
+            maskBuf[ci * maxOpts + oi] = 1.0;
+          } finally {
+            disposeTensor(emb);
           }
-          maskBuf[ci * maxOpts + oi] = 1.0;
         }
       }
       cQTensor = new this.ort.Tensor("float32", cqBuf, [numC, this.hiddenSize]);
@@ -1114,19 +1311,33 @@ export class WardenS1OnnxBackend {
       optMaskTensor = new this.ort.Tensor("float32", new Float32Array([1, 1]), [1, 2]);
     }
 
-    const headsOut = await this.headsSession.run({
-      query_repr: new this.ort.Tensor("float32", qMat, [numQ, this.hiddenSize]),
-      chunk_reprs: chunkReprs,
-      choice_query_repr: cQTensor,
-      option_reprs: optReprsTensor,
-      option_mask: optMaskTensor,
-    });
+    const qTensor = new this.ort.Tensor("float32", qMat, [numQ, this.hiddenSize]);
+    let headsOut: Record<string, OrtTensorLike>;
+    try {
+      headsOut = await this.headsSession.run({
+        query_repr: qTensor,
+        chunk_reprs: chunkReprs,
+        choice_query_repr: cQTensor,
+        option_reprs: optReprsTensor,
+        option_mask: optMaskTensor,
+      });
+    } finally {
+      disposeTensor(qTensor);
+      disposeTensor(cQTensor);
+      disposeTensor(optReprsTensor);
+      disposeTensor(optMaskTensor);
+    }
+
+    const noulProbs = Array.from(headsOut.noul_probs!.data as Float32Array);
+    const salienceProbs = Array.from(headsOut.salience_probs!.data as Float32Array);
+    disposeTensor(headsOut.noul_probs);
+    disposeTensor(headsOut.salience_probs);
 
     return {
-      noulProbs: Array.from(headsOut.noul_probs!.data as Float32Array),
+      noulProbs,
       scoreProbs: headsOut.score_probs!,
       locusProbs: headsOut.locus_probs!,
-      salienceProbs: Array.from(headsOut.salience_probs!.data as Float32Array),
+      salienceProbs,
       choiceProbs: headsOut.choice_probs!,
     };
   }
@@ -1213,7 +1424,7 @@ export function createSyntheticOnnxBackend(options?: {
 
   // Stateful causal hybrid backbone: updates conv window, gated DeltaNet recurrence, and GQA KV cache.
   const backboneSession: OrtSessionLike = {
-    async run(feeds) {
+    async run(feeds, fetches) {
       if (stepDelayMs > 0) await new Promise((r) => setTimeout(r, stepDelayMs));
       const embeds = feeds.inputs_embeds!.data as Float32Array;
       const posIds = feeds.position_ids!.data as BigInt64Array;
@@ -1303,6 +1514,9 @@ export function createSyntheticOnnxBackend(options?: {
       const res: Record<string, OrtTensorLike> = {
         hidden_states: new SyntheticTensor("float32", hidden, [1, seqLen, hiddenSize]),
       };
+      if (fetches && fetches.length === 1 && fetches[0] === "hidden_states") {
+        return res;
+      }
       for (const li of LINEAR_LAYERS) {
         res[`present_conv_${li}`] = new SyntheticTensor("float32", nextConv[li]!, [1, convDim, convKernel]);
         res[`present_rec_${li}`] = new SyntheticTensor("float32", nextRec[li]!, [1, linearNumHeads, linearHeadDim, linearHeadDim]);
@@ -1622,7 +1836,9 @@ export class OnnxSessionPager {
 
   pageOut(sid: string, rec: SessionPageRecord): number {
     const t0 = performance.now();
+    const existing = this.ramPages.get(sid);
     this.ramPages.delete(sid);
+    if (existing && existing !== rec) disposeSessionRecord(existing);
     this.ramPages.set(sid, rec);
     while (this.ramPages.size > this.ramSlots) {
       const oldestKey = this.ramPages.keys().next().value;
@@ -1630,6 +1846,7 @@ export class OnnxSessionPager {
       const oldestRec = this.ramPages.get(oldestKey)!;
       this.ramPages.delete(oldestKey);
       this.writeDiskPage(oldestKey, oldestRec);
+      if (oldestRec !== rec) disposeSessionRecord(oldestRec);
     }
     return performance.now() - t0;
   }
@@ -1665,6 +1882,7 @@ export class OnnxSessionPager {
       if (!rec) continue;
       this.ramPages.delete(sid);
       const info = this.writeDiskPage(sid, rec);
+      disposeSessionRecord(rec);
       evicted.push({
         sid,
         raw_mb: Number((info.rawBytes / (1024 * 1024)).toFixed(3)),
@@ -1675,8 +1893,10 @@ export class OnnxSessionPager {
     return evicted;
   }
 
-  dropSession(sid: string): boolean {
+  dropSession(sid: string, skipDispose?: SessionPageRecord | null): boolean {
+    const ramRec = this.ramPages.get(sid);
     let dropped = this.ramPages.delete(sid);
+    if (ramRec && ramRec !== skipDispose) disposeSessionRecord(ramRec);
     const diskPath = this.diskPages.get(sid);
     if (diskPath) {
       this.diskPages.delete(sid);
@@ -1690,7 +1910,27 @@ export class OnnxSessionPager {
     return dropped;
   }
 
-  clearAll(): void {
+  purgePageDirFiles(): void {
+    if (!existsSync(this.pageDir)) return;
+    try {
+      for (const entry of readdirSync(this.pageDir)) {
+        if (entry.endsWith(".ws1page") || entry.includes(".ws1page.")) {
+          try {
+            unlinkSync(join(this.pageDir, entry));
+          } catch {
+            // Ignore already removed page file.
+          }
+        }
+      }
+    } catch {
+      // Ignore unreadable or removed page directory.
+    }
+  }
+
+  clearAll(skipDispose?: SessionPageRecord | null): void {
+    for (const rec of this.ramPages.values()) {
+      if (rec !== skipDispose) disposeSessionRecord(rec);
+    }
     this.ramPages.clear();
     for (const p of this.diskPages.values()) {
       try {
@@ -1700,6 +1940,11 @@ export class OnnxSessionPager {
       }
     }
     this.diskPages.clear();
+    this.purgePageDirFiles();
+  }
+
+  close(): void {
+    this.clearAll();
   }
 }
 
@@ -1912,6 +2157,21 @@ export class WardenS1OnnxEngine {
     return { tier: res.tier, swapMs };
   }
 
+  private replaceActiveRecord(sid: string, next: SessionPageRecord): void {
+    const prev = this.activeRecord;
+    const prevSid = this.activeSid;
+    if (prev && prevSid && this.pager.ramPages.get(prevSid) === prev) {
+      this.pager.ramPages.delete(prevSid);
+    }
+    this.activeSid = sid;
+    this.activeRecord = next;
+    if (prev && prev !== next) {
+      if (prev.state !== next.state) disposeState(prev.state);
+      if (prev.ckptRec && prev.ckptRec !== next.ckptRec) disposeTensorRecord(prev.ckptRec);
+      if (prev.chunkReprs !== next.chunkReprs) disposeTensor(prev.chunkReprs);
+    }
+  }
+
   private async encodeWithBoundaryCkpt(
     deltaIds: readonly number[],
     chunkSpans: Array<[number, number]>,
@@ -1939,9 +2199,15 @@ export class WardenS1OnnxEngine {
       const tail = deltaIds.slice(deltaIds.length - guard);
       const ckptLen = startOffset + body.length;
       const step1 = await this.backend.encodeSlice(body, initState, chunkSpans, spanSums, spanCounts);
+      disposeTensor(step1.chunkReprs);
       const ckptRec = this.backend.snapshotRecurrentState(step1.state);
       const ckptChunks = cloneChunkAccumulators({ spans: chunkSpans, sums: spanSums, counts: spanCounts, meta: chunkMeta });
-      const step2 = await this.backend.encodeSlice(tail, step1.state, chunkSpans, spanSums, spanCounts);
+      let step2: { state: OnnxState; chunkReprs: OrtTensorLike };
+      try {
+        step2 = await this.backend.encodeSlice(tail, step1.state, chunkSpans, spanSums, spanCounts);
+      } finally {
+        if (step1.state !== initState) disposeState(step1.state);
+      }
       const fullChunks = cloneChunkAccumulators({ spans: chunkSpans, sums: spanSums, counts: spanCounts, meta: chunkMeta });
       return {
         state: step2.state,
@@ -1981,11 +2247,14 @@ export class WardenS1OnnxEngine {
     prefillMs: number;
   }> {
     if (forceRecheckpoint) {
+      let droppedActive: SessionPageRecord | null = null;
       if (this.activeSid === sid) {
+        droppedActive = this.activeRecord;
         this.activeSid = null;
         this.activeRecord = null;
       }
-      this.pager.dropSession(sid);
+      this.pager.dropSession(sid, droppedActive);
+      disposeSessionRecord(droppedActive);
     }
     const { tier, swapMs } = this.activateSessionSlot(sid);
     const t0 = performance.now();
@@ -2024,8 +2293,7 @@ export class WardenS1OnnxEngine {
           cur.ckptLen,
           cur.ckptChunks,
         );
-        this.activeSid = sid;
-        this.activeRecord = { ids: [...ids], ...enc };
+        this.replaceActiveRecord(sid, { ids: [...ids], ...enc });
         this.cacheDeltaHits += 1;
         return {
           prefixReuse: oldLen,
@@ -2045,19 +2313,23 @@ export class WardenS1OnnxEngine {
       if (reused) {
         const restored = this.backend.restoreFromBoundaryCheckpoint(cur.state, cur.ckptRec, cur.ckptLen);
         const deltaIds = ids.slice(cur.ckptLen);
-        const enc = await this.encodeWithBoundaryCkpt(
-          deltaIds,
-          chunkSpans,
-          chunkMeta,
-          restored,
-          reused.sums,
-          reused.counts,
-          cur.ckptRec,
-          cur.ckptLen,
-          cur.ckptChunks,
-        );
-        this.activeSid = sid;
-        this.activeRecord = { ids: [...ids], ...enc };
+        let enc: Awaited<ReturnType<WardenS1OnnxEngine["encodeWithBoundaryCkpt"]>>;
+        try {
+          enc = await this.encodeWithBoundaryCkpt(
+            deltaIds,
+            chunkSpans,
+            chunkMeta,
+            restored,
+            reused.sums,
+            reused.counts,
+            cur.ckptRec,
+            cur.ckptLen,
+            cur.ckptChunks,
+          );
+        } finally {
+          disposeState(restored);
+        }
+        this.replaceActiveRecord(sid, { ids: [...ids], ...enc });
         this.cacheDeltaHits += 1;
         this.cacheBoundaryHealedHits += 1;
         return {
@@ -2075,8 +2347,7 @@ export class WardenS1OnnxEngine {
     const freshSums = new Array<Float64Array | null>(chunkSpans.length).fill(null);
     const freshCounts = new Array<number>(chunkSpans.length).fill(0);
     const enc = await this.encodeWithBoundaryCkpt(ids, chunkSpans, chunkMeta, null, freshSums, freshCounts, null, 0, null);
-    this.activeSid = sid;
-    this.activeRecord = { ids: [...ids], ...enc };
+    this.replaceActiveRecord(sid, { ids: [...ids], ...enc });
     this.cacheMisses += 1;
     return {
       prefixReuse: 0,
@@ -2097,15 +2368,23 @@ export class WardenS1OnnxEngine {
       this.backend.hiddenSize,
     ]);
     const dummyMask = new this.backend.ort.Tensor("float32", new Float32Array([1, 1]), [1, 2]);
-    const out = await this.backend.headsSession.run({
-      query_repr: dummyQ,
-      chunk_reprs: chunkReprs,
-      choice_query_repr: dummyQ,
-      option_reprs: dummyOpt,
-      option_mask: dummyMask,
-    });
-    const raw = out.salience_probs!.data as Float32Array;
-    return Array.from(raw.subarray(0, nChunks), (v) => Number(Math.max(0, Math.min(1, v)).toFixed(6)));
+    let out: Record<string, OrtTensorLike> | undefined;
+    try {
+      out = await this.backend.headsSession.run({
+        query_repr: dummyQ,
+        chunk_reprs: chunkReprs,
+        choice_query_repr: dummyQ,
+        option_reprs: dummyOpt,
+        option_mask: dummyMask,
+      });
+      const raw = out.salience_probs!.data as Float32Array;
+      return Array.from(raw.subarray(0, nChunks), (v) => Number(Math.max(0, Math.min(1, v)).toFixed(6)));
+    } finally {
+      disposeTensor(dummyQ);
+      disposeTensor(dummyOpt);
+      disposeTensor(dummyMask);
+      disposeTensorRecord(out);
+    }
   }
 
   evaluate(payload: Record<string, unknown>, explicitSid?: string): Promise<{ response: SystemOneResponse; telemetry: Record<string, unknown> }> {
@@ -2159,84 +2438,164 @@ export class WardenS1OnnxEngine {
       }
 
       const tStart = performance.now();
-      const inc = await this.encodeIncremental(sid, ids, chunkSpans, chunkMeta);
-      const rec = this.activeRecord!;
+      const ephemeralLastChunk = Boolean(payload.ephemeral_last_chunk);
+      let inc: {
+        prefixReuse: number;
+        deltaLen: number;
+        cacheMode: "exact" | "delta" | "miss";
+        boundaryHealed: boolean;
+        pageTier: "L1" | "L2_RAM" | "L3_DISK" | "NEW";
+        swapMs: number;
+        prefillMs: number;
+      } | null = null;
+      let evalState: OnnxState | null = null;
+      let evalChunkReprs: OrtTensorLike | null = null;
+      let evalIsEphemeral = false;
 
-      const tProbe0 = performance.now();
-      const rawHeads = await this.backend.scoreProbes(rec.state, rec.chunkReprs, qIdsList, choiceIndices, choiceOptIds);
-      const probeMs = performance.now() - tProbe0;
-      const totalMs = performance.now() - tStart;
-      this.requestsServed += 1;
-
-      const nChunks = chunkMeta.length;
-      const scoreBins = rawHeads.scoreProbs.dims[1] ?? this.backend.scoreBins;
-      const scoreData = rawHeads.scoreProbs.data as Float32Array;
-      const locusData = rawHeads.locusProbs.data as Float32Array;
-      const choiceData = rawHeads.choiceProbs.data as Float32Array;
-      const maxOpts = rawHeads.choiceProbs.dims[1] ?? 2;
-
-      const answers: Record<string, unknown> = {};
-      const abstentions: Record<string, boolean> = {};
-      const locusByQ: Record<string, LocusSummary> = {};
-      let cPos = 0;
-
-      for (let qi = 0; qi < qKeys.length; qi++) {
-        const qid = qKeys[qi]!;
-        const norm = qNorms[qi]!;
-        const rawQ = qRaw[qi]!;
-        const lRow = Array.from(locusData.subarray(qi * nChunks, (qi + 1) * nChunks), (v) =>
-          Number(Math.max(0, Math.min(1, v)).toFixed(6)),
-        );
-        let lTop = 0;
-        for (let ci = 1; ci < lRow.length; ci++) {
-          if (lRow[ci]! > lRow[lTop]!) lTop = ci;
+      if (ephemeralLastChunk && chunkSpans.length >= 2) {
+        const prefixSpansRaw = chunkSpans.slice(0, -1);
+        const prefixMetaRaw = chunkMeta.slice(0, -1);
+        const candTokenStart = chunkSpans[chunkSpans.length - 1]![0];
+        let maxPrefixEnd = 0;
+        for (const [, e] of prefixSpansRaw) {
+          if (e > maxPrefixEnd) maxPrefixEnd = e;
         }
-        locusByQ[qid] = { top_chunk: lTop, top_prob: lRow[lTop] ?? 0, chunk_probs: lRow };
-
-        if (norm.type === "noul") {
-          const p = Number(Math.max(0, Math.min(1, rawHeads.noulProbs[qi] ?? 0.5)).toFixed(6));
-          answers[qid] = { type: "noul", noul: p };
-          abstentions[qid] = p >= abstainLo && p <= abstainHi;
-        } else if (norm.type === "choice") {
-          const keys = choiceOptKeys[cPos] ?? [];
-          const baseOff = cPos * maxOpts;
-          const probsArr: number[] = [];
-          let rsum = 0;
-          for (let oi = 0; oi < keys.length; oi++) {
-            const v = Math.max(0, Math.min(1, choiceData[baseOff + oi] ?? 0));
-            probsArr.push(v);
-            rsum += v;
+        const splitPos = Math.min(candTokenStart, maxPrefixEnd);
+        if (splitPos > 0 && splitPos < ids.length && prefixSpansRaw.every(([s]) => s < splitPos)) {
+          const prefixIds = ids.slice(0, splitPos);
+          const prefixSpans = prefixSpansRaw.map(([s, e]) => [s, Math.min(e, splitPos)] as [number, number]);
+          const prefixMeta = prefixMetaRaw.map((m, i) => ({
+            ...m,
+            token_start: prefixSpans[i]![0],
+            token_end: prefixSpans[i]![1],
+          }));
+          const tailIds = ids.slice(splitPos);
+          const prefixInc = await this.encodeIncremental(sid, prefixIds, prefixSpans, prefixMeta);
+          const cur = this.activeRecord!;
+          const reused = buildReusedAccumulators(chunkSpans, splitPos, cur.fullChunks);
+          if (reused) {
+            const tTail0 = performance.now();
+            const tailEnc = await this.backend.encodeSlice(tailIds, cur.state, chunkSpans, reused.sums, reused.counts);
+            const tailPrefillMs = performance.now() - tTail0;
+            let effectiveCacheMode = prefixInc.cacheMode;
+            if (effectiveCacheMode === "exact") {
+              this.cacheExactHits -= 1;
+              this.cacheDeltaHits += 1;
+              effectiveCacheMode = "delta";
+            }
+            inc = {
+              prefixReuse: prefixInc.prefixReuse,
+              deltaLen: prefixInc.deltaLen + tailIds.length,
+              cacheMode: effectiveCacheMode,
+              boundaryHealed: prefixInc.boundaryHealed,
+              pageTier: prefixInc.pageTier,
+              swapMs: prefixInc.swapMs,
+              prefillMs: prefixInc.prefillMs + tailPrefillMs,
+            };
+            evalState = tailEnc.state;
+            evalChunkReprs = tailEnc.chunkReprs;
+            evalIsEphemeral = true;
           }
-          const probs: Record<string, number> = {};
-          let bestIdx = 0;
-          for (let oi = 0; oi < keys.length; oi++) {
-            const pv = rsum > 0 ? probsArr[oi]! / rsum : 1 / Math.max(1, keys.length);
-            probs[keys[oi]!] = Number(pv.toFixed(6));
-            if (pv > (probs[keys[bestIdx]!] ?? -1)) bestIdx = oi;
-          }
-          answers[qid] = {
-            type: "choice",
-            choice: keys[bestIdx] ?? "",
-            confidence: probs[keys[bestIdx] ?? ""] ?? 0,
-            probabilities: probs,
-          };
-          cPos += 1;
-        } else if (norm.type === "score") {
-          const legend = Array.isArray(rawQ.criteria) ? rawQ.criteria : [];
-          const proj = projectScoreBins(scoreData.subarray(qi * scoreBins, (qi + 1) * scoreBins), legend.length);
-          answers[qid] = {
-            type: "score",
-            score: proj.score,
-            confidence: proj.confidence,
-            probabilities: proj.probabilities,
-            legend,
-          };
-        } else {
-          answers[qid] = { type: "locus", ...locusByQ[qid]! };
         }
       }
 
-      const salience = rawHeads.salienceProbs.slice(0, nChunks).map((v) => Number(Math.max(0, Math.min(1, v)).toFixed(6)));
+      if (!inc || !evalState || !evalChunkReprs) {
+        inc = await this.encodeIncremental(sid, ids, chunkSpans, chunkMeta);
+        const rec = this.activeRecord!;
+        evalState = rec.state;
+        evalChunkReprs = rec.chunkReprs;
+      }
+
+      const tProbe0 = performance.now();
+      let rawHeads: Awaited<ReturnType<WardenS1OnnxBackend["scoreProbes"]>> | undefined;
+      const answers: Record<string, unknown> = {};
+      const abstentions: Record<string, boolean> = {};
+      const locusByQ: Record<string, LocusSummary> = {};
+      let probeMs = 0;
+      let totalMs = 0;
+      let salience: number[] = [];
+      try {
+        rawHeads = await this.backend.scoreProbes(evalState, evalChunkReprs, qIdsList, choiceIndices, choiceOptIds);
+        probeMs = performance.now() - tProbe0;
+        totalMs = performance.now() - tStart;
+        this.requestsServed += 1;
+
+        const nChunks = chunkMeta.length;
+        const scoreBins = rawHeads.scoreProbs.dims[1] ?? this.backend.scoreBins;
+        const scoreData = rawHeads.scoreProbs.data as Float32Array;
+        const locusData = rawHeads.locusProbs.data as Float32Array;
+        const choiceData = rawHeads.choiceProbs.data as Float32Array;
+        const maxOpts = rawHeads.choiceProbs.dims[1] ?? 2;
+
+        let cPos = 0;
+        for (let qi = 0; qi < qKeys.length; qi++) {
+          const qid = qKeys[qi]!;
+          const norm = qNorms[qi]!;
+          const rawQ = qRaw[qi]!;
+          const lRow = Array.from(locusData.subarray(qi * nChunks, (qi + 1) * nChunks), (v) =>
+            Number(Math.max(0, Math.min(1, v)).toFixed(6)),
+          );
+          let lTop = 0;
+          for (let ci = 1; ci < lRow.length; ci++) {
+            if (lRow[ci]! > lRow[lTop]!) lTop = ci;
+          }
+          locusByQ[qid] = { top_chunk: lTop, top_prob: lRow[lTop] ?? 0, chunk_probs: lRow };
+
+          if (norm.type === "noul") {
+            const p = Number(Math.max(0, Math.min(1, rawHeads.noulProbs[qi] ?? 0.5)).toFixed(6));
+            answers[qid] = { type: "noul", noul: p };
+            abstentions[qid] = p >= abstainLo && p <= abstainHi;
+          } else if (norm.type === "choice") {
+            const keys = choiceOptKeys[cPos] ?? [];
+            const baseOff = cPos * maxOpts;
+            const probsArr: number[] = [];
+            let rsum = 0;
+            for (let oi = 0; oi < keys.length; oi++) {
+              const v = Math.max(0, Math.min(1, choiceData[baseOff + oi] ?? 0));
+              probsArr.push(v);
+              rsum += v;
+            }
+            const probs: Record<string, number> = {};
+            let bestIdx = 0;
+            for (let oi = 0; oi < keys.length; oi++) {
+              const pv = rsum > 0 ? probsArr[oi]! / rsum : 1 / Math.max(1, keys.length);
+              probs[keys[oi]!] = Number(pv.toFixed(6));
+              if (pv > (probs[keys[bestIdx]!] ?? -1)) bestIdx = oi;
+            }
+            answers[qid] = {
+              type: "choice",
+              choice: keys[bestIdx] ?? "",
+              confidence: probs[keys[bestIdx] ?? ""] ?? 0,
+              probabilities: probs,
+            };
+            cPos += 1;
+          } else if (norm.type === "score") {
+            const legend = Array.isArray(rawQ.criteria) ? rawQ.criteria : [];
+            const proj = projectScoreBins(scoreData.subarray(qi * scoreBins, (qi + 1) * scoreBins), legend.length);
+            answers[qid] = {
+              type: "score",
+              score: proj.score,
+              confidence: proj.confidence,
+              probabilities: proj.probabilities,
+              legend,
+            };
+          } else {
+            answers[qid] = { type: "locus", ...locusByQ[qid]! };
+          }
+        }
+
+        salience = rawHeads.salienceProbs.slice(0, nChunks).map((v) => Number(Math.max(0, Math.min(1, v)).toFixed(6)));
+      } finally {
+        if (rawHeads) {
+          disposeTensor(rawHeads.scoreProbs);
+          disposeTensor(rawHeads.locusProbs);
+          disposeTensor(rawHeads.choiceProbs);
+        }
+        if (evalIsEphemeral) {
+          if (evalState && evalState !== this.activeRecord?.state) disposeState(evalState);
+          if (evalChunkReprs && evalChunkReprs !== this.activeRecord?.chunkReprs) disposeTensor(evalChunkReprs);
+        }
+      }
       const chunksOut: ChunkDescriptor[] = chunkMeta.map((m, i) => ({ ...m, salience: salience[i] ?? 0 }));
       const primaryLocus = (qKeys[0] ? locusByQ[qKeys[0]] : undefined) ?? { top_chunk: 0, top_prob: 0, chunk_probs: [] };
 
@@ -2379,23 +2738,36 @@ export class WardenS1OnnxEngine {
   dropSession(sessionId: string): Promise<{ dropped: boolean; session_id: string }> {
     return this.queue.enqueue(0, false, async () => {
       let dropped = false;
+      let droppedActive: SessionPageRecord | null = null;
       if (this.activeSid === sessionId) {
+        droppedActive = this.activeRecord;
         this.activeSid = null;
         this.activeRecord = null;
         dropped = true;
       }
-      if (this.pager.dropSession(sessionId)) dropped = true;
+      if (this.pager.dropSession(sessionId, droppedActive)) dropped = true;
+      disposeSessionRecord(droppedActive);
       return { dropped, session_id: sessionId };
     });
   }
 
   resetCache(): Promise<{ reset: true }> {
     return this.queue.enqueue(0, false, async () => {
+      const prev = this.activeRecord;
       this.activeSid = null;
       this.activeRecord = null;
-      this.pager.clearAll();
+      this.pager.clearAll(prev);
+      disposeSessionRecord(prev);
       return { reset: true };
     });
+  }
+
+  close(): void {
+    const prev = this.activeRecord;
+    this.activeSid = null;
+    this.activeRecord = null;
+    this.pager.clearAll(prev);
+    disposeSessionRecord(prev);
   }
 
   stats(): DaemonStats {
@@ -2405,6 +2777,8 @@ export class WardenS1OnnxEngine {
     return {
       status: "ok",
       runtime: "onnx",
+      activeExecutionProvider: this.backend.activeExecutionProvider,
+      intraOpNumThreads: this.backend.intraOpNumThreads,
       pid: process.pid,
       instance_id: this.instanceId,
       model: this.modelId,
@@ -2452,6 +2826,7 @@ export interface OnnxWorkerServerOptions {
   readonly instanceId?: string;
   readonly stateFile?: string;
   readonly stepDelayMs?: number;
+  readonly threads?: number;
 }
 
 export interface OnnxWorkerServerHandle {
@@ -2540,6 +2915,13 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
         ? join(options.stateDir, "pages")
         : join(homedir(), ".cache", "pi-warden", "pages"));
 
+  const pidsDir = options.stateFile
+    ? join(dirname(options.stateFile), "pids")
+    : options.stateDir
+      ? join(options.stateDir, "pids")
+      : undefined;
+  const pidFile = pidsDir ? join(pidsDir, `${process.pid}.json`) : undefined;
+
   const backend =
     options.backend ??
     (options.mockWeights
@@ -2548,6 +2930,7 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
           modelDir,
           ...(options.ortPath !== undefined ? { ortPath: options.ortPath } : {}),
           ...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
+          ...(options.threads !== undefined ? { threads: options.threads } : {}),
         }));
 
   const engine = new WardenS1OnnxEngine({
@@ -2560,6 +2943,7 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
     ...(options.ramSlots !== undefined ? { ramSlots: options.ramSlots } : {}),
     pageDir,
   });
+  engine.pager.purgePageDirFiles();
 
   const expectedAuth = token ? `Bearer ${token}` : "";
   let closed = false;
@@ -2681,11 +3065,13 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
       clearInterval(idleTimer);
       idleTimer = null;
     }
-    removeStateFileIfOwned(options.stateFile, instanceId);
     await new Promise<void>((resolveP) => {
       server.close(() => resolveP());
       if (typeof server.closeAllConnections === "function") server.closeAllConnections();
     });
+    engine.close();
+    removeStateFileIfOwned(options.stateFile, instanceId);
+    removeStateFileIfOwned(pidFile, instanceId);
   };
 
   await new Promise<void>((resolveP, rejectP) => {
@@ -2725,6 +3111,17 @@ export async function startOnnxWorkerServer(options: OnnxWorkerServerOptions): P
     };
     writeFileAtomicSync(options.stateFile, `${JSON.stringify(metadata, null, 2)}\n`);
   }
+  if (pidFile) {
+    try {
+      mkdirSync(dirname(pidFile), { recursive: true, mode: 0o700 });
+      writeFileAtomicSync(
+        pidFile,
+        `${JSON.stringify({ pid: process.pid, instanceId, startedAt: new Date().toISOString(), runtime: "onnx" })}\n`,
+      );
+    } catch {
+      // Best-effort PID registry write.
+    }
+  }
 
   return {
     server,
@@ -2754,6 +3151,7 @@ function parseCliArgs(argv: readonly string[]): OnnxWorkerServerOptions {
   let instanceId: string | undefined;
   let stateFile: string | undefined;
   let stepDelayMs: number | undefined;
+  let threads: number | undefined;
 
   for (let i = 2; i < argv.length; i++) {
     const flag = argv[i];
@@ -2773,6 +3171,7 @@ function parseCliArgs(argv: readonly string[]): OnnxWorkerServerOptions {
     else if (flag === "--instance-id") instanceId = next();
     else if (flag === "--state-file") stateFile = next();
     else if (flag === "--step-delay-ms") stepDelayMs = Number(next());
+    else if (flag === "--threads") threads = Number(next());
   }
 
   return {
@@ -2791,6 +3190,7 @@ function parseCliArgs(argv: readonly string[]): OnnxWorkerServerOptions {
     ...(instanceId !== undefined ? { instanceId } : {}),
     ...(stateFile !== undefined ? { stateFile } : {}),
     ...(stepDelayMs !== undefined ? { stepDelayMs } : {}),
+    ...(threads !== undefined ? { threads } : {}),
   };
 }
 
