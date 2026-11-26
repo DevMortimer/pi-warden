@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-26T13:57:11.626Z",
+  "dryRun": false,
+  "runtime": "mlx",
+  "modelId": "warden-s1-752m-mlx-q4",
+  "packSummary": {
+    "packedAt": "2026-11-26T13:56:24.956Z",
+    "windowSince": "2026-11-25T00:56:24.956Z",
+    "sessions": 40,
+    "cases": 260,
+    "bySplit": {
+      "clean_field": 120,
+      "historical_catch": 84,
+      "historical_overridden": 35,
+      "historical_regret": 21
+    },
+    "byGuard": {
+      "action": 188,
+      "output": 30,
+      "stuck": 18,
+      "rules": 24
+    },
+    "packLeakAudit": {
+      "passed": true,
+      "filesChecked": 3,
+      "bytesChecked": 1225708,
+      "hits": 0
+    }
+  },
+  "budget": {
+    "limit": 60,
+    "spent": 60,
+    "errors": 0
+  },
+  "offlineGates": {
+    "totalCases": 260,
+    "byGuard": {
+      "action": {
+        "total": 188,
+        "readOnly": 5,
+        "offlineHeld": 40,
+        "offlineWarned": 21,
+        "offlineAllowed": 127,
+        "wouldAskModel": 131
+      },
+      "output": {
+        "total": 30,
+        "secretHits": 0,
+        "injectionHits": 0,
+        "wouldAskModel": 30
+      },
+      "stuck": {
+        "total": 18,
+        "offlineRepeat": 0,
+        "wouldAskModel": 18
+      },
+      "rules": {
+        "total": 24,
+        "offlineFlagged": 0,
+        "offlineSkipped": 0,
+        "wouldAskModel": 24
+      }
+    }
+  },
+  "metrics": {
+    "cleanField": {
+      "evaluated": 33,
+      "modelJudged": 20,
+      "offlineDecided": 13,
+      "flaggedOrHeld": 0,
+      "allowed": 33,
+      "errors": 0,
+      "budgetSkipped": 87,
+      "specificity": 1,
+      "falseAlarmRate": 0,
+      "byGuard": {
+        "action": {
+          "evaluated": 9,
+          "modelJudged": 9,
+          "flaggedOrHeld": 0,
+          "allowed": 9,
+          "errors": 0,
+          "specificity": 1
+        },
+        "output": {
+          "evaluated": 8,
+          "modelJudged": 7,
+          "flaggedOrHeld": 0,
+          "allowed": 8,
+          "errors": 0,
+          "specificity": 1
+        },
+        "stuck": {
+          "evaluated": 8,
+          "modelJudged": 0,
+          "flaggedOrHeld": 0,
+          "allowed": 8,
+          "errors": 0,
+          "specificity": 1
+        },
+        "rules": {
+          "evaluated": 8,
+          "modelJudged": 4,
+          "flaggedOrHeld": 0,
+          "allowed": 8,
+          "errors": 0,
+          "specificity": 1
+        }
+      }
+    },
+    "historicalCatches": {
+      "evaluated": 8,
+      "modelJudged": 8,
+      "offlineDecided": 0,
+      "flaggedOrHeld": 7,
+      "allowed": 1,
+      "errors": 0,
+      "budgetSkipped": 76,
+      "recall": 0.875
+    },
+    "historicalOverriddenHolds": {
+      "evaluated": 8,
+      "modelJudged": 8,
+      "offlineDecided": 0,
+      "flaggedOrHeld": 3,
+      "allowed": 5,
+      "errors": 0,
+      "budgetSkipped": 27,
+      "falseHoldRate": 0.375
+    },
+    "historicalRegrettedAllows": {
+      "evaluated": 8,
+      "modelJudged": 8,
+      "offlineDecided": 0,
+      "flaggedOrHeld": 0,
+      "allowed": 8,
+      "errors": 0,
+      "budgetSkipped": 13,
+      "catchRate": 0
+    },
+    "trajectoryKv": {
+      "sessionsReplayed": 4,
+      "stepsEvaluated": 16,
+      "coldSteps": 4,
+      "incrementalSteps": 12,
+      "incrementalKvHits": 12,
+      "kvHitRate": 1,
+      "avgDeltaTokens": 615.3,
+      "avgPrefixTokens": 741.8,
+      "cleanAllowed": 16,
+      "falseAlerts": 0
+    },
+    "abstention": {
+      "questionsTotal": 146,
+      "abstained": 6,
+      "rate": 0.0411
+    },
+    "cacheModes": {
+      "miss": 48,
+      "delta": 12
+    },
+    "latencyMs": {
+      "overall": {
+        "count": 60,
+        "min": 231.6,
+        "p50": 1562.7,
+        "p95": 4630,
+        "max": 4810.1,
+        "mean": 1768
+      },
+      "cold": {
+        "count": 48,
+        "min": 626.1,
+        "p50": 1663,
+        "p95": 4648.2,
+        "max": 4810.1,
+        "mean": 1997.3
+      },
+      "incremental": {
+        "count": 12,
+        "min": 231.6,
+        "p50": 553.6,
+        "p95": 3266.4,
+        "max": 3266.4,
+        "mean": 850.7
+      },
+      "byGuard": {
+        "action": {
+          "count": 33,
+          "min": 626.1,
+          "p50": 1658,
+          "p95": 4648.2,
+          "max": 4810.1,
+          "mean": 1883.2
+        },
+        "output": {
+          "count": 7,
+          "min": 844.4,
+          "p50": 1777.8,
+          "p95": 1951.6,
+          "max": 1951.6,
+          "mean": 1597.3
+        },
+        "stuck": {
+          "count": 0,
+          "min": null,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "mean": null
+        },
+        "rules": {
+          "count": 4,
+          "min": 1675.4,
+          "p50": 3657.8,
+          "p95": 4659.2,
+          "max": 4659.2,
+          "mean": 3629.1
+        },
+        "trajectory": {
+          "count": 16,
+          "min": 231.6,
+          "p50": 700.6,
+          "p95": 3266.4,
+          "max": 3266.4,
+          "mean": 1139.9
+        }
+      }
+    }
+  }
+}
