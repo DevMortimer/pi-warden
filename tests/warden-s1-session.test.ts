@@ -693,13 +693,137 @@ test("one connection: the endpoint is kept, a start is shared, a failed start is
   const original = globalThis.fetch;
   t.after(() => { globalThis.fetch = original; });
   globalThis.fetch = async () => new Response("", { status: 401 });
-  await connection.fetchImpl(`${endpoint.url}/v1/prewarm`, { method: "POST" });
+  const refused = await connection.fetchImpl(`${endpoint.url}/v1/prewarm`, { method: "POST" });
+  assert.equal(refused.status, 401);
   fail = true;
   await assert.rejects(connection.resolveEndpoint(), /worker exited/);
   await assert.rejects(connection.resolveEndpoint(), /worker exited/);
-  assert.equal(starts, 2, "the second call inside the retry window starts nothing");
+  assert.equal(starts, 3, "a 401 re-resolves once, drops again on second 401, and the second call inside the retry window starts nothing");
 
   const aborted = new AbortController();
   aborted.abort();
   await assert.rejects(connection.resolveEndpoint(aborted.signal), { name: "AbortError" });
+});
+
+test("connectWardenS1 transparently re-resolves and retries once on ECONNREFUSED or 401/403 after daemon rotation, and skips retry when aborted", async t => {
+  const ep1 = {
+    url: "http://127.0.0.1:48101",
+    token: "token-v1",
+    modelId: "warden-s1-752m-mlx-q4",
+    pid: 101,
+    instanceId: "inst-1",
+    host: "127.0.0.1",
+    port: 48101,
+    runtime: "mlx" as const,
+    modelDir: "/models/s1",
+    startedAt: "",
+    idleShutdownSec: 1800,
+    stateDir: "",
+  };
+  const ep2 = {
+    ...ep1,
+    url: "http://127.0.0.1:48202",
+    token: "token-v2",
+    pid: 202,
+    instanceId: "inst-2",
+    port: 48202,
+  };
+  const ep3 = {
+    ...ep1,
+    url: "http://127.0.0.1:48303",
+    token: "token-v3",
+    pid: 303,
+    instanceId: "inst-3",
+    port: 48303,
+  };
+
+  const queue = [ep1, ep2, ep3];
+  let ensureCalls = 0;
+  const connection = connectWardenS1({ runtime: "mlx", modelDir: "/models/s1" }, async () => {
+    ensureCalls++;
+    return queue.shift() ?? ep3;
+  });
+
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+
+  const initial = await connection.resolveEndpoint();
+  assert.equal(initial?.url, ep1.url);
+  assert.equal(ensureCalls, 1);
+
+  const seenCalls: Array<{ url: string; auth: string | null; body: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const headers = new Headers(init?.headers);
+    const auth = headers.get("authorization");
+    const body = String(init?.body ?? "");
+    seenCalls.push({ url, auth, body });
+    if (url.startsWith(ep1.url)) {
+      const err = new TypeError("fetch failed");
+      (err as TypeError & { cause?: unknown }).cause = { code: "ECONNREFUSED" };
+      throw err;
+    }
+    if (url.startsWith(ep2.url) && auth === `Bearer ${ep2.token}`) {
+      return jsonResponse({ ok: true, rotated: "from-econnrefused" });
+    }
+    return new Response("unauthorized", { status: 401 });
+  };
+
+  const recoveredConn = await connection.fetchImpl(`${ep1.url}/v1/systemone?mode=fast`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${ep1.token}`,
+      "X-Warden-Session-Id": "sess-rot",
+    },
+    body: JSON.stringify({ hello: 1 }),
+  });
+  assert.equal(recoveredConn.status, 200);
+  assert.deepEqual(await recoveredConn.json(), { ok: true, rotated: "from-econnrefused" });
+  assert.equal(ensureCalls, 2);
+  assert.equal(seenCalls.length, 2);
+  assert.equal(seenCalls[1]!.url, `${ep2.url}/v1/systemone?mode=fast`);
+  assert.equal(seenCalls[1]!.auth, `Bearer ${ep2.token}`);
+  assert.equal(seenCalls[1]!.body, JSON.stringify({ hello: 1 }));
+
+  seenCalls.length = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const headers = new Headers(init?.headers);
+    const auth = headers.get("authorization");
+    seenCalls.push({ url, auth, body: String(init?.body ?? "") });
+    if (url.startsWith(ep2.url)) return new Response("Unauthorized", { status: 401 });
+    if (url.startsWith(ep3.url) && auth === `Bearer ${ep3.token}`) {
+      return jsonResponse({ ok: true, rotated: "from-401" });
+    }
+    return new Response("Forbidden", { status: 403 });
+  };
+
+  const recoveredAuth = await connection.fetchImpl(`${ep2.url}/v1/prewarm`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${ep2.token}` },
+    body: JSON.stringify({ state: "hi" }),
+  });
+  assert.equal(recoveredAuth.status, 200);
+  assert.deepEqual(await recoveredAuth.json(), { ok: true, rotated: "from-401" });
+  assert.equal(ensureCalls, 3);
+  assert.equal(seenCalls.length, 2);
+  assert.equal(seenCalls[1]!.url, `${ep3.url}/v1/prewarm`);
+  assert.equal(seenCalls[1]!.auth, `Bearer ${ep3.token}`);
+
+  // Aborted caller signal must neither drop the endpoint nor trigger a retry.
+  const ac = new AbortController();
+  ac.abort();
+  let fetchAttempts = 0;
+  globalThis.fetch = async () => {
+    fetchAttempts++;
+    throw new DOMException("Aborted", "AbortError");
+  };
+  await assert.rejects(
+    connection.fetchImpl(`${ep3.url}/v1/systemone`, { method: "POST", signal: ac.signal }),
+    { name: "AbortError" },
+  );
+  assert.equal(fetchAttempts, 1);
+  assert.equal(ensureCalls, 3);
+  assert.equal((await connection.resolveEndpoint())?.url, ep3.url);
 });

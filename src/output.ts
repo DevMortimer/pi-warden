@@ -174,11 +174,75 @@ const SUSPICIOUS_OUTPUT_CUE_RE = /\b(?:ignore\s+(?:all\s+|any\s+|previous\s+|pri
 
 const REMOTE_SHELL_CMD_RE = /\b(?:curl|wget|Invoke-WebRequest|iwr|ssh|scp|sftp|rsync|ncat|netcat|socat|aria2c|lynx|w3m)\b|(?:^|[;&|(\n"'`]\s*)(?:(?:sudo|env|command|timeout(?:\s+\S+)?|time)\s+)*(?:gh|nc|http|ftp|telnet|fetch)\b|\bgit(?:\s+(?:-[a-zA-Z]|--[a-z-]+(?:=\S+)?|-C\s+\S+))*\s+(?:clone|fetch|pull|ls-remote)\b/i;
 
+const LOCAL_FILE_TOOLS = new Set([
+  "read", "view_file", "agy-read",
+  "edit", "write", "agy-edit", "agy-write",
+]);
+
 const LOCAL_LIST_TOOLS = new Set(["grep", "find", "ls"]);
 
 export function hasSuspiciousOutputCue(text: string): boolean {
   if (!text) return false;
   return detectOfflineInjection(text) !== undefined || SUSPICIOUS_OUTPUT_CUE_RE.test(text);
+}
+
+function inputPathOf(input: Record<string, unknown>): string {
+  for (const key of ["path", "file_path", "Path"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return "";
+}
+
+function isPathInsideCwd(rawPath: string, cwd: string, allowRoot: boolean): boolean {
+  const trimmed = rawPath.trim();
+  if (!trimmed) return false;
+  if (projectPath(trimmed, cwd) !== undefined) return true;
+  return allowRoot && resolve(cwd, trimmed) === resolve(cwd);
+}
+
+function isTrustedLocalShellCommand(
+  toolName: string,
+  input: Record<string, unknown>,
+  command: string,
+  cwd: string,
+  allowHosts?: readonly string[],
+): boolean {
+  if (classifyTaintSource({ tool: toolName, input, cwd, allowHosts }).untrusted) return false;
+  const clean = stripShellComments(command);
+  return !REMOTE_SHELL_CMD_RE.test(clean);
+}
+
+function isTrustedWorkBatch(
+  input: Record<string, unknown>,
+  cwd: string,
+  allowHosts?: readonly string[],
+): boolean {
+  if (!Array.isArray(input.steps) || input.steps.length === 0) return false;
+  for (const rawStep of input.steps) {
+    if (!rawStep || typeof rawStep !== "object" || Array.isArray(rawStep)) return false;
+    const step = rawStep as Record<string, unknown>;
+    const op = typeof step.op === "string" ? step.op.trim() : "";
+    if (op === "read" || op === "edit" || op === "write") {
+      const rawPath = inputPathOf(step);
+      if (!rawPath || !isPathInsideCwd(rawPath, cwd, false)) return false;
+    } else if (op === "search") {
+      const rawPath = inputPathOf(step);
+      if (rawPath && !isPathInsideCwd(rawPath, cwd, true)) return false;
+    } else if (op === "run") {
+      const command = typeof step.command === "string" ? step.command.trim() : "";
+      if (!command) return false;
+      let stepCwd = cwd;
+      if (step.cwd !== undefined) {
+        if (typeof step.cwd !== "string" || !isPathInsideCwd(step.cwd, cwd, true)) return false;
+        stepCwd = resolve(cwd, step.cwd);
+      }
+      if (!isTrustedLocalShellCommand("bash", { command }, command, stepCwd, allowHosts)) return false;
+    } else {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function isTrustedLocalOutputSource(
@@ -187,20 +251,21 @@ export function isTrustedLocalOutputSource(
   cwd: string,
   allowHosts?: readonly string[],
 ): boolean {
-  if (toolName === "read" || toolName === "view_file") {
-    const rawPath = typeof input.path === "string" ? input.path.trim() : "";
-    return rawPath.length > 0 && projectPath(rawPath, cwd) !== undefined;
+  if (LOCAL_FILE_TOOLS.has(toolName)) {
+    const rawPath = inputPathOf(input);
+    return rawPath.length > 0 && isPathInsideCwd(rawPath, cwd, false);
   }
   if (LOCAL_LIST_TOOLS.has(toolName)) {
-    const rawPath = typeof input.path === "string" ? input.path.trim() : "";
+    const rawPath = inputPathOf(input);
     if (!rawPath) return true;
-    return projectPath(rawPath, cwd) !== undefined || resolve(cwd, rawPath) === resolve(cwd);
+    return isPathInsideCwd(rawPath, cwd, true);
+  }
+  if (toolName === "work") {
+    return isTrustedWorkBatch(input, cwd, allowHosts);
   }
   const view = commandOf(toolName, input);
   if (view) {
-    if (classifyTaintSource({ tool: toolName, input, cwd, allowHosts }).untrusted) return false;
-    const clean = stripShellComments(view.command);
-    return !REMOTE_SHELL_CMD_RE.test(clean);
+    return isTrustedLocalShellCommand(toolName, input, view.command, cwd, allowHosts);
   }
   return false;
 }
@@ -227,6 +292,11 @@ export async function evaluateOutput(tool: string, text: string, task: string | 
     verdict.secretIds = secretIds(real);
   }
   if (synthetic.length) verdict.syntheticIds = secretIds(synthetic);
+  const suspiciousCue = options.localFastGate ? hasSuspiciousOutputCue(text) : false;
+  if (options.localFastGate && options.trustedLocalSource && !suspiciousCue) {
+    return verdict;
+  }
+
   const contentTool = tool.startsWith("mcp") || /(?:^|_)(?:read|fetch|webfetch|fetch_content|fetch_and_index|web_search|search|search_code|source_check|search_graph|query_graph|trace_path|get_architecture|get_code_snippet|get_search_content)$/.test(tool);
   const compress = options.context.enabled && options.compressible !== false && text.length >= options.context.tailMinChars;
 
@@ -237,11 +307,6 @@ export async function evaluateOutput(tool: string, text: string, task: string | 
       // Pre-set retention based on learning, but still ask Jev for confirmation
       verdict.retention = suggestedRetention;
     }
-  }
-
-  const suspiciousCue = options.localFastGate ? hasSuspiciousOutputCue(text) : false;
-  if (options.localFastGate && options.trustedLocalSource && !compress && !suspiciousCue) {
-    return verdict;
   }
 
   const security = options.security.enabled && (contentTool || text.length >= 2048 || suspiciousCue);

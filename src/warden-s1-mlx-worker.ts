@@ -1170,9 +1170,6 @@ class WardenS1ServerEngine:
         self._in_flight = 0
         self._last_activity = time.monotonic()
 
-        self._worker = threading.Thread(target=self._gpu_worker_loop, daemon=True)
-        self._worker.start()
-
         self.requests_served = 0
         self.prewarms_served = 0
         self.cache_exact_hits = 0
@@ -1180,9 +1177,15 @@ class WardenS1ServerEngine:
         self.cache_boundary_healed_hits = 0
         self.cache_misses = 0
         self.l1_hits = 0
+        self._cached_active_mb = self.weights_active_mb
         self.max_active_mb = self.weights_active_mb
         self.max_peak_mb = self.weights_active_mb
         self.recent_telemetry: list[dict[str, Any]] = []
+        self._recent_snapshot: tuple[dict[str, Any], ...] = ()
+        self._stats_snapshot: dict[str, Any] = self._build_stats_snapshot_on_gpu(sample_memory=False)
+
+        self._worker = threading.Thread(target=self._gpu_worker_loop, daemon=True)
+        self._worker.start()
 
     def stop(self) -> None:
         self._req_q.put((-1, next(self._seq), "stop", None, None))
@@ -1233,13 +1236,16 @@ class WardenS1ServerEngine:
                     ev = self.pager.evict_ram_to_disk(arg)
                     mx.clear_cache()
                     result = {"evicted": ev, "ram_slots_used": len(self.pager.ram_pages), "disk_pages": len(self.pager.disk_pages)}
-                elif op == "stats":
-                    result = self._stats_on_gpu()
                 else:
                     raise ValueError(f"Unknown op: {op}")
+                self._refresh_stats_snapshot_on_gpu()
                 if fut is not None:
                     fut.set_result(result)
             except Exception as exc:
+                try:
+                    self._refresh_stats_snapshot_on_gpu()
+                except Exception:
+                    pass
                 if fut is not None:
                     fut.set_exception(exc)
             finally:
@@ -1272,7 +1278,21 @@ class WardenS1ServerEngine:
         return self._submit("evict_to_disk", session_id, priority=0)
 
     def stats(self) -> dict[str, Any]:
-        return self._submit("stats", None, priority=0)
+        snap = self._stats_snapshot
+        with self._activity_lock:
+            in_flight = self._in_flight
+            if in_flight > 0 or not self._req_q.empty():
+                idle_sec = 0.0
+            else:
+                idle_sec = max(0.0, time.monotonic() - self._last_activity)
+        return {
+            **snap,
+            "idle_sec": round(idle_sec, 2),
+            "in_flight": in_flight,
+        }
+
+    def stats_with_recent(self) -> dict[str, Any]:
+        return {**self.stats(), "recent": list(self._recent_snapshot)}
 
     def _clear_l1_on_gpu(self, force_clear: bool = False) -> None:
         self._active_sid = None
@@ -1352,6 +1372,8 @@ class WardenS1ServerEngine:
             self._active_ckpt_chunks = ckpt_chunks
             self._active_chunk_reprs = self._build_chunk_reprs(full_chunks)
             self.pager.swap_latencies_ms.append(total_swap_ms)
+            if len(self.pager.swap_latencies_ms) > 200:
+                self.pager.swap_latencies_ms = self.pager.swap_latencies_ms[-200:]
         return tier, total_swap_ms
 
     def _resolve_session_id(self, explicit_sid: str | None, payload: dict[str, Any], ids: list[int]) -> str:
@@ -1879,8 +1901,13 @@ class WardenS1ServerEngine:
         }
         return response, telemetry
 
-    def _stats_on_gpu(self) -> dict[str, Any]:
-        active_mb = round(mx.get_active_memory() / (1024 * 1024), 2)
+    def _build_stats_snapshot_on_gpu(self, sample_memory: bool = True) -> dict[str, Any]:
+        if sample_memory:
+            active_mb = round(mx.get_active_memory() / (1024 * 1024), 2)
+            self._cached_active_mb = active_mb
+            self.max_active_mb = max(self.max_active_mb, active_mb)
+        else:
+            active_mb = self._cached_active_mb
         lats = [r["total_ms"] for r in self.recent_telemetry]
         swaps = self.pager.swap_latencies_ms[-200:]
         return {
@@ -1891,8 +1918,8 @@ class WardenS1ServerEngine:
             "model": self.model_id,
             "model_dir": str(self.mlx_dir),
             "idle_shutdown_sec": self.idle_shutdown_sec,
-            "idle_sec": round(self.idle_seconds(), 2),
-            "in_flight": self._in_flight,
+            "idle_sec": 0.0,
+            "in_flight": 0,
             "weights_active_mb": self.weights_active_mb,
             "metal_active_mb": active_mb,
             "metal_max_active_mb": self.max_active_mb,
@@ -1917,6 +1944,10 @@ class WardenS1ServerEngine:
             "latency_ms_p50": round(float(np.percentile(lats, 50)), 2) if lats else 0.0,
             "latency_ms_p95": round(float(np.percentile(lats, 95)), 2) if lats else 0.0,
         }
+
+    def _refresh_stats_snapshot_on_gpu(self) -> None:
+        self._stats_snapshot = self._build_stats_snapshot_on_gpu(sample_memory=True)
+        self._recent_snapshot = tuple(self.recent_telemetry[-100:])
 
 
 def _write_state_file_atomic(path: Path, info: dict[str, Any]) -> None:
@@ -1978,7 +2009,7 @@ def make_handler(engine: WardenS1ServerEngine, token: str, shutdown_cb: Any):
                 self._send_json(200, engine.stats())
                 return
             if path == "/stats":
-                self._send_json(200, {**engine.stats(), "recent": engine.recent_telemetry[-100:]})
+                self._send_json(200, engine.stats_with_recent())
                 return
             if path == "/v1/models":
                 self._send_json(
@@ -2050,6 +2081,7 @@ def make_handler(engine: WardenS1ServerEngine, token: str, shutdown_cb: Any):
                     self._send_json(200, engine.drop_session(str(target_sid)))
                     return
                 if path == "/admin/shutdown":
+                    self.close_connection = True
                     self._send_json(200, {"shutting_down": True})
                     threading.Thread(target=shutdown_cb, daemon=True).start()
                     return
@@ -2060,6 +2092,11 @@ def make_handler(engine: WardenS1ServerEngine, token: str, shutdown_cb: Any):
                 self._send_json(500, {"error": f"{type(e).__name__}: {e}"})
 
     return Handler
+
+
+class WardenHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 128
 
 
 def main() -> None:
@@ -2103,7 +2140,7 @@ def main() -> None:
         if server is not None:
             server.shutdown()
 
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(engine, token, trigger_shutdown))
+    server = WardenHTTPServer((args.host, args.port), make_handler(engine, token, trigger_shutdown))
     bound_host, bound_port = server.server_address
 
     def _handle_sig(_signum: int, _frame: Any) -> None:
