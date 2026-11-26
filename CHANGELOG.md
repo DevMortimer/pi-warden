@@ -8,6 +8,23 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 2.18.1
+
+### Added
+
+- Once-ever contextual `Warden-S1` discovery hint persisted atomically under `<agent dir>/pi-warden/state/warden-s1-hint.json` on the first unconfigured (`no_consent` / `no_key`) notice or `/warden status` check, or on a cloud context-length / HTTP `400` / timeout error when local `Warden-S1` is not yet configured (leaving `config.json` untouched and never repeating), plus `/warden help` and quiet `Warden-S1 (Apache-2.0) by @devmortimer` attribution on `/warden model status`, `/warden model download` completion, `/warden help`, and the muted `/warden config` sidebar footer (`viewport >= 6`).
+- Offline `Warden-S1` field-session scrubbing and replay runner (`scripts/s1-field-replay.mjs` `--pack` / `--run`) with deterministic PII/secret/hostname scrubbing, multi-session `O(ΔL)` KV prefix-cache measurement, and anonymized `260`-case field benchmark scorecard (`eval/reports/2026-11-26-warden-s1-field-replay/`), plus the procedural Blender Cycles 3D explainer renderer (`scripts/render-3d-explainer.py`).
+
+### Fixed
+
+- Hardened local `Warden-S1` daemon stability and throughput under concurrent multi-session load: MLX `/health` and `/stats` now answer lock-free from worker snapshots without queueing behind active Metal inference (`WardenHTTPServer` with `request_queue_size = 128`, `daemon_threads = True`, and `close_connection = True` on `/admin/shutdown`), `ensureWardenS1Daemon` canonicalizes `modelDir` via `realpathSync` and grants live owned daemons a 10 s busy-load `/health` grace probe instead of restarting them, `connectWardenS1` transparently reconnects and retries once after mid-session daemon rotation, and `src/output.ts` `localFastGate` skips blocking `Warden-S1` retention calls on clean local `read`/`edit`/`write`/shell and `work` batch outputs of any length (`>= context.tailMinChars`) while still judging untrusted or injection-cued outputs.
+- Terminated shell redirect target scanning (`writeSinkTargets` in `src/guard.ts`) at unquoted shell operators (`;`, `&`, `|`, `(`, `)`, `<`, `>`) so compound `2>/dev/null; ...` and `(cmd 2>/dev/null)` invocations are not misclassified as external file sinks under active taint, skipped slop judge questions on gitignored project writes (`gitignoredProjectWrite`), and ignored `build/` and `node_modules` symlinks in `.gitignore`.
+- Broke both runtime ESM import cycles (`src/rules.ts -> src/widget.ts -> src/done.ts -> src/guard.ts -> src/rules-file.ts -> src/rules.ts` and `src/ask-gate.ts <-> src/guard.ts` via leaf module `src/action-paths.ts`) so standalone headless entrypoints (`dist/hosts/claude.js` and `dist/hosts/codex.js`) load cleanly in any import order, and added a static Tarjan runtime-import cycle gate across `src/**/*.ts` to `npm run check`.
+
+### Docs
+
+- Embedded the 3D explainer video in `README.md` and removed the legacy `docs/assets/demo.gif` binary from the repository.
+
 ## 2.18.0
 
 ### Added
