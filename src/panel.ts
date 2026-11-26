@@ -10,6 +10,9 @@ import type { Trace } from "./trace.js";
 import { LEVEL_COLOR, WIDGET_BAR_MODES, WIDGET_PLACEMENTS, parseVerdictLine, renderSegment } from "./widget.js";
 import type { ThemeLike } from "./widget.js";
 
+export const WARDEN_S1_CREDIT =
+  "Warden-S1 (Apache-2.0) by @devmortimer · https://x.com/devmortimer · https://ryanjoshuagapac.com/writing/warden-s1";
+
 export interface PanelActions {
   /** Remove the sidebar. */
   close(): void;
@@ -314,12 +317,14 @@ export class ConfigPanel implements Component {
     const inner = Math.max(10, width - 2);
     const all = this.lines(inner);
     const fixed = all.splice(0, 3);
+    const showCredit = this.viewport >= 6;
+    const creditRows = showCredit ? 1 : 0;
     if (this.notice) {
       const notice = wrapTextWithAnsi(this.theme.fg("warning", this.notice), inner);
       // Keep the notice outside the scrolling list, with room for at least one selected row.
-      fixed.push(...notice.slice(0, Math.max(1, this.viewport - fixed.length - 2)));
+      fixed.push(...notice.slice(0, Math.max(1, this.viewport - fixed.length - creditRows - 2)));
     }
-    const available = Math.max(1, this.viewport - fixed.length);
+    const available = Math.max(1, this.viewport - fixed.length - creditRows);
     const showFooter = all.length > available && available > 1;
     const listRows = available - (showFooter ? 1 : 0);
     const maxScroll = Math.max(0, all.length - listRows);
@@ -336,7 +341,10 @@ export class ConfigPanel implements Component {
       const label = below > 0 ? `… ${below} more below${above ? ` · ${above} above` : ""}` : `… end${above ? ` · ${above} above` : ""}`;
       visible.push(truncateToWidth(theme_fg(this.theme, "dim", label), inner, ""));
     }
-    while (visible.length < this.viewport) visible.push("");
+    while (visible.length < this.viewport - creditRows) visible.push("");
+    if (showCredit) {
+      visible.push(truncateToWidth(theme_fg(this.theme, "dim", WARDEN_S1_CREDIT), inner, "…"));
+    }
     return visible.map(line => border + line);
   }
 
