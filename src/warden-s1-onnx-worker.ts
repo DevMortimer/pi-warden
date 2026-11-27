@@ -1389,7 +1389,8 @@ export function createSyntheticOnnxBackend(options?: {
   const manifest: OnnxModelManifest = {
     architecture: {
       hidden_size: hiddenSize,
-      max_chunk_len: MAX_CHUNK_LEN,
+      // Synthetic mock-weights JS backbone uses larger chunks so >64 KiB payloads stay sub-second.
+      max_chunk_len: 4096,
       linear_layers: LINEAR_LAYERS,
       full_layers: FULL_LAYERS,
       linear_conv_dim: convDim,
@@ -1486,19 +1487,21 @@ export function createSyntheticOnnxBackend(options?: {
         }
         const attnOut = new Float32Array(fullHeadDim);
         const kvCount = kvPos + 1;
+        const jStart = Math.max(0, kvCount - 64);
+        const winLen = kvCount - jStart;
         let wSum = 0;
-        const weights = new Float32Array(kvCount);
+        const weights = new Float32Array(winLen);
         const qOff = kvPos * fullHeadDim;
-        for (let j = 0; j < kvCount; j++) {
+        for (let j = jStart; j < kvCount; j++) {
           let dot = 0;
           const kOff = j * fullHeadDim;
           for (let d = 0; d < fullHeadDim; d++) dot += key0[qOff + d]! * key0[kOff + d]!;
           const w = Math.exp(Math.max(-10, Math.min(10, dot * 0.25)));
-          weights[j] = w;
+          weights[j - jStart] = w;
           wSum += w;
         }
-        for (let j = 0; j < kvCount; j++) {
-          const w = weights[j]! / Math.max(1e-9, wSum);
+        for (let j = jStart; j < kvCount; j++) {
+          const w = weights[j - jStart]! / Math.max(1e-9, wSum);
           const vOff = j * fullHeadDim;
           for (let d = 0; d < fullHeadDim; d++) attnOut[d] = attnOut[d]! + w * val0[vOff + d]!;
         }

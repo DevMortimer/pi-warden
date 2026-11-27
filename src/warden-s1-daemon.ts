@@ -315,6 +315,10 @@ function modelDirMatches(actual: string, expected: string): boolean {
   return canonicalizePath(actual) === canonicalizePath(expected);
 }
 
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
 function readDaemonMetadata(stateDir: string): DaemonMetadata | null {
   const path = daemonMetadataPath(stateDir);
   if (!existsSync(path)) return null;
@@ -322,13 +326,21 @@ function readDaemonMetadata(stateDir: string): DaemonMetadata | null {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<DaemonMetadata>;
     if (
       typeof parsed.pid === "number" &&
+      Number.isInteger(parsed.pid) &&
+      parsed.pid > 0 &&
       typeof parsed.instanceId === "string" &&
+      parsed.instanceId.length > 0 &&
       typeof parsed.host === "string" &&
+      isLoopbackHost(parsed.host) &&
       typeof parsed.port === "number" &&
+      Number.isInteger(parsed.port) &&
+      parsed.port > 0 &&
+      parsed.port <= 65535 &&
       (parsed.runtime === "mlx" || parsed.runtime === "onnx") &&
       typeof parsed.modelId === "string" &&
       typeof parsed.modelDir === "string" &&
-      typeof parsed.token === "string"
+      typeof parsed.token === "string" &&
+      parsed.token.length > 0
     ) {
       return parsed as DaemonMetadata;
     }
@@ -336,6 +348,24 @@ function readDaemonMetadata(stateDir: string): DaemonMetadata | null {
     return null;
   }
   return null;
+}
+
+export function hasLiveDaemonMetadata(stateDirInput?: string): boolean {
+  const stateDir = stateDirInput ? resolve(stateDirInput) : defaultWardenS1StateDir();
+  const meta = readDaemonMetadata(stateDir);
+  return meta !== null && isPidAlive(meta.pid);
+}
+
+export async function attachHealthyDaemon(
+  stateDirInput?: string,
+  healthTimeoutMs = 1500,
+): Promise<DaemonEndpoint | null> {
+  const stateDir = stateDirInput ? resolve(stateDirInput) : defaultWardenS1StateDir();
+  const meta = readDaemonMetadata(stateDir);
+  if (!meta || !isPidAlive(meta.pid)) return null;
+  const endpoint = toEndpoint(meta, stateDir);
+  const stats = await probeHealth(endpoint, healthTimeoutMs);
+  return stats ? endpoint : null;
 }
 
 function toEndpoint(meta: DaemonMetadata, stateDir: string): DaemonEndpoint {

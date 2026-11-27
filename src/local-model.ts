@@ -4,10 +4,13 @@ import { createReadStream, createWriteStream, existsSync, mkdirSync, openSync, c
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deriveWardenS1ModelState, type WardenS1ModelState } from "pi-typesafe";
 import { writeFileAtomicSync } from "./atomic.js";
 import type { LocalModelConfig, LocalModelRuntime } from "./config.js";
 import type { HostDirs } from "./host-dirs.js";
 import { defaultHostDirs, expandHome } from "./host-dirs.js";
+
+export { deriveWardenS1ModelState, type WardenS1ModelState };
 
 export const MLX_MODEL_REPO = "DevMortimer/Warden-S1-752M-MLX-4bit";
 export const ONNX_MODEL_REPO = "DevMortimer/Warden-S1-752M-ONNX-Int4";
@@ -90,6 +93,7 @@ export interface ReadyManifest {
 }
 
 export interface WardenS1Status {
+  readonly state: WardenS1ModelState;
   readonly runtime: SelectedRuntime;
   readonly requestedRuntime: LocalModelRuntime;
   readonly repoId: string;
@@ -225,9 +229,17 @@ export function resolveInstalledOrtPath(options?: { stateDir?: string; dirs?: Ho
   } catch {
     // Not present in ambient node_modules.
   }
-  const runtimeDir = resolveOrtRuntimeDir(options?.stateDir, options?.dirs, options?.env);
-  const pkgDir = join(runtimeDir, "node_modules", "onnxruntime-node");
-  if (existsSync(join(pkgDir, "package.json"))) return pkgDir;
+  const env = options?.env ?? process.env;
+  const dirs = options?.dirs ?? defaultHostDirs(env);
+  const candidateRoots = [
+    resolveOrtRuntimeDir(options?.stateDir, dirs, env),
+    join(dirs.agentDir, "pi-typesafe", "runtime"),
+    join(resolveCacheRoot(env), "runtime"),
+  ];
+  for (const runtimeDir of candidateRoots) {
+    const pkgDir = join(runtimeDir, "node_modules", "onnxruntime-node");
+    if (existsSync(join(pkgDir, "package.json"))) return pkgDir;
+  }
   return undefined;
 }
 
@@ -458,9 +470,11 @@ export function getWardenS1Status(config?: Partial<LocalModelConfig>, options: S
       ? `MLX runtime is not provisioned yet; run /warden model download to provision ${resolveManagedMlxVenvDir(env)}`
       : undefined
   );
+  const state = deriveWardenS1ModelState({ ready, installed, incomplete, diagnostic });
   const totalBytes = manifest ? manifest.totalBytes : Math.round(selection.expectedMib * 1024 * 1024);
 
   return {
+    state,
     runtime: selection.runtime,
     requestedRuntime: selection.requestedRuntime,
     repoId: selection.repoId,

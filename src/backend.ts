@@ -4,7 +4,7 @@ import { DEFAULT_BACKEND, backendHost, resolveBackend } from "pi-typesafe";
 /** Local judgment modes that run Warden-S1 on loopback (or prefer it with cloud fallback). */
 export type LocalBackendMode = "warden-s1" | "auto";
 
-/** The judgment backend: "cloud" (default TypeSafe), local modes ("warden-s1", "auto"), a registry name ("typesafe", "openrouter", "commandcode", "liquid", "subq", "nace"), or a caller-supplied endpoint object. */
+/** The judgment backend: "cloud" (default TypeSafe), local modes ("warden-s1", "auto"), a registry name in DECISIONS_BACKENDS ("typesafe", "openrouter", "commandcode", "liquid", "subq", "nace", "warden-s1"), or a caller-supplied endpoint object. */
 export type JudgmentBackend = "cloud" | LocalBackendMode | BackendSpec;
 
 /** True when the configured backend prefers or requires the local Warden-S1 daemon. */
@@ -58,10 +58,11 @@ export function backendName(backend: JudgmentBackend | undefined): string {
   return typeof backend === "string" ? backend : resolveBackend(backend).label;
 }
 
-/** Whether `/typesafe login <backend>` can store this backend's key. Local-only warden-s1 and endpoint objects cannot be named. */
+/** Whether `/typesafe login <backend>` can store this backend's key. Local registry backends (such as warden-s1) and endpoint objects cannot be named. */
 export function loginStoresKey(backend: JudgmentBackend | undefined): boolean {
-  if (backend === "warden-s1") return false;
-  return typeof (backend ?? DEFAULT_BACKEND) === "string";
+  if (backend === undefined || backend === "cloud" || backend === "auto") return true;
+  if (typeof backend !== "string") return false;
+  return resolveBackend(backend).local !== true;
 }
 
 /** One phrase naming where judgments go — the label, the host, and the model sent — for consent text and status lines. */
