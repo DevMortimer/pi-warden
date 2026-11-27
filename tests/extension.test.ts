@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
 import { createEventBus, DefaultResourceLoader, SettingsManager, type EventBus } from "@earendil-works/pi-coding-agent";
-import { createTypeSafe } from "pi-typesafe";
+import { createTypeSafe, DECISIONS_BACKENDS } from "pi-typesafe";
 import type { Extension, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { initSchema, queryHoldsForProject, recordCause } from "../src/learning.js";
 import { readRulesLog, rulesLogPath } from "../src/rules-log.js";
@@ -5241,7 +5241,7 @@ test("judgments off: an unknown typesafeBackend name is refused with the message
   await writeConfig(JSON.stringify({ typesafe: true, typesafeBackend: "azure", rules: { enabled: false }, ...STACK_BAR }));
   await toolCall("bash", { command: "npm test" });
   await toolCall("bash", { command: "npm run lint" });
-  assert.deepEqual(judgmentsOff(), ["warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend \"azure\". Valid backends: typesafe, openrouter, commandcode, liquid, subq, nace.)"], "said once, carrying pi-typesafe's refusal message");
+  assert.deepEqual(judgmentsOff(), [`warden: Jev judgments are off (typesafeBackend refused: Unknown judgment backend "azure". Valid backends: ${Object.keys(DECISIONS_BACKENDS).join(", ")}.)`], "said once, carrying pi-typesafe's refusal message");
   assert.equal(networkCalls, 0, "no client is created and nothing is sent");
   assert.equal(requests.length, 0);
   await runCommand("status");
