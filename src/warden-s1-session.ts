@@ -1,5 +1,7 @@
 import {
   DEFAULT_BACKEND_LIMITS,
+  LOCAL_MAX_INPUT_BYTES,
+  MOCK_WEIGHTS_ENV,
   TypeSafeIntegrationError,
   evaluateAll,
   evaluateMany,
@@ -30,8 +32,8 @@ export const COMPACT_UNPINNED_BLOCK_TOKENS = 48_000;
 export const COMPACT_KEEP_BUDGET_TOKENS = 8_000;
 export const SALIENCE_KEEP_THRESHOLD = 0.80;
 export const ABSTENTION_HALF_BAND = 0.08;
-export const LOCAL_MAX_INPUT_BYTES = 2_097_152;
 export const ABSTENTION_REASON = "insufficient evidence in transcript";
+export { LOCAL_MAX_INPUT_BYTES, MOCK_WEIGHTS_ENV };
 
 const EXCERPT_MAX_CHARS = 140;
 const FLOAT_EPSILON = 1e-12;
@@ -39,7 +41,6 @@ const MAX_COMPACTION_ITERATIONS = 32;
 const MAX_COALESCED_PREWARM_PASSES = 16;
 // A daemon that failed to start is left alone this long, so a broken install costs one spawn per window, not one per turn.
 const DAEMON_RETRY_MS = 30_000;
-export const MOCK_WEIGHTS_ENV = "PI_WARDEN_S1_MOCK_WEIGHTS";
 
 export interface WardenS1Endpoint {
   readonly url: string;

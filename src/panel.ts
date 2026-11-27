@@ -196,7 +196,7 @@ type ConfigDraft =
 
 const SELECTOR_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   mode: WARDEN_MODES,
-  typesafeBackend: ["cloud", "warden-s1", "auto", ...Object.keys(DECISIONS_BACKENDS)],
+  typesafeBackend: [...new Set(["cloud", "warden-s1", "auto", ...Object.keys(DECISIONS_BACKENDS)])],
   "localModel.runtime": LOCAL_MODEL_RUNTIMES,
   "widget.placement": WIDGET_PLACEMENTS,
   "widget.barMode": WIDGET_BAR_MODES,

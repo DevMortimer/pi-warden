@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  attachHealthyDaemon,
   daemonDropSession,
   daemonEvaluate,
   daemonEvictToDisk,
@@ -19,6 +20,7 @@ import {
   effectiveWardenS1TimeoutMs,
   ensureWardenS1Daemon,
   getWardenS1DaemonStatus,
+  hasLiveDaemonMetadata,
   isPidAlive,
   stopWardenS1Daemon,
   sweepOrphanDaemonPids,
@@ -1361,6 +1363,83 @@ test("ensureWardenS1Daemon never kills a live owned matching daemon when a short
   } finally {
     await stopWardenS1Daemon(stateDir, 3000).catch(() => undefined);
     if (childPid && isPidAlive(childPid)) { try { process.kill(childPid, "SIGKILL"); } catch {} }
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("hasLiveDaemonMetadata and attachHealthyDaemon validate live loopback metadata and reject tampered entries", async () => {
+  const stateDir = makeTempDir("ws1-meta-validate-");
+  try {
+    assert.equal(hasLiveDaemonMetadata(stateDir), false);
+    assert.equal(await attachHealthyDaemon(stateDir, 300), null);
+
+    const baseMeta = {
+      pid: process.pid,
+      instanceId: "meta-check-instance",
+      host: "127.0.0.1",
+      port: 41234,
+      runtime: "onnx",
+      modelId: "warden-s1-mock-onnx",
+      modelDir: "mock-weights",
+      startedAt: new Date().toISOString(),
+      idleShutdownSec: 60,
+      token: "valid-secret-token",
+    };
+
+    const invalidCases: Array<{ label: string; patch: Record<string, unknown> }> = [
+      { label: "non-loopback IPv4", patch: { host: "192.168.1.5" } },
+      { label: "non-loopback hostname", patch: { host: "evil.example" } },
+      { label: "port zero", patch: { port: 0 } },
+      { label: "port > 65535", patch: { port: 65536 } },
+      { label: "fractional port", patch: { port: 41234.5 } },
+      { label: "non-positive pid", patch: { pid: 0 } },
+      { label: "fractional pid", patch: { pid: 12.5 } },
+      { label: "empty token", patch: { token: "" } },
+      { label: "empty instanceId", patch: { instanceId: "" } },
+    ];
+
+    for (const { label, patch } of invalidCases) {
+      writeFileSync(daemonMetadataPath(stateDir), JSON.stringify({ ...baseMeta, ...patch }));
+      assert.equal(hasLiveDaemonMetadata(stateDir), false, `expected invalid metadata (${label}) to be rejected`);
+      assert.equal(await attachHealthyDaemon(stateDir, 200), null, `attachHealthyDaemon must reject ${label}`);
+      const status = await getWardenS1DaemonStatus(stateDir, 200);
+      assert.equal(status.running, false);
+      assert.equal(status.reason, "no_metadata", `getWardenS1DaemonStatus must reject ${label}`);
+    }
+
+    rmSync(daemonMetadataPath(stateDir), { force: true });
+    const live = await ensureWardenS1Daemon({
+      runtime: "onnx",
+      mockWeights: true,
+      stateDir,
+      idleShutdownSec: 60,
+      startupTimeoutMs: 15_000,
+    });
+    assert.equal(hasLiveDaemonMetadata(stateDir), true);
+    const attached = await attachHealthyDaemon(stateDir, 1500);
+    assert.ok(attached);
+    assert.equal(attached.pid, live.pid);
+    assert.equal(attached.instanceId, live.instanceId);
+    assert.equal(attached.port, live.port);
+
+    // >64 KiB synthetic mock-weights payload must stay sub-second with max_chunk_len=4096 and 64-token sliding window.
+    const bigPayload = `<turn index="0" role="user">${"alpha beta gamma delta ".repeat(3200)}</turn>`;
+    assert.ok(Buffer.byteLength(bigPayload, "utf8") > 65_536);
+    const t0 = performance.now();
+    const res = await daemonEvaluate(
+      attached,
+      { state: bigPayload, questions: { safe: { type: "noul", instructions: "Is this safe?" } } },
+      { sessionId: "big-mock-payload", timeoutMs: 10_000 },
+    );
+    const elapsedMs = performance.now() - t0;
+    assert.equal(res.s1.runtime, "onnx");
+    assert.ok(elapsedMs < 3000, `expected >64 KiB mock-weights eval to stay fast, took ${Math.round(elapsedMs)} ms`);
+
+    await stopWardenS1Daemon(stateDir, 5000);
+    assert.equal(hasLiveDaemonMetadata(stateDir), false);
+    assert.equal(await attachHealthyDaemon(stateDir, 300), null);
+  } finally {
+    await stopWardenS1Daemon(stateDir, 3000).catch(() => undefined);
     rmSync(stateDir, { recursive: true, force: true });
   }
 });

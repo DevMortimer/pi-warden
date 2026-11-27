@@ -13,7 +13,7 @@ const enter = "\r";
 const escape = "\x1b";
 const left = "\x1b[D";
 const right = "\x1b[C";
-const BACKEND_SELECTOR_OPTIONS = ["cloud", "warden-s1", "auto", ...Object.keys(DECISIONS_BACKENDS)];
+const BACKEND_SELECTOR_OPTIONS = [...new Set(["cloud", "warden-s1", "auto", ...Object.keys(DECISIONS_BACKENDS)])];
 const selectors = [
   { path: "mode", options: ["steer", "confirm", "advise"] },
   { path: "typesafeBackend", options: BACKEND_SELECTOR_OPTIONS },
@@ -205,11 +205,34 @@ test("config selector: a custom backend remains untouched on uncycled Enter and 
   assert.equal(panel.bytes(), original);
   panel.press(enter);
   panel.press(left);
-  assert.ok(panel.selected("typesafeBackend")!.includes(`‹ ${Object.keys(DECISIONS_BACKENDS).at(-1)} ›`));
+  assert.ok(panel.selected("typesafeBackend")!.includes(`‹ ${BACKEND_SELECTOR_OPTIONS.at(-1)} ›`));
   panel.press(escape);
   assert.equal(panel.bytes(), original);
   panel.select("typesafeBackend.host");
   assert.ok(panel.selected("typesafeBackend.host")!.includes(customBackend.host));
+});
+
+test("config selector: typesafeBackend deduplicates warden-s1 at index 1 and wraps cleanly", t => {
+  assert.ok("warden-s1" in DECISIONS_BACKENDS, "pi-typesafe@0.16.0 registers warden-s1 in DECISIONS_BACKENDS");
+  assert.equal(new Set(BACKEND_SELECTOR_OPTIONS).size, BACKEND_SELECTOR_OPTIONS.length, "selector options must be unique");
+  assert.equal(BACKEND_SELECTOR_OPTIONS.indexOf("warden-s1"), 1);
+  assert.equal(BACKEND_SELECTOR_OPTIONS.lastIndexOf("warden-s1"), 1);
+
+  const panel = configPanel(t, { typesafeBackend: "cloud" });
+  panel.select("typesafeBackend");
+  panel.press(enter);
+  const visited = ["cloud"];
+  for (let i = 1; i < BACKEND_SELECTOR_OPTIONS.length; i++) {
+    panel.press(right);
+    const match = panel.selected("typesafeBackend")!.match(/‹ ([^›]+) ›/);
+    assert.ok(match, "expected selector value marker");
+    visited.push(match[1]!);
+  }
+  assert.deepEqual(visited, BACKEND_SELECTOR_OPTIONS);
+  panel.press(right);
+  assert.ok(panel.selected("typesafeBackend")!.includes(`‹ ${BACKEND_SELECTOR_OPTIONS[0]} ›`));
+  panel.press(left);
+  assert.ok(panel.selected("typesafeBackend")!.includes(`‹ ${BACKEND_SELECTOR_OPTIONS.at(-1)} ›`));
 });
 
 test("config selector: custom backend child edits prevent replacing their parent until saved", t => {

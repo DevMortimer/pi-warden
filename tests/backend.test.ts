@@ -5,7 +5,7 @@ import type { AddressInfo, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DECISIONS_BACKENDS, TypeSafeIntegrationError, createTypeSafe, noul, openUsageLedger } from "pi-typesafe";
+import { DECISIONS_BACKENDS, TypeSafeIntegrationError, createTypeSafe, noul, openUsageLedger, resolveBackend } from "pi-typesafe";
 import { backendName, describeBackend, disclosureFor, isLocalBackendMode, judgeOptions, loginStoresKey, resolveJudgmentBackend, toCloudBackendSpec } from "../src/backend.js";
 
 const gateway = { label: "Acme judge gateway", host: "https://gw.acme.example", path: "/judge/v1/decide", keyEnv: "ACME_JUDGE_KEY", defaultModel: "jev-1.13" };
@@ -66,6 +66,18 @@ test("nace: the registry entry reaches our helpers, so a user config naming it s
   assert.equal(backendName("nace"), "nace");
   assert.equal(describeBackend("nace"), "Nace.AI at console.nace.ai, model drex-v2.0");
   assert.equal(loginStoresKey("nace"), true);
+});
+
+test("warden-s1: pi-typesafe@0.16.0 local registry backend interop", () => {
+  assert.equal(DECISIONS_BACKENDS["warden-s1"].local, true);
+  const resolved = resolveBackend("warden-s1");
+  assert.equal(resolved.local, true);
+  assert.equal(resolved.keyEnv, "");
+  assert.equal(resolved.defaultModel, "warden-s1-752m");
+  assert.equal(loginStoresKey("warden-s1"), false);
+  for (const name of Object.keys(DECISIONS_BACKENDS) as Array<keyof typeof DECISIONS_BACKENDS>) {
+    assert.equal(loginStoresKey(name), resolveBackend(name).local !== true, `loginStoresKey(${name}) must match !local`);
+  }
 });
 
 test("backendName shows the registry name, local mode, or the endpoint label", () => {

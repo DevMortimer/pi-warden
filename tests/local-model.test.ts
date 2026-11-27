@@ -16,12 +16,14 @@ import {
   ONNX_MODEL_ID,
   ONNX_MODEL_REPO,
   READY_MANIFEST_FILE,
+  deriveWardenS1ModelState,
   downloadWardenS1,
   formatDownloadProgress,
   getWardenS1Status,
   probeMlxPython,
   removeWardenS1,
   resolveCacheRoot,
+  resolveInstalledOrtPath,
   resolveManagedMlxPython,
   resolveManagedMlxVenvDir,
   resolveModelsRoot,
@@ -688,4 +690,64 @@ test("trust boundary: project .pi/pi-warden.json cannot enable localModel.autoDo
     runtime: "auto",
     idleShutdownSec: 1800,
   });
+});
+
+test("resolveInstalledOrtPath discovers shared pi-typesafe and cache runtimes, and getWardenS1Status populates state", t => {
+  const root = makeTempDir(t, "pi-warden-s1-ort-share-");
+  const agentDir = join(root, "agent");
+  const stateDir = join(root, "state");
+  const cacheRoot = join(root, "cache");
+  const modelsDir = join(root, "models");
+  const dirs = { agentDir, configDirName: ".pi" };
+  const env: NodeJS.ProcessEnv = { PI_WARDEN_CACHE_DIR: cacheRoot };
+
+  assert.equal(resolveInstalledOrtPath({ stateDir, dirs, env }), undefined);
+
+  const cacheOrtPkg = join(cacheRoot, "runtime", "node_modules", "onnxruntime-node");
+  mkdirSync(cacheOrtPkg, { recursive: true });
+  writeFileSync(join(cacheOrtPkg, "package.json"), JSON.stringify({ name: "onnxruntime-node", version: "1.0.0" }));
+  assert.equal(resolveInstalledOrtPath({ stateDir, dirs, env }), cacheOrtPkg);
+
+  const typesafeOrtPkg = join(agentDir, "pi-typesafe", "runtime", "node_modules", "onnxruntime-node");
+  mkdirSync(typesafeOrtPkg, { recursive: true });
+  writeFileSync(join(typesafeOrtPkg, "package.json"), JSON.stringify({ name: "onnxruntime-node", version: "1.0.0" }));
+  assert.equal(resolveInstalledOrtPath({ stateDir, dirs, env }), typesafeOrtPkg);
+
+  const statusNotDownloaded = getWardenS1Status({ runtime: "onnx", cacheDir: modelsDir }, { stateDir, dirs, env });
+  assert.equal(statusNotDownloaded.state, "not_downloaded");
+  assert.equal(statusNotDownloaded.ortRuntimePath, typesafeOrtPkg);
+
+  mkdirSync(statusNotDownloaded.modelDir, { recursive: true });
+  writeFileSync(join(statusNotDownloaded.modelDir, "weights.bin.part"), Buffer.from("partial"));
+  const statusIncomplete = getWardenS1Status({ runtime: "onnx", cacheDir: modelsDir }, { stateDir, dirs, env });
+  assert.equal(statusIncomplete.state, "incomplete");
+
+  const payload = Buffer.from("verified-onnx-weights");
+  rmSync(join(statusNotDownloaded.modelDir, "weights.bin.part"), { force: true });
+  writeFileSync(join(statusNotDownloaded.modelDir, "config.json"), payload);
+  writeFileSync(
+    join(statusNotDownloaded.modelDir, READY_MANIFEST_FILE),
+    JSON.stringify({
+      version: 1,
+      runtime: "onnx",
+      repoId: ONNX_MODEL_REPO,
+      modelId: ONNX_MODEL_ID,
+      downloadedAt: new Date().toISOString(),
+      totalBytes: payload.length,
+      files: [{ path: "config.json", bytes: payload.length, sha256: sha256Hex(payload) }],
+    }),
+  );
+  const statusReady = getWardenS1Status({ runtime: "onnx", cacheDir: modelsDir }, { stateDir, dirs, env });
+  assert.equal(statusReady.state, "ready");
+  assert.equal(statusReady.ready, true);
+
+  const statusUnsupported = getWardenS1Status({ runtime: "mlx", cacheDir: modelsDir }, { platform: "linux", arch: "x64", stateDir, dirs, env });
+  assert.equal(statusUnsupported.state, "unsupported");
+
+  assert.equal(deriveWardenS1ModelState({ ready: false, installed: true, incomplete: false, diagnostic: "missing mlx" }), "runtime_missing");
+
+  const wardenOrtPkg = join(stateDir, "runtime", "node_modules", "onnxruntime-node");
+  mkdirSync(wardenOrtPkg, { recursive: true });
+  writeFileSync(join(wardenOrtPkg, "package.json"), JSON.stringify({ name: "onnxruntime-node", version: "1.0.0" }));
+  assert.equal(resolveInstalledOrtPath({ stateDir, dirs, env }), wardenOrtPkg);
 });
