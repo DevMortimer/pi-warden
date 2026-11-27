@@ -8,6 +8,17 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 <!-- Empty. Next release starts here. -->
 
+## 2.18.2
+
+### Changed
+
+- Updated `pi-typesafe` dependency from `^0.15.1` to `^0.16.0` (`0.16.0` in lockfile), adopting its first-class `"warden-s1"` local registry backend (`loginStoresKey` now treats any `local: true` registry backend as keyless) and keeping `0.x` caret checks and Pi 1.x peer installs aligned.
+- Shared `Warden-S1` runtime, daemon, and worker interop with `pi-typesafe@0.16.0`: re-used `LOCAL_MAX_INPUT_BYTES`, `MOCK_WEIGHTS_ENV`, and `deriveWardenS1ModelState` (exposed as `status.state` on `WardenS1Status`), extended `resolveInstalledOrtPath` to discover ONNX runtimes installed under `<agent dir>/pi-typesafe/runtime` and `<cache root>/runtime` without re-installing `onnxruntime-node`, tightened loopback/port/PID daemon metadata validation, exported `hasLiveDaemonMetadata` and `attachHealthyDaemon`, and updated the synthetic mock-weights ONNX backbone (`max_chunk_len: 4096` with a 64-token sliding attention window) so `>64 KiB` mock-weights payloads stay sub-second regardless of which package spawned the shared singleton daemon.
+
+### Fixed
+
+- Deduplicated `"warden-s1"` in `/warden config`'s `typesafeBackend` selector now that `DECISIONS_BACKENDS` registers `"warden-s1"`, keeping `"warden-s1"` once at index 1 so Left/Right cycling wraps cleanly across all 9 backend options.
+
 ## 2.18.1
 
 ### Added

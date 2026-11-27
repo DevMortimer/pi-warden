@@ -1,6 +1,6 @@
 {
   "name": "pi-warden",
-  "version": "2.18.1",
+  "version": "2.18.2",
   "description": "Zero-key runtime guardrails for Pi, Claude Code, and Codex — blocks destructive commands and secret exfiltration, enforces project rules, and breaks agent loops.",
   "type": "module",
   "license": "MIT",
